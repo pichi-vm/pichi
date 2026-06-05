@@ -41,8 +41,6 @@ mod memory;
 mod pci_irq;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod pio_pci;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-mod serial_init;
 #[cfg(target_os = "linux")]
 mod vhost_frontend;
 #[cfg(target_os = "windows")]
@@ -257,17 +255,16 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let pci_bus = Arc::new(pci_bus);
     let shutdown = Arc::new(AtomicBool::new(false));
     let ioapic = Arc::new(ioapic::IoApic::new());
+    // The MMIO bus builder also attaches the ns16550a serial (if the Platform
+    // declares one), routing its IRQ through this IOAPIC + the partition's
+    // interrupt controller.
     let mmio_bus = Arc::new(windows_x86_mmio_bus(
         &platform,
         Arc::clone(&pci_bus),
         Arc::clone(&ioapic),
+        vm.interrupt_controller(),
     )?);
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
-    serial_init::init_from_dtb(dtb_bytes, vm.interrupt_controller(), ioapic).map_err(|source| {
-        RunError::SerialInit {
-            source: source.into(),
-        }
-    })?;
 
     let mut joins = Vec::with_capacity(vcpu_handles.len());
     for mut vcpu in vcpu_handles {
@@ -308,8 +305,38 @@ fn windows_x86_mmio_bus(
     platform: &dillo_platform::Platform,
     pci_bus: Arc<PciBus>,
     ioapic: Arc<ioapic::IoApic>,
+    interrupt_controller: dillo_hypervisor::InterruptController,
 ) -> Result<MmioBus, RunError> {
     let mut mmio_bus = MmioBus::new();
+
+    // ns16550a serial console (MMIO; device-model §"Serial port"). The IRQ is
+    // injected at the declared GSI through the userspace IOAPIC, which drives
+    // WHP's fixed-interrupt primitive. Absent UART → no serial on the bus.
+    match &platform.uart {
+        Some(uart) => {
+            uart::init_ns16550(
+                uart.reg_shift,
+                interrupt_controller,
+                Arc::clone(&ioapic),
+                uart.irq,
+            );
+            mmio_bus.register(
+                "ns16550a",
+                uart.base,
+                uart.size,
+                Arc::new(|off, data| uart::ns16550_read(off, data)),
+                Arc::new(|off, data| uart::ns16550_write(off, data)),
+            );
+            log::info!(
+                "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
+                uart.base,
+                uart.size,
+                uart.reg_shift,
+                uart.irq
+            );
+        }
+        None => log::warn!("no UART in Platform — guest console output will be dropped"),
+    }
 
     let syscon_base = platform.poweroff.base;
     let syscon_target = platform.poweroff.base + platform.poweroff.offset;
@@ -432,9 +459,9 @@ fn run_windows_vcpu_loop(
         let pci_for_read = Arc::clone(pci_bus);
         let exit = vcpu.run(
             move |port, size| {
-                if let Some(byte) = uart::try_pio_read(port) {
-                    u32::from(byte)
-                } else if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
+                // x86 serial is MMIO (ns16550a), so the only PIO devices are
+                // the architectural PCI config ports.
+                if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
                     || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
                 {
                     pio_pci::pio_read(&legacy_for_read, &pci_for_read, port, size)
@@ -462,9 +489,8 @@ fn run_windows_vcpu_loop(
 
         match exit {
             VmExit::PioWrite { port, data, size } => {
-                if uart::try_pio_write(port, &data[..size as usize]) {
-                    // UART claimed it.
-                } else if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
+                // x86 serial is MMIO (ns16550a); only PCI config ports are PIO.
+                if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
                     || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
                 {
                     pio_pci::pio_write(legacy_pci, pci_bus, port, &data[..size as usize]);
@@ -1547,11 +1573,10 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         })?,
     ));
 
-    // DTB-driven UART attach (`#12`): walk for a `isa@*/serial@*`
-    // node; if present, attach an 8250 with an irqfd at the declared
-    // GSI. Absent → no UART emulation at all. Errors here are the
-    // strict-reject contract: an unknown serial-ish node or >1
-    // declared port aborts launch with a helpful message.
+    // Platform-driven UART attach (device-model §"Serial port"): the serial
+    // port is an MMIO ns16550a. If the Platform declares one, attach it with a
+    // KVM irqfd at the declared GSI and map its register window on the MMIO
+    // bus. Absent → no UART emulation at all.
     match platform.uart {
         Some(uart) => {
             let eventfd = {
@@ -1838,9 +1863,9 @@ fn run_vcpu_loop(
         let pci_for_read = Arc::clone(pci_bus);
         let exit = vcpu.run(
             move |port, size| {
-                if let Some(byte) = uart::try_pio_read(port) {
-                    u32::from(byte)
-                } else if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
+                // x86 serial is MMIO (ns16550a), so the only PIO devices are
+                // the architectural PCI config ports.
+                if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
                     || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
                 {
                     pio_pci::pio_read(&legacy_for_read, &pci_for_read, port, size)
@@ -1874,9 +1899,8 @@ fn run_vcpu_loop(
                 // means stale state; ignore.
             }
             VmExit::PioWrite { port, data, size } => {
-                if uart::try_pio_write(port, &data[..size as usize]) {
-                    // UART claimed it.
-                } else if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
+                // x86 serial is MMIO (ns16550a); only PCI config ports are PIO.
+                if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
                     || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
                 {
                     pio_pci::pio_write(legacy_pci, pci_bus, port, &data[..size as usize]);

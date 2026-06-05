@@ -47,7 +47,6 @@ use gdbstub_arch::x86::X86_64_SSE;
 use gdbstub_arch::x86::reg::X86_64CoreRegs;
 
 use crate::memory::GpaMap;
-use crate::uart;
 
 /// State shared between the gdb stub and the vCPU dispatch loop.
 pub(crate) struct GdbTarget {
@@ -99,7 +98,7 @@ impl GdbTarget {
         let exit = self
             .vcpu
             .run(
-                |port, _size| uart::try_pio_read(port).map_or(0u32, u32::from),
+                |_port, _size| 0u32,  // gdb stub: no PIO device wiring
                 |_addr, _data| false, // gdb stub: no MMIO bus wiring
             )
             .map_err(|_| "vcpu.run failed")?;
@@ -138,10 +137,7 @@ impl GdbTarget {
                 }
                 None
             }
-            VmExit::PioWrite { port, data, size } => {
-                let _ = uart::try_pio_write(port, &data[..size as usize]);
-                None
-            }
+            VmExit::PioWrite { .. } => None,
             VmExit::MmioRead { .. }
             | VmExit::PioRead { .. }
             | VmExit::Hvc { .. }

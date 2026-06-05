@@ -1,18 +1,19 @@
-//! UART emulation, DTB-driven attach.
+//! ns16550a UART emulation (MMIO), `Platform`-driven attach.
 //!
-//! 8250/16550 backed by `vm-superio`'s `Serial`. The driver sees a
-//! register file that responds to LCR/DLAB, the MCR loopback probe,
-//! IIR/FCR FIFO control, and the LSR TX-ready bit — a hand-rolled
-//! stub fails one of those probes and the kernel silently disables
-//! ttyS0. Writes to THR go to host stderr. The IRQ trigger is wired
-//! to a KVM irqfd so guest writes that arm IER's THRE/RX bits cause
-//! the kernel to receive a real ISA IRQ from the in-kernel IOAPIC.
+//! A 16550 backed by `vm-superio`'s `Serial`. The driver sees a register
+//! file that responds to LCR/DLAB, the MCR loopback probe, IIR/FCR FIFO
+//! control, and the LSR TX-ready bit — a hand-rolled stub fails one of
+//! those probes and the kernel silently disables the console. Writes to
+//! THR go to the host (stdout on Linux, stderr elsewhere).
 //!
-//! Attach is **DTB-driven** per the `#12` device-allocation contract:
-//! `init_8250` is called once from `dillo_vm::run` after walking the
-//! PMI's DTB for `isa@*/serial@*` nodes. If the DTB declares no
-//! serial node, this module stays dormant and the bus dispatcher
-//! never claims port 0x3F8 — there's no UART on the bus at all.
+//! Per the arma device model (see `arma/docs/device-model.md` §"Serial
+//! port") the serial port is an **MMIO `ns16550a`** on every arch — there
+//! is no legacy x86 `0x3f8` port-I/O UART. `init_ns16550` is called once
+//! from `dillo_vm::run` when the PMI's `Platform` declares a UART, and the
+//! node's register window is mapped on the MMIO bus (register `N` at offset
+//! `N << reg_shift`). The IRQ is delivered per host: a KVM irqfd on Linux,
+//! WHP's fixed-interrupt injection through the userspace IOAPIC on Windows,
+//! and polled (no IRQ) on macOS/HVF.
 
 use std::io::{self, Write};
 use std::sync::{Mutex, OnceLock};
@@ -77,92 +78,6 @@ impl vm_superio::Trigger for WhpTrigger {
             .inject_gsi(&self.interrupt_controller, self.gsi)
             .map_err(|e| io::Error::other(e.to_string()))
     }
-}
-
-#[cfg(target_os = "linux")]
-type SerialDev = Serial<IrqfdTrigger, NoEvents, Box<dyn Write + Send>>;
-#[cfg(target_os = "windows")]
-type SerialDev = Serial<WhpTrigger, NoEvents, Box<dyn Write + Send>>;
-
-/// State for the (at most one) declared 8250. None until `init_8250`
-/// fires; set-once thereafter.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-struct SerialState {
-    base: u16,
-    size: u16,
-    serial: Mutex<SerialDev>,
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-static SERIAL_8250: OnceLock<SerialState> = OnceLock::new();
-
-/// Attach an 8250 emulator at the given I/O port base, with `irqfd`
-/// (already registered with KVM at the right GSI) as the IRQ trigger.
-/// Idempotent on duplicate call (returns the original; second call's
-/// arguments are dropped — `dillo_vm::run` calls this exactly once).
-#[cfg(target_os = "linux")]
-pub(crate) fn init_8250(base: u16, irqfd: EventFd) {
-    let stderr: Box<dyn Write + Send> = Box::new(io::stderr());
-    let serial = Serial::new(IrqfdTrigger::new(irqfd), stderr);
-    let _ = SERIAL_8250.set(SerialState {
-        base,
-        size: 8,
-        serial: Mutex::new(serial),
-    });
-}
-
-/// Attach an 8250 emulator at the given I/O port base and route its
-/// DTB-declared ISA IRQ through the userspace IOAPIC model to WHP's
-/// fixed-interrupt injection primitive.
-#[cfg(target_os = "windows")]
-pub(crate) fn init_8250(
-    base: u16,
-    interrupt_controller: InterruptController,
-    ioapic: Arc<IoApic>,
-    gsi: u32,
-) {
-    let stderr: Box<dyn Write + Send> = Box::new(io::stderr());
-    let serial = Serial::new(WhpTrigger::new(interrupt_controller, ioapic, gsi), stderr);
-    let _ = SERIAL_8250.set(SerialState {
-        base,
-        size: 8,
-        serial: Mutex::new(serial),
-    });
-}
-
-/// Dispatch a PIO write to the attached 8250. Returns `true` if the
-/// port was claimed, `false` otherwise (no UART attached or port
-/// outside the claimed range).
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-pub(crate) fn try_pio_write(port: u16, data: &[u8]) -> bool {
-    let Some(st) = SERIAL_8250.get() else {
-        return false;
-    };
-    if !(st.base..st.base + st.size).contains(&port) || data.is_empty() {
-        return false;
-    }
-    let offset = (port - st.base) as u8;
-    if let Ok(mut s) = st.serial.lock() {
-        let _ = s.write(offset, data[0]);
-        if offset == 0 {
-            // THR write — flush stderr now so host sees the byte as it
-            // is produced rather than waiting for buffer growth.
-            let _ = s.writer_mut().flush();
-        }
-    }
-    true
-}
-
-/// Dispatch a PIO read to the attached 8250. Returns `Some(byte)` if
-/// the port was claimed, `None` otherwise.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-pub(crate) fn try_pio_read(port: u16) -> Option<u8> {
-    let st = SERIAL_8250.get()?;
-    if !(st.base..st.base + st.size).contains(&port) {
-        return None;
-    }
-    let offset = (port - st.base) as u8;
-    Some(st.serial.lock().ok()?.read(offset))
 }
 
 // ── ns16550a (aarch64/HVF) — MMIO 16550 backed by vm-superio (F3). ─────
@@ -295,6 +210,79 @@ pub(crate) fn ns16550_write(offset: u64, data: &[u8]) -> bool {
 
 /// MMIO read from the ns16550a register file.
 #[cfg(target_os = "linux")]
+pub(crate) fn ns16550_read(offset: u64, data: &mut [u8]) -> bool {
+    data.fill(0);
+    let Some(st) = NS16550.get() else {
+        return true;
+    };
+    let reg = (offset >> st.reg_shift) as u8;
+    if let Ok(mut s) = st.serial.lock()
+        && !data.is_empty()
+    {
+        data[0] = s.read(reg);
+    }
+    true
+}
+
+// ── ns16550a (Windows/WHP) — MMIO 16550 routed through the userspace IOAPIC.
+// The device-model serial is MMIO on x86 too — there is no port-I/O 0x3f8. The
+// guest's THRE/RX interrupts are raised by injecting the DTB-declared GSI into
+// the userspace IOAPIC model, which drives WHP's fixed-interrupt primitive
+// (`WhpTrigger`). Console output (THR) → host stderr.
+#[cfg(target_os = "windows")]
+type Mmio16550 = Serial<WhpTrigger, NoEvents, Box<dyn Write + Send>>;
+
+#[cfg(target_os = "windows")]
+struct Ns16550State {
+    reg_shift: u32,
+    serial: Mutex<Mmio16550>,
+}
+
+#[cfg(target_os = "windows")]
+static NS16550: OnceLock<Ns16550State> = OnceLock::new();
+
+/// Attach the MMIO ns16550a, routing its IRQ through the userspace IOAPIC to
+/// WHP's fixed-interrupt injection at the declared GSI. Set-once;
+/// `dillo_vm::run` calls this exactly once when the Platform declares a UART.
+#[cfg(target_os = "windows")]
+pub(crate) fn init_ns16550(
+    reg_shift: u32,
+    interrupt_controller: InterruptController,
+    ioapic: Arc<IoApic>,
+    gsi: u32,
+) {
+    let out: Box<dyn Write + Send> = Box::new(io::stderr());
+    let _ = NS16550.set(Ns16550State {
+        reg_shift,
+        serial: Mutex::new(Serial::new(
+            WhpTrigger::new(interrupt_controller, ioapic, gsi),
+            out,
+        )),
+    });
+}
+
+/// MMIO write to the ns16550a register file (`offset` within the node reg).
+#[cfg(target_os = "windows")]
+pub(crate) fn ns16550_write(offset: u64, data: &[u8]) -> bool {
+    let Some(st) = NS16550.get() else {
+        return true;
+    };
+    if data.is_empty() {
+        return true;
+    }
+    let reg = (offset >> st.reg_shift) as u8;
+    if let Ok(mut s) = st.serial.lock() {
+        let _ = s.write(reg, data[0]);
+        if reg == 0 {
+            // THR write — flush so the host sees the byte immediately.
+            let _ = s.writer_mut().flush();
+        }
+    }
+    true
+}
+
+/// MMIO read from the ns16550a register file.
+#[cfg(target_os = "windows")]
 pub(crate) fn ns16550_read(offset: u64, data: &mut [u8]) -> bool {
     data.fill(0);
     let Some(st) = NS16550.get() else {
