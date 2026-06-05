@@ -134,4 +134,4 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          "$CARGO" test -p dillo --features vm-tests -- --test-threads=1
+          "$CARGO" test -p dillo --features vm-tests -- --test-threads=1 --nocapture

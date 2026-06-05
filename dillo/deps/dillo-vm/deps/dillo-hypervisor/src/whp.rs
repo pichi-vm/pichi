@@ -712,36 +712,41 @@ mod raw {
         // Enlightenments are paravirt optimizations; a nested/limited WHP host
         // (e.g. a CI runner) may reject individual ones with
         // ERROR_NOT_SUPPORTED. Treat each as best-effort — the guest boots
-        // correctly without them — but log every skip so a degraded host is
-        // visible in the boot output rather than silently swallowed.
-        match set_synthetic_processor_features_banks(partition) {
-            Ok(()) => {}
-            Err(ERROR_NOT_SUPPORTED) => {
-                log::warn!("WHP: synthetic processor feature banks not supported; skipping");
+        // correctly without them — and emit one definitive summary line so the
+        // host's actual enlightenment level is observable, never hidden.
+
+        // Map Ok -> applied(true), ERROR_NOT_SUPPORTED -> skipped(false), and
+        // propagate any other failure as a hard error.
+        fn applied(r: Result<(), HResult>) -> Result<bool, HResult> {
+            match r {
+                Ok(()) => Ok(true),
+                Err(ERROR_NOT_SUPPORTED) => Ok(false),
+                Err(hr) => Err(hr),
             }
-            Err(hr) => return Err(hr),
         }
 
-        match get_capability_u64(WHvCapabilityCodeProcessorClockFrequency)
-            .and_then(|freq| set_processor_clock_frequency(partition, freq))
-        {
-            Ok(()) => {}
-            Err(ERROR_NOT_SUPPORTED) => {
-                log::warn!("WHP: processor clock frequency enlightenment not supported; skipping");
-            }
-            Err(hr) => return Err(hr),
-        }
-
+        let synthetic_features = applied(set_synthetic_processor_features_banks(partition))?;
+        let processor_clock = applied(
+            get_capability_u64(WHvCapabilityCodeProcessorClockFrequency)
+                .and_then(|freq| set_processor_clock_frequency(partition, freq)),
+        )?;
         let interrupt_clock_frequency =
             get_capability_u64(WHvCapabilityCodeInterruptClockFrequency)?;
-        match set_interrupt_clock_frequency(partition, interrupt_clock_frequency) {
-            Ok(()) => {}
-            Err(ERROR_NOT_SUPPORTED) => {
-                log::warn!("WHP: interrupt clock frequency enlightenment not supported; skipping");
-            }
-            Err(hr) => return Err(hr),
-        }
+        let interrupt_clock =
+            applied(set_interrupt_clock_frequency(partition, interrupt_clock_frequency))?;
 
+        if synthetic_features && processor_clock && interrupt_clock {
+            log::info!(
+                "WHP: fully enlightened (synthetic processor features, processor clock, \
+                 interrupt clock all applied)"
+            );
+        } else {
+            log::warn!(
+                "WHP: partially enlightened — synthetic_features={synthetic_features}, \
+                 processor_clock={processor_clock}, interrupt_clock={interrupt_clock} \
+                 (host returned ERROR_NOT_SUPPORTED for the false ones; guest still boots)"
+            );
+        }
         Ok(())
     }
 

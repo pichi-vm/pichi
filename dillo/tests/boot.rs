@@ -136,6 +136,14 @@ fn boots_and_reports(#[values(256, 1024)] mem_mib: u32, #[values(1, 2)] cpus: u3
     let tmp = TempDir::new().unwrap();
     let pmi = build_pmi(tmp.path());
     let output = boot(&pmi, mem_mib, cpus, tmp.path());
+    // Surface the hypervisor's own enlightenment/serial setup so the host's
+    // actual capability level is visible in CI (under --nocapture) rather than
+    // hidden in the captured child output.
+    for line in output.lines() {
+        if line.contains("enlightened") || line.contains("ns16550a") {
+            eprintln!("[dillo] {line}");
+        }
+    }
     let r = parse_report(&output)
         .unwrap_or_else(|| panic!("boot produced no snuffler report (guest did not boot):\n{output}"));
 
