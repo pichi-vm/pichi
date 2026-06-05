@@ -24,6 +24,7 @@ const GIC_MSI_SIZE: u64 = 0x0001_0000; // 64 KiB
 // Serial/virtio MMIO addresses are planner-assigned (passed in `Inputs`);
 // only the clock + IRQ routing constants live here.
 const SERIAL_CLK_HZ: u32 = 3_686_400; // 16550 reference clock
+const SERIAL_CURRENT_SPEED: u32 = 115_200;
 const SERIAL_SPI: u32 = 1; // GIC SPI 1, level-high
 
 const VIRTIO_MMIO_SPI_BASE: u32 = 16; // SPI 16, 17, … (edge), one per transport
@@ -148,6 +149,7 @@ pub(super) fn add_platform(
         fdt.property_u32("reg-shift", 2)?;
         fdt.property_u32("reg-io-width", 4)?;
         fdt.property_u32("clock-frequency", SERIAL_CLK_HZ)?;
+        fdt.property_u32("current-speed", SERIAL_CURRENT_SPEED)?;
         fdt.property_u32("interrupt-parent", INTC_PHANDLE)?;
         fdt.property_array_u32("interrupts", &[0, SERIAL_SPI, 4])?; // SPI, level-high
         fdt.end_node(s)?;

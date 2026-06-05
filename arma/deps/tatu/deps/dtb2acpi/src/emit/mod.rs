@@ -17,6 +17,7 @@ pub(crate) mod mcfg;
 pub(crate) mod pci_host;
 pub(crate) mod rsdp;
 pub(crate) mod sdt;
+pub(crate) mod serial_device;
 pub(crate) mod slit;
 pub(crate) mod spcr;
 pub(crate) mod srat;

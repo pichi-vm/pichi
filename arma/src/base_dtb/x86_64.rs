@@ -27,6 +27,7 @@ const IOAPIC_PHANDLE: u32 = 2;
 // Serial/virtio MMIO addresses are planner-assigned (passed in `Inputs`);
 // only the IRQ routing constants live here.
 const SERIAL_CLK_HZ: u32 = 3_686_400;
+const SERIAL_CURRENT_SPEED: u32 = 115_200;
 const SERIAL_IOAPIC_PIN: u32 = 4; // IO-APIC pin 4 (legacy COM1 line)
 
 // syscon power management — arma-assigned but arch-specific, so fixed here and
@@ -117,6 +118,7 @@ pub(super) fn add_platform(
         fdt.property_u32("reg-shift", 2)?;
         fdt.property_u32("reg-io-width", 4)?;
         fdt.property_u32("clock-frequency", SERIAL_CLK_HZ)?;
+        fdt.property_u32("current-speed", SERIAL_CURRENT_SPEED)?;
         fdt.property_u32("interrupt-parent", IOAPIC_PHANDLE)?;
         fdt.property_array_u32("interrupts", &[SERIAL_IOAPIC_PIN, 1])?; // <pin, sense>
         fdt.end_node(s)?;

@@ -684,7 +684,7 @@ fn buffer_too_small_needed_is_deterministic_and_got_reflects_n() {
 /// `basic.dtb` or the count arithmetic changes, the exact-fit and
 /// one-byte-short tests below will fail with the new value in
 /// their error message — bake that in here.
-const BASIC_DTB_NEEDED: usize = 731;
+const BASIC_DTB_NEEDED: usize = 932;
 
 #[test]
 fn buffer_at_exact_needed_succeeds() {

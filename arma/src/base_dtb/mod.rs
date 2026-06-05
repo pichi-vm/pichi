@@ -55,6 +55,8 @@ pub(super) const ECAM_BUSES: u32 = 16;
 /// PCI space code in `ranges` phys.hi: 64-bit non-prefetchable memory. The
 /// legacy 32-bit (`0x0200_0000`) and I/O (`0x0100_0000`) windows are dropped.
 const PCI_MEM64: u32 = 0x0300_0000;
+const SERIAL_ALIAS: &str = "serial0";
+const SERIAL_OPTIONS: &str = "115200n8";
 
 /// The architecture-fixed and architecture-specific MMIO the planner must
 /// avoid but never assigns: x86 LAPIC/IOAPIC + syscon, aarch64 GIC/v2m.
@@ -81,6 +83,7 @@ pub(crate) fn build(inputs: &Inputs<'_>) -> Result<Vec<u8>, DtbError> {
 
     // /chosen — cmdline + initrd extents.
     chosen_node(&mut fdt, inputs)?;
+    aliases_node(&mut fdt, inputs)?;
 
     // No `/cpus`: the base declares nothing CPU-related. The host overlay
     // authors the entire `/cpus` subtree (container + cpu@N) per merged.md §1.
@@ -108,11 +111,24 @@ pub(crate) fn build(inputs: &Inputs<'_>) -> Result<Vec<u8>, DtbError> {
 fn chosen_node(fdt: &mut FdtWriter, inputs: &Inputs<'_>) -> Result<(), DtbError> {
     let node = fdt.begin_node("chosen")?;
     fdt.property_string("bootargs", inputs.cmdline)?;
+    if inputs.serial.is_some() {
+        fdt.property_string("stdout-path", &format!("{SERIAL_ALIAS}:{SERIAL_OPTIONS}"))?;
+    }
     if let Some((gpa, size)) = inputs.initrd {
         let end = gpa.saturating_add(size);
         fdt.property_u64("linux,initrd-start", gpa)?;
         fdt.property_u64("linux,initrd-end", end)?;
     }
+    fdt.end_node(node)?;
+    Ok(())
+}
+
+fn aliases_node(fdt: &mut FdtWriter, inputs: &Inputs<'_>) -> Result<(), DtbError> {
+    let Some(serial) = &inputs.serial else {
+        return Ok(());
+    };
+    let node = fdt.begin_node("aliases")?;
+    fdt.property_string(SERIAL_ALIAS, &format!("/serial@{:x}", serial.start))?;
     fdt.end_node(node)?;
     Ok(())
 }
@@ -208,10 +224,23 @@ mod tests {
 
     #[test]
     fn build_x86_succeeds() {
+        use devtree::{NodeView, PropertyView, Tree, TreeView};
+
         let bytes = build(&x86_inputs()).expect("build");
         assert!(bytes.len() > 0x80, "non-trivial DTB");
         let magic = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
         assert_eq!(magic, 0xd00d_feed);
+        let tree: Tree<'_> = Tree::parse(&bytes).expect("parse x86 DTB");
+        let chosen = tree.find_path("/chosen").expect("/chosen present");
+        assert_eq!(
+            chosen.property("stdout-path").unwrap().as_str(),
+            Some("serial0:115200n8")
+        );
+        let aliases = tree.find_path("/aliases").expect("/aliases present");
+        assert_eq!(
+            aliases.property("serial0").unwrap().as_str(),
+            Some("/serial@9000000")
+        );
     }
 
     #[test]
@@ -252,7 +281,7 @@ mod tests {
             .expect("/pcie@a200000 present");
         let mp = pci.property("msi-parent").expect("msi-parent");
         assert_eq!(mp.as_ref(), &[0, 0, 0, 3]); // V2M_PHANDLE
-        // window from inputs: base 2^35 (32 GiB), size 2^34 (16 GiB).
+                                                // window from inputs: base 2^35 (32 GiB), size 2^34 (16 GiB).
         let ranges = pci.property("ranges").expect("ranges");
         assert_eq!(
             ranges.as_ref(),
@@ -289,7 +318,7 @@ mod tests {
     /// A4/A7: ns16550a serial + virtio-mmio at the planner-assigned ranges.
     #[test]
     fn aarch64_serial_and_virtio_mmio() {
-        use devtree::{NodeView, Tree, TreeView};
+        use devtree::{NodeView, PropertyView, Tree, TreeView};
         let virtio: Vec<Range<u64>> = (0..3)
             .map(|i| {
                 let b = 0x0A11_1000 + i * 0x200;
@@ -303,29 +332,39 @@ mod tests {
         let bytes = build(&inputs).expect("build");
         let tree: Tree<'_> = Tree::parse(&bytes).expect("parse");
 
-        let s = tree.find_path("/serial@a110000").expect("/serial present");
-        assert!(
-            s.property("compatible")
-                .unwrap()
-                .as_ref()
-                .starts_with(b"ns16550a")
+        let chosen = tree.find_path("/chosen").expect("/chosen present");
+        assert_eq!(
+            chosen.property("stdout-path").unwrap().as_str(),
+            Some("serial0:115200n8")
         );
+        let aliases = tree.find_path("/aliases").expect("/aliases present");
+        assert_eq!(
+            aliases.property("serial0").unwrap().as_str(),
+            Some("/serial@a110000")
+        );
+
+        let s = tree.find_path("/serial@a110000").expect("/serial present");
+        assert!(s
+            .property("compatible")
+            .unwrap()
+            .as_ref()
+            .starts_with(b"ns16550a"));
         assert_eq!(
             s.property("interrupts").unwrap().as_ref(),
             &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 4] // <SPI 1 level-high>
         );
+        assert_eq!(s.property("current-speed").unwrap().as_u32(), Some(115_200));
 
         for i in 0..3u64 {
             let base = 0x0A11_1000 + i * 0x200;
             let n = tree
                 .find_path(&format!("/virtio_mmio@{base:x}"))
                 .expect("virtio_mmio node");
-            assert!(
-                n.property("compatible")
-                    .unwrap()
-                    .as_ref()
-                    .starts_with(b"virtio,mmio")
-            );
+            assert!(n
+                .property("compatible")
+                .unwrap()
+                .as_ref()
+                .starts_with(b"virtio,mmio"));
             let spi = 16 + i as u32;
             let mut exp = Vec::new();
             exp.extend_from_slice(&0u32.to_be_bytes());

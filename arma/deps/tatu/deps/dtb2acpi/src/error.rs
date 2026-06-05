@@ -311,7 +311,7 @@ impl Site {
         match self {
             Self::Serial => {
                 "compatible, reg, interrupts, interrupt-parent, reg-shift, \
-                 reg-io-width, clock-frequency"
+                 reg-io-width, clock-frequency, current-speed"
             }
             _ => "(coverage rule not yet enforced at this site — see issue #12)",
         }

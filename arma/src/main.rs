@@ -127,7 +127,10 @@ struct BuildArgs {
     /// no ttyS0 in the guest (rely on virtio-console once it binds).
     /// Present = one MMIO `ns16550a` port at the per-arch canonical
     /// address: 0x09000000 IO-APIC pin 4 on x86_64; 0x0A110000 SPI 1
-    /// on aarch64.
+    /// on aarch64. Also declares `/aliases/serial0`, sets
+    /// `/chosen/stdout-path = "serial0:115200n8"`, and prepends
+    /// `earlycon` to the kernel command line. It does not choose the
+    /// normal console; pass `console=...` explicitly if desired.
     #[arg(long = "serial")]
     serial: bool,
 

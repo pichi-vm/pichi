@@ -17,7 +17,7 @@ use devtree::{NodeView, PropertyView, TreeView};
 use zerocopy::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use super::sdt::{GenericAddress, SYSTEM_MEMORY, SdtHeader};
+use super::sdt::{GenericAddress, SdtHeader, SYSTEM_MEMORY};
 use super::set_sdt_checksum;
 use crate::count::base_name_is;
 use crate::dtb::DtbNode;
@@ -38,12 +38,12 @@ const INTERFACE_TYPE_FULL_16550: u8 = 0x00;
 /// PC-AT `irq` byte is left zero.
 const INTERRUPT_TYPE_IOAPIC: u8 = 0x08;
 
+/// SPCR baud-rate enum for 115200 baud.
+const BAUD_RATE_115200: u8 = 7;
 /// "Vendor-defined / unknown" sentinels for the fields SPCR requires
-/// but a generic MMIO 16550 doesn't constrain. Per the SPCR spec a
-/// baud-rate of 0 means "the current/firmware setting", parity 0 = no
-/// parity, stop-bits 1, and `0x00FF` PCI device/vendor IDs mean "not a
-/// PCI device".
-const BAUD_RATE_AS_IS: u8 = 0;
+/// but a generic MMIO 16550 doesn't constrain. Per the SPCR spec parity
+/// 0 = no parity, stop-bits 1, and `0x00FF` PCI device/vendor IDs mean
+/// "not a PCI device".
 const PARITY_NONE: u8 = 0;
 const STOP_BITS_ONE: u8 = 1;
 const FLOW_CONTROL_NONE: u8 = 0;
@@ -53,8 +53,9 @@ const PCI_NOT_PRESENT_ID: u16 = 0xFFFF;
 /// Allowed property names on the `ns16550a` serial node. Anything else
 /// triggers `DtbError::UnsupportedProperty` per the strict-reject rule.
 /// `reg-shift` / `reg-io-width` are read (they shape the GAS access);
-/// `clock-frequency` / `interrupt-parent` are accepted as present-only
-/// (ACPI's single GSI space + the UART's own clock make them inert).
+/// `current-speed` drives SPCR baud-rate; `clock-frequency` is threaded
+/// through the DSDT ACPI serial device; `interrupt-parent` is accepted as
+/// present-only (ACPI's single GSI space makes it inert).
 const SERIAL_ALLOWED: &[&str] = &[
     "compatible",
     "reg",
@@ -63,6 +64,7 @@ const SERIAL_ALLOWED: &[&str] = &[
     "reg-shift",
     "reg-io-width",
     "clock-frequency",
+    "current-speed",
 ];
 
 /// SPCR table, revision 2 (80 bytes). Field order and offsets are the
@@ -100,17 +102,18 @@ impl Spcr {
 
 const _: () = assert!(core::mem::size_of::<Spcr>() == Spcr::SIZE);
 
-/// `true` iff the tree declares a `serial@…` (`ns16550a`) node — and
-/// validates its property set when it does. Drives whether the SPCR
-/// slot is allocated. A node present but malformed is an error, not a
-/// silent omission.
+/// `true` iff `/chosen/stdout-path` names an `ns16550a` serial node. Drives
+/// whether the SPCR table is emitted; SPCR mirrors the DT firmware-console
+/// choice, not the mere presence of serial hardware.
 pub(crate) fn present<T: TreeView>(tree: &T) -> Result<bool, DtbError> {
-    Ok(find_serial(tree)?.is_some())
+    Ok(find_stdout_serial(tree)?.is_some())
 }
 
 /// Locate the top-level `serial@…` node compatible with `ns16550a`,
 /// validating its property set if found.
-fn find_serial<T: TreeView>(tree: &T) -> Result<Option<DtbNode<<T as TreeView>::Node>>, DtbError> {
+pub(crate) fn find_serial<T: TreeView>(
+    tree: &T,
+) -> Result<Option<DtbNode<<T as TreeView>::Node>>, DtbError> {
     let root = DtbNode::root_of(tree.root());
     for child in root.children()? {
         if !base_name_is(child.name(), "serial") {
@@ -125,6 +128,79 @@ fn find_serial<T: TreeView>(tree: &T) -> Result<Option<DtbNode<<T as TreeView>::
     Ok(None)
 }
 
+/// Resolve `/chosen/stdout-path` to the ns16550a node it names. Supports both
+/// absolute paths (`/serial@...:115200n8`) and aliases (`serial0:115200n8`).
+fn find_stdout_serial<T: TreeView>(
+    tree: &T,
+) -> Result<Option<(DtbNode<<T as TreeView>::Node>, Option<u32>)>, DtbError> {
+    let Some(chosen) = tree.find_path("/chosen") else {
+        return Ok(None);
+    };
+    let Some(prop) = chosen.property("stdout-path") else {
+        return Ok(None);
+    };
+    let stdout = prop.as_str().ok_or(DtbError::MalformedProperty {
+        site: Site::Root,
+        property: "stdout-path",
+    })?;
+    let (target, opts) = stdout.split_once(':').unwrap_or((stdout, ""));
+    let serial = if target.starts_with('/') {
+        find_serial_by_path(tree, target)?
+    } else {
+        let Some(aliases) = tree.find_path("/aliases") else {
+            return Err(DtbError::MalformedProperty {
+                site: Site::Root,
+                property: "stdout-path",
+            });
+        };
+        let alias = aliases
+            .property(target)
+            .ok_or(DtbError::MalformedProperty {
+                site: Site::Root,
+                property: "stdout-path",
+            })?;
+        alias
+            .as_str()
+            .ok_or(DtbError::MalformedProperty {
+                site: Site::Root,
+                property: "stdout-path",
+            })
+            .and_then(|path| find_serial_by_path(tree, path))?
+    };
+
+    let Some(serial) = serial else {
+        return Err(DtbError::MalformedProperty {
+            site: Site::Root,
+            property: "stdout-path",
+        });
+    };
+    if !serial.has_compatible("ns16550a")? {
+        return Err(DtbError::UnsupportedNode { site: Site::Serial });
+    }
+    validate_property_set(&serial)?;
+    Ok(Some((serial, parse_stdout_baud(opts)?)))
+}
+
+fn find_serial_by_path<T: TreeView>(
+    tree: &T,
+    path: &str,
+) -> Result<Option<DtbNode<<T as TreeView>::Node>>, DtbError> {
+    let Some(rest) = path.strip_prefix('/') else {
+        return Ok(None);
+    };
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    let mut node = DtbNode::root_of(tree.root());
+    for segment in rest.split('/').filter(|s| !s.is_empty()) {
+        let Some(next) = node.child(segment, Site::Serial)? else {
+            return Ok(None);
+        };
+        node = next;
+    }
+    Ok(Some(node))
+}
+
 /// Strict-reject: every property on the serial node must be allowed.
 fn validate_property_set<N: NodeView + Copy>(node: &DtbNode<N>) -> Result<(), DtbError> {
     for prop in node.node.properties() {
@@ -137,16 +213,17 @@ fn validate_property_set<N: NodeView + Copy>(node: &DtbNode<N>) -> Result<(), Dt
 
 /// Emit a complete, checksummed SPCR into `slot`.
 ///
-/// Precondition: the tree has a validated `serial@…` node (the slot is
-/// only carved when [`present`] returned `true`). The re-walk's
-/// per-node errors are defense-in-depth on a count-validated tree.
+/// Precondition: the tree has a validated `/chosen/stdout-path` targeting a
+/// `serial@…` node (the slot is only carved when [`present`] returned `true`).
+/// The re-walk's per-node errors are defense-in-depth on a count-validated tree.
 pub(crate) fn emit<T: TreeView>(
     slot: &mut [u8],
     oem: &OemIdentity,
     tree: &T,
 ) -> Result<(), DtbError> {
-    let node = find_serial(tree)?.ok_or(DtbError::Internal)?;
+    let (node, stdout_baud) = find_stdout_serial(tree)?.ok_or(DtbError::Internal)?;
     let (base, access_size, gsi) = decode_serial(&node)?;
+    let baud_rate = decode_baud_rate(&node, stdout_baud)?;
     let length = super::sdt_length_from_slot(slot)?;
 
     let spcr = Spcr {
@@ -164,7 +241,7 @@ pub(crate) fn emit<T: TreeView>(
         interrupt_type: INTERRUPT_TYPE_IOAPIC,
         irq: 0,
         gsi: U32::new(gsi),
-        baud_rate: BAUD_RATE_AS_IS,
+        baud_rate,
         parity: PARITY_NONE,
         stop_bits: STOP_BITS_ONE,
         flow_control: FLOW_CONTROL_NONE,
@@ -184,13 +261,53 @@ pub(crate) fn emit<T: TreeView>(
     set_sdt_checksum(slot)
 }
 
+fn decode_baud_rate<N: NodeView + Copy>(
+    node: &DtbNode<N>,
+    stdout_baud: Option<u32>,
+) -> Result<u8, DtbError> {
+    match stdout_baud.or(node.property_u32_opt("current-speed")?) {
+        Some(9_600) => Ok(3),
+        Some(19_200) => Ok(4),
+        Some(57_600) => Ok(6),
+        Some(115_200) => Ok(BAUD_RATE_115200),
+        Some(_) => Err(DtbError::ValueOutOfRange {
+            site: Site::Serial,
+            property: "current-speed",
+        }),
+        None => Ok(0),
+    }
+}
+
+fn parse_stdout_baud(opts: &str) -> Result<Option<u32>, DtbError> {
+    if opts.is_empty() {
+        return Ok(None);
+    }
+    let digits = opts
+        .as_bytes()
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if digits == 0 {
+        return Ok(None);
+    }
+    opts.get(..digits)
+        .and_then(|s| s.parse().ok())
+        .map(Some)
+        .ok_or(DtbError::MalformedProperty {
+            site: Site::Root,
+            property: "stdout-path",
+        })
+}
+
 /// Decode `(base, access_size, gsi)` from the serial node.
 ///
 /// `base` is the MMIO `reg[0]` base. `access_size` is the GAS
 /// access-size code derived from `reg-io-width` (4 → 3 = dword).
 /// `gsi` is the IO-APIC pin from `interrupts = <pin, sense>` — under
 /// identity GSI routing the pin IS the global system interrupt.
-fn decode_serial<N: NodeView + Copy>(node: &DtbNode<N>) -> Result<(u64, u8, u32), DtbError> {
+pub(crate) fn decode_serial<N: NodeView + Copy>(
+    node: &DtbNode<N>,
+) -> Result<(u64, u8, u32), DtbError> {
     let base = node
         .reg(Site::Serial)?
         .next()

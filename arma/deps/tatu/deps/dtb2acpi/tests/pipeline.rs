@@ -141,25 +141,22 @@ fn dsdt_carries_s5_aml_derived_from_syscon_value() {
     // basic.dts declares syscon-poweroff value = 0x34 (the conformant
     // device-model §4 value). Per SdtHeader::write_dsdt_into,
     // SLP_TYP = (value >> 2) & 0x7 = 5. The DSDT body starts with the
-    // \_S5_ AML (13 bytes) and is then followed by one Device(PCI0)
-    // block (78 bytes for the basic fixture, which has no `ranges`
-    // property → zero MMIO windows). The serial port is described by
-    // SPCR, not DSDT AML.
+    // \_S5_ AML (13 bytes), one Device(PCI0) block (78 bytes for the
+    // basic fixture, which has no `ranges` property → zero MMIO windows),
+    // and one Device(SER0) block for the MMIO ns16550a.
     let buf = build_layout();
     let d = common::decode(&*buf);
     let bytes = AsRef::<[u8]>::as_ref(&*buf);
     assert_eq!(
         d.dsdt.header.length,
-        36 + 13 + 78,
-        "DSDT = header(36) + _S5_(13) + Device(PCI0)(78)"
+        36 + 13 + 78 + 201,
+        "DSDT = header(36) + _S5_(13) + Device(PCI0)(78) + Device(SER0)(201)"
     );
     let body_off = d.dsdt.header.offset_in_buf + 36;
     let s5 = &bytes[body_off..body_off + 13];
     assert_eq!(
         s5,
-        &[
-            0x08, 0x5C, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x06, 0x03, 0x0A, 0x05, 0x00, 0x00
-        ],
+        &[0x08, 0x5C, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x06, 0x03, 0x0A, 0x05, 0x00, 0x00],
         "DSDT body must start with Name(\\_S5_, Package(3){{5,0,0}})"
     );
     // The next byte begins the Device(PCI0) block: ExtOpPrefix 0x5B,
@@ -168,6 +165,48 @@ fn dsdt_carries_s5_aml_derived_from_syscon_value() {
         &bytes[body_off + 13..body_off + 15],
         &[0x5B, 0x82],
         "Device(PCI0) follows _S5_"
+    );
+}
+
+#[test]
+fn dsdt_carries_mmio_serial_device() {
+    let buf = build_layout();
+    let d = common::decode(&*buf);
+    let bytes = AsRef::<[u8]>::as_ref(&*buf);
+    let dsdt = &bytes[d.dsdt.header.offset_in_buf..][..d.dsdt.header.length as usize];
+
+    let ser = dsdt
+        .windows(4)
+        .position(|w| w == b"SER0")
+        .expect("Device(SER0) present");
+    assert!(
+        dsdt[ser..].windows(9).any(|w| w == b"RSCV0003\0"),
+        "_HID RSCV0003 present"
+    );
+    let mem = dsdt
+        .windows(46)
+        .position(|w| w[0] == 0x8A && w[1] == 0x2B && w[3] == 0x00)
+        .expect("serial QWordMemory descriptor present");
+    let desc = &dsdt[mem..mem + 46];
+    assert_eq!(
+        u64::from_le_bytes(desc[14..22].try_into().unwrap()),
+        0x900_0000
+    );
+    assert!(
+        dsdt.windows(9).any(|w| w[0] == 0x89
+            && w[1] == 0x06
+            && w[3] == 0x01
+            && u32::from_le_bytes(w[5..9].try_into().unwrap()) == 4),
+        "ExtendedInterrupt GSI 4 present"
+    );
+    assert!(
+        dsdt.windows("clock-frequency".len())
+            .any(|w| w == b"clock-frequency")
+            && dsdt.windows("reg-shift".len()).any(|w| w == b"reg-shift")
+            && dsdt
+                .windows("reg-io-width".len())
+                .any(|w| w == b"reg-io-width"),
+        "_DSD serial port properties present"
     );
 }
 
@@ -415,6 +454,8 @@ fn spcr_describes_mmio_16550() {
     // gsi (u32) at offset 54.
     let gsi = u32::from_le_bytes(bytes[off + 54..off + 58].try_into().unwrap());
     assert_eq!(gsi, 4, "gsi = IO-APIC pin from interrupts<4 1>");
+    // baud_rate at offset 58 — 7 = 115200, translated from DT current-speed.
+    assert_eq!(bytes[off + 58], 7, "SPCR baud_rate = 115200");
 }
 
 #[test]

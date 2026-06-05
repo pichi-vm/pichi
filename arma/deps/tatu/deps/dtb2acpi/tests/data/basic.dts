@@ -6,6 +6,14 @@
 	model = "dtb2acpi-test/basic";
 	compatible = "dtb2acpi,test-basic";
 
+	aliases {
+		serial0 = "/serial@9000000";
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -56,6 +64,7 @@
 		reg-shift = <2>;
 		reg-io-width = <4>;
 		clock-frequency = <3686400>;
+		current-speed = <115200>;
 		interrupt-parent = <&ioapic>;
 		interrupts = <4 1>;
 	};

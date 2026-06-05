@@ -81,6 +81,9 @@ impl SdtHeader {
     ///    namespace for PNP0A03/PNP0A08 devices to know which bridges
     ///    exist, and falls through to legacy CF8/CFC port-IO when none
     ///    are present.
+    /// 3. One `Device(SER0)` block when the DTB declares a `ns16550a`
+    ///    serial node — so Linux creates a normal 8250 `ttyS*` device
+    ///    for the MMIO UART instead of only parsing SPCR metadata.
     ///
     /// `slot.len()` MUST equal [`Self::SIZE`] + [`S5_AML_LEN`] +
     /// `pci_host::dsdt_total_bytes(tree)` — the same arithmetic
@@ -100,7 +103,8 @@ impl SdtHeader {
         slot.get_mut(body_start..s5_end)
             .ok_or(crate::error::DtbError::Internal)?
             .copy_from_slice(&s5_aml(sleep_value));
-        let end = super::pci_host::emit(slot, s5_end, tree)?;
+        let after_pci = super::pci_host::emit(slot, s5_end, tree)?;
+        let end = super::serial_device::emit(slot, after_pci, tree)?;
         if end != slot.len() {
             // Layout-accounting mismatch — count and emit disagreed.
             // Surface as Internal so the test suite catches it.

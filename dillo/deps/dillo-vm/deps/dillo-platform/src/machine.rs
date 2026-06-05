@@ -442,6 +442,7 @@ impl Uart {
             })?;
         serial.ack("reg-io-width");
         serial.ack("clock-frequency");
+        serial.ack("current-speed");
         serial.ack("interrupt-parent");
         serial.ensure_drained()?;
 
@@ -571,6 +572,10 @@ impl CoreVm {
             chosen.ack("linux,initrd-end");
             chosen.ack("stdout-path");
             chosen.ensure_drained()?;
+        }
+        if let Some(mut aliases) = root.remove_child("aliases") {
+            aliases.ack("serial0");
+            aliases.ensure_drained()?;
         }
 
         // Sweep now-empty containers a leaf device may have emptied.
@@ -875,6 +880,7 @@ mod tests {
             .with_property(OwnedProperty::new("reg-shift").with_u32(2))
             .with_property(OwnedProperty::new("reg-io-width").with_u32(4))
             .with_property(OwnedProperty::new("clock-frequency").with_u32(3_686_400))
+            .with_property(OwnedProperty::new("current-speed").with_u32(115_200))
             .with_property(OwnedProperty::new("interrupt-parent").with_u32(1))
             .with_property(OwnedProperty::new("interrupts").with_u32s(&[0, 1, 4]));
 
@@ -910,7 +916,14 @@ mod tests {
             .with_property(OwnedProperty::new("compatible").with_str("arma,v1"))
             .with_child(
                 OwnedNode::new("chosen")
-                    .with_property(OwnedProperty::new("bootargs").with_str("console=ttyS0")),
+                    .with_property(
+                        OwnedProperty::new("bootargs").with_str("earlycon console=ttyS0"),
+                    )
+                    .with_property(OwnedProperty::new("stdout-path").with_str("serial0:115200n8")),
+            )
+            .with_child(
+                OwnedNode::new("aliases")
+                    .with_property(OwnedProperty::new("serial0").with_str("/serial@9000000")),
             )
             .with_child(intc)
             .with_child(v2m)
@@ -986,7 +999,7 @@ mod tests {
         let m = Machine::survey(&dtb(root), Arch::Aarch64).expect("survey ok");
         assert!(!m.has_pcie);
         assert_eq!(m.pcie.ecam_base, 0); // ZEROED sentinel
-        // GICD, GICR, MSI frame, serial, four virtio-mmio (1 base + 3 added).
+                                         // GICD, GICR, MSI frame, serial, four virtio-mmio (1 base + 3 added).
         assert_eq!(m.plan.regions().len(), 8);
     }
 
@@ -1080,6 +1093,7 @@ mod tests {
             .with_property(OwnedProperty::new("reg-shift").with_u32(2))
             .with_property(OwnedProperty::new("reg-io-width").with_u32(4))
             .with_property(OwnedProperty::new("clock-frequency").with_u32(3_686_400))
+            .with_property(OwnedProperty::new("current-speed").with_u32(115_200))
             .with_property(OwnedProperty::new("interrupt-parent").with_u32(2))
             .with_property(OwnedProperty::new("interrupts").with_u32s(&[4, 1]));
 
@@ -1107,7 +1121,14 @@ mod tests {
             .with_property(OwnedProperty::new("compatible").with_str("arma,v1"))
             .with_child(
                 OwnedNode::new("chosen")
-                    .with_property(OwnedProperty::new("bootargs").with_str("console=ttyS0")),
+                    .with_property(
+                        OwnedProperty::new("bootargs").with_str("earlycon console=ttyS0"),
+                    )
+                    .with_property(OwnedProperty::new("stdout-path").with_str("serial0:115200n8")),
+            )
+            .with_child(
+                OwnedNode::new("aliases")
+                    .with_property(OwnedProperty::new("serial0").with_str("/serial@9000000")),
             )
             .with_child(lapic)
             .with_child(ioapic)

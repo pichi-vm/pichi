@@ -276,35 +276,65 @@ is no legacy x86 `0x3f8`. Conforms to `serial/8250.yaml`.
 #### aarch64
 
 ```dts
+aliases {
+    serial0 = "/serial@9000000";
+};
+
+chosen {
+    stdout-path = "serial0:115200n8";
+};
+
 serial@9000000 {
     compatible = "ns16550a";
     reg = <0x0 0x9000000 0x0 0x1000>;
     reg-shift = <2>;
     reg-io-width = <4>;
     clock-frequency = <3686400>;
+    current-speed = <115200>;
     interrupt-parent = <&gic>;
     interrupts = <0 1 4>;
 };
 ```
 
 The interrupt is a GIC SPI — the GIC's 3-cell `<type, number, flags>`, here SPI
-1, level-high.
+1, level-high. `clock-frequency` is the UART reference clock; `current-speed`
+is the firmware-configured line speed. When `--serial` is selected, Arma also
+sets `/chosen/stdout-path = "serial0:115200n8"` and prepends `earlycon` to the
+kernel command line. Linux consumes the DT stdout-path for early printk, then
+the image's own `console=` choice (for example `console=hvc0` or
+`console=ttyS0,115200n8`) decides the normal console.
 
 #### x86-64
 
 ```dts
+aliases {
+    serial0 = "/serial@9000000";
+};
+
+chosen {
+    stdout-path = "serial0:115200n8";
+};
+
 serial@9000000 {
     compatible = "ns16550a";
     reg = <0x0 0x9000000 0x0 0x1000>;
     reg-shift = <2>;
     reg-io-width = <4>;
     clock-frequency = <3686400>;
+    current-speed = <115200>;
     interrupt-parent = <&ioapic>;
     interrupts = <4 1>;
 };
 ```
 
 The interrupt is an IO-APIC line — the 2-cell `<pin, sense>`, here pin 4.
+`clock-frequency` is the UART reference clock; `current-speed` is the
+firmware-configured line speed. When `--serial` is selected, Arma also sets
+`/chosen/stdout-path = "serial0:115200n8"` and prepends `earlycon` to the kernel
+command line. `dtb2acpi` mirrors the DT stdout-path into SPCR, so Linux consumes
+the same firmware-console choice through ACPI. The image's own `console=`
+choice (for example `console=hvc0` or `console=ttyS0,115200n8`) decides the
+normal console.
 
 ### virtio-mmio transport
 

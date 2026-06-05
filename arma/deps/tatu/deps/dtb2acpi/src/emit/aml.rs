@@ -24,13 +24,16 @@ pub(crate) const NAME_OP: u8 = 0x08;
 pub(crate) const BYTE_PREFIX: u8 = 0x0A;
 pub(crate) const WORD_PREFIX: u8 = 0x0B;
 pub(crate) const DWORD_PREFIX: u8 = 0x0C;
+pub(crate) const STRING_PREFIX: u8 = 0x0D;
 pub(crate) const BUFFER_OP: u8 = 0x11;
+pub(crate) const PACKAGE_OP: u8 = 0x12;
 pub(crate) const EXT_OP_PREFIX: u8 = 0x5B;
 pub(crate) const DEVICE_OP: u8 = 0x82;
 
 // ── Large resource descriptor tags (ACPI §6.4.3) ─────────────────────
 pub(crate) const TAG_DWORD_ADDRESS_SPACE: u8 = 0x87;
 pub(crate) const TAG_WORD_ADDRESS_SPACE: u8 = 0x88;
+pub(crate) const TAG_EXTENDED_INTERRUPT: u8 = 0x89;
 pub(crate) const TAG_QWORD_ADDRESS_SPACE: u8 = 0x8A;
 
 // ── Small resource descriptor tags (ACPI §6.4.2) ─────────────────────
@@ -110,6 +113,48 @@ pub(crate) fn write_name_dword(
     write_bytes(slot, pos, &value.to_le_bytes())
 }
 
+/// `Name(<name>, "<value>")`.
+pub(crate) fn write_name_string(
+    slot: &mut [u8],
+    pos: usize,
+    name: &[u8; 4],
+    value: &[u8],
+) -> Result<usize, DtbError> {
+    let pos = write_bytes(slot, pos, &[NAME_OP])?;
+    let pos = write_name_seg(slot, pos, name)?;
+    write_string(slot, pos, value)
+}
+
+/// AML StringPrefix followed by a NUL-terminated byte string.
+pub(crate) fn write_string(slot: &mut [u8], pos: usize, value: &[u8]) -> Result<usize, DtbError> {
+    let pos = write_bytes(slot, pos, &[STRING_PREFIX])?;
+    let pos = write_bytes(slot, pos, value)?;
+    write_bytes(slot, pos, &[0])
+}
+
+/// Constant byte cost of an AML string for an ASCII byte slice.
+pub(crate) const fn string_bytes(value_len: usize) -> usize {
+    1 + value_len + 1
+}
+
+/// `Buffer() { <bytes> }` for byte arrays of length <= 255.
+pub(crate) fn write_byte_buffer(
+    slot: &mut [u8],
+    pos: usize,
+    bytes: &[u8],
+) -> Result<usize, DtbError> {
+    let len = u8::try_from(bytes.len()).map_err(|_| DtbError::Internal)?;
+    let pos = write_bytes(slot, pos, &[BUFFER_OP])?;
+    let pos = write_pkg_length(slot, pos, PKG_LENGTH_BYTES + 2 + bytes.len())?;
+    let pos = write_bytes(slot, pos, &[BYTE_PREFIX, len])?;
+    write_bytes(slot, pos, bytes)
+}
+
+/// Constant byte cost of [`write_byte_buffer`] for length <= 255.
+pub(crate) const fn byte_buffer_bytes(value_len: usize) -> usize {
+    1 + PKG_LENGTH_BYTES + 2 + value_len
+}
+
 /// Compute the 32-bit EISAID encoding of a 7-character PNP ID like
 /// `b"PNP0A08"`. ACPI §5.7.2.1: first three letters compressed into
 /// bytes 0-1 (5 bits each, biased by `@`), last four hex digits in
@@ -158,7 +203,7 @@ pub(crate) fn write_word_bus_number(
     buf[3] = RES_TYPE_BUS_NUMBER;
     buf[4] = GENFLAGS_FIXED_RANGE;
     buf[5] = 0; // Type-specific flags = 0 for bus numbers
-    // Granularity = 0, Min = bus_min, Max = bus_max, Translation = 0, Len.
+                // Granularity = 0, Min = bus_min, Max = bus_max, Translation = 0, Len.
     buf[6..8].copy_from_slice(&0u16.to_le_bytes());
     buf[8..10].copy_from_slice(&u16::from(bus_min).to_le_bytes());
     buf[10..12].copy_from_slice(&u16::from(bus_max).to_le_bytes());
@@ -231,6 +276,28 @@ pub(crate) fn write_qword_memory(
 
 /// Constant byte cost of a `QWordMemory` descriptor.
 pub(crate) const QWORD_MEMORY_BYTES: usize = 46;
+
+/// Write an `ExtendedInterrupt` resource descriptor for one GSI (9 bytes).
+/// ACPI §6.4.3.6. We use producer/consumer = consumer, level-triggered,
+/// active-high, exclusive. That matches the DT serial binding's
+/// `<pin, sense>` identity-GSI model and the dillo KVM irqfd route.
+pub(crate) fn write_extended_interrupt(
+    slot: &mut [u8],
+    pos: usize,
+    gsi: u32,
+) -> Result<usize, DtbError> {
+    let mut buf = [0u8; EXTENDED_INTERRUPT_BYTES];
+    buf[0] = TAG_EXTENDED_INTERRUPT;
+    buf[1] = 0x06; // length field = 6: flags + count + one u32 interrupt
+    buf[2] = 0x00;
+    buf[3] = 0b0000_0001; // ResourceConsumer, Level, ActiveHigh, Exclusive
+    buf[4] = 1; // interrupt table length
+    buf[5..9].copy_from_slice(&gsi.to_le_bytes());
+    write_bytes(slot, pos, &buf)
+}
+
+/// Constant byte cost of a one-entry `ExtendedInterrupt` descriptor.
+pub(crate) const EXTENDED_INTERRUPT_BYTES: usize = 9;
 
 /// Write an `EndTag` (small descriptor, 2 bytes). Checksum byte 0 means
 /// "don't verify" — the kernel accepts this and most firmware uses it.

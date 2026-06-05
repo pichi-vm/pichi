@@ -32,6 +32,7 @@ use crate::emit::mcfg::McfgHeader;
 use crate::emit::pci_host;
 use crate::emit::rsdp::Rsdp;
 use crate::emit::sdt::{GenericAddress, S5_AML_LEN, SdtHeader};
+use crate::emit::serial_device;
 use crate::emit::slit::SlitHeader;
 use crate::emit::spcr::{self, Spcr};
 use crate::emit::srat::{SratHeader, cpu_affinity_size_for_apic};
@@ -124,6 +125,9 @@ struct Counts {
     /// Computed by [`pci_host::dsdt_total_bytes`] so count and emit
     /// agree on the slot size without duplicating the size math.
     pci_dsdt_bytes: usize,
+    /// Total bytes of DSDT body AML contributed by `Device(SER0)`,
+    /// or zero when the DTB has no serial node.
+    serial_dsdt_bytes: usize,
     /// Whether the tree declares a `ns16550a` serial node — drives
     /// whether the SPCR table is emitted.
     has_serial: bool,
@@ -399,13 +403,14 @@ impl Offsets {
         // DSDT body carries `\_S5_` (so Linux installs `acpi_power_off`
         // as `pm_power_off`) plus one `Device(PCI<n>)` block per
         // `pci-host-ecam-generic` root child (so `acpi_pci_root_add`
-        // registers each PCI root bus). See
-        // [`crate::emit::sdt::SdtHeader::write_dsdt_into`] and
-        // [`crate::emit::pci_host`]. The serial port is described by the
-        // SPCR table, not DSDT AML.
+        // registers each PCI root bus), plus `Device(SER0)` when the
+        // DTB declares an ns16550a UART. SPCR points firmware console
+        // redirection at the UART, but Linux still needs an enumerable
+        // ACPI device before it creates a normal ttyS port.
         let dsdt_size = SdtHeader::SIZE
             .checked_add(S5_AML_LEN)
             .and_then(|n| n.checked_add(c.pci_dsdt_bytes))
+            .and_then(|n| n.checked_add(c.serial_dsdt_bytes))
             .ok_or(DtbError::Internal)?;
         let dsdt = Slot::carve(&mut cur, dsdt_size)?;
         let fadt = Slot::carve(&mut cur, FadtTable::SIZE)?;
@@ -513,6 +518,7 @@ pub(crate) fn run<T: TreeView>(
     // Optional subtrees.
     let ecam_count = root.count_mcfg()?;
     let pci_dsdt_bytes = pci_host::dsdt_total_bytes(tree)?;
+    let serial_dsdt_bytes = serial_device::dsdt_total_bytes(tree)?;
     let has_serial = spcr::present(tree)?;
     let (has_numa, memory_region_count, has_distances) = root.count_numa(&cpu_walk, domains)?;
 
@@ -522,6 +528,7 @@ pub(crate) fn run<T: TreeView>(
         ioapic_count,
         ecam_count,
         pci_dsdt_bytes,
+        serial_dsdt_bytes,
         has_serial,
         has_numa,
         memory_region_count,

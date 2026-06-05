@@ -3,11 +3,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 use crate::{
-    TATU_AARCH64, TATU_X86_64, base_dtb, bootinfo, initrd, kconfig, kernel, manifest, pe, planner,
-    tatu,
+    base_dtb, bootinfo, initrd, kconfig, kernel, manifest, pe, planner, tatu, TATU_AARCH64,
+    TATU_X86_64,
 };
 
 /// Resolve `(mmio_slots, pci_slots)` (device-model.md §6 Slot composition).
@@ -150,11 +150,11 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
     // ---- Step 8: base DTB (single pass) ----
     // Device addresses and the initrd extent both come from the plan, so the
     // DTB is built once — no sizing/final two-pass dance.
-    let cmdline = args.cmdline.as_str();
+    let cmdline = serial_earlycon_cmdline(args.serial, &args.cmdline);
     let initrd_extent = lay.initrd.as_ref().map(|r| (r.start, r.end - r.start));
     let dtb_bytes = base_dtb::build(&base_dtb::Inputs {
         arch,
-        cmdline,
+        cmdline: &cmdline,
         initrd: initrd_extent,
         serial: lay.serial.clone(),
         virtio: &lay.virtio,
@@ -226,6 +226,56 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
 
     atomic_write(&args.output_path, &pe_bytes)?;
     Ok(())
+}
+
+fn serial_earlycon_cmdline(serial: bool, cmdline: &str) -> String {
+    if !serial || has_earlycon(cmdline) {
+        return cmdline.to_owned();
+    }
+    if cmdline.trim().is_empty() {
+        "earlycon".to_owned()
+    } else {
+        format!("earlycon {cmdline}")
+    }
+}
+
+fn has_earlycon(cmdline: &str) -> bool {
+    cmdline
+        .split_whitespace()
+        .any(|arg| arg == "earlycon" || arg.starts_with("earlycon="))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::serial_earlycon_cmdline;
+
+    #[test]
+    fn serial_prepends_plain_earlycon() {
+        assert_eq!(
+            serial_earlycon_cmdline(true, "console=hvc0 quiet"),
+            "earlycon console=hvc0 quiet"
+        );
+    }
+
+    #[test]
+    fn serial_keeps_existing_earlycon() {
+        assert_eq!(
+            serial_earlycon_cmdline(true, "earlycon=acpi,spcr console=hvc0"),
+            "earlycon=acpi,spcr console=hvc0"
+        );
+        assert_eq!(
+            serial_earlycon_cmdline(true, "earlycon console=hvc0"),
+            "earlycon console=hvc0"
+        );
+    }
+
+    #[test]
+    fn no_serial_leaves_cmdline_unchanged() {
+        assert_eq!(
+            serial_earlycon_cmdline(false, "console=hvc0"),
+            "console=hvc0"
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

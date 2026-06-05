@@ -1,4 +1,6 @@
 /target
+/.codex
+/demo
 
 # Editor swap files
 *~

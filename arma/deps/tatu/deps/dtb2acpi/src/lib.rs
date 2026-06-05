@@ -97,7 +97,7 @@
 //! | Memory map → e820                        | Separate concern (boot setup, not `dtb2acpi`)                                 |
 //! | IORT, GTDT                               | Not x86-relevant                                                              |
 //! | NFIT                                     | No NVDIMM support in v1                                                       |
-//! | DSDT AML beyond `\_S5_`                  | Only `\_S5_` is emitted (required for `pm_power_off`); device AML is deferred |
+//! | DSDT AML beyond power / PCI / serial     | Only the platform devices Linux needs to boot are emitted; richer device AML is deferred |
 //!
 //! # DT binding scope
 //!
