@@ -14,6 +14,12 @@ env:
   # two-target tatu artifact deps need until it lands in nightly.
   CARGO_PR_SHA: 0294a8367512e4eecf69c70e8ba69ba6f1eb1514
 
+# Supported platforms (build + real guest boot, both required): Linux x86_64
+# (KVM) and Windows x86_64 (WHP). No other platform is enabled in CI: GitHub's
+# hosted runners offer nested virtualization only on Linux x86, so arm Linux,
+# macOS, and Windows-on-arm can't boot a guest here; macOS/x86 additionally has
+# no backend. See PLATFORMS.md for the full matrix and how to light the rest up
+# on bare-metal runners later.
 jobs:
   ci:
     name: ${{ matrix.os }}
@@ -21,11 +27,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          - os: ubuntu-24.04        # Linux x86_64 — full workspace + real KVM boot
             guest_musl: x86_64-unknown-linux-musl
-          - os: windows-2025
-            guest_musl: x86_64-unknown-linux-musl
-          - os: macos-15-large       # Intel x86_64 paid runner (named by the goal)
+          - os: windows-2025        # Windows x86_64 — build + real WHP boot
             guest_musl: x86_64-unknown-linux-musl
     runs-on: ${{ matrix.os }}
     steps:
@@ -87,19 +91,30 @@ jobs:
         if: runner.os == 'Linux'
         run: ls -l /dev/kvm && sudo chmod 666 /dev/kvm || true
 
-      # Linux builds every member (incl. the Linux-only guest binary snuffler and
-      # the vhost-backend); macOS/Windows can't host-build those, so there we
-      # test the portable crates + arma explicitly. dillo (with its HVF/WHP
-      # backend) is exercised by the boot step on all platforms.
+      # `CARGO_BUILD_RUSTFLAGS: -D warnings` (set per cargo step below) makes the
+      # build warning-clean-or-fail. It is the lowest-priority rustflags source,
+      # so it applies to the host/workspace crates but is ignored for the musl
+      # snuffler target, which keeps its own linker flags from .cargo/config.toml.
+      # (Registry deps are cap-lints'd, so only our crates can fail it.) It is set
+      # per-step, never globally, so it can't reach the patched-cargo build above.
+
+      # Linux builds every member, including the Linux-only guest binary snuffler
+      # and the vhost-backend. Windows can't host-build those, so there we test
+      # the portable crates + arma explicitly; dillo (with its WHP backend) is
+      # built and exercised by the boot step.
       - name: Test (Linux, full workspace)
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
           "$CARGO" test --workspace
 
-      - name: Test (macOS/Windows, portable + arma)
-        if: runner.os != 'Linux'
+      - name: Test (Windows, portable + arma)
+        if: runner.os == 'Windows'
         shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
           "$CARGO" test -p pmi -p devtree -p dtb2acpi -p dtb2e820 -p burrow -p arma
 
@@ -109,12 +124,13 @@ jobs:
           sudo sysctl -w vm.nr_hugepages=1024
           grep -i huge /proc/meminfo
 
-      # dillo's HVF backend is Apple-Silicon only, so it can't build on the
-      # Intel macos-15-large runner (and GitHub-hosted macOS has no nested
-      # virtualization regardless); skip the dillo/boot step there. Linux (KVM)
-      # and Windows (WHP) build dillo and run real boots.
+      # Real guest boot on both platforms — required, no skip. dillo builds its
+      # per-OS backend (KVM on Linux, WHP on Windows) and boots an Alpine guest;
+      # the test asserts the guest's self-report. A runner that cannot boot fails
+      # loudly (see dillo/tests/boot.rs) — this is what must never break.
       - name: Boot tests (KVM / WHP)
-        if: runner.os != 'macOS'
         shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
           "$CARGO" test -p dillo --features vm-tests -- --test-threads=1
