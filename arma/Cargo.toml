@@ -15,10 +15,10 @@ path = "src/main.rs"
 # from rust-lang/cargo#17067, with `-Z bindeps` enabled in .cargo/config.toml.
 # arma reads each ELF through the CARGO_BIN_FILE_<DEP>_tatu env var cargo
 # injects (see src/main.rs), so no build.rs is needed.
-tatu-x86_64 = { package = "tatu", path = "../tatu", artifact = "bin", target = "x86_64-unknown-none" }
-tatu-aarch64 = { package = "tatu", path = "../tatu", artifact = "bin", target = "aarch64-unknown-none" }
+tatu-x86_64 = { package = "tatu", path = "deps/tatu", artifact = "bin", target = "x86_64-unknown-none" }
+tatu-aarch64 = { package = "tatu", path = "deps/tatu", artifact = "bin", target = "aarch64-unknown-none" }
 
-pmi = { path = "../pmi" }
+pmi = { path = "../deps/pmi" }
 ciborium = "0.2"
 goblin = { version = "0.10", default-features = false, features = [
     "elf32",
@@ -29,7 +29,7 @@ goblin = { version = "0.10", default-features = false, features = [
     "std",
 ] }
 vm-fdt = "0.3"
-devtree = { path = "../devtree" }
+devtree = { path = "../deps/devtree" }
 flate2 = "1"
 zerocopy = { version = "0.8", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }

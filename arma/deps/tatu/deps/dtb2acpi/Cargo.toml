@@ -6,7 +6,7 @@ rust-version = "1.87"
 license = "MIT"
 
 [dependencies]
-devtree = { path = "../devtree" }
+devtree = { path = "../../../../../deps/devtree" }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 
 [dev-dependencies]

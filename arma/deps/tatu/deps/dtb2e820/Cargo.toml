@@ -6,4 +6,4 @@ rust-version = "1.87"
 license = "MIT"
 
 [dependencies]
-devtree = { path = "../devtree" }
+devtree = { path = "../../../../../deps/devtree" }

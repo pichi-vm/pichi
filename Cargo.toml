@@ -1,29 +1,33 @@
 [workspace]
 resolver = "2"
 members = [
+    # Products (consumed by nothing else)
     "arma",
-    "tatu",
-    "devtree",
-    "dtb2acpi",
-    "dtb2e820",
-    "pmi",
     "dillo",
-    "dillo/crates/dillo-pmi",
-    "dillo/crates/dillo-platform",
-    "dillo/crates/dillo-hypervisor",
-    "dillo/crates/dillo-device",
-    "dillo/crates/dillo-virtio-console",
-    "dillo/crates/dillo-vm",
-    "dillo/crates/dillo-e2e-schema",
-    "dillo/crates/virtio",
-    "dillo/crates/vm-pci",
-    "dillo/crates/virtio-pci",
-    "dillo/crates/vhost-backend",
+    # Cross-product shared libraries (no single owner)
+    "deps/devtree",
+    "deps/pmi",
+    # arma-owned (nested by sole consumer)
+    "arma/deps/tatu",
+    "arma/deps/tatu/deps/dtb2acpi",
+    "arma/deps/tatu/deps/dtb2e820",
+    # dillo-owned (nested by sole consumer)
+    "dillo/deps/dillo-vm",
+    "dillo/deps/dillo-vm/deps/dillo-hypervisor",
+    "dillo/deps/dillo-vm/deps/dillo-platform",
+    "dillo/deps/dillo-vm/deps/dillo-pmi",
+    "dillo/deps/dillo-vm/deps/virtio-pci",
+    "dillo/deps/dillo-vm/deps/vm-pci",
+    "dillo/deps/dillo-virtio-console",
+    "dillo/deps/dillo-virtio-console/deps/vhost-backend",
+    "dillo/deps/virtio",
+    "dillo/deps/dillo-device",
+    "dillo/deps/dillo-e2e-schema",
 ]
 exclude = [
     # cargo-fuzz harnesses: nightly + libfuzzer-sys, built out-of-band.
-    "dillo/crates/dillo-pmi/fuzz",
-    "devtree/fuzz",
+    "dillo/deps/dillo-vm/deps/dillo-pmi/fuzz",
+    "deps/devtree/fuzz",
     # Guest init fixture: cross-compiled standalone for the e2e boot test.
     "dillo/tests/fixtures/init",
 ]
@@ -60,21 +64,21 @@ needless_pass_by_value = "allow"
 uninlined_format_args = "allow"
 
 [workspace.dependencies]
-# Local project crates
-pmi = { path = "pmi" }
-devtree = { path = "devtree" }
+# Cross-product shared crates
+pmi = { path = "deps/pmi" }
+devtree = { path = "deps/devtree" }
 
 # dillo-internal crates
-dillo-pmi = { path = "dillo/crates/dillo-pmi" }
-dillo-platform = { path = "dillo/crates/dillo-platform" }
-dillo-hypervisor = { path = "dillo/crates/dillo-hypervisor" }
-dillo-device = { path = "dillo/crates/dillo-device" }
-dillo-virtio-console = { path = "dillo/crates/dillo-virtio-console" }
-dillo-vm = { path = "dillo/crates/dillo-vm" }
-virtio = { path = "dillo/crates/virtio" }
-vm-pci = { path = "dillo/crates/vm-pci" }
-virtio-pci = { path = "dillo/crates/virtio-pci" }
-vhost-backend = { path = "dillo/crates/vhost-backend" }
+dillo-pmi = { path = "dillo/deps/dillo-vm/deps/dillo-pmi" }
+dillo-platform = { path = "dillo/deps/dillo-vm/deps/dillo-platform" }
+dillo-hypervisor = { path = "dillo/deps/dillo-vm/deps/dillo-hypervisor" }
+dillo-device = { path = "dillo/deps/dillo-device" }
+dillo-virtio-console = { path = "dillo/deps/dillo-virtio-console" }
+dillo-vm = { path = "dillo/deps/dillo-vm" }
+virtio = { path = "dillo/deps/virtio" }
+vm-pci = { path = "dillo/deps/dillo-vm/deps/vm-pci" }
+virtio-pci = { path = "dillo/deps/dillo-vm/deps/virtio-pci" }
+vhost-backend = { path = "dillo/deps/dillo-virtio-console/deps/vhost-backend" }
 
 # Error handling
 anyhow = "1"
