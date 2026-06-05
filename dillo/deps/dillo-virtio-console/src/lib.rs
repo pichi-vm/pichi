@@ -7,11 +7,11 @@
 //! transport (virtio-pci, in crate `virtio-pci`) wraps this device,
 //! handles config-space + BAR MMIO, and calls [`activate`] once the
 //! guest writes DRIVER_OK. We then spawn a TX worker that drains the
-//! TX queue and writes the bytes to stdout.
+//! TX queue and writes the bytes to stdout, plus an RX worker that
+//! forwards host stdin into guest-provided receive buffers.
 //!
 //! Two queues per virtio-console spec §5.3:
-//! - Queue 0: RX (host → guest input, not yet wired — stdin loop is
-//!   a Phase 4 stdio-polish item).
+//! - Queue 0: RX (host → guest input from stdin).
 //! - Queue 1: TX (guest → host output → stdout).
 //!
 //! No multiport / control queue support (we don't negotiate
@@ -20,9 +20,10 @@
 //!
 //! See `dillo/ARCHITECTURE.md` §10 and §12.
 
-use std::io::{self, BufWriter, Write};
-use std::sync::OnceLock;
+use std::collections::VecDeque;
+use std::io::{self, BufWriter, Read, Write};
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -160,17 +161,16 @@ impl VirtioDevice for VirtioConsole {
         let tx_queue = queues.remove(1);
         let tx_evt = queue_evts.remove(1);
         let tx_call_fd = (self.call_fd_lookup)(tx_queue.msix_vector);
-        spawn_tx_worker(mem, tx_queue, tx_evt, tx_call_fd);
+        spawn_tx_worker(mem.clone(), tx_queue, tx_evt, tx_call_fd);
 
-        // Queue 0 is RX. We don't drive stdin yet — the queue stays
-        // empty until Phase 4 wires SIGWINCH + raw-mode stdin. Drop
-        // it on the floor; the guest can post available descriptors
-        // freely, we just never use them.
-        let _rx_queue = queues.remove(0);
-        let _rx_evt = queue_evts.remove(0);
+        // Queue 0 is RX. Feed host stdin into guest-provided writable buffers.
+        let rx_queue = queues.remove(0);
+        let rx_evt = queue_evts.remove(0);
+        let rx_call_fd = (self.call_fd_lookup)(rx_queue.msix_vector);
+        spawn_rx_worker(mem.clone(), rx_queue, rx_evt, rx_call_fd);
 
         self.activated = true;
-        log::info!("virtio-console: activated (TX worker spawned, RX idle)");
+        log::info!("virtio-console: activated (TX/RX workers spawned)");
         Ok(())
     }
 
@@ -193,6 +193,39 @@ fn spawn_tx_worker(mem: GuestMemoryMmap, queue: Queue, kick: Kick, call_fd: Opti
         .name("virtio-console-tx".into())
         .spawn(move || tx_worker(mem, queue, kick, call_fd))
         .expect("spawn virtio-console TX worker");
+}
+
+fn spawn_rx_worker(mem: GuestMemoryMmap, queue: Queue, kick: Kick, call_fd: Option<Interrupt>) {
+    let (input_tx, input_rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("virtio-console-stdin".into())
+        .spawn(move || stdin_worker(input_tx))
+        .expect("spawn virtio-console stdin worker");
+    thread::Builder::new()
+        .name("virtio-console-rx".into())
+        .spawn(move || rx_worker(mem, queue, kick, call_fd, input_rx))
+        .expect("spawn virtio-console RX worker");
+}
+
+fn stdin_worker(tx: mpsc::Sender<Vec<u8>>) {
+    let stdin = io::stdin();
+    let mut stdin = stdin.lock();
+    let mut buf = [0u8; 1024];
+    loop {
+        match stdin.read(&mut buf) {
+            Ok(0) => return,
+            Ok(n) => {
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    return;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                log::warn!("virtio-console stdin: read error: {e}");
+                return;
+            }
+        }
+    }
 }
 
 fn tx_worker(mem: GuestMemoryMmap, queue: Queue, kick: Kick, call_fd: Option<Interrupt>) {
@@ -224,6 +257,117 @@ fn tx_worker(mem: GuestMemoryMmap, queue: Queue, kick: Kick, call_fd: Option<Int
         }
         drain_tx(&mem, &queue, call_fd.as_ref());
     }
+}
+
+fn rx_worker(
+    mem: GuestMemoryMmap,
+    queue: Queue,
+    kick: Kick,
+    call_fd: Option<Interrupt>,
+    input_rx: mpsc::Receiver<Vec<u8>>,
+) {
+    #[cfg(target_os = "linux")]
+    clear_kick_nonblock(&kick);
+
+    let queue = Arc::new(Mutex::new(queue));
+    let mut pending = VecDeque::new();
+    loop {
+        if pending.is_empty() {
+            match input_rx.recv() {
+                Ok(bytes) => pending.extend(bytes),
+                Err(_) => return,
+            }
+        }
+
+        while !pending.is_empty() {
+            if drain_rx(&mem, &queue, &mut pending, call_fd.as_ref()) {
+                continue;
+            }
+            if let Err(e) = kick.read() {
+                log::error!("virtio-console RX: kick eventfd read error: {e}");
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn clear_kick_nonblock(kick: &Kick) {
+    use std::os::fd::AsRawFd;
+    // SAFETY: fcntl is a pure syscall; failures are non-fatal and only affect
+    // whether the device worker spins or blocks.
+    #[allow(unsafe_code)]
+    unsafe {
+        let fd = kick.as_eventfd().as_raw_fd();
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags >= 0 {
+            let _ = libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+        }
+    }
+}
+
+fn drain_rx(
+    mem: &GuestMemoryMmap,
+    queue: &Arc<Mutex<Queue>>,
+    pending: &mut VecDeque<u8>,
+    call_fd: Option<&Interrupt>,
+) -> bool {
+    let mut q = queue.lock().expect("virtio-console RX queue mutex");
+    let mut signaled = false;
+    let mut made_progress = false;
+    while !pending.is_empty() {
+        let Some(head) = q.pop(mem) else {
+            break;
+        };
+        let head_index = head.index;
+        let mut written: u32 = 0;
+        let mut current = Some(head);
+        while let Some(desc) = current {
+            if desc.flags & VIRTQ_DESC_F_WRITE != 0 {
+                let n = pending.len().min(desc.len as usize);
+                if n != 0 {
+                    let chunk: Vec<u8> = pending.drain(..n).collect();
+                    match mem.write(&chunk, desc.addr) {
+                        Ok(bytes) => {
+                            written = written.saturating_add(bytes as u32);
+                            made_progress = true;
+                            if bytes < chunk.len() {
+                                for byte in chunk[bytes..].iter().rev() {
+                                    pending.push_front(*byte);
+                                }
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "virtio-console RX: guest write at {:#x}+{}: {e:?}",
+                                desc.addr.0,
+                                desc.len
+                            );
+                            for byte in chunk.iter().rev() {
+                                pending.push_front(*byte);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            if pending.is_empty() {
+                break;
+            }
+            current = desc.next_desc(mem);
+        }
+        q.add_used(mem, head_index, written);
+        signaled = true;
+    }
+    if signaled {
+        if let Some(intr) = call_fd {
+            if let Err(e) = intr.signal() {
+                log::warn!("virtio-console RX: signal interrupt: {e}");
+            }
+        }
+    }
+    made_progress
 }
 
 fn drain_tx(mem: &GuestMemoryMmap, queue: &Arc<Mutex<Queue>>, call_fd: Option<&Interrupt>) {
@@ -267,6 +411,47 @@ fn drain_tx(mem: &GuestMemoryMmap, queue: &Arc<Mutex<Queue>>, call_fd: Option<&I
                 log::warn!("virtio-console TX: signal interrupt: {e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use virtio::queue::VIRTQ_DESC_F_WRITE;
+    use vm_memory::{Address, GuestAddress};
+
+    #[test]
+    fn rx_drains_pending_input_into_guest_buffer() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let mut queue = Queue::new(16);
+        queue.size = 16;
+        queue.ready = true;
+        queue.desc_table = GuestAddress(0x100);
+        queue.avail_ring = GuestAddress(0x1000);
+        queue.used_ring = GuestAddress(0x2000);
+
+        mem.write_obj::<u64>(0x5000, queue.desc_table).unwrap();
+        mem.write_obj::<u32>(8, queue.desc_table.unchecked_add(8))
+            .unwrap();
+        mem.write_obj::<u16>(VIRTQ_DESC_F_WRITE, queue.desc_table.unchecked_add(12))
+            .unwrap();
+        mem.write_obj::<u16>(0, queue.desc_table.unchecked_add(14))
+            .unwrap();
+        mem.write_obj::<u16>(0, queue.avail_ring.unchecked_add(4))
+            .unwrap();
+        mem.write_obj::<u16>(1, queue.avail_ring.unchecked_add(2))
+            .unwrap();
+
+        let queue = Arc::new(Mutex::new(queue));
+        let mut pending: VecDeque<u8> = b"abc".iter().copied().collect();
+        assert!(drain_rx(&mem, &queue, &mut pending, None));
+        assert!(pending.is_empty());
+
+        let mut out = [0u8; 3];
+        mem.read(&mut out, GuestAddress(0x5000)).unwrap();
+        assert_eq!(&out, b"abc");
+        let used_idx: u16 = mem.read_obj(GuestAddress(0x2002)).unwrap();
+        assert_eq!(used_idx, 1);
     }
 }
 
@@ -339,8 +524,8 @@ fn install_console_seccomp() {
     //     the inherited socketpair, plus epoll + eventfd for the
     //     handler-thread event loop.
     // KillProcess on anything else.
+    use extrasafe::builtins::{danger_zone::Threads, BasicCapabilities, Networking, SystemIO};
     use extrasafe::SafetyContext;
-    use extrasafe::builtins::{BasicCapabilities, Networking, SystemIO, danger_zone::Threads};
     let ctx = SafetyContext::new()
         .enable(BasicCapabilities)
         .and_then(|c| c.enable(Threads::nothing().allow_create()))
