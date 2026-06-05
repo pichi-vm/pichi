@@ -29,10 +29,15 @@ const IOAPIC_PHANDLE: u32 = 2;
 const SERIAL_CLK_HZ: u32 = 3_686_400;
 const SERIAL_IOAPIC_PIN: u32 = 4; // IO-APIC pin 4 (legacy COM1 line)
 
-// syscon power management — arma-assigned but arch-specific, so fixed here
-// and reserved (not planner-placed).
-const POWEROFF_BASE: u64 = 0x0901_0000;
-const REBOOT_BASE: u64 = 0x0902_0000;
+// syscon power management — arma-assigned but arch-specific, so fixed here and
+// reserved (not planner-placed). Placed in the IOAPIC's 2 MiB page, just above
+// the IOAPIC register window, so the syscon shares the fixed APIC device island
+// (IOAPIC + LAPIC) instead of forming a separate low island — keeping guest RAM
+// contiguous below the APIC block. The island's low edge stays the IOAPIC base
+// (already 2 MiB-aligned; see device-model §6 and `arma check`). Only one IOAPIC
+// is declared, so the conventional multi-IOAPIC slots in this page are unused.
+const POWEROFF_BASE: u64 = 0xFEC0_1000;
+const REBOOT_BASE: u64 = 0xFEC0_2000;
 const SYSCON_REG_SIZE: u64 = 0x4;
 
 const VIRTIO_MMIO_PIN_BASE: u32 = 16; // IO-APIC pins 16, 17, … per transport

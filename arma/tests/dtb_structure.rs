@@ -198,7 +198,7 @@ fn x86_intc_two_nodes_lapic_and_ioapic() {
 
     // A5: standalone syscon poweroff with its own reg + value 0x34 (S5 byte).
     let po = tree
-        .find_path("/poweroff@9010000")
+        .find_path("/poweroff@fec01000")
         .expect("poweroff node present");
     assert_eq!(
         prop_str(&po, "compatible").as_deref(),
