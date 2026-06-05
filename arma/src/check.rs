@@ -36,7 +36,9 @@ pub(crate) fn run(pmi_path: &Path) -> Result<()> {
     let mut dtb: Option<&[u8]> = None;
     for s in &pe.sections {
         let name = s.name().unwrap_or("?").trim_end_matches('\0').to_string();
-        if name == ".dtb" {
+        // The base DTB is a tatu-namespaced section (`.tatu.dtb`); arma fills it
+        // at build time and dillo loads it into guest memory.
+        if name == ".tatu.dtb" {
             let off = s.pointer_to_raw_data as usize;
             let len = s.size_of_raw_data as usize;
             dtb = bytes.get(off..off + len);
@@ -53,7 +55,7 @@ pub(crate) fn run(pmi_path: &Path) -> Result<()> {
             });
         }
     }
-    let dtb = dtb.context(".dtb section not found in PMI")?;
+    let dtb = dtb.context(".tatu.dtb section not found in PMI")?;
     let tree: Tree<'_> = Tree::parse(dtb).context("parse base DTB")?;
     let root = tree.root();
 
