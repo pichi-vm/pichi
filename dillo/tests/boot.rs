@@ -18,7 +18,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use rstest::rstest;
-use snuffler::{REPORT_BEGIN, REPORT_END, Report};
+use snuffler::{Report, REPORT_BEGIN, REPORT_END};
 use tempfile::TempDir;
 use wait_timeout::ChildExt;
 
@@ -64,25 +64,26 @@ fn hypervisor_available() -> bool {
     }
 }
 
-/// Build a PMI: Alpine host kernel + snuffler initrd, console on hvc0.
-fn build_pmi(dir: &Path) -> PathBuf {
+/// Build a PMI: Alpine host kernel + snuffler initrd.
+fn build_pmi(dir: &Path, cmdline: &str, serial: bool) -> PathBuf {
     let kernel = burrow::fetch(&kernel_url()).expect("fetch kernel");
     let cfg = dir.join("kernel.config");
     std::fs::write(&cfg, host::CONFIG).unwrap();
     let pmi = dir.join("boot.pmi");
-    let st = Command::new(env!("CARGO_BIN_FILE_ARMA_arma"))
-        .arg("build")
-        .args(["--cmdline", "console=hvc0"])
+    let mut cmd = Command::new(env!("CARGO_BIN_FILE_ARMA_arma"));
+    cmd.arg("build")
+        .args(["--cmdline", cmdline])
         .args(["--profile", host::PROFILE])
         .arg("--config")
         .arg(&cfg)
         .arg("--kernel")
         .arg(&kernel)
         .arg("--initrd")
-        .arg(env!("CARGO_BIN_FILE_SNUFFLER_snuffler"))
-        .arg(&pmi)
-        .status()
-        .expect("spawn arma");
+        .arg(env!("CARGO_BIN_FILE_SNUFFLER_snuffler"));
+    if serial {
+        cmd.arg("--serial");
+    }
+    let st = cmd.arg(&pmi).status().expect("spawn arma");
     assert!(st.success(), "arma build failed");
     pmi
 }
@@ -134,7 +135,7 @@ fn boots_and_reports(#[values(256, 1024)] mem_mib: u32, #[values(1, 2)] cpus: u3
         return;
     }
     let tmp = TempDir::new().unwrap();
-    let pmi = build_pmi(tmp.path());
+    let pmi = build_pmi(tmp.path(), "console=hvc0", false);
     let output = boot(&pmi, mem_mib, cpus, tmp.path());
     // Surface the hypervisor's own enlightenment/serial setup so the host's
     // actual capability level is visible in CI (under --nocapture) rather than
@@ -144,8 +145,9 @@ fn boots_and_reports(#[values(256, 1024)] mem_mib: u32, #[values(1, 2)] cpus: u3
             eprintln!("[dillo] {line}");
         }
     }
-    let r = parse_report(&output)
-        .unwrap_or_else(|| panic!("boot produced no snuffler report (guest did not boot):\n{output}"));
+    let r = parse_report(&output).unwrap_or_else(|| {
+        panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+    });
 
     assert_eq!(r.arch, host::ARCH, "guest arch");
     assert_eq!(r.cpu.online_count, cpus as usize, "online cpus");
@@ -160,5 +162,58 @@ fn boots_and_reports(#[values(256, 1024)] mem_mib: u32, #[values(1, 2)] cpus: u3
         r.consoles.iter().any(|c| c.starts_with("hvc0")),
         "hvc0 not among consoles: {:?}",
         r.consoles
+    );
+}
+
+#[test]
+fn serial_earlycon_hands_off_to_hvc0() {
+    if !hypervisor_available() {
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let pmi = build_pmi(tmp.path(), "console=hvc0", true);
+    let output = boot(&pmi, 256, 1, tmp.path());
+    let r = parse_report(&output).unwrap_or_else(|| {
+        panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+    });
+
+    assert_eq!(r.cmdline, "earlycon console=hvc0");
+    assert!(
+        r.consoles.iter().any(|c| c.starts_with("hvc0")),
+        "hvc0 not among consoles: {:?}",
+        r.consoles
+    );
+    assert!(
+        r.serial.iter().any(|s| {
+            s.name == "ttyS0"
+                && s.io_type == "mem"
+                && s.uartclk_hz == Some(3_686_400)
+                && s.uart_type_id == Some(4)
+        }),
+        "ttyS0 not among serial ports: {:?}",
+        r.serial
+    );
+    let kernel_messages: Vec<&str> = r
+        .kernel_log
+        .entries
+        .iter()
+        .map(|e| e.message.as_str())
+        .collect();
+    assert!(
+        kernel_messages
+            .iter()
+            .any(|m| m.contains("ACPI: SPCR: console: uart,mmio32") && m.contains(",115200")),
+        "SPCR early console line missing from kernel log"
+    );
+    assert!(
+        kernel_messages
+            .iter()
+            .any(|m| m.contains("RSCV0003:00: ttyS0 at MMIO")),
+        "ACPI serial device did not bind as ttyS0"
+    );
+    assert!(
+        output.contains("earlycon: uart0 at MMIO32") || output.contains("bootconsole"),
+        "combined console output did not include early serial output"
     );
 }
