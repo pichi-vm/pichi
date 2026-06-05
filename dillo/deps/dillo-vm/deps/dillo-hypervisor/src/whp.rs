@@ -709,11 +709,21 @@ mod raw {
     }
 
     pub(super) fn set_hyperv_enlightenments(partition: PartitionHandle) -> Result<(), HResult> {
-        set_synthetic_processor_features_banks(partition)?;
+        // Enlightenments are paravirt optimizations; a nested/limited WHP host
+        // (e.g. a CI runner) may reject individual ones with
+        // ERROR_NOT_SUPPORTED. Treat each as best-effort — the guest boots
+        // correctly without them.
+        match set_synthetic_processor_features_banks(partition) {
+            Ok(()) | Err(ERROR_NOT_SUPPORTED) => {}
+            Err(hr) => return Err(hr),
+        }
 
-        let processor_clock_frequency =
-            get_capability_u64(WHvCapabilityCodeProcessorClockFrequency)?;
-        set_processor_clock_frequency(partition, processor_clock_frequency)?;
+        match get_capability_u64(WHvCapabilityCodeProcessorClockFrequency)
+            .and_then(|freq| set_processor_clock_frequency(partition, freq))
+        {
+            Ok(()) | Err(ERROR_NOT_SUPPORTED) => {}
+            Err(hr) => return Err(hr),
+        }
 
         let interrupt_clock_frequency =
             get_capability_u64(WHvCapabilityCodeInterruptClockFrequency)?;
