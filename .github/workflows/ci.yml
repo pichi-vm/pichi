@@ -72,5 +72,13 @@ jobs:
           ls -l /dev/kvm 2>/dev/null && sudo chmod 666 /dev/kvm || echo "no /dev/kvm (boot tests will skip)"
       - name: Test workspace
         run: ~/.local/bin/cargo-bindeps test --workspace
+      - name: Reserve hugepages for guest RAM
+        # dillo backs guest memory with 2 MiB hugepages; GitHub runners reserve
+        # none by default (boot then fails with ENOSPC). 2 GiB pool is ample for
+        # the matrix's largest (1 GiB) guest run serially.
+        run: |
+          sudo sysctl -w vm.nr_hugepages=1024
+          grep -i huge /proc/meminfo
       - name: Boot tests (vm-tests; skip without KVM)
-        run: ~/.local/bin/cargo-bindeps test -p dillo --features vm-tests
+        # Serial so only one guest holds hugepages at a time.
+        run: ~/.local/bin/cargo-bindeps test -p dillo --features vm-tests -- --test-threads=1
