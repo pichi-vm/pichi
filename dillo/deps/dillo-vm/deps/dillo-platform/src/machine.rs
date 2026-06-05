@@ -182,20 +182,12 @@ pub struct GicConfig {
     pub spi_count: u32,
 }
 
-/// An x86 16550 serial port claimed for coverage. The device model makes this
-/// an `ns16550a` over MMIO (see [`Serial8250::from_tree`]); the `io_base: u16`
-/// field is a frozen pre-device-model shape and holds only the MMIO base's low
-/// 16 bits, while the full window is declared in the [`ResourcePlan`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Serial8250 {
-    pub io_base: u16,
-    pub irq: u32,
-}
-
 /// A fully surveyed machine: every base-DTB node was claimed, every region
 /// traces to a property, and the regions are pairwise disjoint. Fields populate
-/// per architecture (aarch64: `gic`/`psci`/`uart`; x86: `lapic`/`ioapic`/
-/// `poweroff`/`reboot`/`serial8250`); `pcie`/`plan` are common.
+/// per architecture (aarch64: `gic`/`psci`; x86: `lapic`/`ioapic`/`poweroff`/
+/// `reboot`). `uart` (the `ns16550a` serial, present only under `--serial`),
+/// `pcie`, and `plan` are common to both — the serial is the same MMIO
+/// `ns16550a` device on every arch.
 #[derive(Debug, Clone)]
 pub struct Machine {
     pub arch: Arch,
@@ -209,16 +201,17 @@ pub struct Machine {
     /// microVM; skip all PCI fabric).
     pub has_pcie: bool,
     pub plan: ResourcePlan,
+    /// The `ns16550a` serial (MMIO), shared by both arches; `None` unless the
+    /// base was built with `--serial`.
+    pub uart: Option<Uart>,
     // aarch64
     pub gic: Option<GicConfig>,
     pub psci: Option<Psci>,
-    pub uart: Option<Uart>,
     // x86-64
     pub lapic: Option<MmioRegion>,
     pub ioapic: Option<MmioRegion>,
     pub poweroff: Option<Syscon>,
     pub reboot: Option<Syscon>,
-    pub serial8250: Option<Serial8250>,
 }
 
 impl Machine {
@@ -230,12 +223,10 @@ impl Machine {
 
         let mut gic = None;
         let mut psci = None;
-        let mut uart = None;
         let mut lapic = None;
         let mut ioapic = None;
         let mut poweroff = None;
         let mut reboot = None;
-        let mut serial8250 = None;
 
         // arch-specific substrate (specific → general within the arch).
         match arch {
@@ -243,7 +234,6 @@ impl Machine {
                 gic = Some(GicConfig::from_tree(&mut t, &mut plan)?);
                 Timer::from_tree(&mut t, &mut plan)?;
                 psci = Some(Psci::from_tree(&mut t, &mut plan)?);
-                uart = Uart::from_tree(&mut t, &mut plan)?;
             }
             Arch::X86_64 => {
                 let (l, io) = X86Intc::from_tree(&mut t, &mut plan)?;
@@ -252,11 +242,12 @@ impl Machine {
                 let (po, rb) = X86Syscon::from_tree(&mut t, &mut plan)?;
                 poweroff = Some(po);
                 reboot = rb;
-                serial8250 = Serial8250::from_tree(&mut t, &mut plan)?;
             }
         }
 
-        // Shared devices, then the general device last.
+        // Shared devices, then the general device last. The serial is the same
+        // MMIO `ns16550a` on both arches (present only under `--serial`).
+        let uart = Uart::from_tree(&mut t, &mut plan)?;
         VirtioMmioSlots::from_tree(&mut t, &mut plan)?;
         let (pcie, has_pcie) = match Pcie::from_tree(&mut t, &mut plan)? {
             Some(p) => (p, true),
@@ -277,14 +268,13 @@ impl Machine {
             pcie,
             has_pcie,
             plan,
+            uart,
             gic,
             psci,
-            uart,
             lapic,
             ioapic,
             poweroff,
             reboot,
-            serial8250,
         })
     }
 }
@@ -698,57 +688,6 @@ fn syscon_action(
         value,
         mask: 0xFF,
     }))
-}
-
-impl Serial8250 {
-    /// Claim `serial@*` (`ns16550a`, a 16550 over MMIO) — present only under
-    /// `--serial`. Absent ⇒ `Ok(None)`.
-    ///
-    /// FIELD-SHAPE COMPROMISE: the device model's x86 serial is MMIO with a
-    /// 64-bit `reg` base, but [`Serial8250`]'s `io_base` is a `u16` (its
-    /// pre-device-model port-I/O shape, which the constraint freezes). The full
-    /// MMIO window is declared in the [`ResourcePlan`] (correct for coverage and
-    /// disjointness); `io_base` is set to the base's low 16 bits as a lossy
-    /// placeholder. `Serial8250` has no external consumer, so this affects only
-    /// the survey path; the field should become an MMIO `(base, size)` when the
-    /// shape can change. `irq` is the IO-APIC pin (`interrupts` cell 0).
-    fn from_tree(
-        t: &mut OwnedTree,
-        plan: &mut ResourcePlan,
-    ) -> Result<Option<Serial8250>, SurveyError> {
-        let root = t.root_mut();
-        let Some(name) = child_name_prefixed(root, "serial@") else {
-            return Ok(None); // no serial in this base
-        };
-        let mut serial = root.remove_child(&name).expect("just located");
-        require_compatible(&mut serial, "/serial", "ns16550a")?;
-        let reg = serial.require("reg", "/serial")?;
-        let (base, size) = reg.reg_pair(0).ok_or(SurveyError::BadProperty {
-            node: "/serial",
-            prop: "reg",
-            reason: "missing reg pair",
-        })?;
-        plan.declare_from(&reg, "/serial", base, size, RegionKind::Mmio);
-        // x86 `interrupts` is the IO-APIC 2-cell <pin, sense>; the pin is cell 0.
-        let ints = serial.require("interrupts", "/serial")?;
-        let irq = ints
-            .as_u32s()
-            .and_then(|mut it| it.next())
-            .ok_or(SurveyError::BadProperty {
-                node: "/serial",
-                prop: "interrupts",
-                reason: "expected <pin sense>",
-            })?;
-        serial.ack("reg-shift");
-        serial.ack("reg-io-width");
-        serial.ack("clock-frequency");
-        serial.ack("interrupt-parent");
-        serial.ensure_drained()?;
-        Ok(Some(Serial8250 {
-            io_base: base as u16,
-            irq,
-        }))
-    }
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -1188,24 +1127,24 @@ mod tests {
         assert_eq!((po.base, po.value, po.mask), (POWEROFF_BASE, 0x34, 0xFF));
         let rb = m.reboot.expect("reboot");
         assert_eq!((rb.base, rb.value), (REBOOT_BASE, 0x1));
-        // FIELD-SHAPE COMPROMISE: io_base holds the MMIO base's low 16 bits.
-        let s = m.serial8250.expect("serial");
-        assert_eq!((s.io_base, s.irq), (X86_SERIAL_BASE as u16, 4));
+        // Serial is the shared MMIO ns16550a; on x86 the IRQ is the IO-APIC pin.
+        let s = m.uart.expect("serial");
+        assert_eq!((s.base, s.irq), (X86_SERIAL_BASE, 4));
         assert!(m.has_pcie);
         assert_eq!(m.pcie.ecam_base, X86_ECAM_BASE);
         assert_eq!(m.pcie.mmio_base, X86_PCI_MMIO_BASE);
         // aarch64-only fields stay empty.
-        assert!(m.gic.is_none() && m.psci.is_none() && m.uart.is_none());
+        assert!(m.gic.is_none() && m.psci.is_none());
         // LAPIC, IOAPIC, poweroff, reboot, serial, ECAM, PCI MMIO.
         assert_eq!(m.plan.regions().len(), 7);
     }
 
     #[test]
-    fn x86_base_without_serial_has_no_8250_and_still_drains() {
+    fn x86_base_without_serial_has_no_uart_and_still_drains() {
         let mut root = x86_base_root();
         root.remove_child("serial@9000000");
         let m = Machine::survey(&dtb(root), Arch::X86_64).expect("survey ok");
-        assert!(m.serial8250.is_none());
+        assert!(m.uart.is_none());
     }
 
     #[test]
