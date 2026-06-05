@@ -43,6 +43,10 @@ unsafe_code = "deny"
 missing_debug_implementations = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "warn"
+# The KVM/HVF/WHP backends carry per-OS cfg-gated code, so items used on one
+# platform read as dead/unused on another. Allow the `unused` group so the
+# build is warning-clean on every platform.
+unused = { level = "allow", priority = -1 }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
