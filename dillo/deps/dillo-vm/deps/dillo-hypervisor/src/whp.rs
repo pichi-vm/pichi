@@ -709,15 +709,11 @@ mod raw {
     }
 
     pub(super) fn set_hyperv_enlightenments(partition: PartitionHandle) -> Result<(), HResult> {
-        // Enlightenments are paravirt optimizations; a nested/limited WHP host
-        // (e.g. a CI runner) may reject individual ones with
-        // ERROR_NOT_SUPPORTED. Treat each as best-effort — the guest boots
-        // correctly without them — and emit one definitive summary line so the
-        // host's actual enlightenment level is observable, never hidden.
-
-        // Map Ok -> applied(true), ERROR_NOT_SUPPORTED -> skipped(false), and
-        // propagate any other failure as a hard error.
-        fn applied(r: Result<(), HResult>) -> Result<bool, HResult> {
+        // Optional enlightenment: Ok -> applied(true), ERROR_NOT_SUPPORTED ->
+        // skipped(false), any other failure -> hard error. Applied uniformly to
+        // both the capability *query* and the property *set*, so a host that
+        // can't even report a value skips cleanly instead of aborting.
+        fn optional(r: Result<(), HResult>) -> Result<bool, HResult> {
             match r {
                 Ok(()) => Ok(true),
                 Err(ERROR_NOT_SUPPORTED) => Ok(false),
@@ -725,26 +721,39 @@ mod raw {
             }
         }
 
-        let synthetic_features = applied(set_synthetic_processor_features_banks(partition))?;
-        let processor_clock = applied(
+        // REQUIRED. The synthetic processor feature banks expose the core
+        // Hyper-V paravirt interface — the reference TSC page (enlightened
+        // clocksource), the SynIC, and synthetic timers. Every enlightened
+        // clock/timer/interrupt path the guest uses depends on it, so any
+        // failure here (including ERROR_NOT_SUPPORTED) is fatal: we do not run a
+        // guest on a host that can't provide it.
+        set_synthetic_processor_features_banks(partition)?;
+
+        // OPTIONAL. The processor/interrupt clock-frequency hints only let the
+        // guest skip boot-time calibration; a nested/limited host (e.g. a CI
+        // runner) may return ERROR_NOT_SUPPORTED. Skip those rather than fail —
+        // the guest derives the frequencies another way, and the synthetic
+        // timers above already cover the clock-event path.
+        let processor_clock = optional(
             get_capability_u64(WHvCapabilityCodeProcessorClockFrequency)
                 .and_then(|freq| set_processor_clock_frequency(partition, freq)),
         )?;
-        let interrupt_clock_frequency =
-            get_capability_u64(WHvCapabilityCodeInterruptClockFrequency)?;
-        let interrupt_clock =
-            applied(set_interrupt_clock_frequency(partition, interrupt_clock_frequency))?;
+        let interrupt_clock = optional(
+            get_capability_u64(WHvCapabilityCodeInterruptClockFrequency)
+                .and_then(|freq| set_interrupt_clock_frequency(partition, freq)),
+        )?;
 
-        if synthetic_features && processor_clock && interrupt_clock {
+        if processor_clock && interrupt_clock {
             log::info!(
-                "WHP: fully enlightened (synthetic processor features, processor clock, \
-                 interrupt clock all applied)"
+                "WHP: fully enlightened (synthetic processor features + processor and \
+                 interrupt clock frequencies applied)"
             );
         } else {
             log::warn!(
-                "WHP: partially enlightened — synthetic_features={synthetic_features}, \
+                "WHP: enlightened, optional clock hints skipped — \
                  processor_clock={processor_clock}, interrupt_clock={interrupt_clock} \
-                 (host returned ERROR_NOT_SUPPORTED for the false ones; guest still boots)"
+                 (host returned ERROR_NOT_SUPPORTED; required synthetic features applied; \
+                 guest still boots)"
             );
         }
         Ok(())
