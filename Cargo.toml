@@ -7,6 +7,8 @@ members = [
     # Cross-product shared libraries (no single owner)
     "deps/devtree",
     "deps/pmi",
+    # Shared test-support (dev-only): generic caching URL downloader
+    "deps/burrow",
     # arma-owned (nested by sole consumer)
     "arma/deps/tatu",
     "arma/deps/tatu/deps/dtb2acpi",

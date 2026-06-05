@@ -1,0 +1,13 @@
+[package]
+name = "burrow"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Tiny caching URL downloader for tests: fetch(url) -> a cached path under target/."
+
+[dependencies]
+# Blocking HTTPS via rustls (no system OpenSSL — works on Linux/macOS/Windows).
+ureq = "2"
+# Cross-platform advisory file lock so concurrent fetchers don't race.
+fs2 = "0.4"
