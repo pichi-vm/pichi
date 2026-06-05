@@ -7,11 +7,17 @@
 //!   protocol >= 2.12, LOADED_HIGH set). Passed through whole; tatu
 //!   reads `setup_sects` at runtime to compute the 64-bit entry.
 //! - **aarch64**: a raw arm64 `Image` (ARM\x64 magic at offset 56).
-//!   Passed through whole; tatu jumps to offset 0.
+//!   Passed through whole; tatu jumps to offset 0. An arm64 EFI-zboot
+//!   wrapper (`CONFIG_EFI_ZBOOT`: `MZ` + `zimg`, a gzip-compressed Image —
+//!   the form distro `vmlinuz` ships, e.g. Alpine `vmlinuz-virt`) is
+//!   unwrapped to its raw Image first; see [`unwrap_zboot`].
 //!
-//! vmlinuz.efi (PE-wrapped Linux) is rejected with a hint to
-//! extract the raw Image.
+//! A PE-wrapped Linux `vmlinuz.efi` that is *not* zboot is rejected with a
+//! hint to extract the raw Image.
 
+use std::io::Read;
+
+use flate2::read::GzDecoder;
 use thiserror::Error;
 
 /// Target guest architecture, inferred from the kernel file.
@@ -54,6 +60,19 @@ pub(crate) enum KernelError {
 
     #[error("bzImage kernel_alignment ({0:#x}) is not a non-zero power of two")]
     KernelAlignmentInvalid(u32),
+
+    #[error("EFI-zboot payload out of bounds (offset {offset:#x}, size {size:#x}, file {file} bytes)")]
+    ZbootMalformed {
+        offset: usize,
+        size: usize,
+        file: usize,
+    },
+
+    #[error("EFI-zboot uses unsupported compression {0:?}; only gzip is supported")]
+    ZbootCompression(String),
+
+    #[error("EFI-zboot payload gunzip failed: {0}")]
+    ZbootDecompress(String),
 }
 
 const BZIMAGE_HDRS_MAGIC: u32 = 0x5372_6448; // "HdrS" LE at 0x202
@@ -78,6 +97,16 @@ const MAX_KERNEL_ALIGNMENT: u32 = 16 * 1024 * 1024;
 const ARM64_IMAGE_MAGIC: u32 = 0x644D_5241; // "ARM\x64" LE at offset 56
 const ARM64_IMAGE_MAGIC_OFFSET: usize = 56;
 const ARM64_IMAGE_SIZE_OFFSET: usize = 16; // u64 LE: effective image size (text + BSS)
+
+// arm64 EFI-zboot header (`CONFIG_EFI_ZBOOT`). Offsets verified against a
+// real Alpine `vmlinuz-virt`: "MZ" at 0, "zimg" at 4, u32 payload offset at
+// 8, u32 payload size at 12, NUL-padded compression name at 24.
+const ZBOOT_ZIMG_OFFSET: usize = 4;
+const ZBOOT_PAYLOAD_OFFSET_FIELD: usize = 8;
+const ZBOOT_PAYLOAD_SIZE_FIELD: usize = 12;
+const ZBOOT_COMP_OFFSET: usize = 24;
+const ZBOOT_COMP_LEN: usize = 32;
+const ZBOOT_HEADER_MIN: usize = ZBOOT_COMP_OFFSET + ZBOOT_COMP_LEN; // 56
 
 /// Result of parsing a kernel file.
 #[derive(Debug, Clone)]
@@ -210,6 +239,60 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Parsed, KernelError> {
     Err(KernelError::Unrecognized)
 }
 
+/// Unwrap an arm64 EFI-zboot kernel to its raw `Image`.
+///
+/// `CONFIG_EFI_ZBOOT` kernels are a tiny EFI stub (`MZ`) tagged `zimg` at
+/// offset 4, wrapping a compressed raw `Image`. Distro arm64 `vmlinuz`
+/// ships this form (e.g. Alpine `vmlinuz-virt`). Input that is not zboot
+/// passes through unchanged, so this is safe to call on any kernel before
+/// [`parse`]. Only gzip is handled (what the arm64 zboot kernels we target
+/// use); other compression schemes are an error rather than a silent pass.
+pub(crate) fn unwrap_zboot(input: Vec<u8>) -> Result<Vec<u8>, KernelError> {
+    let is_zboot = input.len() >= ZBOOT_HEADER_MIN
+        && &input[0..2] == b"MZ"
+        && &input[ZBOOT_ZIMG_OFFSET..ZBOOT_ZIMG_OFFSET + 4] == b"zimg";
+    if !is_zboot {
+        return Ok(input);
+    }
+
+    let offset = u32::from_le_bytes(
+        input[ZBOOT_PAYLOAD_OFFSET_FIELD..ZBOOT_PAYLOAD_OFFSET_FIELD + 4]
+            .try_into()
+            .expect("slice is 4 bytes"),
+    ) as usize;
+    let size = u32::from_le_bytes(
+        input[ZBOOT_PAYLOAD_SIZE_FIELD..ZBOOT_PAYLOAD_SIZE_FIELD + 4]
+            .try_into()
+            .expect("slice is 4 bytes"),
+    ) as usize;
+    let end = offset
+        .checked_add(size)
+        .filter(|&e| e <= input.len())
+        .ok_or(KernelError::ZbootMalformed {
+            offset,
+            size,
+            file: input.len(),
+        })?;
+
+    let comp_field = &input[ZBOOT_COMP_OFFSET..ZBOOT_COMP_OFFSET + ZBOOT_COMP_LEN];
+    let comp_len = comp_field
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(comp_field.len());
+    let comp = &comp_field[..comp_len];
+    if comp != b"gzip" {
+        return Err(KernelError::ZbootCompression(
+            String::from_utf8_lossy(comp).into_owned(),
+        ));
+    }
+
+    let mut image = Vec::new();
+    GzDecoder::new(&input[offset..end])
+        .read_to_end(&mut image)
+        .map_err(|e| KernelError::ZbootDecompress(e.to_string()))?;
+    Ok(image)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +340,52 @@ mod tests {
         let p = parse(&bytes).unwrap();
         assert_eq!(p.arch, Arch::Aarch64);
         assert!(p.bzimage.is_none());
+    }
+
+    fn make_zboot(image: &[u8]) -> Vec<u8> {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
+        enc.write_all(image).unwrap();
+        let payload = enc.finish().unwrap();
+        let offset = ZBOOT_HEADER_MIN; // payload right after the header
+        let mut v = vec![0u8; offset];
+        v[0..2].copy_from_slice(b"MZ");
+        v[ZBOOT_ZIMG_OFFSET..ZBOOT_ZIMG_OFFSET + 4].copy_from_slice(b"zimg");
+        v[ZBOOT_PAYLOAD_OFFSET_FIELD..ZBOOT_PAYLOAD_OFFSET_FIELD + 4]
+            .copy_from_slice(&(offset as u32).to_le_bytes());
+        v[ZBOOT_PAYLOAD_SIZE_FIELD..ZBOOT_PAYLOAD_SIZE_FIELD + 4]
+            .copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        v[ZBOOT_COMP_OFFSET..ZBOOT_COMP_OFFSET + 4].copy_from_slice(b"gzip");
+        v.extend_from_slice(&payload);
+        v
+    }
+
+    #[test]
+    fn unwraps_efi_zboot_to_arm64_image() {
+        let img = make_arm64_image();
+        let wrapped = make_zboot(&img);
+        let raw = unwrap_zboot(wrapped).unwrap();
+        assert_eq!(raw, img);
+        assert_eq!(parse(&raw).unwrap().arch, Arch::Aarch64);
+    }
+
+    #[test]
+    fn unwrap_zboot_passes_through_non_zboot() {
+        let bz = make_bzimage();
+        assert_eq!(unwrap_zboot(bz.clone()).unwrap(), bz);
+        let arm = make_arm64_image();
+        assert_eq!(unwrap_zboot(arm.clone()).unwrap(), arm);
+    }
+
+    #[test]
+    fn rejects_non_gzip_zboot() {
+        let mut z = make_zboot(&make_arm64_image());
+        z[ZBOOT_COMP_OFFSET..ZBOOT_COMP_OFFSET + 4].copy_from_slice(b"zstd");
+        assert!(matches!(
+            unwrap_zboot(z),
+            Err(KernelError::ZbootCompression(_))
+        ));
     }
 
     #[test]
