@@ -1,10 +1,10 @@
-//! Universal e2e test fixture for dillo.
+//! snuffler — the guest probe.
 //!
 //! Runs as PID 1 inside a guest booted from a PMI. Mounts /proc + /sys,
-//! observes the system the kernel sees (CPU/memory/cmdline/consoles/PCI/
-//! block/net), emits a [`Report`] JSON bracketed by sentinels, then
-//! poweroffs. The fixture contains no test logic — host harnesses assert
-//! whatever they want against the [`Report`].
+//! snuffles out the system the kernel sees (CPU/memory/cmdline/consoles/
+//! PCI/block/net), emits a [`Report`] JSON bracketed by sentinels, then
+//! poweroffs. The probe contains no test logic — host harnesses assert
+//! whatever they want against the [`Report`] (the crate's library half).
 //!
 //! Output: bracketed JSON on stdout (which is /dev/console / hvc0 for
 //! PID 1 given `console=hvc0`). Free-form debug lines go to stderr.
@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::Path;
 use std::ptr;
 
-use dillo_e2e_schema::{
+use snuffler::{
     BlockDevice, ClockInfo, CpuInfo, KernelLog, KernelLogEntry, MemoryInfo, NetIf, PciDevice,
     REPORT_BEGIN, REPORT_END, Report, SCHEMA_VERSION, SerialPort,
 };

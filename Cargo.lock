@@ -363,12 +363,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argh",
+ "arma",
  "dillo-virtio-console",
  "dillo-vm",
  "env_logger",
  "libc",
  "log",
  "nix",
+ "serde_json",
+ "snuffler",
 ]
 
 [[package]]
@@ -381,13 +384,6 @@ dependencies = [
  "virtio",
  "vm-memory",
  "vmm-sys-util",
-]
-
-[[package]]
-name = "dillo-e2e-schema"
-version = "0.1.0"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -1204,6 +1200,15 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "snuffler"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "strsim"

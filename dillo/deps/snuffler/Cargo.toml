@@ -1,0 +1,23 @@
+[package]
+name = "snuffler"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Guest probe (PID 1) that snuffles out the booted machine's devices and emits a Report; also the shared Report schema."
+
+# This crate is both halves of the e2e contract:
+#   * the library (src/lib.rs) is the `Report` wire schema — host harnesses
+#     decode it;
+#   * the binary (src/main.rs) is the guest probe — host tests pull it as an
+#     artifact dependency cross-built for the guest's musl target.
+# libc/serde_json are only used by the binary; they're plain deps (not behind
+# a feature) because gating the bin on a feature interacts badly with artifact
+# dependencies — a feature requested on the artifact dep lands on the host lib
+# instance, not the cross-built bin, so the bin gets skipped. They're cheap and
+# unused by the library, so a host consumer of the lib pays almost nothing.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+libc = "0.2"
+serde_json = "1"

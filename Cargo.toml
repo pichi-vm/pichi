@@ -22,14 +22,12 @@ members = [
     "dillo/deps/dillo-virtio-console/deps/vhost-backend",
     "dillo/deps/virtio",
     "dillo/deps/dillo-device",
-    "dillo/deps/dillo-e2e-schema",
+    "dillo/deps/snuffler",
 ]
 exclude = [
     # cargo-fuzz harnesses: nightly + libfuzzer-sys, built out-of-band.
     "dillo/deps/dillo-vm/deps/dillo-pmi/fuzz",
     "deps/devtree/fuzz",
-    # Guest init fixture: cross-compiled standalone for the e2e boot test.
-    "dillo/tests/fixtures/init",
 ]
 
 [workspace.package]

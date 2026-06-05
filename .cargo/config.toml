@@ -4,3 +4,18 @@
 # until it lands in nightly, after which this flag (and file) can be dropped.
 [unstable]
 bindeps = true
+
+# Guest build of `snuffler` (deps/snuffler), pulled as an artifact dep by
+# dillo's tests. Only musl builds — i.e. only snuffler — see these.
+#   * rust-lld: link a Linux static binary without a musl cross-gcc (also lets
+#     a non-Linux host cross-compile it).
+#   * relocation-model=static: emit a fixed-address non-PIE ET_EXEC so there
+#     is no runtime self-relocation as PID 1. (Inherited from the old fixture;
+#     to be re-tested — plain static-PIE may well boot fine.)
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "relocation-model=static"]
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "relocation-model=static"]
