@@ -390,14 +390,17 @@ dependencies = [
  "anyhow",
  "argh",
  "arma",
+ "burrow",
  "dillo-virtio-console",
  "dillo-vm",
  "env_logger",
  "libc",
  "log",
  "nix",
+ "rstest",
  "serde_json",
  "snuffler",
+ "tempfile",
 ]
 
 [[package]]
