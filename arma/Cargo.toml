@@ -1,0 +1,41 @@
+[package]
+name = "arma"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "arma"
+path = "src/main.rs"
+
+[dependencies]
+# tatu is embedded as a bare-metal binary, one per guest arch, via artifact
+# dependencies. Depending on the same package twice with different `target`s
+# is RFC 3176 "multidep" — until it lands in nightly this needs a cargo built
+# from rust-lang/cargo#17067, with `-Z bindeps` enabled in .cargo/config.toml.
+# arma reads each ELF through the CARGO_BIN_FILE_<DEP>_tatu env var cargo
+# injects (see src/main.rs), so no build.rs is needed.
+tatu-x86_64 = { package = "tatu", path = "../tatu", artifact = "bin", target = "x86_64-unknown-none" }
+tatu-aarch64 = { package = "tatu", path = "../tatu", artifact = "bin", target = "aarch64-unknown-none" }
+
+pmi = { path = "../pmi" }
+ciborium = "0.2"
+goblin = { version = "0.10", default-features = false, features = [
+    "elf32",
+    "elf64",
+    "pe64",
+    "alloc",
+    "endian_fd",
+    "std",
+] }
+vm-fdt = "0.3"
+devtree = { path = "../devtree" }
+flate2 = "1"
+zerocopy = { version = "0.8", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+
+[dev-dependencies]
+sha2 = "0.10"
+tempfile = "3"

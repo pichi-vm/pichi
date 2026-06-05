@@ -1,0 +1,140 @@
+[workspace]
+resolver = "2"
+members = [
+    "arma",
+    "tatu",
+    "devtree",
+    "dtb2acpi",
+    "dtb2e820",
+    "pmi",
+    "dillo",
+    "dillo/crates/dillo-pmi",
+    "dillo/crates/dillo-platform",
+    "dillo/crates/dillo-hypervisor",
+    "dillo/crates/dillo-device",
+    "dillo/crates/dillo-virtio-console",
+    "dillo/crates/dillo-vm",
+    "dillo/crates/dillo-e2e-schema",
+    "dillo/crates/virtio",
+    "dillo/crates/vm-pci",
+    "dillo/crates/virtio-pci",
+    "dillo/crates/vhost-backend",
+]
+exclude = [
+    # cargo-fuzz harnesses: nightly + libfuzzer-sys, built out-of-band.
+    "dillo/crates/dillo-pmi/fuzz",
+    "devtree/fuzz",
+    # Guest init fixture: cross-compiled standalone for the e2e boot test.
+    "dillo/tests/fixtures/init",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"
+type_complexity = "allow"
+similar_names = "allow"
+struct_field_names = "allow"
+needless_continue = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+too_many_lines = "allow"
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"
+uninlined_format_args = "allow"
+
+[workspace.dependencies]
+# Local project crates
+pmi = { path = "pmi" }
+devtree = { path = "devtree" }
+
+# dillo-internal crates
+dillo-pmi = { path = "dillo/crates/dillo-pmi" }
+dillo-platform = { path = "dillo/crates/dillo-platform" }
+dillo-hypervisor = { path = "dillo/crates/dillo-hypervisor" }
+dillo-device = { path = "dillo/crates/dillo-device" }
+dillo-virtio-console = { path = "dillo/crates/dillo-virtio-console" }
+dillo-vm = { path = "dillo/crates/dillo-vm" }
+virtio = { path = "dillo/crates/virtio" }
+vm-pci = { path = "dillo/crates/vm-pci" }
+virtio-pci = { path = "dillo/crates/virtio-pci" }
+vhost-backend = { path = "dillo/crates/vhost-backend" }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# CLI
+argh = "0.1"
+
+# PE + CBOR
+object = { version = "0.36", default-features = false, features = ["read_core", "pe", "std"] }
+serde = { version = "1", features = ["derive"] }
+ciborium = "0.2"
+
+# (FDT writer is hand-rolled in dillo-vm/src/fdt_writer.rs because
+# upstream vm-fdt rejects the literal `__overlay__` child-node name
+# that DT overlay fragments require. See ARCH §7.1.)
+
+# Memory + KVM (Linux)
+vm-memory = { version = "0.17", default-features = false, features = ["backend-mmap", "backend-atomic"] }
+kvm-ioctls = "0.24"
+kvm-bindings = "0.14"
+vhost-user-backend = "0.22"
+vhost = { version = "0.16", features = ["vhost-user-backend", "vhost-user-frontend"] }
+virtio-queue = "0.17"
+
+# Battle-tested 16550 UART implementation (matches what the PoC
+# uses) — the kernel's 8250 driver only enables ttyS0 if the probe
+# (LCR, LSR, MCR loopback, scratch echo) succeeds. A hand-rolled
+# stub usually fails one of those checks and Linux silently drops
+# the console.
+vm-superio = "0.8"
+
+# Seccomp (Linux)
+extrasafe = "0.5"
+
+# Process / signal / fd plumbing
+nix = { version = "0.30", features = ["fs", "process", "signal", "ioctl", "mman", "socket", "term"] }
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Remote-debug (GDB Remote Serial Protocol)
+gdbstub = "0.7"
+gdbstub_arch = "0.3"
+
+# Utility
+zerocopy = { version = "0.8", features = ["derive"] }
+vmm-sys-util = "0.15"
+
+# tatu must fit its 2 MiB slab (linker ASSERT in tatu/linker/tatu.ld), so it
+# must always be built with release-equivalent codegen even when the rest of
+# the workspace is built in dev — a debug build's larger .text overflows the
+# slab. tatu is consumed by arma as an artifact dependency, so the profile
+# that applies is this workspace's, not tatu's own.
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.dev.package.tatu]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false

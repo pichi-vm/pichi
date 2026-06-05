@@ -1,0 +1,11 @@
+[package]
+name = "devtree"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# Owned, drainable representation built atop the zero-copy parser. Pulls in
+# `alloc`; off by default so bare-metal consumers (e.g. tatu) stay pure no_std.
+alloc = []
+
+[dependencies]

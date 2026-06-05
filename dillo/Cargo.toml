@@ -1,0 +1,33 @@
+[package]
+name = "dillo"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "VMM that boots PMI files (Linux/KVM, macOS/HVF, Windows/WHP)"
+
+[[bin]]
+name = "dillo"
+path = "src/main.rs"
+
+[features]
+# Default = production process-isolation model per ARCH §4.1. See
+# main.rs for the DILLO_GDB refusal cross-reference (ARCH §9.5).
+default = ["process-isolation"]
+process-isolation = []
+thread-only = []
+
+[dependencies]
+dillo-vm.workspace = true
+dillo-virtio-console.workspace = true
+argh.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true }
+
+[lints]
+workspace = true

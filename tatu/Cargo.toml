@@ -1,0 +1,19 @@
+[package]
+name = "tatu"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "tatu"
+path = "src/main.rs"
+bench = false
+doctest = false
+
+[dependencies]
+devtree = { path = "../devtree" }
+arrayvec = { version = "0.7", default-features = false }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+dtb2acpi = { path = "../dtb2acpi" }
+dtb2e820 = { path = "../dtb2e820" }

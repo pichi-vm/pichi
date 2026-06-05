@@ -1,0 +1,20 @@
+[package]
+name = "dillo-device"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Symmetric device-side abstraction (DeviceBackend + ProcessHost/ThreadHost) for dillo."
+
+[dependencies]
+thiserror.workspace = true
+vm-memory.workspace = true
+vmm-sys-util.workspace = true
+virtio.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+vhost-user-backend.workspace = true
+nix.workspace = true
+
+[lints]
+workspace = true

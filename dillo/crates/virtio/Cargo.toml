@@ -1,0 +1,19 @@
+[package]
+name = "virtio"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Virtio device primitives: split virtqueue, device trait, feature constants. Migrated from ~/Projects/dillo/virtio."
+
+[dependencies]
+thiserror.workspace = true
+vm-memory.workspace = true
+vmm-sys-util.workspace = true
+
+# eventfd-backed Kick (EFD_NONBLOCK | EFD_CLOEXEC) is Linux-only.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

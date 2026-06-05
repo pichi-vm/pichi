@@ -1,0 +1,282 @@
+//! virtio-mmio (modern, version 2) transport — the microVM profile's
+//! device-attach path (F6). Mirrors the virtio-pci transport's role but over a
+//! flat MMIO register file at the DTB's `virtio_mmio@…` window, with a wired
+//! GIC SPI for interrupts instead of MSI-X.
+//!
+//! The register file is driven from the vCPU thread (via the MMIO bus); the
+//! backing [`VirtioDevice`]'s I/O worker runs on its own thread and raises the
+//! wired SPI through `dillo_hypervisor::set_spi` when it completes buffers.
+//! On `DRIVER_OK` the configured queues are handed to `activate`; a
+//! `QueueNotify` write kicks the matching queue's [`Kick`].
+
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use virtio::queue::Queue;
+use virtio::{Kick, VirtioDevice};
+use vm_memory::{GuestAddress, GuestMemoryMmap};
+
+// Register offsets (virtio-mmio v2; see the virtio spec §4.2.2).
+const MAGIC: u64 = 0x000;
+const VERSION: u64 = 0x004;
+const DEVICE_ID: u64 = 0x008;
+const VENDOR_ID: u64 = 0x00c;
+const DEVICE_FEATURES: u64 = 0x010;
+const DEVICE_FEATURES_SEL: u64 = 0x014;
+const DRIVER_FEATURES: u64 = 0x020;
+const DRIVER_FEATURES_SEL: u64 = 0x024;
+const QUEUE_SEL: u64 = 0x030;
+const QUEUE_NUM_MAX: u64 = 0x034;
+const QUEUE_NUM: u64 = 0x038;
+const QUEUE_READY: u64 = 0x044;
+const QUEUE_NOTIFY: u64 = 0x050;
+const INTERRUPT_STATUS: u64 = 0x060;
+const INTERRUPT_ACK: u64 = 0x064;
+const STATUS: u64 = 0x070;
+const QUEUE_DESC_LOW: u64 = 0x080;
+const QUEUE_DESC_HIGH: u64 = 0x084;
+const QUEUE_DRIVER_LOW: u64 = 0x090;
+const QUEUE_DRIVER_HIGH: u64 = 0x094;
+const QUEUE_DEVICE_LOW: u64 = 0x0a0;
+const QUEUE_DEVICE_HIGH: u64 = 0x0a4;
+const CONFIG_GENERATION: u64 = 0x0fc;
+const CONFIG: u64 = 0x100;
+
+const MAGIC_VALUE: u32 = 0x7472_6976; // "virt"
+const STATUS_DRIVER_OK: u32 = 0x4;
+/// InterruptStatus bit: used-buffer notification (a virtqueue completed).
+const INT_VRING: u32 = 0x1;
+
+#[derive(Clone, Copy, Default)]
+struct QueueCfg {
+    max: u16,
+    num: u16,
+    ready: bool,
+    desc: u64,
+    avail: u64,
+    used: u64,
+}
+
+struct Inner {
+    device: Box<dyn VirtioDevice>,
+    device_id: u32,
+    device_features: u64,
+    dev_feat_sel: u32,
+    drv_feat_sel: u32,
+    queue_sel: usize,
+    queues: Vec<QueueCfg>,
+    status: u32,
+    activated: bool,
+    mem: GuestMemoryMmap,
+    /// One per queue after activation; `QueueNotify` writes kick these.
+    kicks: Vec<Kick>,
+}
+
+/// A single virtio-mmio transport slot bound to one [`VirtioDevice`].
+pub(crate) struct VirtioMmio {
+    inner: Mutex<Inner>,
+    /// Shared with the device's interrupt closure (raised on the worker thread,
+    /// read here on `INTERRUPT_STATUS`).
+    int_status: std::sync::Arc<AtomicU32>,
+    /// Wired GIC SPI number (from the DTB node's `interrupts`).
+    irq: u32,
+}
+
+impl VirtioMmio {
+    pub(crate) fn new(
+        device: Box<dyn VirtioDevice>,
+        int_status: std::sync::Arc<AtomicU32>,
+        irq: u32,
+        mem: GuestMemoryMmap,
+    ) -> Self {
+        let device_id = device.device_type();
+        let device_features = device.features();
+        let maxs = device.queue_max_sizes().to_vec();
+        let queues = maxs
+            .iter()
+            .map(|&m| QueueCfg {
+                max: m,
+                num: m,
+                ..Default::default()
+            })
+            .collect();
+        Self {
+            inner: Mutex::new(Inner {
+                device,
+                device_id,
+                device_features,
+                dev_feat_sel: 0,
+                drv_feat_sel: 0,
+                queue_sel: 0,
+                queues,
+                status: 0,
+                activated: false,
+                mem,
+                kicks: Vec::new(),
+            }),
+            int_status,
+            irq,
+        }
+    }
+
+    pub(crate) fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+        let mut g = self.inner.lock().expect("virtio-mmio poisoned");
+        if offset >= CONFIG {
+            g.device.read_config(offset - CONFIG, data);
+            return true;
+        }
+        let sel = g.queue_sel;
+        let val: u32 = match offset {
+            MAGIC => MAGIC_VALUE,
+            VERSION => 2,
+            DEVICE_ID => g.device_id,
+            VENDOR_ID => 0x554d_4551, // "QEMU" — arbitrary
+            DEVICE_FEATURES => {
+                if g.dev_feat_sel == 1 {
+                    (g.device_features >> 32) as u32
+                } else {
+                    g.device_features as u32
+                }
+            }
+            QUEUE_NUM_MAX => g.queues.get(sel).map_or(0, |q| u32::from(q.max)),
+            QUEUE_READY => g.queues.get(sel).map_or(0, |q| u32::from(q.ready)),
+            INTERRUPT_STATUS => self.int_status.load(Ordering::SeqCst),
+            STATUS => g.status,
+            CONFIG_GENERATION => 0,
+            _ => 0,
+        };
+        let bytes = val.to_le_bytes();
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = bytes.get(i).copied().unwrap_or(0);
+        }
+        true
+    }
+
+    pub(crate) fn write(&self, offset: u64, data: &[u8]) -> bool {
+        let mut g = self.inner.lock().expect("virtio-mmio poisoned");
+        if offset >= CONFIG {
+            g.device.write_config(offset - CONFIG, data);
+            return true;
+        }
+        let mut le = [0u8; 4];
+        for (i, b) in data.iter().take(4).enumerate() {
+            le[i] = *b;
+        }
+        let val = u32::from_le_bytes(le);
+        let sel = g.queue_sel;
+        match offset {
+            DEVICE_FEATURES_SEL => g.dev_feat_sel = val,
+            DRIVER_FEATURES_SEL => g.drv_feat_sel = val,
+            DRIVER_FEATURES => {} // accepted; the device fixes its own feature set
+            QUEUE_SEL => g.queue_sel = val as usize,
+            QUEUE_NUM => {
+                if let Some(q) = g.queues.get_mut(sel) {
+                    q.num = val as u16;
+                }
+            }
+            QUEUE_READY => {
+                if let Some(q) = g.queues.get_mut(sel) {
+                    q.ready = val & 1 != 0;
+                }
+            }
+            QUEUE_DESC_LOW => set_lo(&mut g, sel, |q| &mut q.desc, val),
+            QUEUE_DESC_HIGH => set_hi(&mut g, sel, |q| &mut q.desc, val),
+            QUEUE_DRIVER_LOW => set_lo(&mut g, sel, |q| &mut q.avail, val),
+            QUEUE_DRIVER_HIGH => set_hi(&mut g, sel, |q| &mut q.avail, val),
+            QUEUE_DEVICE_LOW => set_lo(&mut g, sel, |q| &mut q.used, val),
+            QUEUE_DEVICE_HIGH => set_hi(&mut g, sel, |q| &mut q.used, val),
+            QUEUE_NOTIFY => {
+                if let Some(k) = g.kicks.get(val as usize) {
+                    let _ = k.write(1);
+                }
+            }
+            INTERRUPT_ACK => {
+                self.int_status.fetch_and(!val, Ordering::SeqCst);
+                if self.int_status.load(Ordering::SeqCst) == 0 {
+                    let _ = dillo_hypervisor::set_spi(self.irq, false);
+                }
+            }
+            STATUS => {
+                g.status = val;
+                if val == 0 {
+                    // Reset: the driver will re-negotiate. Devices stay; a real
+                    // re-activation path is out of scope for the boot console.
+                    g.activated = false;
+                } else {
+                    maybe_activate(&mut g);
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// An interrupt closure for the backing device: sets the used-buffer status
+    /// bit and asserts the wired SPI. Clone of `int_status`/`irq` so it can run
+    /// on the device's worker thread.
+    pub(crate) fn interrupt(
+        int_status: std::sync::Arc<AtomicU32>,
+        irq: u32,
+    ) -> virtio::Interrupt {
+        virtio::Interrupt::from_fn(move || {
+            int_status.fetch_or(INT_VRING, Ordering::SeqCst);
+            if let Err(e) = dillo_hypervisor::set_spi(irq, true) {
+                log::warn!("virtio-mmio SPI {irq} inject failed: {e}");
+            }
+        })
+    }
+}
+
+fn set_lo(g: &mut Inner, sel: usize, field: impl Fn(&mut QueueCfg) -> &mut u64, val: u32) {
+    if let Some(q) = g.queues.get_mut(sel) {
+        let f = field(q);
+        *f = (*f & 0xFFFF_FFFF_0000_0000) | u64::from(val);
+    }
+}
+
+fn set_hi(g: &mut Inner, sel: usize, field: impl Fn(&mut QueueCfg) -> &mut u64, val: u32) {
+    if let Some(q) = g.queues.get_mut(sel) {
+        let f = field(q);
+        *f = (*f & 0x0000_0000_FFFF_FFFF) | (u64::from(val) << 32);
+    }
+}
+
+fn maybe_activate(g: &mut Inner) {
+    if g.activated || g.status & STATUS_DRIVER_OK == 0 {
+        return;
+    }
+    let mem = g.mem.clone();
+    let queues: Vec<Queue> = g
+        .queues
+        .iter()
+        .map(|qc| {
+            let mut q = Queue::new(qc.max);
+            q.size = qc.num;
+            q.ready = qc.ready;
+            q.desc_table = GuestAddress(qc.desc);
+            q.avail_ring = GuestAddress(qc.avail);
+            q.used_ring = GuestAddress(qc.used);
+            q
+        })
+        .collect();
+    let kicks: Vec<Kick> = match (0..queues.len())
+        .map(|_| Kick::new())
+        .collect::<std::io::Result<Vec<_>>>()
+    {
+        Ok(k) => k,
+        Err(e) => {
+            log::error!("virtio-mmio: kick alloc failed: {e}");
+            return;
+        }
+    };
+    g.kicks = kicks
+        .iter()
+        .filter_map(|k| k.try_clone().ok())
+        .collect();
+    if let Err(e) = g.device.activate(mem, queues, kicks) {
+        log::error!("virtio-mmio: activate failed: {e}");
+        return;
+    }
+    g.activated = true;
+    log::info!("virtio-mmio: device-id {} activated", g.device_id);
+}

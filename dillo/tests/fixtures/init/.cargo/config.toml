@@ -1,0 +1,16 @@
+# Build as a fully static binary. The `*-unknown-linux-musl` targets default
+# to `+crt-static`, and rust ships the musl libc + startfiles (link-self-
+# contained), so std + libc link statically with no external toolchain.
+#
+# On a non-Linux host (e.g. macOS) the system `cc` can't emit a Linux ELF, so
+# use rust's bundled `rust-lld` as the linker.
+# `relocation-model=static` makes a non-PIE ET_EXEC (no self-relocation), the
+# classic plain static binary — static-PIE's runtime self-relocation misbehaves
+# as a minimal PID 1.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "relocation-model=static"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "relocation-model=static"]

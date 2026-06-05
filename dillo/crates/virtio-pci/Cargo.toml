@@ -1,0 +1,23 @@
+[package]
+name = "virtio-pci"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Virtio PCI transport layer: capabilities, device status FSM, notification wiring. Migrated from ~/Projects/dillo/virtio-pci."
+
+[dependencies]
+virtio.workspace = true
+vm-pci.workspace = true
+vm-memory.workspace = true
+vmm-sys-util.workspace = true
+libc = "0.2"
+log.workspace = true
+
+# KVM ioeventfd-based queue notification is Linux-only. On macOS/HVF the
+# notify path is driven by the in-process MMIO bus (no ioeventfd).
+[target.'cfg(target_os = "linux")'.dependencies]
+kvm-ioctls.workspace = true
+
+[lints]
+workspace = true

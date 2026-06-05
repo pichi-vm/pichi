@@ -1,0 +1,47 @@
+[package]
+name = "dillo-vm"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "VM-side integration crate for dillo: DTBO synthesis, memfd setup, KVM wiring, vCPU threads, MMIO/PIO dispatch."
+
+[dependencies]
+dillo-pmi.workspace = true
+dillo-platform.workspace = true
+dillo-hypervisor.workspace = true
+devtree.workspace = true
+
+pmi.workspace = true
+virtio.workspace = true
+virtio-pci.workspace = true
+vm-pci.workspace = true
+vm-memory.workspace = true
+vmm-sys-util.workspace = true
+dillo-virtio-console.workspace = true
+thiserror.workspace = true
+log.workspace = true
+anyhow.workspace = true
+vm-superio.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix.workspace = true
+libc = "0.2"
+kvm-bindings.workspace = true
+kvm-ioctls.workspace = true
+vhost.workspace = true
+gdbstub.workspace = true
+gdbstub_arch.workspace = true
+
+[features]
+# Spawn the console as a separate vhost-user backend process inside
+# `run()`: fork+exec `/proc/self/exe backend console --fd=N`, install
+# seccomp in the child, run the vhost-user handshake, and use the
+# `VhostUserFrontend` proxy as the PCI device in place of the in-
+# process `VirtioConsole`. ARCH §4.1-conformant. Off by default for
+# now — the default build keeps the in-process device for fast iter
+# and gdb-stub use; flip on for the §27.3 active-cell production shape.
+process-isolation-spawn = []
+
+[lints]
+workspace = true

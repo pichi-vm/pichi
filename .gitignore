@@ -1,0 +1,8 @@
+/target
+
+# Editor swap files
+*~
+*.swp
+*.swo
+
+Cargo.toml.bak*

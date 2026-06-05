@@ -1,0 +1,19 @@
+[package]
+name = "dillo-pmi-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dillo-pmi = { path = ".." }
+
+[[bin]]
+name = "pmi_parse"
+path = "fuzz_targets/pmi_parse.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,12 @@
+[package]
+name = "vm-pci"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Reusable PCI type library: config space, BDF, BARs, capabilities, MSI-X data structures. Migrated from ~/Projects/dillo/vm-pci."
+
+[dependencies]
+
+[lints]
+workspace = true

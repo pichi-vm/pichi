@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  linux:
+    name: Linux (${{ matrix.toolchain }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        # Note: avoid `cargo fmt --all` because it recurses into path dependencies
+        # (devtree, pmi) which live in sibling repos and are not our concern.
+        run: |
+          for p in dillo dillo-pmi dillo-platform dillo-hypervisor dillo-device dillo-virtio-console dillo-vm; do
+            cargo fmt --check -p "$p"
+          done
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo build
+        run: cargo build --release --all-targets
+
+      - name: cargo test
+        run: cargo test --release --all-features
