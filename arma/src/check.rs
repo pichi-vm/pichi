@@ -114,11 +114,26 @@ pub(crate) fn run(pmi_path: &Path) -> Result<()> {
 
     // ---- render ----
     println!("arma check: {}", pmi_path.display());
+    // Size each column to its widest value so names of any length stay aligned.
+    let size_strs: Vec<String> = regions.iter().map(|r| human(r.size)).collect();
+    let name_w = regions
+        .iter()
+        .map(|r| r.name.len())
+        .max()
+        .unwrap_or(0)
+        .max("region".len());
+    let size_w = size_strs
+        .iter()
+        .map(String::len)
+        .max()
+        .unwrap_or(0)
+        .max("size".len());
+    let addr_w = 14; // "0x" + up to 12 hex digits (top of address space is 2^39+)
     println!(
-        "  {:<22} {:>18} {:>18} {:>10}",
-        "region", "start", "end", "size"
+        "  {:<name_w$}  {:>addr_w$}  {:>addr_w$}  {:>size_w$}  kind",
+        "region", "start", "end", "size",
     );
-    for r in &regions {
+    for (r, size_s) in regions.iter().zip(&size_strs) {
         let tag = match r.kind {
             Kind::Device => "device",
             Kind::Window => "BAR window",
@@ -126,12 +141,10 @@ pub(crate) fn run(pmi_path: &Path) -> Result<()> {
             Kind::Payload => "payload",
         };
         println!(
-            "  {:<22} {:>#18x} {:>#18x} {:>9} {}",
+            "  {:<name_w$}  {:>#addr_w$x}  {:>#addr_w$x}  {size_s:>size_w$}  {tag}",
             r.name,
             r.base,
             r.base + r.size,
-            human(r.size),
-            tag
         );
     }
 
