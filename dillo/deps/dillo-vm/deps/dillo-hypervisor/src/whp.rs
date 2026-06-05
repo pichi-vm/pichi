@@ -712,23 +712,33 @@ mod raw {
         // Enlightenments are paravirt optimizations; a nested/limited WHP host
         // (e.g. a CI runner) may reject individual ones with
         // ERROR_NOT_SUPPORTED. Treat each as best-effort — the guest boots
-        // correctly without them.
+        // correctly without them — but log every skip so a degraded host is
+        // visible in the boot output rather than silently swallowed.
         match set_synthetic_processor_features_banks(partition) {
-            Ok(()) | Err(ERROR_NOT_SUPPORTED) => {}
+            Ok(()) => {}
+            Err(ERROR_NOT_SUPPORTED) => {
+                log::warn!("WHP: synthetic processor feature banks not supported; skipping");
+            }
             Err(hr) => return Err(hr),
         }
 
         match get_capability_u64(WHvCapabilityCodeProcessorClockFrequency)
             .and_then(|freq| set_processor_clock_frequency(partition, freq))
         {
-            Ok(()) | Err(ERROR_NOT_SUPPORTED) => {}
+            Ok(()) => {}
+            Err(ERROR_NOT_SUPPORTED) => {
+                log::warn!("WHP: processor clock frequency enlightenment not supported; skipping");
+            }
             Err(hr) => return Err(hr),
         }
 
         let interrupt_clock_frequency =
             get_capability_u64(WHvCapabilityCodeInterruptClockFrequency)?;
         match set_interrupt_clock_frequency(partition, interrupt_clock_frequency) {
-            Ok(()) | Err(ERROR_NOT_SUPPORTED) => {}
+            Ok(()) => {}
+            Err(ERROR_NOT_SUPPORTED) => {
+                log::warn!("WHP: interrupt clock frequency enlightenment not supported; skipping");
+            }
             Err(hr) => return Err(hr),
         }
 

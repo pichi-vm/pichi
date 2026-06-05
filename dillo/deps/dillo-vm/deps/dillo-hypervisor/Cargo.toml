@@ -18,6 +18,7 @@ nix.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Hypervisor"] }
+log.workspace = true
 
 # HVF binding of record (macOS/aarch64). applevisor = safe wrapper;
 # applevisor-sys = raw FFI for the newest hv_gic_* APIs the safe layer

@@ -424,6 +424,7 @@ dependencies = [
  "applevisor-sys",
  "kvm-bindings",
  "kvm-ioctls",
+ "log",
  "nix",
  "pmi",
  "thiserror",
