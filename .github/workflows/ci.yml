@@ -8,6 +8,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  # Cross-link the snuffler guest binary (musl) with the bundled rust-lld so it
+  # builds from any host (the host `cc`/clang/mingw can't emit a Linux ELF).
+  # An env var applies to artifact-dep builds where the .cargo/config linker
+  # key does not.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
   # Nightly pinned to the patched cargo's version (no floating-channel re-sync).
   NIGHTLY: nightly-2026-06-04
   # Patched cargo: RFC 3176 multidep (rust-lang/cargo#17067) that arma's
