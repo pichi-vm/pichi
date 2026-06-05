@@ -9,12 +9,15 @@
 //! plain `cargo test` (or a runner without KVM) is a clean skip.
 #![cfg(feature = "vm-tests")]
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use rstest::rstest;
 use snuffler::{REPORT_BEGIN, REPORT_END, Report};
 use tempfile::TempDir;
+use wait_timeout::ChildExt;
 
 const ALPINE: &str = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases";
 
@@ -37,10 +40,25 @@ fn kernel_url() -> String {
     format!("{ALPINE}/{}/netboot/vmlinuz-virt", host::ARCH)
 }
 
-/// KVM must be present and usable, else these tests are a no-op skip.
-fn kvm_available() -> bool {
-    use std::fs::OpenOptions;
-    Path::new("/dev/kvm").exists() && OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok()
+/// Whether the host hypervisor is usable; otherwise these tests no-op skip.
+/// On Linux we can cheaply probe `/dev/kvm`; HVF (macOS) and WHP (Windows)
+/// have no equivalent file gate, and the CI runners provide them, so we
+/// assume present and let a genuine absence surface as a boot failure.
+fn hypervisor_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs::OpenOptions;
+        Path::new("/dev/kvm").exists()
+            && OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/kvm")
+                .is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
 /// Build a PMI: Alpine host kernel + snuffler initrd, console on hvc0.
@@ -66,20 +84,33 @@ fn build_pmi(dir: &Path) -> PathBuf {
     pmi
 }
 
-/// Boot `pmi` under dillo (wrapped in `timeout` so a hang fails fast),
-/// returning the combined console output.
-fn boot(pmi: &Path, mem_mib: u32, cpus: u32) -> String {
-    let out = Command::new("timeout")
-        .arg("120")
-        .arg(env!("CARGO_BIN_EXE_dillo"))
+/// Boot `pmi` under dillo, returning the combined console output. dillo's
+/// stdout/stderr are redirected to files (no pipe-buffer deadlock) and the
+/// child is killed if it overruns the timeout. Cross-platform (no `timeout`
+/// coreutil).
+fn boot(pmi: &Path, mem_mib: u32, cpus: u32, dir: &Path) -> String {
+    let out_path = dir.join("console.out");
+    let err_path = dir.join("console.err");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dillo"))
         .arg("--pmi")
         .arg(pmi)
         .args(["--memory", &mem_mib.to_string()])
         .args(["--cpus", &cpus.to_string()])
-        .output()
+        .stdout(File::create(&out_path).unwrap())
+        .stderr(File::create(&err_path).unwrap())
+        .spawn()
         .expect("spawn dillo");
-    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    if child
+        .wait_timeout(Duration::from_secs(120))
+        .expect("wait dillo")
+        .is_none()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("dillo boot timed out");
+    }
+    let mut s = std::fs::read_to_string(&out_path).unwrap_or_default();
+    s.push_str(&std::fs::read_to_string(&err_path).unwrap_or_default());
     s
 }
 
@@ -98,13 +129,13 @@ fn report(output: &str) -> Report {
 
 #[rstest]
 fn boots_and_reports(#[values(256, 1024)] mem_mib: u32, #[values(1, 2)] cpus: u32) {
-    if !kvm_available() {
-        eprintln!("skip: /dev/kvm unavailable");
+    if !hypervisor_available() {
+        eprintln!("skip: host hypervisor unavailable");
         return;
     }
     let tmp = TempDir::new().unwrap();
     let pmi = build_pmi(tmp.path());
-    let r = report(&boot(&pmi, mem_mib, cpus));
+    let r = report(&boot(&pmi, mem_mib, cpus, tmp.path()));
 
     assert_eq!(r.arch, host::ARCH, "guest arch");
     assert_eq!(r.cpu.online_count, cpus as usize, "online cpus");

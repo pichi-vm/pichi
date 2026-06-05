@@ -401,6 +401,7 @@ dependencies = [
  "serde_json",
  "snuffler",
  "tempfile",
+ "wait-timeout",
 ]
 
 [[package]]
