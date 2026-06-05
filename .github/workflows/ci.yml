@@ -98,10 +98,11 @@ jobs:
       # (Registry deps are cap-lints'd, so only our crates can fail it.) It is set
       # per-step, never globally, so it can't reach the patched-cargo build above.
 
-      # Linux builds every member, including the Linux-only guest binary snuffler
-      # and the vhost-backend. Windows can't host-build those, so there we test
-      # the portable crates + arma explicitly; dillo (with its WHP backend) is
-      # built and exercised by the boot step.
+      # Both platforms run the full workspace unit tests. The only members
+      # Windows can't build are the genuinely Linux-only ones: vhost-backend
+      # (vhost = a Linux kernel interface) and snuffler (the Linux guest probe
+      # binary). Everything else — the whole dillo stack with its WHP backend —
+      # is built and tested on Windows too, for parity with Linux.
       - name: Test (Linux, full workspace)
         if: runner.os == 'Linux'
         shell: bash
@@ -110,13 +111,13 @@ jobs:
         run: |
           "$CARGO" test --workspace
 
-      - name: Test (Windows, portable + arma)
+      - name: Test (Windows, workspace minus Linux-only crates)
         if: runner.os == 'Windows'
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          "$CARGO" test -p pmi -p devtree -p dtb2acpi -p dtb2e820 -p burrow -p arma
+          "$CARGO" test --workspace --exclude vhost-backend --exclude snuffler
 
       - name: Reserve hugepages for guest RAM (Linux/KVM)
         if: runner.os == 'Linux'
