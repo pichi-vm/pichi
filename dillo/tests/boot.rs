@@ -1,12 +1,15 @@
-//! End-to-end boot tests (feature `vm-tests`, Linux/KVM).
+//! End-to-end boot tests (feature `vm-tests`; KVM on Linux, WHP on Windows).
 //!
 //! For each config: build a PMI with arma (Alpine host-arch kernel +
 //! the `snuffler` guest probe as initrd), boot it under dillo, capture the
 //! console, extract `snuffler`'s `Report` from between its sentinels, and
 //! assert what the guest actually saw matches what we asked dillo for.
 //!
-//! Gated on the `vm-tests` feature *and* a runtime `/dev/kvm` check, so a
-//! plain `cargo test` (or a runner without KVM) is a clean skip.
+//! Gated on the `vm-tests` feature. On Linux a missing/inaccessible `/dev/kvm`
+//! is a clean skip so a plain local `cargo test` doesn't fail — but once the
+//! suite actually runs a boot, a guest that does not report back is a hard
+//! failure, never a silent skip. CI runs this on the platforms it claims to
+//! support (Linux/KVM, Windows/WHP), so there it must genuinely boot.
 #![cfg(feature = "vm-tests")]
 
 use std::fs::File;
@@ -24,15 +27,15 @@ const ALPINE: &str = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releas
 // dillo boots a same-arch guest, so the host arch picks the kernel.
 #[cfg(target_arch = "x86_64")]
 mod host {
-    pub const ARCH: &str = "x86_64";
-    pub const PROFILE: &str = "x86-64-v2";
-    pub const CONFIG: &str = "CONFIG_PCI=y\nCONFIG_VIRTIO_PCI=y\nCONFIG_VIRTIO_MMIO=y\n";
+    pub(crate) const ARCH: &str = "x86_64";
+    pub(crate) const PROFILE: &str = "x86-64-v2";
+    pub(crate) const CONFIG: &str = "CONFIG_PCI=y\nCONFIG_VIRTIO_PCI=y\nCONFIG_VIRTIO_MMIO=y\n";
 }
 #[cfg(target_arch = "aarch64")]
 mod host {
-    pub const ARCH: &str = "aarch64";
-    pub const PROFILE: &str = "armv8.0-a";
-    pub const CONFIG: &str =
+    pub(crate) const ARCH: &str = "aarch64";
+    pub(crate) const PROFILE: &str = "armv8.0-a";
+    pub(crate) const CONFIG: &str =
         "CONFIG_PCI=y\nCONFIG_PCI_HOST_GENERIC=y\nCONFIG_VIRTIO_PCI=y\nCONFIG_VIRTIO_MMIO=y\n";
 }
 
@@ -121,34 +124,20 @@ fn parse_report(output: &str) -> Option<Report> {
     serde_json::from_str(&output[begin..end]).ok()
 }
 
-/// Markers that the host can't actually launch a guest — no nested
-/// virtualization (KVM/HVF/WHP), common on hosted CI runners (notably
-/// GitHub-hosted macOS, which has no nested HVF). Treated as a skip rather
-/// than a failure, while any *other* no-report case still fails loudly.
-fn hypervisor_cannot_run(output: &str) -> bool {
-    output.contains("unsupported operation")
-        || output.contains("HypervisorError")
-        || output.contains("hv_vm")
-        || output.contains("KVM_CREATE")
-}
-
 #[rstest]
 fn boots_and_reports(#[values(256, 1024)] mem_mib: u32, #[values(1, 2)] cpus: u32) {
+    // Local convenience only: if there is no usable /dev/kvm (Linux dev box
+    // without KVM), skip rather than fail. This is the *only* skip; once we
+    // attempt a boot below, anything short of a guest report is a failure.
     if !hypervisor_available() {
-        eprintln!("skip: host hypervisor unavailable");
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
         return;
     }
     let tmp = TempDir::new().unwrap();
     let pmi = build_pmi(tmp.path());
     let output = boot(&pmi, mem_mib, cpus, tmp.path());
-    let Some(r) = parse_report(&output) else {
-        assert!(
-            hypervisor_cannot_run(&output),
-            "no report and no hypervisor-unavailable marker:\n{output}"
-        );
-        eprintln!("skip: host cannot launch a guest (no nested virtualization)");
-        return;
-    };
+    let r = parse_report(&output)
+        .unwrap_or_else(|| panic!("boot produced no snuffler report (guest did not boot):\n{output}"));
 
     assert_eq!(r.arch, host::ARCH, "guest arch");
     assert_eq!(r.cpu.online_count, cpus as usize, "online cpus");
