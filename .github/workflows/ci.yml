@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pin the patched cargo (RFC 3176 multidep, rust-lang/cargo#17067) that arma's
+  # two-target tatu artifact deps need until it lands in nightly.
+  CARGO_PR_SHA: 0294a8367512e4eecf69c70e8ba69ba6f1eb1514
+
+jobs:
+  # macOS/Windows: build & test the crates that don't use artifact deps, so
+  # plain nightly cargo suffices (no custom cargo). Proves cross-platform
+  # portability of the shared libraries + the burrow downloader.
+  portable:
+    name: portable (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15-large]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup default nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Test bindeps-free crates
+        run: cargo test -p pmi -p devtree -p dtb2acpi -p dtb2e820 -p burrow
+
+  # Linux: full workspace (arma needs the patched cargo) + KVM boot tests.
+  linux:
+    name: linux full (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly + cross targets
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup default nightly
+          rustup target add x86_64-unknown-none aarch64-unknown-none \
+                            x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache patched cargo
+        id: cargo-bin
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/cargo-bindeps
+          key: cargo-bindeps-ubuntu24-${{ env.CARGO_PR_SHA }}
+      - name: Build patched cargo
+        if: steps.cargo-bin.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config cmake
+          git clone https://github.com/npmccallum/cargo /tmp/cargo-src
+          git -C /tmp/cargo-src checkout "$CARGO_PR_SHA"
+          (cd /tmp/cargo-src && cargo build --release)
+          mkdir -p ~/.local/bin
+          cp /tmp/cargo-src/target/release/cargo ~/.local/bin/cargo-bindeps
+      - name: Show toolchain
+        run: |
+          ~/.local/bin/cargo-bindeps --version
+          rustc --version
+          ls -l /dev/kvm 2>/dev/null && sudo chmod 666 /dev/kvm || echo "no /dev/kvm (boot tests will skip)"
+      - name: Test workspace
+        run: ~/.local/bin/cargo-bindeps test --workspace
+      - name: Boot tests (vm-tests; skip without KVM)
+        run: ~/.local/bin/cargo-bindeps test -p dillo --features vm-tests
