@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn merged_dtb_basic_fixture_passes() {
-        let blob = include_bytes!("../../dtb2acpi/tests/data/basic.dtb");
+        let blob = include_bytes!("../deps/dtb2acpi/tests/data/basic.dtb");
         let tree: devtree::Tree<'_> = devtree::Tree::parse(blob).unwrap();
         validate_merged(&tree).expect("basic fixture should pass");
     }
