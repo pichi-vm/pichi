@@ -114,17 +114,22 @@ fn boot(pmi: &Path, mem_mib: u32, cpus: u32, dir: &Path) -> String {
     s
 }
 
-/// Extract snuffler's JSON `Report` from the console output.
-fn report(output: &str) -> Report {
-    let begin = output
-        .find(REPORT_BEGIN)
-        .unwrap_or_else(|| panic!("no report sentinel in output:\n{output}"))
-        + REPORT_BEGIN.len();
-    let end = output[begin..]
-        .find(REPORT_END)
-        .expect("no report end sentinel")
-        + begin;
-    serde_json::from_str(&output[begin..end]).expect("parse Report json")
+/// Extract snuffler's JSON `Report` from the console output, if present.
+fn parse_report(output: &str) -> Option<Report> {
+    let begin = output.find(REPORT_BEGIN)? + REPORT_BEGIN.len();
+    let end = output[begin..].find(REPORT_END)? + begin;
+    serde_json::from_str(&output[begin..end]).ok()
+}
+
+/// Markers that the host can't actually launch a guest — no nested
+/// virtualization (KVM/HVF/WHP), common on hosted CI runners (notably
+/// GitHub-hosted macOS, which has no nested HVF). Treated as a skip rather
+/// than a failure, while any *other* no-report case still fails loudly.
+fn hypervisor_cannot_run(output: &str) -> bool {
+    output.contains("unsupported operation")
+        || output.contains("HypervisorError")
+        || output.contains("hv_vm")
+        || output.contains("KVM_CREATE")
 }
 
 #[rstest]
@@ -135,7 +140,15 @@ fn boots_and_reports(#[values(256, 1024)] mem_mib: u32, #[values(1, 2)] cpus: u3
     }
     let tmp = TempDir::new().unwrap();
     let pmi = build_pmi(tmp.path());
-    let r = report(&boot(&pmi, mem_mib, cpus, tmp.path()));
+    let output = boot(&pmi, mem_mib, cpus, tmp.path());
+    let Some(r) = parse_report(&output) else {
+        assert!(
+            hypervisor_cannot_run(&output),
+            "no report and no hypervisor-unavailable marker:\n{output}"
+        );
+        eprintln!("skip: host cannot launch a guest (no nested virtualization)");
+        return;
+    };
 
     assert_eq!(r.arch, host::ARCH, "guest arch");
     assert_eq!(r.cpu.online_count, cpus as usize, "online cpus");
