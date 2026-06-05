@@ -381,14 +381,17 @@ pub fn cross_validate_loads(
     loaded: &[(String, u64, u64)],
 ) -> Result<(), Error> {
     let mmio_regions: Vec<(&'static str, u64, u64)> = {
-        let mut v = vec![
-            ("intc", platform.intc.base, platform.intc.size),
-            (
+        let mut v = vec![("intc", platform.intc.base, platform.intc.size)];
+        // poweroff is an x86 syscon MMIO register; aarch64 powers off via PSCI,
+        // leaving poweroff.base = 0 (unused). A phantom [0x0..0x4) region would
+        // otherwise collide with tatu's sections (which start at GPA 0 on arm).
+        if platform.poweroff.base != 0 {
+            v.push((
                 "poweroff",
                 platform.poweroff.base,
                 platform.poweroff.offset + 4,
-            ),
-        ];
+            ));
+        }
         if platform.has_pcie {
             v.push((
                 "pcie-ecam",
