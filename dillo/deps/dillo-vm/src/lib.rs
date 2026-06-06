@@ -8,7 +8,7 @@
 
 #![allow(clippy::needless_lifetimes)]
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod backend;
 mod cpu_id;
 mod error;
@@ -67,7 +67,7 @@ use std::sync::atomic::Ordering;
 use std::thread;
 
 use anyhow::{Result, anyhow};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use backend::BackendVm;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_hypervisor::Vm;
@@ -244,10 +244,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     );
 
     let msix_vectors: u16 = 3;
-    let notifier = Arc::new(whp_devices::WhpMsixNotifier::new(
-        vm.interrupt_controller(),
-        msix_vectors,
-    ));
+    let notifier = vm.msix_notifier(msix_vectors);
     let lookup_notifier = Arc::clone(&notifier);
     let console: Arc<std::sync::Mutex<Box<dyn virtio::VirtioDevice>>> = Arc::new(
         std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
@@ -288,9 +285,9 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // interrupt controller.
     let mmio_bus = Arc::new(windows_x86_mmio_bus(
         &platform,
+        &vm,
         Arc::clone(&pci_root),
         Arc::clone(&ioapic),
-        vm.interrupt_controller(),
         Arc::clone(&syscon_state),
     )?);
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
@@ -340,9 +337,9 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 #[cfg(target_os = "windows")]
 fn windows_x86_mmio_bus(
     platform: &dillo_platform::Platform,
+    vm: &dillo_hypervisor::Vm,
     pci_root: Arc<PciRoot>,
     ioapic: Arc<ioapic::IoApic>,
-    interrupt_controller: dillo_hypervisor::InterruptController,
     syscon_state: Arc<syscon::SysconState>,
 ) -> Result<MmioBus, RunError> {
     let mut mmio_bus = MmioBus::new();
@@ -352,14 +349,13 @@ fn windows_x86_mmio_bus(
     // WHP's fixed-interrupt primitive. Absent UART → no serial on the bus.
     match &platform.uart {
         Some(uart) => {
-            let serial = uart::Ns16550::new_whp(
+            let serial = vm.ns16550(
                 MmioWindow {
                     name: "ns16550a",
                     base: uart.base,
                     size: uart.size,
                 },
                 uart.reg_shift,
-                interrupt_controller,
                 Arc::clone(&ioapic),
                 uart.irq,
                 Box::new(std::io::stderr()),

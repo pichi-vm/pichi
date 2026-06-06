@@ -259,12 +259,16 @@ Success criteria:
 Progress:
 - Added a Linux `BackendVm` trait slice in `dillo-vm` for backend-owned interrupt/MSI queue-notifier setup.
 - Linux launch code no longer calls `vm_fd_arc()` directly; KVM handle access is isolated behind the backend trait implementation.
-- Remaining work: extend the trait boundary across construction, guest memory, MMIO attach, wired IRQ, MSI notifier creation, and vCPU seed/factory APIs on all supported backends.
+- Added a Windows `BackendVm` trait slice for backend-owned WHP MSI-X notifier and ns16550 IRQ trigger setup.
+- Windows launch code no longer calls `interrupt_controller()` directly; WHP handle access is isolated behind the backend trait implementation.
+- Remaining work: extend the trait boundary across construction, guest memory, MMIO attach, wired IRQ, and vCPU seed/factory APIs on all supported backends.
 
 Local verification for current slice:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-platform -p dillo-vm --all-targets`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 
 ## Stage 9 - Unify supervisor run outcome
 
