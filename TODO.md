@@ -333,6 +333,8 @@ Success criteria:
 Progress:
 - Removed the macOS/HVF `extract -> Platform` adapter; the HVF launch path now realizes devices from the surveyed `Machine`.
 - Narrowed the shared load-section helper to the exact DTB facts it consumes (`arch` and PSCI presence) instead of a whole `Platform`.
+- Removed the Windows/WHP `extract -> Platform` adapter; WHP now realizes PCIe, IOAPIC, syscon, UART, and overlay facts from the surveyed `Machine`.
+- Removed the single-use WHP MMIO bus helper and changed x86 backend syscon attachment to take concrete DTB-derived syscon registers instead of a whole `Platform`.
 
 Local verification for current slice:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

@@ -142,23 +142,23 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         machine.plan.regions().len(),
         machine.has_pcie
     );
-    // Temporary adapter: realization below still consumes Platform-shaped fields,
-    // but validation and placement are driven by the surveyed ResourcePlan.
-    let platform =
-        dillo_platform::extract(dtb_bytes, platform_arch).map_err(RunError::DtbExtract)?;
+    if !machine.has_pcie {
+        return Err(RunError::MissingRequiredDevice("/pcie"));
+    }
+    let poweroff = machine
+        .poweroff
+        .ok_or(RunError::MissingRequiredDevice("/syscon-poweroff"))?;
     log::info!(
-        "WHP platform from DTB: pcie mmio {:#x}..{:#x}, ecam {:#x}..{:#x}, intc {:?} @ {:#x}..{:#x}, poweroff @ {:#x}+{:#x} = {:#x} & {:#x}",
-        platform.pcie.mmio_base,
-        platform.pcie.mmio_base + platform.pcie.mmio_size,
-        platform.pcie.ecam_base,
-        platform.pcie.ecam_base + platform.pcie.ecam_size,
-        platform.intc.kind,
-        platform.intc.base,
-        platform.intc.base + platform.intc.size,
-        platform.poweroff.base,
-        platform.poweroff.offset,
-        platform.poweroff.value,
-        platform.poweroff.mask,
+        "WHP machine from DTB: pcie mmio {:#x}..{:#x}, ecam {:#x}..{:#x}, ioapic={:?}, poweroff @ {:#x}+{:#x} = {:#x} & {:#x}",
+        machine.pcie.mmio_base,
+        machine.pcie.mmio_base + machine.pcie.mmio_size,
+        machine.pcie.ecam_base,
+        machine.pcie.ecam_base + machine.pcie.ecam_size,
+        machine.ioapic,
+        poweroff.base,
+        poweroff.offset,
+        poweroff.value,
+        poweroff.mask,
     );
 
     let load_ranges: Vec<(String, u64, u64)> = parsed
@@ -219,8 +219,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         &mut vm,
         &parsed,
         &bytes,
-        platform.arch,
-        platform.psci.is_some(),
+        machine.arch,
+        machine.psci.is_some(),
         &plan,
         vcpus,
     )?;
@@ -253,8 +253,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         ))),
     );
 
-    let bar0_gpa = platform.pcie.mmio_base;
-    let bar2_gpa = platform.pcie.mmio_base + 0x1000;
+    let bar0_gpa = machine.pcie.mmio_base;
+    let bar2_gpa = machine.pcie.mmio_base + 0x1000;
     let mut virtio_pci_dev = virtio_pci::VirtioPciDevice::new(
         console,
         msix_vectors,
@@ -266,13 +266,13 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     let mut pci_root = PciRoot::new(MmioWindow {
         name: "pcie-ecam",
-        base: platform.pcie.ecam_base,
-        size: platform.pcie.ecam_size,
+        base: machine.pcie.ecam_base,
+        size: machine.pcie.ecam_size,
     });
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
     let shutdown = Arc::new(AtomicBool::new(false));
-    let ioapic_region = platform
+    let ioapic_region = machine
         .ioapic
         .ok_or(RunError::MissingRequiredDevice("/intc reg[1] ioapic"))?;
     let ioapic = Arc::new(ioapic::IoApic::new(MmioWindow {
@@ -281,16 +281,40 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         size: ioapic_region.size,
     }));
     let syscon_state = Arc::new(syscon::SysconState::default());
-    // The MMIO bus builder also attaches the ns16550a serial (if the Platform
-    // declares one), routing its IRQ through this IOAPIC + the partition's
-    // interrupt controller.
-    let mmio_bus = Arc::new(windows_x86_mmio_bus(
-        &platform,
-        &vm,
-        Arc::clone(&pci_root),
-        Arc::clone(&ioapic),
+    let mut mmio_bus = MmioBus::new();
+    match &machine.uart {
+        Some(uart) => {
+            let serial = vm.ns16550(
+                MmioWindow {
+                    name: "ns16550a",
+                    base: uart.base,
+                    size: uart.size,
+                },
+                uart.reg_shift,
+                Arc::clone(&ioapic),
+                uart.irq,
+                Box::new(std::io::stderr()),
+            );
+            vm.attach_mmio(&mut mmio_bus, Arc::new(serial));
+            log::info!(
+                "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
+                uart.base,
+                uart.size,
+                uart.reg_shift,
+                uart.irq
+            );
+        }
+        None => log::warn!("no UART in Machine — guest console output will be dropped"),
+    }
+    vm.attach_x86_syscon_devices(
+        &mut mmio_bus,
+        poweroff,
+        machine.reboot,
         Arc::clone(&syscon_state),
-    )?);
+    );
+    vm.attach_mmio(&mut mmio_bus, ioapic);
+    vm.attach_mmio(&mut mmio_bus, Arc::clone(&pci_root));
+    let mmio_bus = Arc::new(mmio_bus);
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
     let mut joins = Vec::with_capacity(vcpu_handles.len());
@@ -344,51 +368,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             Ok(0)
         }
     }
-}
-
-#[cfg(target_os = "windows")]
-fn windows_x86_mmio_bus(
-    platform: &dillo_platform::Platform,
-    vm: &dillo_hypervisor::Vm,
-    pci_root: Arc<PciRoot>,
-    ioapic: Arc<ioapic::IoApic>,
-    syscon_state: Arc<syscon::SysconState>,
-) -> Result<MmioBus, RunError> {
-    let mut mmio_bus = MmioBus::new();
-
-    // ns16550a serial console (MMIO; device-model §"Serial port"). The IRQ is
-    // injected at the declared GSI through the userspace IOAPIC, which drives
-    // WHP's fixed-interrupt primitive. Absent UART → no serial on the bus.
-    match &platform.uart {
-        Some(uart) => {
-            let serial = vm.ns16550(
-                MmioWindow {
-                    name: "ns16550a",
-                    base: uart.base,
-                    size: uart.size,
-                },
-                uart.reg_shift,
-                Arc::clone(&ioapic),
-                uart.irq,
-                Box::new(std::io::stderr()),
-            );
-            vm.attach_mmio(&mut mmio_bus, Arc::new(serial));
-            log::info!(
-                "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
-                uart.base,
-                uart.size,
-                uart.reg_shift,
-                uart.irq
-            );
-        }
-        None => log::warn!("no UART in Platform — guest console output will be dropped"),
-    }
-
-    vm.attach_x86_syscon_devices(&mut mmio_bus, platform, syscon_state);
-    vm.attach_mmio(&mut mmio_bus, ioapic);
-    vm.attach_mmio(&mut mmio_bus, Arc::clone(&pci_root));
-
-    Ok(mmio_bus)
 }
 
 #[cfg(target_os = "windows")]
@@ -1461,7 +1440,12 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // backend-direct — no VMM relay.
     let mut mmio_bus = MmioBus::new();
     let syscon_state = Arc::new(syscon::SysconState::default());
-    vm.attach_x86_syscon_devices(&mut mmio_bus, &platform, Arc::clone(&syscon_state));
+    vm.attach_x86_syscon_devices(
+        &mut mmio_bus,
+        platform.poweroff,
+        platform.reboot,
+        Arc::clone(&syscon_state),
+    );
 
     // Build the device → adapter → bus chain.
     let irq_mgr = vm.irq_manager()?;

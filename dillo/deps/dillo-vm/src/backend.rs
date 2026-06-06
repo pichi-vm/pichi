@@ -82,7 +82,8 @@ pub(crate) trait BackendVm {
     fn attach_x86_syscon_devices(
         &self,
         bus: &mut MmioBus,
-        platform: &dillo_platform::Platform,
+        poweroff: dillo_platform::Syscon,
+        reboot: Option<dillo_platform::Syscon>,
         state: Arc<syscon::SysconState>,
     );
     fn ns16550(
@@ -164,19 +165,20 @@ impl BackendVm for dillo_hypervisor::Vm {
     fn attach_x86_syscon_devices(
         &self,
         bus: &mut MmioBus,
-        platform: &dillo_platform::Platform,
+        poweroff: dillo_platform::Syscon,
+        reboot: Option<dillo_platform::Syscon>,
         state: Arc<syscon::SysconState>,
     ) {
         self.attach_mmio(
             bus,
             Arc::new(syscon::SysconDevice::new(
                 "syscon-poweroff",
-                platform.poweroff,
+                poweroff,
                 syscon::SysconAction::Poweroff,
                 Arc::clone(&state),
             )),
         );
-        if let Some(reboot) = platform.reboot {
+        if let Some(reboot) = reboot {
             self.attach_mmio(
                 bus,
                 Arc::new(syscon::SysconDevice::new(
@@ -333,7 +335,8 @@ pub(crate) trait BackendVm {
     fn attach_x86_syscon_devices(
         &self,
         bus: &mut MmioBus,
-        platform: &dillo_platform::Platform,
+        poweroff: dillo_platform::Syscon,
+        reboot: Option<dillo_platform::Syscon>,
         state: Arc<syscon::SysconState>,
     );
 
@@ -397,19 +400,20 @@ impl BackendVm for dillo_hypervisor::Vm {
     fn attach_x86_syscon_devices(
         &self,
         bus: &mut MmioBus,
-        platform: &dillo_platform::Platform,
+        poweroff: dillo_platform::Syscon,
+        reboot: Option<dillo_platform::Syscon>,
         state: Arc<syscon::SysconState>,
     ) {
         self.attach_mmio(
             bus,
             Arc::new(syscon::SysconDevice::new(
                 "syscon-poweroff",
-                platform.poweroff,
+                poweroff,
                 syscon::SysconAction::Poweroff,
                 Arc::clone(&state),
             )),
         );
-        if let Some(reboot) = platform.reboot {
+        if let Some(reboot) = reboot {
             self.attach_mmio(
                 bus,
                 Arc::new(syscon::SysconDevice::new(
