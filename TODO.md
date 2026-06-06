@@ -269,12 +269,13 @@ Progress:
 - Added a Linux `VmOptions` constructor slice; KVM VM creation and memslot installation now happen behind `BackendVm`.
 - Added a macOS `VmOptions` constructor slice; HVF VM creation, max-vCPU validation, and memory installation now happen behind `BackendVm`.
 - Added Linux/WHP backend-owned vCPU creation; launch code no longer calls `create_vcpu` directly on those VMs.
-- Remaining work: extend the trait boundary across MMIO attach, wired IRQ, and uniform vCPU seed/factory APIs on all supported backends.
+- Added Linux backend-owned UART wired-IRQ setup; launch code no longer allocates serial irqfds directly.
+- Remaining work: extend the trait boundary across MMIO attach, macOS wired IRQ, and uniform vCPU seed/factory APIs on all supported backends.
 
 Local verification for current slice:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-platform -p dillo-vm --all-targets`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`

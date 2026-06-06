@@ -15,7 +15,7 @@ use crate::{RunError, hvf_devices};
 #[cfg(target_os = "windows")]
 use crate::{RunError, ioapic::IoApic, mmio_bus::MmioWindow, uart, whp_devices::WhpMsixNotifier};
 #[cfg(target_os = "linux")]
-use crate::{RunError, irq::IrqManager, pci_notify::KvmQueueNotifier};
+use crate::{RunError, irq::IrqManager, mmio_bus::MmioWindow, pci_notify::KvmQueueNotifier, uart};
 
 #[cfg(target_os = "linux")]
 pub(crate) struct Memslot {
@@ -39,6 +39,14 @@ pub(crate) trait BackendVm {
     fn irq_manager(&self) -> Result<Arc<Mutex<IrqManager>>, RunError>;
     fn queue_notifier(&self) -> Box<dyn QueueNotifier>;
     fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError>;
+    fn ns16550(
+        &self,
+        irq_manager: Arc<Mutex<IrqManager>>,
+        window: MmioWindow,
+        reg_shift: u32,
+        gsi: u32,
+        out: Box<dyn std::io::Write + Send>,
+    ) -> Result<uart::Ns16550, RunError>;
 }
 
 #[cfg(target_os = "linux")]
@@ -75,6 +83,25 @@ impl BackendVm for dillo_hypervisor::Vm {
 
     fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError> {
         dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)
+    }
+
+    fn ns16550(
+        &self,
+        irq_manager: Arc<Mutex<IrqManager>>,
+        window: MmioWindow,
+        reg_shift: u32,
+        gsi: u32,
+        out: Box<dyn std::io::Write + Send>,
+    ) -> Result<uart::Ns16550, RunError> {
+        let eventfd = {
+            let mut manager = irq_manager.lock().expect("irq mgr poisoned");
+            manager
+                .register_irqfd_at_gsi(gsi)
+                .map_err(|e| RunError::SerialInit {
+                    source: anyhow::anyhow!("irqfd for serial GSI {gsi}: {e}"),
+                })?
+        };
+        Ok(uart::Ns16550::new_irqfd(window, reg_shift, eventfd, out))
     }
 }
 

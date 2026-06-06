@@ -1423,23 +1423,18 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // bus. Absent → no UART emulation at all.
     match platform.uart {
         Some(uart) => {
-            let eventfd = {
-                let mut mgr = irq_mgr.lock().expect("irq mgr poisoned");
-                mgr.register_irqfd_at_gsi(uart.irq)
-                    .map_err(|e| RunError::SerialInit {
-                        source: anyhow!("irqfd for serial GSI {}: {e}", uart.irq),
-                    })?
-            };
-            mmio_bus.register_device(Arc::new(uart::Ns16550::new_irqfd(
+            let serial = vm.ns16550(
+                Arc::clone(&irq_mgr),
                 MmioWindow {
                     name: "ns16550a",
                     base: uart.base,
                     size: uart.size,
                 },
                 uart.reg_shift,
-                eventfd,
+                uart.irq,
                 Box::new(std::io::stdout()),
-            )));
+            )?;
+            mmio_bus.register_device(Arc::new(serial));
             log::info!(
                 "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
                 uart.base,
