@@ -14,6 +14,8 @@ mod fdt_writer;
 mod mmio_bus;
 mod overlay;
 mod pci;
+#[cfg(target_os = "linux")]
+mod pci_notify;
 mod placement;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod syscon;
@@ -681,7 +683,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             bar2_gpa,
             Arc::clone(&notifier) as Arc<dyn vm_pci::MsixNotifier>,
         );
-        // No set_vm_fd on macOS (no KVM ioeventfd); queue notifies kick directly.
+        // No backend queue notifier on macOS; queue notifies kick directly.
         let guest_mem =
             hvf_devices::build_guest_memory(&vm.region_mappings()).map_err(RunError::MemfdSetup)?;
         virtio_pci_dev.set_mem(guest_mem);
@@ -1542,7 +1544,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         bar2_gpa,
         irqfd_notifier as Arc<dyn vm_pci::MsixNotifier>,
     );
-    virtio_pci_dev.set_vm_fd(vm.vm_fd_arc());
+    virtio_pci_dev.set_queue_notifier(Box::new(pci_notify::KvmQueueNotifier::new(vm.vm_fd_arc())));
     // Build a vm-memory view over our memfd regions so virtio-pci can
     // access queues / descriptors when the guest activates the device.
     let region_tuples: Vec<(u64, u64, u64)> = plan

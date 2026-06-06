@@ -9,8 +9,6 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-#[cfg(target_os = "linux")]
-use kvm_ioctls::VmFd;
 use virtio::Kick;
 use virtio::queue::Queue;
 use virtio::{VIRTIO_F_VERSION_1, VirtioDevice};
@@ -56,6 +54,16 @@ const CC_QUEUE_USED_HI: u64 = 0x34;
 // Device status bits.
 const STATUS_FEATURES_OK: u8 = 8;
 const STATUS_DRIVER_OK: u8 = 4;
+
+/// Backend-owned queue notification hook.
+///
+/// Linux/KVM implements this with ioeventfd registration. Backends without an
+/// accelerated notify path leave it unset and use direct kick signaling from the
+/// BAR notify write path.
+pub trait QueueNotifier: Send {
+    fn register(&mut self, queue_index: usize, addr: u64, kick: &Kick) -> Result<(), String>;
+    fn unregister_all(&mut self);
+}
 
 /// Per-queue state tracked by the transport layer.
 #[derive(Debug)]
@@ -142,17 +150,9 @@ pub struct VirtioPciDevice {
     // MSI-X notifier (VMM provides real implementation, tests use NoopNotifier).
     notifier: Arc<dyn MsixNotifier>,
 
-    // VM fd for ioeventfd registration (set by VMM layer). Linux/KVM only.
-    #[cfg(target_os = "linux")]
-    vm_fd: Option<Arc<VmFd>>,
-
-    // Clones of ioeventfds registered with KVM via register_ioevent().
-    // Stored so Drop can call unregister_ioevent() to release KVM bindings
-    // when the device is removed (e.g., during crash recovery hot-remove).
-    // Without explicit deregistration, the KVM binding persists and a
-    // respawned device at the same BAR address cannot re-register its eventfds.
-    #[cfg(target_os = "linux")]
-    registered_ioeventfds: Vec<vmm_sys_util::eventfd::EventFd>,
+    // Backend queue notification registrar. Linux/KVM supplies an ioeventfd
+    // implementation; non-Linux backends leave this unset and kick directly.
+    queue_notifier: Option<Box<dyn QueueNotifier>>,
 
     // macOS/HVF: retained kick clones (sharing the worker's counters) so the
     // MMIO notify path can signal queue kicks directly — there is no ioeventfd.
@@ -307,10 +307,7 @@ impl VirtioPciDevice {
             activated: false,
             mem: None,
             notifier,
-            #[cfg(target_os = "linux")]
-            vm_fd: None,
-            #[cfg(target_os = "linux")]
-            registered_ioeventfds: Vec::new(),
+            queue_notifier: None,
             #[cfg(not(target_os = "linux"))]
             queue_kicks: Vec::new(),
             device_features,
@@ -318,13 +315,9 @@ impl VirtioPciDevice {
         }
     }
 
-    /// Set the KVM VmFd for ioeventfd registration at device activation.
-    ///
-    /// When set, `activate_device()` registers ioeventfds at the correct
-    /// MMIO addresses so queue kicks bypass VM exits entirely. Linux/KVM only.
-    #[cfg(target_os = "linux")]
-    pub fn set_vm_fd(&mut self, vm_fd: Arc<VmFd>) {
-        self.vm_fd = Some(vm_fd);
+    /// Set the backend queue-notification registrar used at activation.
+    pub fn set_queue_notifier(&mut self, notifier: Box<dyn QueueNotifier>) {
+        self.queue_notifier = Some(notifier);
     }
 
     /// Set the guest memory used for Queue operations during device activation.
@@ -345,45 +338,26 @@ impl VirtioPciDevice {
         Arc::clone(&self.device)
     }
 
-    /// Deregister all ioeventfds from KVM and clear the tracking vec.
+    /// Deregister all backend queue-notification bindings.
     ///
     /// Called from both `Drop` and `reset_for_reconnect` to avoid code duplication.
-    /// No-op on non-Linux (no ioeventfd to release).
     #[cfg_attr(not(target_os = "linux"), allow(clippy::unused_self))]
-    fn deregister_all_ioeventfds(&mut self) {
-        #[cfg(target_os = "linux")]
-        if let Some(ref vm_fd) = self.vm_fd {
-            for (qi, evtfd) in self.registered_ioeventfds.iter().enumerate() {
-                let addr =
-                    self.bar0_gpa + NOTIFY_CFG_OFFSET + (qi as u64) * NOTIFY_OFF_MULTIPLIER as u64;
-                if let Err(e) = vm_fd.unregister_ioevent(
-                    evtfd,
-                    &kvm_ioctls::IoEventAddress::Mmio(addr),
-                    kvm_ioctls::NoDatamatch,
-                ) {
-                    log::warn!(
-                        "virtio-pci: failed to unregister ioeventfd for queue {qi} \
-                         at {addr:#x}: {e}"
-                    );
-                } else {
-                    log::debug!("virtio-pci: unregistered ioeventfd for queue {qi} at {addr:#x}");
-                }
-            }
+    fn deregister_all_queue_notifiers(&mut self) {
+        if let Some(notifier) = self.queue_notifier.as_mut() {
+            notifier.unregister_all();
         }
-        #[cfg(target_os = "linux")]
-        self.registered_ioeventfds.clear();
     }
 
     /// Reset transport state for console soft reconnect.
     ///
-    /// Deregisters all ioeventfds from KVM and clears activation state so that
+    /// Deregisters queue-notification bindings and clears activation state so that
     /// the guest driver's next `DRIVER_OK` write triggers a fresh `activate_device()`
-    /// call with new ioeventfds and a new vhost-user handshake.
+    /// call with new bindings and a new vhost-user handshake.
     ///
     /// Does NOT touch the PCIe config space, MSI-X table, or BAR addresses — the
     /// guest driver continues to see the same PCI device without re-enumeration.
     pub fn reset_for_reconnect(&mut self) {
-        self.deregister_all_ioeventfds();
+        self.deregister_all_queue_notifiers();
         self.activated = false;
         self.device_status = 0;
     }
@@ -667,31 +641,20 @@ impl VirtioPciDevice {
             }
         }
 
-        // Linux: register ioeventfds so queue kicks bypass VM exits (kernel
-        // signals the eventfd directly on the notify MMIO write). Only when
-        // the VMM has set vm_fd.
-        #[cfg(target_os = "linux")]
-        if let Some(ref vm_fd) = self.vm_fd {
+        // Register backend queue notifications when the backend provides an
+        // accelerated notify path. Linux/KVM uses this for ioeventfd.
+        if let Some(notifier) = self.queue_notifier.as_mut() {
             for (qi, kick) in kicks.iter().enumerate() {
                 let addr =
                     self.bar0_gpa + NOTIFY_CFG_OFFSET + (qi as u64) * NOTIFY_OFF_MULTIPLIER as u64;
-                if let Err(e) = vm_fd.register_ioevent(
-                    kick.as_eventfd(),
-                    &kvm_ioctls::IoEventAddress::Mmio(addr),
-                    kvm_ioctls::NoDatamatch,
-                ) {
+                if let Err(e) = notifier.register(qi, addr, kick) {
                     log::error!(
-                        "virtio-pci: failed to register ioeventfd for queue {qi} at {addr:#x}: {e}"
+                        "virtio-pci: failed to register queue notifier for queue {qi} at {addr:#x}: {e}"
                     );
                 } else {
-                    log::debug!("virtio-pci: registered ioeventfd for queue {qi} at {addr:#x}");
-                    // Store a clone so Drop can deregister this binding when the device
-                    // is removed (e.g., during crash recovery). Without deregistration the
-                    // KVM binding persists and a respawned device at the same BAR address
-                    // cannot re-register its ioeventfd (EEXIST).
-                    if let Ok(clone) = kick.as_eventfd().try_clone() {
-                        self.registered_ioeventfds.push(clone);
-                    }
+                    log::debug!(
+                        "virtio-pci: registered queue notifier for queue {qi} at {addr:#x}"
+                    );
                 }
             }
         }
@@ -775,14 +738,14 @@ impl VirtioPciDevice {
 }
 
 impl Drop for VirtioPciDevice {
-    /// Deregister all ioeventfds from KVM when the device is dropped.
+    /// Deregister all queue-notification bindings when the device is dropped.
     ///
     /// This is critical for crash recovery: when `hot_remove` drops the
-    /// `VirtioPciDevice`, this ensures the KVM ioeventfd bindings at the
-    /// device's BAR addresses are released. Without this, a respawned device
-    /// at the same BAR address cannot re-register its ioeventfds (EEXIST).
+    /// `VirtioPciDevice`, this ensures backend notify bindings at the device's
+    /// BAR addresses are released. Without this, a respawned device at the same
+    /// BAR address cannot re-register its bindings.
     fn drop(&mut self) {
-        self.deregister_all_ioeventfds();
+        self.deregister_all_queue_notifiers();
     }
 }
 
@@ -1240,8 +1203,7 @@ mod tests {
         let status = bar0_read_u8(&dev, CC_DEVICE_STATUS);
         assert!(status & STATUS_FEATURES_OK != 0);
 
-        // DRIVER_OK -- no KVM available in unit tests, but status should be set
-        // We can't test activate without VmFd, but status transition should work
+        // DRIVER_OK -- no backend notifier in unit tests, but status should be set.
         bar0_write_u8(
             &mut dev,
             CC_DEVICE_STATUS,

@@ -14,10 +14,5 @@ vmm-sys-util.workspace = true
 libc = "0.2"
 log.workspace = true
 
-# KVM ioeventfd-based queue notification is Linux-only. On macOS/HVF the
-# notify path is driven by the in-process MMIO bus (no ioeventfd).
-[target.'cfg(target_os = "linux")'.dependencies]
-kvm-ioctls.workspace = true
-
 [lints]
 workspace = true

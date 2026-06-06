@@ -208,7 +208,7 @@ Local verification:
 
 ## Stage 7 - Hide KVM handles from virtio-pci
 
-Status: pending.
+Status: complete.
 
 Goal: remove KVM `VmFd` leakage from the virtio-pci transport.
 
@@ -222,6 +222,22 @@ Success criteria:
 - KVM ioeventfd behavior is preserved.
 - non-Linux direct kick behavior is preserved.
 - Default local verification passes.
+
+Completed changes:
+- Replaced `VirtioPciDevice::set_vm_fd` and the internal `VmFd` field with a backend-owned `QueueNotifier` trait.
+- Removed the `kvm-ioctls` dependency from the `virtio-pci` crate.
+- Added Linux `KvmQueueNotifier` in `dillo-vm`; it registers and unregisters KVM ioeventfd bindings for virtio-pci queue notify BAR addresses.
+- Linux wires `KvmQueueNotifier` into the PCI console transport; non-Linux paths leave the notifier unset and keep direct kick signaling.
+- Source search confirms `virtio-pci` has no `VmFd`, `set_vm_fd`, `kvm_ioctls`, or `kvm-ioctls` references.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p virtio-pci --all-targets`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p virtio-pci -p dillo-platform -p dillo-vm --all-targets`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --all-targets`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 
 ## Stage 8 - Introduce compile-time `Vm` trait
 

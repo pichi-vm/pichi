@@ -1882,7 +1882,6 @@ checksum = "091f1f09cfbf2a78563b562e7a949465cce1aef63b6065645188d995162f8868"
 name = "virtio-pci"
 version = "0.1.0"
 dependencies = [
- "kvm-ioctls",
  "libc",
  "log",
  "virtio",

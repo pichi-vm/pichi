@@ -6,7 +6,7 @@
 //! [`VirtioDevice`](virtio::VirtioDevice) as a PCI device with all 5 virtio
 //! PCI capabilities (common cfg, notify, ISR, device cfg, PCI cfg access),
 //! MSI-X interrupts, device status FSM, feature negotiation, and
-//! ioeventfd-based queue notification.
+//! backend-provided queue notification.
 //!
 //! # Composition chain
 //!
@@ -36,4 +36,4 @@ pub(crate) mod capabilities;
 /// PCI transport implementation: device status FSM, feature negotiation, BAR I/O.
 pub mod transport;
 
-pub use transport::VirtioPciDevice;
+pub use transport::{QueueNotifier, VirtioPciDevice};
