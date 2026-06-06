@@ -272,7 +272,8 @@ Progress:
 - Added Linux backend-owned UART wired-IRQ setup; launch code no longer allocates serial irqfds directly.
 - Added backend-owned MMIO attach methods on Linux, macOS, and Windows; runtime launch paths no longer register MMIO devices directly.
 - Moved x86 syscon MMIO attachment into the Linux/Windows backend trait implementations instead of a freestanding launch helper.
-- Remaining work: extend the trait boundary across macOS wired IRQ and uniform vCPU seed/factory APIs on all supported backends.
+- Added a macOS backend-owned wired-IRQ capability for virtio-mmio; the transport no longer calls HVF `set_spi` directly.
+- Remaining work: extend the trait boundary across uniform vCPU seed/factory APIs on all supported backends.
 
 Local verification for current slice:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

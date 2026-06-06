@@ -5,10 +5,11 @@
 //!
 //! The register file is driven from the vCPU thread (via the MMIO bus); the
 //! backing [`VirtioDevice`]'s I/O worker runs on its own thread and raises the
-//! wired SPI through `dillo_hypervisor::set_spi` when it completes buffers.
-//! On `DRIVER_OK` the configured queues are handed to `activate`; a
-//! `QueueNotify` write kicks the matching queue's [`Kick`].
+//! injected wired IRQ when it completes buffers. On `DRIVER_OK` the configured
+//! queues are handed to `activate`; a `QueueNotify` write kicks the matching
+//! queue's [`Kick`].
 
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -48,6 +49,26 @@ const STATUS_DRIVER_OK: u32 = 0x4;
 /// InterruptStatus bit: used-buffer notification (a virtqueue completed).
 const INT_VRING: u32 = 0x1;
 
+#[derive(Clone)]
+pub(crate) struct WiredIrq {
+    intid: u32,
+    set_level: Arc<dyn Fn(u32, bool) + Send + Sync>,
+}
+
+impl WiredIrq {
+    pub(crate) fn new(intid: u32, set_level: Arc<dyn Fn(u32, bool) + Send + Sync>) -> Self {
+        Self { intid, set_level }
+    }
+
+    pub(crate) fn intid(&self) -> u32 {
+        self.intid
+    }
+
+    fn set(&self, level: bool) {
+        (self.set_level)(self.intid, level);
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct QueueCfg {
     max: u16,
@@ -81,7 +102,7 @@ pub(crate) struct VirtioMmio {
     /// read here on `INTERRUPT_STATUS`).
     int_status: std::sync::Arc<AtomicU32>,
     /// Wired GIC SPI number (from the DTB node's `interrupts`).
-    irq: u32,
+    irq: WiredIrq,
 }
 
 impl VirtioMmio {
@@ -89,7 +110,7 @@ impl VirtioMmio {
         window: MmioWindow,
         device: Box<dyn VirtioDevice>,
         int_status: std::sync::Arc<AtomicU32>,
-        irq: u32,
+        irq: WiredIrq,
         mem: GuestMemoryMmap,
     ) -> Self {
         let device_id = device.device_type();
@@ -197,7 +218,7 @@ impl VirtioMmio {
             INTERRUPT_ACK => {
                 self.int_status.fetch_and(!val, Ordering::SeqCst);
                 if self.int_status.load(Ordering::SeqCst) == 0 {
-                    let _ = dillo_hypervisor::set_spi(self.irq, false);
+                    self.irq.set(false);
                 }
             }
             STATUS => {
@@ -216,14 +237,15 @@ impl VirtioMmio {
     }
 
     /// An interrupt closure for the backing device: sets the used-buffer status
-    /// bit and asserts the wired SPI. Clone of `int_status`/`irq` so it can run
+    /// bit and asserts the wired IRQ. Clone of `int_status`/`irq` so it can run
     /// on the device's worker thread.
-    pub(crate) fn interrupt(int_status: std::sync::Arc<AtomicU32>, irq: u32) -> virtio::Interrupt {
+    pub(crate) fn interrupt(
+        int_status: std::sync::Arc<AtomicU32>,
+        irq: WiredIrq,
+    ) -> virtio::Interrupt {
         virtio::Interrupt::from_fn(move || {
             int_status.fetch_or(INT_VRING, Ordering::SeqCst);
-            if let Err(e) = dillo_hypervisor::set_spi(irq, true) {
-                log::warn!("virtio-mmio SPI {irq} inject failed: {e}");
-            }
+            irq.set(true);
         })
     }
 }

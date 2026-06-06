@@ -690,15 +690,20 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // 7c. virtio-mmio (F6): bind a virtio-console to the first transport slot
     //     so a microVM (no PCIe) still gets an hvc console. Remaining slots stay
     //     empty — the guest reads DeviceID 0 (unmapped MMIO ⇒ 0) and skips them.
-    //     The wired GIC SPI is injected via dillo_hypervisor::set_spi.
+    //     The wired GIC SPI is injected through a backend-owned IRQ capability.
     if let Some(slot) = platform.virtio_mmio.first() {
         let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let irq = slot.irq;
+        let irq = vm.wired_irq(slot.irq);
+        let interrupt_irq = irq.clone();
         let is = Arc::clone(&int_status);
-        let console: Box<dyn virtio::VirtioDevice> =
-            Box::new(dillo_virtio_console::VirtioConsole::new(Arc::new(
-                move |_vector| Some(virtio_mmio::VirtioMmio::interrupt(Arc::clone(&is), irq)),
-            )));
+        let console: Box<dyn virtio::VirtioDevice> = Box::new(
+            dillo_virtio_console::VirtioConsole::new(Arc::new(move |_vector| {
+                Some(virtio_mmio::VirtioMmio::interrupt(
+                    Arc::clone(&is),
+                    interrupt_irq.clone(),
+                ))
+            })),
+        );
         let guest_mem = vm.guest_memory()?;
         let transport = Arc::new(virtio_mmio::VirtioMmio::new(
             MmioWindow {
@@ -708,14 +713,14 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             },
             console,
             Arc::clone(&int_status),
-            irq,
+            irq.clone(),
             guest_mem,
         ));
         vm.attach_mmio(&mut mmio_bus, transport);
         log::info!(
             "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
             slot.base,
-            irq,
+            irq.intid(),
             platform.virtio_mmio.len()
         );
     }

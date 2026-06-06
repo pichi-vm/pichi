@@ -16,6 +16,7 @@ use vm_memory::GuestMemoryMmap;
 use crate::{
     RunError, hvf_devices,
     mmio_bus::{MmioBus, MmioDevice},
+    virtio_mmio,
 };
 #[cfg(target_os = "windows")]
 use crate::{
@@ -193,6 +194,8 @@ pub(crate) trait BackendVm {
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
     where
         D: MmioDevice + 'static;
+
+    fn wired_irq(&self, intid: u32) -> virtio_mmio::WiredIrq;
 }
 
 #[cfg(target_os = "macos")]
@@ -231,6 +234,17 @@ impl BackendVm for dillo_hypervisor::Vm {
         D: MmioDevice + 'static,
     {
         bus.register_device(device);
+    }
+
+    fn wired_irq(&self, intid: u32) -> virtio_mmio::WiredIrq {
+        virtio_mmio::WiredIrq::new(
+            intid,
+            Arc::new(|intid, level| {
+                if let Err(e) = dillo_hypervisor::set_spi(intid, level) {
+                    log::warn!("virtio-mmio SPI {intid} inject failed: {e}");
+                }
+            }),
+        )
     }
 }
 
