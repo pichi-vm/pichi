@@ -340,6 +340,29 @@ impl Machine {
             reboot,
         })
     }
+
+    /// Declared non-RAM regions as `(base, size)` tuples for placement code.
+    pub fn placement_regions(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.plan
+            .regions()
+            .iter()
+            .filter(|region| region.kind != RegionKind::Ram)
+            .map(|region| (region.gpa, region.size))
+    }
+
+    /// Address-space watermark used by HVF: with PCIe present, the BAR
+    /// burned-buddy top; otherwise the highest declared region end.
+    pub fn min_addr_space_bits(&self) -> u32 {
+        let space_top = if self.has_pcie {
+            self.pcie.mmio_base + 2 * self.pcie.mmio_size
+        } else {
+            self.placement_regions()
+                .map(|(base, size)| base.saturating_add(size))
+                .max()
+                .unwrap_or(1 << 20)
+        };
+        space_top.max(2).next_power_of_two().ilog2()
+    }
 }
 
 // ── self-routing device constructors ──────────────────────────────────
@@ -1064,6 +1087,24 @@ mod tests {
 
         // Regions: GICD, GICR, MSI frame, serial, virtio-mmio, ECAM, PCI MMIO.
         assert_eq!(m.plan.regions().len(), 7);
+        assert_eq!(
+            m.placement_regions().collect::<Vec<_>>(),
+            vec![
+                (GICD_BASE, 0x1_0000),
+                (GICR_BASE, 0x200_0000),
+                (V2M_BASE, 0x1_0000),
+                (SERIAL_BASE, 0x1000),
+                (VIRTIO_BASE, 0x200),
+                (ECAM_BASE, 0x10_0000),
+                (PCI_MMIO_BASE, 0x03F0_0000),
+            ]
+        );
+        assert_eq!(
+            m.min_addr_space_bits(),
+            (PCI_MMIO_BASE + 2 * 0x03F0_0000)
+                .next_power_of_two()
+                .ilog2()
+        );
     }
 
     #[test]
@@ -1107,6 +1148,10 @@ mod tests {
                 .map(|slot| slot.irq)
                 .collect::<Vec<_>>(),
             vec![16, 17, 18, 19]
+        );
+        assert_eq!(
+            m.min_addr_space_bits(),
+            (0x0A42_0000u64 + 0x200).next_power_of_two().ilog2()
         );
         // GICD, GICR, MSI frame, serial, four virtio-mmio (1 base + 3 added).
         assert_eq!(m.plan.regions().len(), 8);

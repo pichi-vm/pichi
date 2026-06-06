@@ -625,18 +625,10 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         .values()
         .map(|s| (s.gpa, s.virtual_size))
         .collect();
-    let plan = placement::plan_around_regions(
-        &must_cover,
-        memory_mib,
-        machine
-            .plan
-            .regions()
-            .iter()
-            .map(|region| (region.gpa, region.size)),
-    )
-    .map_err(|source| RunError::Placement {
-        source: source.into(),
-    })?;
+    let plan = placement::plan_around_regions(&must_cover, memory_mib, machine.placement_regions())
+        .map_err(|source| RunError::Placement {
+            source: source.into(),
+        })?;
     let total_backed: u64 = plan.memslots.iter().map(|r| r.size).sum();
     log::info!(
         "memslots: {} region(s), {} bytes",
@@ -670,17 +662,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         msi_intid_base: gic.spi_base,
         msi_intid_count: gic.spi_count,
     };
-    let space_top = if platform.has_pcie {
-        platform.pcie.mmio_base + 2 * platform.pcie.mmio_size
-    } else {
-        platform
-            .device_regions
-            .iter()
-            .map(|(b, s)| b + s)
-            .max()
-            .unwrap_or(1 << 20)
-    };
-    let min_addr_space_bits = space_top.max(2).next_power_of_two().ilog2();
+    let min_addr_space_bits = machine.min_addr_space_bits();
     let mut vm = Vm::new(&gic_params, min_addr_space_bits)?;
     let max_vcpus = vm.max_vcpus()?;
     if vcpus > max_vcpus {
