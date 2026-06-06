@@ -28,8 +28,8 @@ struct Region {
 }
 
 pub(crate) fn run(pmi_path: &Path) -> Result<()> {
-    let bytes = std::fs::read(pmi_path)
-        .with_context(|| format!("read PMI: {}", pmi_path.display()))?;
+    let bytes =
+        std::fs::read(pmi_path).with_context(|| format!("read PMI: {}", pmi_path.display()))?;
     let pe = goblin::pe::PE::parse(&bytes).context("parse PMI as PE")?;
 
     let mut regions: Vec<Region> = Vec::new();
@@ -74,7 +74,11 @@ pub(crate) fn run(pmi_path: &Path) -> Result<()> {
                     continue;
                 }
                 regions.push(Region {
-                    name: if i == 0 { cname.clone() } else { format!("{cname}#{i}") },
+                    name: if i == 0 {
+                        cname.clone()
+                    } else {
+                        format!("{cname}#{i}")
+                    },
                     base,
                     size,
                     kind: Kind::Device,

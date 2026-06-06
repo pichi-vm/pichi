@@ -38,11 +38,12 @@ mod pe;
 mod planner;
 mod tatu;
 
-// tatu ELFs come from the artifact dependencies declared in Cargo.toml.
-// Cargo injects `CARGO_BIN_FILE_<DEP>_<bin>` for each; the dep aliases are
-// `tatu-x86_64` / `tatu-aarch64` and the bin is `tatu`.
-pub(crate) const TATU_X86_64: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_TATU_X86_64_tatu"));
-pub(crate) const TATU_AARCH64: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_TATU_AARCH64_tatu"));
+// The native-arch tatu ELF comes from the artifact dependency declared in
+// Cargo.toml. Cargo injects `CARGO_BIN_FILE_<DEP>_<bin>` for it.
+#[cfg(target_arch = "x86_64")]
+pub(crate) const TATU_X86_64: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_TATU_tatu"));
+#[cfg(target_arch = "aarch64")]
+pub(crate) const TATU_AARCH64: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_TATU_tatu"));
 
 use std::path::PathBuf;
 use std::process::ExitCode;

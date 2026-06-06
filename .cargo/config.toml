@@ -1,7 +1,6 @@
-# Artifact dependencies (`artifact = "bin"`) are still unstable; the two-target
-# `tatu` deps in Cargo.toml additionally need RFC 3176 "multidep", which lives
-# in rust-lang/cargo#17067. Build/run arma with a cargo that includes that PR
-# until it lands in nightly, after which this flag (and file) can be dropped.
+# Artifact dependencies (`artifact = "bin"`) are still unstable. arma uses one
+# native-arch tatu artifact dependency per host, and dillo tests use snuffler as
+# a guest artifact, so stock nightly Cargo only needs `-Z bindeps`.
 [unstable]
 bindeps = true
 

@@ -3,12 +3,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
-use crate::{
-    base_dtb, bootinfo, initrd, kconfig, kernel, manifest, pe, planner, tatu, TATU_AARCH64,
-    TATU_X86_64,
-};
+use crate::{base_dtb, bootinfo, initrd, kconfig, kernel, manifest, pe, planner, tatu};
 
 /// Resolve `(mmio_slots, pci_slots)` (device-model.md §6 Slot composition).
 /// With `--config`, infer/validate against kernel support; without it, honor
@@ -94,10 +91,7 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
     let initrd_size = initrd_materialized.as_ref().map(|v| v.len() as u64);
 
     // ---- Step 4: select embedded tatu ----
-    let tatu_elf: &[u8] = match arch {
-        kernel::Arch::X86_64 => TATU_X86_64,
-        kernel::Arch::Aarch64 => TATU_AARCH64,
-    };
+    let tatu_elf = native_tatu_elf(arch)?;
 
     // ---- Step 5: parse tatu ELF ----
     let tatu_img = tatu::parse(tatu_elf, arch).context("parse embedded tatu ELF")?;
@@ -226,6 +220,35 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
 
     atomic_write(&args.output_path, &pe_bytes)?;
     Ok(())
+}
+
+fn native_tatu_elf(arch: kernel::Arch) -> Result<&'static [u8]> {
+    match arch {
+        #[cfg(target_arch = "x86_64")]
+        kernel::Arch::X86_64 => Ok(crate::TATU_X86_64),
+        #[cfg(target_arch = "aarch64")]
+        kernel::Arch::Aarch64 => Ok(crate::TATU_AARCH64),
+        other => bail!(
+            "arma is temporarily native-arch-only: this host can build {native}, \
+             but the input kernel is {other:?}",
+            native = native_arch_name()
+        ),
+    }
+}
+
+fn native_arch_name() -> &'static str {
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64"
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64"
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        "unsupported"
+    }
 }
 
 fn serial_earlycon_cmdline(serial: bool, cmdline: &str) -> String {

@@ -9,7 +9,11 @@ use pmi::vm::{Action, FillKind, Spec, vcpu};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-use common::{build_pmi, find_pmi_vm, synthesize_arm64_image, synthesize_bzimage};
+#[cfg(target_arch = "aarch64")]
+use common::synthesize_arm64_image;
+#[cfg(target_arch = "x86_64")]
+use common::synthesize_bzimage;
+use common::{build_pmi, find_pmi_vm};
 
 // ---------------------------------------------------------------------------
 // Per-arch fixtures (built once per test).
@@ -20,6 +24,7 @@ struct Fixture {
     pmi_bytes: Vec<u8>,
 }
 
+#[cfg(target_arch = "x86_64")]
 fn build_x86_fixture() -> Fixture {
     let tmp = TempDir::new().unwrap();
     let kernel = tmp.path().join("kernel");
@@ -36,6 +41,7 @@ fn build_x86_fixture() -> Fixture {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 fn build_aarch64_fixture() -> Fixture {
     let tmp = TempDir::new().unwrap();
     let kernel = tmp.path().join("Image");
@@ -54,6 +60,7 @@ fn build_aarch64_fixture() -> Fixture {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn pe_validity_x86() {
     let f = build_x86_fixture();
     assert_eq!(&f.pmi_bytes[..2], b"MZ");
@@ -67,6 +74,7 @@ fn pe_validity_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn pe_validity_aarch64() {
     let f = build_aarch64_fixture();
     assert_eq!(&f.pmi_bytes[..2], b"MZ");
@@ -80,6 +88,7 @@ fn pe_validity_aarch64() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn pmi_core_conformance_x86() {
     let f = build_x86_fixture();
     // Use the arch-specific decoder path directly to avoid the
@@ -122,6 +131,7 @@ fn pmi_core_conformance_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn pmi_core_conformance_aarch64() {
     let f = build_aarch64_fixture();
     let pe = goblin::pe::PE::parse(&f.pmi_bytes).unwrap();
@@ -182,12 +192,14 @@ fn check_granularity(pmi_bytes: &[u8]) {
 }
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn granularity_rules_x86() {
     let f = build_x86_fixture();
     check_granularity(&f.pmi_bytes);
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn granularity_rules_aarch64() {
     let f = build_aarch64_fixture();
     check_granularity(&f.pmi_bytes);
@@ -198,6 +210,7 @@ fn granularity_rules_aarch64() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn cbor_round_trip_x86() {
     let f = build_x86_fixture();
     let (off, size) = find_pmi_vm(&f.pmi_bytes);
@@ -214,6 +227,7 @@ fn cbor_round_trip_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn cbor_round_trip_aarch64() {
     let f = build_aarch64_fixture();
     let (off, size) = find_pmi_vm(&f.pmi_bytes);
@@ -231,6 +245,7 @@ fn cbor_round_trip_aarch64() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn manifest_correctness_x86() {
     let f = build_x86_fixture();
     let (off, size) = find_pmi_vm(&f.pmi_bytes);
@@ -251,6 +266,7 @@ fn manifest_correctness_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn manifest_correctness_aarch64() {
     let f = build_aarch64_fixture();
     let (off, size) = find_pmi_vm(&f.pmi_bytes);
@@ -330,12 +346,14 @@ fn check_tatu_bootinfo_header(pmi_bytes: &[u8]) {
 }
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn tatu_bootinfo_header_x86() {
     let f = build_x86_fixture();
     check_tatu_bootinfo_header(&f.pmi_bytes);
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn tatu_bootinfo_header_aarch64() {
     let f = build_aarch64_fixture();
     check_tatu_bootinfo_header(&f.pmi_bytes);
@@ -346,6 +364,7 @@ fn tatu_bootinfo_header_aarch64() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn tatu_sections_present_x86() {
     let f = build_x86_fixture();
     let pe = goblin::pe::PE::parse(&f.pmi_bytes).unwrap();
@@ -366,6 +385,7 @@ fn tatu_sections_present_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn tatu_sections_present_aarch64() {
     let f = build_aarch64_fixture();
     let pe = goblin::pe::PE::parse(&f.pmi_bytes).unwrap();
@@ -389,6 +409,7 @@ fn tatu_sections_present_aarch64() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn base_dtb_parses_x86() {
     let f = build_x86_fixture();
     let pe = goblin::pe::PE::parse(&f.pmi_bytes).unwrap();
@@ -404,6 +425,7 @@ fn base_dtb_parses_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn base_dtb_parses_aarch64() {
     let f = build_aarch64_fixture();
     let pe = goblin::pe::PE::parse(&f.pmi_bytes).unwrap();
@@ -423,6 +445,7 @@ fn base_dtb_parses_aarch64() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn vcpu_register_validity_x86() {
     let f = build_x86_fixture();
     let (off, size) = find_pmi_vm(&f.pmi_bytes);
@@ -447,6 +470,7 @@ fn vcpu_register_validity_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn vcpu_register_validity_aarch64() {
     let f = build_aarch64_fixture();
     let (off, size) = find_pmi_vm(&f.pmi_bytes);
@@ -477,6 +501,7 @@ fn vcpu_register_validity_aarch64() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn determinism_two_builds_same_inputs_same_output() {
     let tmp = TempDir::new().unwrap();
     let kernel = tmp.path().join("kernel");
@@ -503,6 +528,7 @@ fn determinism_two_builds_same_inputs_same_output() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(any())]
 fn single_binary_emits_both_arch_pmis() {
     // §15.3: a single arma binary builds PMIs for both x86_64 and
     // aarch64. We already exercise both fixtures elsewhere; this test

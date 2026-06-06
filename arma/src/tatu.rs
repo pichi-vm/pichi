@@ -166,10 +166,11 @@ pub(crate) fn parse(bytes: &[u8], arch: Arch) -> Result<TatuImage, TatuError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TATU_AARCH64, TATU_X86_64};
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn parses_x86_64_tatu_elf() {
+        use crate::TATU_X86_64;
         let img = parse(TATU_X86_64, Arch::X86_64).unwrap();
         // Entry MUST be 0xFFFFFFF0 per tatu/x86_64.ld ENTRY(reset).
         assert_eq!(img.entry, 0xFFFF_FFF0);
@@ -194,7 +195,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "aarch64")]
     fn parses_aarch64_tatu_elf() {
+        use crate::TATU_AARCH64;
         let img = parse(TATU_AARCH64, Arch::Aarch64).unwrap();
         // Entry MUST be inside .tatu.text (which contains the
         // aarch64 reset stub from .tatu.reset, collapsed in by
@@ -219,7 +222,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn reserved_covers_every_section() {
+        use crate::TATU_X86_64;
         let img = parse(TATU_X86_64, Arch::X86_64).unwrap();
         let ranges: Vec<_> = img.reserved().collect();
         assert_eq!(ranges.len(), img.sections.len());
@@ -236,7 +241,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn rejects_wrong_arch() {
+        use crate::TATU_X86_64;
         let r = parse(TATU_X86_64, Arch::Aarch64);
         assert!(matches!(r, Err(TatuError::WrongArch(_, _))));
     }
@@ -246,7 +253,9 @@ mod tests {
     /// goblin's ELF header / section-header parse still succeeds; our
     /// own `end > bytes.len()` check fires.
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn rejects_truncated_section() {
+        use crate::TATU_X86_64;
         let mut buf = TATU_X86_64.to_vec();
         let elf = Elf::parse(&buf).unwrap();
 
@@ -280,7 +289,9 @@ mod tests {
     /// Mutate a copy of the embedded x86 ELF to rename `.tatu.bootinfo`
     /// in the string table so the bootinfo lookup fails.
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn rejects_missing_bootinfo_section() {
+        use crate::TATU_X86_64;
         let mut buf = TATU_X86_64.to_vec();
         let elf = Elf::parse(&buf).unwrap();
 

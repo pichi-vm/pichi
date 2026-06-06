@@ -8,11 +8,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-  # Nightly pinned to the patched cargo's version (no floating-channel re-sync).
   NIGHTLY: nightly-2026-06-04
-  # Patched cargo: RFC 3176 multidep (rust-lang/cargo#17067) that arma's
-  # two-target tatu artifact deps need until it lands in nightly.
-  CARGO_PR_SHA: 0294a8367512e4eecf69c70e8ba69ba6f1eb1514
 
 # Supported platforms (build + real guest boot, all required): Linux x86_64
 # (KVM), Windows x86_64 (WHP), and macOS arm64 (HVF on a bare-metal
@@ -45,49 +41,16 @@ jobs:
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
           rustup default "$NIGHTLY"
-          # arma always emits both-arch PMIs (both tatu none targets); snuffler
-          # is cross-built for the guest musl triple matching this host's arch.
+          # arma embeds native-arch tatu; snuffler is cross-built for the guest
+          # musl triple matching this host's arch.
           rustup target add x86_64-unknown-none aarch64-unknown-none "${{ matrix.guest_musl }}"
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Cache patched cargo
-        id: cargo-bin
-        uses: actions/cache@v5.0.5
-        with:
-          path: cargo-bindeps
-          key: cargo-bindeps-${{ matrix.name }}-${{ env.CARGO_PR_SHA }}
-
-      - name: Build patched cargo
-        if: steps.cargo-bin.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config cmake
-          fi
-          git clone --depth 200 https://github.com/npmccallum/cargo "$RUNNER_TEMP/cargo-src"
-          git -C "$RUNNER_TEMP/cargo-src" checkout "$CARGO_PR_SHA"
-          (cd "$RUNNER_TEMP/cargo-src" && cargo build --release)
-          mkdir -p cargo-bindeps
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp "$RUNNER_TEMP/cargo-src/target/release/cargo.exe" cargo-bindeps/cargo.exe
-          else
-            cp "$RUNNER_TEMP/cargo-src/target/release/cargo" cargo-bindeps/cargo
-          fi
-
-      - name: Resolve cargo path
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            echo "CARGO=$PWD/cargo-bindeps/cargo.exe" >> "$GITHUB_ENV"
-          else
-            echo "CARGO=$PWD/cargo-bindeps/cargo" >> "$GITHUB_ENV"
-          fi
-
       - name: Versions
         shell: bash
         run: |
-          "$CARGO" --version
+          cargo --version
           rustc --version
 
       - name: Enable KVM (Linux)
@@ -115,7 +78,7 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          "$CARGO" test --workspace
+          cargo test --workspace
 
       - name: Test (Windows, workspace minus Linux-only crates)
         if: runner.os == 'Windows'
@@ -123,7 +86,7 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          "$CARGO" test --workspace --exclude vhost-backend --exclude snuffler
+          cargo test --workspace --exclude vhost-backend --exclude snuffler
 
       - name: Test (macOS, workspace minus Linux-only crates)
         if: runner.os == 'macOS'
@@ -131,7 +94,7 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          "$CARGO" test --workspace --exclude vhost-backend --exclude snuffler
+          cargo test --workspace --exclude vhost-backend --exclude snuffler
 
       - name: Reserve hugepages for guest RAM (Linux/KVM)
         if: runner.os == 'Linux'
@@ -148,4 +111,4 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          "$CARGO" test -p dillo --features vm-tests -- --test-threads=1 --nocapture
+          cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture

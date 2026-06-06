@@ -37,7 +37,8 @@ fn missing_kernel_file_fails_with_useful_message() {
         "--cmdline".as_ref(),
         "console=ttyS0".as_ref(),
         "--profile".as_ref(),
-        "x86-64-v3".as_ref(),        out_pmi.as_os_str(),
+        "x86-64-v3".as_ref(),
+        out_pmi.as_os_str(),
     ]);
     assert!(
         stderr.starts_with("arma:"),
@@ -64,7 +65,8 @@ fn malformed_kernel_fails_with_unrecognized() {
         "--cmdline".as_ref(),
         "console=ttyS0".as_ref(),
         "--profile".as_ref(),
-        "x86-64-v3".as_ref(),        out_pmi.as_os_str(),
+        "x86-64-v3".as_ref(),
+        out_pmi.as_os_str(),
     ]);
     assert!(
         stderr.contains("kernel format") || stderr.contains("not recognized"),
@@ -87,7 +89,8 @@ fn unwritable_output_path_fails() {
         "--cmdline".as_ref(),
         "console=ttyS0".as_ref(),
         "--profile".as_ref(),
-        "x86-64-v3".as_ref(),        unwritable.as_os_str(),
+        "x86-64-v3".as_ref(),
+        unwritable.as_os_str(),
     ]);
     // The atomic_write step tries the .tmp first; either tmp creation
     // or the rename fails. Both surface as `arma: ...` errors.

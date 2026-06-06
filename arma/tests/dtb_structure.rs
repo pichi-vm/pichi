@@ -14,7 +14,11 @@ use std::fs;
 use devtree::{NodeView, PropertyView, Tree, TreeView};
 use tempfile::TempDir;
 
-use common::{build_pmi, synthesize_arm64_image, synthesize_bzimage};
+use common::build_pmi;
+#[cfg(target_arch = "aarch64")]
+use common::synthesize_arm64_image;
+#[cfg(target_arch = "x86_64")]
+use common::synthesize_bzimage;
 
 fn dtb_bytes_from(pmi_bytes: &[u8]) -> Vec<u8> {
     let pe = goblin::pe::PE::parse(pmi_bytes).unwrap();
@@ -28,6 +32,7 @@ fn dtb_bytes_from(pmi_bytes: &[u8]) -> Vec<u8> {
     pmi_bytes[off..off + len].to_vec()
 }
 
+#[cfg(target_arch = "x86_64")]
 fn build_x86(cmdline: &str, with_initrd: bool) -> (TempDir, Vec<u8>) {
     let tmp = TempDir::new().unwrap();
     let kernel = tmp.path().join("kernel");
@@ -48,6 +53,7 @@ fn build_x86(cmdline: &str, with_initrd: bool) -> (TempDir, Vec<u8>) {
     (tmp, bytes)
 }
 
+#[cfg(target_arch = "aarch64")]
 fn build_aarch64(cmdline: &str) -> (TempDir, Vec<u8>) {
     let tmp = TempDir::new().unwrap();
     let kernel = tmp.path().join("Image");
@@ -75,6 +81,7 @@ fn prop_u32s<N: NodeView>(node: &N, name: &str) -> Option<Vec<u32>> {
 }
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn chosen_carries_exact_cmdline_x86() {
     let (_tmp, pmi) = build_x86("ro single CUSTOM_TOKEN", true);
     let dtb = dtb_bytes_from(&pmi);
@@ -87,6 +94,7 @@ fn chosen_carries_exact_cmdline_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn chosen_carries_exact_cmdline_aarch64() {
     let (_tmp, pmi) = build_aarch64("aarch64-mark another-token");
     let dtb = dtb_bytes_from(&pmi);
@@ -99,6 +107,7 @@ fn chosen_carries_exact_cmdline_aarch64() {
 }
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn chosen_initrd_range_is_consistent_x86() {
     let (_tmp, pmi) = build_x86("ro", true);
     let dtb = dtb_bytes_from(&pmi);
@@ -131,6 +140,7 @@ fn chosen_initrd_range_is_consistent_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn chosen_omits_initrd_when_none_supplied() {
     let (_tmp, pmi) = build_aarch64("ro");
     let dtb = dtb_bytes_from(&pmi);
@@ -141,6 +151,7 @@ fn chosen_omits_initrd_when_none_supplied() {
 }
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn base_has_no_cpus_node_x86() {
     let (_tmp, pmi) = build_x86("ro", false);
     let dtb = dtb_bytes_from(&pmi);
@@ -154,6 +165,7 @@ fn base_has_no_cpus_node_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn base_has_no_cpus_node_aarch64() {
     let (_tmp, pmi) = build_aarch64("ro");
     let dtb = dtb_bytes_from(&pmi);
@@ -167,6 +179,7 @@ fn base_has_no_cpus_node_aarch64() {
 }
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn x86_intc_two_nodes_lapic_and_ioapic() {
     let (_tmp, pmi) = build_x86("ro", false);
     let dtb = dtb_bytes_from(&pmi);
@@ -209,6 +222,7 @@ fn x86_intc_two_nodes_lapic_and_ioapic() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn aarch64_psci_present_at_root() {
     let (_tmp, pmi) = build_aarch64("ro");
     let dtb = dtb_bytes_from(&pmi);
@@ -219,6 +233,7 @@ fn aarch64_psci_present_at_root() {
 }
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn pci_host_bridge_present_x86() {
     let (_tmp, pmi) = build_x86("ro", false);
     let dtb = dtb_bytes_from(&pmi);
@@ -235,6 +250,7 @@ fn pci_host_bridge_present_x86() {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn pci_host_bridge_present_aarch64() {
     let (_tmp, pmi) = build_aarch64("ro");
     let dtb = dtb_bytes_from(&pmi);
@@ -267,7 +283,9 @@ fn emitted_dtb_passes_dt_validate() {
         return;
     }
     let cases = [
+        #[cfg(target_arch = "aarch64")]
         ("aarch64", build_aarch64("console=ttyS0")),
+        #[cfg(target_arch = "x86_64")]
         ("x86_64", build_x86("console=ttyS0", false)),
     ];
     for (name, (_tmp, pmi)) in cases {

@@ -238,12 +238,13 @@ fn aarch64_vcpu(pc: u64) -> vcpu::aarch64::CpuState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TATU_X86_64;
     use crate::tatu::parse as parse_tatu;
     use ciborium::de::from_reader;
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn x86_manifest_round_trips_via_strict_decoder() {
+        use crate::TATU_X86_64;
         let tatu = parse_tatu(TATU_X86_64, Arch::X86_64).unwrap();
         let cbor = build_pmi_vm(Arch::X86_64, &tatu, true, "x86-64-v3").unwrap();
         let decoded: Spec<vcpu::x86_64::CpuState> =
@@ -269,6 +270,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "aarch64")]
     fn aarch64_manifest_pc_matches_tatu_entry() {
         use crate::TATU_AARCH64;
         let tatu = parse_tatu(TATU_AARCH64, Arch::Aarch64).unwrap();

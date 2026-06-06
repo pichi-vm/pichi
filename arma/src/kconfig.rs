@@ -154,7 +154,12 @@ fn isa_levels(arch: Arch) -> &'static [&'static str] {
     match arch {
         Arch::X86_64 => &["x86-64-v1", "x86-64-v2", "x86-64-v3", "x86-64-v4"],
         Arch::Aarch64 => &[
-            "armv8.0-a", "armv8.1-a", "armv8.2-a", "armv8.3-a", "armv8.4-a", "armv8.5-a",
+            "armv8.0-a",
+            "armv8.1-a",
+            "armv8.2-a",
+            "armv8.3-a",
+            "armv8.4-a",
+            "armv8.5-a",
             "armv8.6-a",
         ],
     }
@@ -241,7 +246,8 @@ mod tests {
         use flate2::{Compression, write::GzEncoder};
         use std::io::Write;
         let mut e = GzEncoder::new(Vec::new(), Compression::fast());
-        e.write_all(b"CONFIG_PCI=y\nCONFIG_VIRTIO_MMIO=y\n").unwrap();
+        e.write_all(b"CONFIG_PCI=y\nCONFIG_VIRTIO_MMIO=y\n")
+            .unwrap();
         let gz = e.finish().unwrap();
         // Embed between markers with junk on both sides (as in a real image).
         let mut kernel = vec![0xABu8; 64];
@@ -274,11 +280,17 @@ mod tests {
             "x86-64-v3"
         );
         // An explicit higher profile is kept (operator may require more).
-        assert_eq!(raise_to_floor("x86-64-v4", "x86-64-v2", Arch::X86_64), "x86-64-v4");
+        assert_eq!(
+            raise_to_floor("x86-64-v4", "x86-64-v2", Arch::X86_64),
+            "x86-64-v4"
+        );
         // aarch64 stock floor is the baseline; default stays.
         let a = cfg("CONFIG_ARM64_LSE_ATOMICS=y\n");
         assert_eq!(a.isa_floor(Arch::Aarch64), "armv8.0-a");
         // An unrecognized explicit profile is passed through unchanged.
-        assert_eq!(raise_to_floor("vendor-custom", "x86-64-v3", Arch::X86_64), "vendor-custom");
+        assert_eq!(
+            raise_to_floor("vendor-custom", "x86-64-v3", Arch::X86_64),
+            "vendor-custom"
+        );
     }
 }

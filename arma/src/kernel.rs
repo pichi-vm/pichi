@@ -61,7 +61,9 @@ pub(crate) enum KernelError {
     #[error("bzImage kernel_alignment ({0:#x}) is not a non-zero power of two")]
     KernelAlignmentInvalid(u32),
 
-    #[error("EFI-zboot payload out of bounds (offset {offset:#x}, size {size:#x}, file {file} bytes)")]
+    #[error(
+        "EFI-zboot payload out of bounds (offset {offset:#x}, size {size:#x}, file {file} bytes)"
+    )]
     ZbootMalformed {
         offset: usize,
         size: usize,

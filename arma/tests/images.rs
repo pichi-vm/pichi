@@ -21,11 +21,17 @@ use common::{arma_bin, find_pmi_vm};
 const GRAN: u64 = 2 * 1024 * 1024;
 const ALPINE: &str = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases";
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Arch {
     X86_64,
     Aarch64,
 }
+
+#[cfg(target_arch = "x86_64")]
+const NATIVE_ARCH: Arch = Arch::X86_64;
+#[cfg(target_arch = "aarch64")]
+const NATIVE_ARCH: Arch = Arch::Aarch64;
 
 impl Arch {
     fn kernel_url(self) -> String {
@@ -125,11 +131,14 @@ fn build(arch: Arch, case: Case, dir: &Path) -> Vec<u8> {
 /// granularity contract), and a parseable `.pmi.vm` manifest.
 #[rstest]
 fn builds_well_formed_pmi(
-    #[values(Arch::X86_64, Arch::Aarch64)] arch: Arch,
     #[values(false, true)] serial: bool,
     #[values(false, true)] initrd: bool,
-    #[values((None, None), (Some(4), Some(2)), (Some(8), Some(0)))] slots: (Option<u32>, Option<u32>),
+    #[values((None, None), (Some(4), Some(2)), (Some(8), Some(0)))] slots: (
+        Option<u32>,
+        Option<u32>,
+    ),
 ) {
+    let arch = NATIVE_ARCH;
     let tmp = TempDir::new().unwrap();
     let case = Case {
         serial,
@@ -162,25 +171,22 @@ fn builds_well_formed_pmi(
     let (off, size) = find_pmi_vm(&bytes);
     let manifest = &bytes[off..off + size];
     let actions = match arch {
-        Arch::X86_64 => {
-            from_reader::<Spec<vcpu::x86_64::CpuState>, _>(manifest)
-                .expect("decode x86 .pmi.vm")
-                .actions
-                .len()
-        }
-        Arch::Aarch64 => {
-            from_reader::<Spec<vcpu::aarch64::CpuState>, _>(manifest)
-                .expect("decode arm .pmi.vm")
-                .actions
-                .len()
-        }
+        Arch::X86_64 => from_reader::<Spec<vcpu::x86_64::CpuState>, _>(manifest)
+            .expect("decode x86 .pmi.vm")
+            .actions
+            .len(),
+        Arch::Aarch64 => from_reader::<Spec<vcpu::aarch64::CpuState>, _>(manifest)
+            .expect("decode arm .pmi.vm")
+            .actions
+            .len(),
     };
     assert!(actions > 0, "manifest has no actions");
 }
 
 /// Same inputs → byte-identical PMI (arma is a deterministic translator).
 #[rstest]
-fn deterministic(#[values(Arch::X86_64, Arch::Aarch64)] arch: Arch) {
+fn deterministic() {
+    let arch = NATIVE_ARCH;
     let tmp = TempDir::new().unwrap();
     let case = Case {
         serial: true,

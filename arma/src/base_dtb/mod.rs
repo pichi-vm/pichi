@@ -281,7 +281,7 @@ mod tests {
             .expect("/pcie@a200000 present");
         let mp = pci.property("msi-parent").expect("msi-parent");
         assert_eq!(mp.as_ref(), &[0, 0, 0, 3]); // V2M_PHANDLE
-                                                // window from inputs: base 2^35 (32 GiB), size 2^34 (16 GiB).
+        // window from inputs: base 2^35 (32 GiB), size 2^34 (16 GiB).
         let ranges = pci.property("ranges").expect("ranges");
         assert_eq!(
             ranges.as_ref(),
@@ -344,11 +344,12 @@ mod tests {
         );
 
         let s = tree.find_path("/serial@a110000").expect("/serial present");
-        assert!(s
-            .property("compatible")
-            .unwrap()
-            .as_ref()
-            .starts_with(b"ns16550a"));
+        assert!(
+            s.property("compatible")
+                .unwrap()
+                .as_ref()
+                .starts_with(b"ns16550a")
+        );
         assert_eq!(
             s.property("interrupts").unwrap().as_ref(),
             &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 4] // <SPI 1 level-high>
@@ -360,11 +361,12 @@ mod tests {
             let n = tree
                 .find_path(&format!("/virtio_mmio@{base:x}"))
                 .expect("virtio_mmio node");
-            assert!(n
-                .property("compatible")
-                .unwrap()
-                .as_ref()
-                .starts_with(b"virtio,mmio"));
+            assert!(
+                n.property("compatible")
+                    .unwrap()
+                    .as_ref()
+                    .starts_with(b"virtio,mmio")
+            );
             let spi = 16 + i as u32;
             let mut exp = Vec::new();
             exp.extend_from_slice(&0u32.to_be_bytes());
