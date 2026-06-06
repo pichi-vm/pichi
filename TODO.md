@@ -37,7 +37,7 @@ Completed changes:
 
 ## Stage 1 - Make `Machine::survey` authoritative in dillo
 
-Status: pending.
+Status: complete.
 
 Goal: dillo launch paths consume the total-coverage `Machine::survey` result instead of partial `extract -> Platform` state.
 
@@ -51,6 +51,15 @@ Success criteria:
 - New code does not use `Platform.device_regions` as authoritative placement input.
 - Tests prove unknown DTB nodes/properties fail closed.
 - Default local verification passes.
+
+Completed changes:
+- Windows and Linux launch paths now run `Machine::survey` before realization.
+- Windows and Linux load validation uses surveyed `ResourcePlan` coverage.
+- Windows and Linux memory placement uses surveyed placement regions.
+- Existing `Platform` extraction remains only as a temporary realization adapter.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo test -p dillo-platform -p dillo-vm --all-targets`
 
 ## Stage 2 - Preserve DTB relationship provenance
 

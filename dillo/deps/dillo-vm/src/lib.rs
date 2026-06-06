@@ -131,6 +131,15 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         HostArch::X86_64 => dillo_platform::Arch::X86_64,
         HostArch::Aarch64 => dillo_platform::Arch::Aarch64,
     };
+    let machine =
+        dillo_platform::Machine::survey(dtb_bytes, platform_arch).map_err(RunError::Coverage)?;
+    log::info!(
+        "WHP coverage: base DTB fully claimed — {} declared region(s), pcie={}",
+        machine.plan.regions().len(),
+        machine.has_pcie
+    );
+    // Temporary adapter: realization below still consumes Platform-shaped fields,
+    // but validation and placement are driven by the surveyed ResourcePlan.
     let platform =
         dillo_platform::extract(dtb_bytes, platform_arch).map_err(RunError::DtbExtract)?;
     log::info!(
@@ -153,19 +162,20 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         .iter()
         .map(|(n, s)| (n.clone(), s.gpa, s.virtual_size))
         .collect();
-    dillo_platform::cross_validate_loads(&platform, &load_ranges)
-        .map_err(RunError::DtbCrossValidate)?;
+    machine
+        .plan
+        .cross_validate_loads(&load_ranges)
+        .map_err(RunError::Coverage)?;
 
     let must_cover: Vec<(u64, u64)> = parsed
         .sections
         .values()
         .map(|s| (s.gpa, s.virtual_size))
         .collect();
-    let plan = placement::plan(&must_cover, memory_mib, &platform).map_err(|source| {
-        RunError::Placement {
+    let plan = placement::plan_around_regions(&must_cover, memory_mib, machine.placement_regions())
+        .map_err(|source| RunError::Placement {
             source: source.into(),
-        }
-    })?;
+        })?;
     log::info!("WHP memory placement: {} memslot(s)", plan.memslots.len());
     for r in &plan.memslots {
         log::info!(
@@ -597,6 +607,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         machine.plan.regions().len(),
         machine.has_pcie
     );
+    // Temporary adapter: realization below still consumes Platform-shaped fields,
+    // but validation and placement are driven by the surveyed ResourcePlan.
     let platform =
         dillo_platform::extract(dtb_bytes, platform_arch).map_err(RunError::DtbExtract)?;
     if platform.has_pcie {
@@ -1378,6 +1390,15 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         HostArch::X86_64 => dillo_platform::Arch::X86_64,
         HostArch::Aarch64 => dillo_platform::Arch::Aarch64,
     };
+    let machine =
+        dillo_platform::Machine::survey(dtb_bytes, platform_arch).map_err(RunError::Coverage)?;
+    log::info!(
+        "coverage: base DTB fully claimed — {} declared region(s), pcie={}",
+        machine.plan.regions().len(),
+        machine.has_pcie
+    );
+    // Temporary adapter: realization below still consumes Platform-shaped fields,
+    // but validation and placement are driven by the surveyed ResourcePlan.
     let platform =
         dillo_platform::extract(dtb_bytes, platform_arch).map_err(RunError::DtbExtract)?;
     log::info!(
@@ -1397,8 +1418,10 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         .iter()
         .map(|(n, s)| (n.clone(), s.gpa, s.virtual_size))
         .collect();
-    dillo_platform::cross_validate_loads(&platform, &load_ranges)
-        .map_err(RunError::DtbCrossValidate)?;
+    machine
+        .plan
+        .cross_validate_loads(&load_ranges)
+        .map_err(RunError::Coverage)?;
 
     // ── 4. compute memory placement ────────────────────────────────
     let must_cover: Vec<(u64, u64)> = parsed
@@ -1406,11 +1429,10 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         .values()
         .map(|s| (s.gpa, s.virtual_size))
         .collect();
-    let plan = placement::plan(&must_cover, memory_mib, &platform).map_err(|source| {
-        RunError::Placement {
+    let plan = placement::plan_around_regions(&must_cover, memory_mib, machine.placement_regions())
+        .map_err(|source| RunError::Placement {
             source: source.into(),
-        }
-    })?;
+        })?;
     log::info!("memslots: {} region(s)", plan.memslots.len());
     for r in &plan.memslots {
         log::info!("  [{:#x}..{:#x}) ({} bytes)", r.gpa, r.gpa + r.size, r.size);
