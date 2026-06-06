@@ -614,8 +614,10 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         .iter()
         .map(|(n, s)| (n.clone(), s.gpa, s.virtual_size))
         .collect();
-    dillo_platform::cross_validate_loads(&platform, &load_ranges)
-        .map_err(RunError::DtbCrossValidate)?;
+    machine
+        .plan
+        .cross_validate_loads(&load_ranges)
+        .map_err(RunError::Coverage)?;
 
     // 4. compute memory placement.
     let must_cover: Vec<(u64, u64)> = parsed

@@ -66,6 +66,25 @@ pub enum SurveyError {
 
     #[error("declared regions overlap: `{a}` and `{b}`")]
     Overlap { a: String, b: String },
+
+    #[error("loaded section `{section}` at [{start:#x}..{end:#x}) overflows guest address space")]
+    LoadAddressOverflow {
+        section: String,
+        start: u64,
+        end: u64,
+    },
+
+    #[error(
+        "loaded section `{section}` at [{start:#x}..{end:#x}) overlaps declared `{region}` region [{region_start:#x}..{region_end:#x})"
+    )]
+    LoadOverlapsRegion {
+        section: String,
+        start: u64,
+        end: u64,
+        region: String,
+        region_start: u64,
+        region_end: u64,
+    },
 }
 
 /// What a declared region is, so the realize step can map RAM, install MMIO
@@ -152,6 +171,46 @@ impl ResourcePlan {
                     return Err(SurveyError::Overlap {
                         a: a.origin.to_string(),
                         b: b.origin.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Reject loaded sections that overlap any surveyed non-RAM region.
+    pub fn cross_validate_loads(&self, loaded: &[(String, u64, u64)]) -> Result<(), SurveyError> {
+        for (section, gpa, size) in loaded {
+            if *size == 0 {
+                continue;
+            }
+            let end = gpa
+                .checked_add(*size)
+                .ok_or(SurveyError::LoadAddressOverflow {
+                    section: section.clone(),
+                    start: *gpa,
+                    end: u64::MAX,
+                })?;
+            if u128::from(end) > (1u128 << 48) {
+                return Err(SurveyError::LoadAddressOverflow {
+                    section: section.clone(),
+                    start: *gpa,
+                    end,
+                });
+            }
+            for region in self
+                .regions
+                .iter()
+                .filter(|region| region.kind != RegionKind::Ram)
+            {
+                if overlaps(*gpa, *size, region.gpa, region.size) {
+                    return Err(SurveyError::LoadOverlapsRegion {
+                        section: section.clone(),
+                        start: *gpa,
+                        end,
+                        region: region.origin.to_string(),
+                        region_start: region.gpa,
+                        region_end: region.gpa.saturating_add(region.size),
                     });
                 }
             }
@@ -1100,6 +1159,56 @@ mod tests {
             .set_u32s(&reg2(ECAM_BASE, 0x1000));
         let err = Machine::survey(&dtb(root), Arch::Aarch64).unwrap_err();
         assert!(matches!(err, SurveyError::Overlap { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn cross_validate_loads_rejects_declared_region_overlap() {
+        let m = Machine::survey(&dtb(base_root()), Arch::Aarch64).expect("survey ok");
+
+        let err = m
+            .plan
+            .cross_validate_loads(&[("kernel".to_string(), SERIAL_BASE, 0x1000)])
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                SurveyError::LoadOverlapsRegion {
+                    ref section,
+                    ref region,
+                    region_start: SERIAL_BASE,
+                    ..
+                } if section == "kernel" && region == "/serial:reg"
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn cross_validate_loads_accepts_zero_sized_sections() {
+        let m = Machine::survey(&dtb(base_root()), Arch::Aarch64).expect("survey ok");
+
+        m.plan
+            .cross_validate_loads(&[("zero".to_string(), SERIAL_BASE, 0)])
+            .expect("zero-sized section ignored");
+    }
+
+    #[test]
+    fn cross_validate_loads_rejects_canonical_overflow() {
+        let m = Machine::survey(&dtb(base_root()), Arch::Aarch64).expect("survey ok");
+
+        let err = m
+            .plan
+            .cross_validate_loads(&[("too-high".to_string(), 1u64 << 48, 1)])
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                SurveyError::LoadAddressOverflow { ref section, .. } if section == "too-high"
+            ),
+            "got {err:?}"
+        );
     }
 
     // x86-64 base layout (arma `src/base_dtb/x86_64.rs`).
