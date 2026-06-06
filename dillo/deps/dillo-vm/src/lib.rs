@@ -19,7 +19,7 @@ mod pci;
 #[cfg(target_os = "linux")]
 mod pci_notify;
 mod placement;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[allow(dead_code)]
 mod syscon;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod uart;
@@ -245,7 +245,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     );
 
     let msix_vectors: u16 = 3;
-    let notifier = vm.msix_notifier(msix_vectors);
+    let notifier = vm.msix_notifier((), msix_vectors);
     let lookup_notifier = Arc::clone(&notifier);
     let console: Arc<std::sync::Mutex<Box<dyn virtio::VirtioDevice>>> = Arc::new(
         std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
@@ -291,10 +291,9 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                     size: uart.size,
                 },
                 uart.reg_shift,
-                Arc::clone(&ioapic),
-                uart.irq,
+                (Arc::clone(&ioapic), uart.irq),
                 Box::new(std::io::stderr()),
-            );
+            )?;
             vm.attach_mmio(&mut mmio_bus, Arc::new(serial));
             log::info!(
                 "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
@@ -649,7 +648,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     //     notifier. ECAM + each BAR register on the MMIO bus.
     if machine.has_pcie {
         let msix_vectors: u16 = 3; // 2 queues (rx/tx) + config-change vector
-        let notifier = vm.msix_notifier(msix_vectors);
+        let notifier = vm.msix_notifier((), msix_vectors);
         let lookup_notifier = Arc::clone(&notifier);
         let console: Arc<std::sync::Mutex<Box<dyn virtio::VirtioDevice>>> = Arc::new(
             std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
@@ -1029,7 +1028,7 @@ fn vcpu_thread(
             None => return Ok(()), // shutdown before this core was ever powered on
         }
     };
-    let vcpu = Vm::current_thread_vcpu(VcpuSeed::Aarch64 {
+    let vcpu = <Vm as BackendVm>::current_thread_vcpu(VcpuSeed::Aarch64 {
         mpidr: mpidr_for(idx),
         state: &init,
     })?;
@@ -1450,7 +1449,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     );
 
     // Build the device → adapter → bus chain.
-    let irq_mgr = vm.irq_manager()?;
+    let irq_mgr = vm.interrupt_state()?;
 
     // Machine-driven UART attach (device-model §"Serial port"): the serial
     // port is an MMIO ns16550a. If the Machine declares one, attach it with a
@@ -1459,14 +1458,13 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     match machine.uart {
         Some(uart) => {
             let serial = vm.ns16550(
-                Arc::clone(&irq_mgr),
                 MmioWindow {
                     name: "ns16550a",
                     base: uart.base,
                     size: uart.size,
                 },
                 uart.reg_shift,
-                uart.irq,
+                (Arc::clone(&irq_mgr), uart.irq),
                 Box::new(std::io::stdout()),
             )?;
             vm.attach_mmio(&mut mmio_bus, Arc::new(serial));

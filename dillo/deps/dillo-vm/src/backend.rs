@@ -1,22 +1,15 @@
-#[cfg(target_os = "windows")]
-use std::sync::Arc;
-#[cfg(target_os = "macos")]
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
-#[cfg(target_os = "linux")]
 use virtio_pci::QueueNotifier;
-#[cfg(target_os = "macos")]
-use vm_memory::GuestMemoryMmap;
-#[cfg(target_os = "windows")]
 use vm_memory::GuestMemoryMmap;
 
 #[cfg(target_os = "macos")]
 use crate::{
     RunError, hvf_devices,
-    mmio_bus::{MmioBus, MmioDevice},
-    virtio_mmio,
+    mmio_bus::{MmioBus, MmioDevice, MmioWindow},
+    syscon, uart, virtio_mmio,
 };
 #[cfg(target_os = "windows")]
 use crate::{
@@ -61,24 +54,44 @@ pub(crate) enum VcpuSeed<'a> {
     },
 }
 
-#[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub(crate) trait BackendVm {
-    fn new(opts: VmOptions) -> Result<Self, RunError>
+    type Options;
+    type Vcpu;
+    type InterruptState: Clone;
+    type SerialIrq;
+    type WiredIrq;
+    type MsiNotifier: vm_pci::MsixNotifier + 'static;
+
+    fn new(opts: Self::Options) -> Result<Self, RunError>
     where
         Self: Sized;
 
-    fn irq_manager(&self) -> Result<Arc<Mutex<IrqManager>>, RunError>;
+    fn interrupt_state(&self) -> Result<Self::InterruptState, RunError>;
+
     fn queue_notifier(&self) -> Box<dyn QueueNotifier>;
-    fn msix_notifier(&self, irq_manager: Arc<Mutex<IrqManager>>, count: u16) -> Arc<IrqfdNotifier>;
+
+    fn msix_notifier(
+        &self,
+        interrupt_state: Self::InterruptState,
+        count: u16,
+    ) -> Arc<Self::MsiNotifier>;
+
     fn create_vcpu(
         &self,
         idx: u32,
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
-    ) -> Result<dillo_hypervisor::Vcpu, RunError>;
+    ) -> Result<Self::Vcpu, RunError>;
+
+    fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<Self::Vcpu, RunError>
+    where
+        Self: Sized;
+
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
     where
         D: MmioDevice + 'static;
+
     fn attach_x86_syscon_devices(
         &self,
         bus: &mut MmioBus,
@@ -86,19 +99,46 @@ pub(crate) trait BackendVm {
         reboot: Option<dillo_platform::Syscon>,
         state: Arc<syscon::SysconState>,
     );
+
     fn ns16550(
         &self,
-        irq_manager: Arc<Mutex<IrqManager>>,
         window: MmioWindow,
         reg_shift: u32,
-        gsi: u32,
+        irq: Self::SerialIrq,
         out: Box<dyn std::io::Write + Send>,
     ) -> Result<uart::Ns16550, RunError>;
+
+    fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError>;
+
+    fn wired_irq(&self, intid: u32) -> Self::WiredIrq;
+}
+
+#[allow(dead_code)]
+struct NoopQueueNotifier;
+
+impl QueueNotifier for NoopQueueNotifier {
+    fn register(
+        &mut self,
+        _queue_index: usize,
+        _addr: u64,
+        _kick: &virtio::Kick,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn unregister_all(&mut self) {}
 }
 
 #[cfg(target_os = "linux")]
 impl BackendVm for dillo_hypervisor::Vm {
-    fn new(opts: VmOptions) -> Result<Self, RunError> {
+    type Options = VmOptions;
+    type Vcpu = dillo_hypervisor::Vcpu;
+    type InterruptState = Arc<Mutex<IrqManager>>;
+    type SerialIrq = (Arc<Mutex<IrqManager>>, u32);
+    type WiredIrq = ();
+    type MsiNotifier = IrqfdNotifier;
+
+    fn new(opts: Self::Options) -> Result<Self, RunError> {
         let vm = dillo_hypervisor::Vm::new()?;
         for memslot in opts.memslots {
             log::info!(
@@ -114,7 +154,7 @@ impl BackendVm for dillo_hypervisor::Vm {
         Ok(vm)
     }
 
-    fn irq_manager(&self) -> Result<Arc<Mutex<IrqManager>>, RunError> {
+    fn interrupt_state(&self) -> Result<Self::InterruptState, RunError> {
         let manager = IrqManager::new(self.vm_fd_arc()).map_err(|e| {
             RunError::Kvm(dillo_hypervisor::Error::RunVcpu(
                 0,
@@ -128,7 +168,11 @@ impl BackendVm for dillo_hypervisor::Vm {
         Box::new(KvmQueueNotifier::new(self.vm_fd_arc()))
     }
 
-    fn msix_notifier(&self, irq_manager: Arc<Mutex<IrqManager>>, count: u16) -> Arc<IrqfdNotifier> {
+    fn msix_notifier(
+        &self,
+        irq_manager: Self::InterruptState,
+        count: u16,
+    ) -> Arc<Self::MsiNotifier> {
         Arc::new(IrqfdNotifier::new(irq_manager, count))
     }
 
@@ -137,7 +181,7 @@ impl BackendVm for dillo_hypervisor::Vm {
         idx: u32,
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
-    ) -> Result<dillo_hypervisor::Vcpu, RunError> {
+    ) -> Result<Self::Vcpu, RunError> {
         let mut vcpu =
             dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)?;
         match seed {
@@ -153,6 +197,12 @@ impl BackendVm for dillo_hypervisor::Vm {
             VcpuSeed::X86_64Secondary => {}
         }
         Ok(vcpu)
+    }
+
+    fn current_thread_vcpu(_seed: VcpuSeed<'_>) -> Result<Self::Vcpu, RunError> {
+        Err(RunError::Unimplemented(
+            "current-thread vCPU factory is HVF-only",
+        ))
     }
 
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
@@ -193,12 +243,12 @@ impl BackendVm for dillo_hypervisor::Vm {
 
     fn ns16550(
         &self,
-        irq_manager: Arc<Mutex<IrqManager>>,
         window: MmioWindow,
         reg_shift: u32,
-        gsi: u32,
+        irq: Self::SerialIrq,
         out: Box<dyn std::io::Write + Send>,
     ) -> Result<uart::Ns16550, RunError> {
+        let (irq_manager, gsi) = irq;
         let eventfd = {
             let mut manager = irq_manager.lock().expect("irq mgr poisoned");
             manager
@@ -209,6 +259,14 @@ impl BackendVm for dillo_hypervisor::Vm {
         };
         Ok(uart::Ns16550::new_irqfd(window, reg_shift, eventfd, out))
     }
+
+    fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError> {
+        Err(RunError::Unimplemented(
+            "Linux/KVM guest memory is provided from the launcher memfd map",
+        ))
+    }
+
+    fn wired_irq(&self, _intid: u32) -> Self::WiredIrq {}
 }
 
 #[cfg(target_os = "macos")]
@@ -226,27 +284,15 @@ pub(crate) struct VmOptions {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) trait BackendVm {
-    fn new(opts: VmOptions) -> Result<Self, RunError>
-    where
-        Self: Sized;
-
-    fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError>;
-
-    fn msix_notifier(&self, count: u16) -> Arc<hvf_devices::HvfMsixNotifier>;
-
-    fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<dillo_hypervisor::Vcpu, RunError>;
-
-    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
-    where
-        D: MmioDevice + 'static;
-
-    fn wired_irq(&self, intid: u32) -> virtio_mmio::WiredIrq;
-}
-
-#[cfg(target_os = "macos")]
 impl BackendVm for dillo_hypervisor::Vm {
-    fn new(opts: VmOptions) -> Result<Self, RunError> {
+    type Options = VmOptions;
+    type Vcpu = dillo_hypervisor::Vcpu;
+    type InterruptState = ();
+    type SerialIrq = ();
+    type WiredIrq = virtio_mmio::WiredIrq;
+    type MsiNotifier = hvf_devices::HvfMsixNotifier;
+
+    fn new(opts: Self::Options) -> Result<Self, RunError> {
         let mut vm = dillo_hypervisor::Vm::new(&opts.gic_params, opts.min_addr_space_bits)?;
         let max_vcpus = vm.max_vcpus()?;
         if opts.vcpus > max_vcpus {
@@ -271,11 +317,34 @@ impl BackendVm for dillo_hypervisor::Vm {
         hvf_devices::build_guest_memory(&self.region_mappings()).map_err(RunError::MemfdSetup)
     }
 
-    fn msix_notifier(&self, count: u16) -> Arc<hvf_devices::HvfMsixNotifier> {
+    fn interrupt_state(&self) -> Result<Self::InterruptState, RunError> {
+        Ok(())
+    }
+
+    fn queue_notifier(&self) -> Box<dyn QueueNotifier> {
+        Box::new(NoopQueueNotifier)
+    }
+
+    fn msix_notifier(
+        &self,
+        _interrupt_state: Self::InterruptState,
+        count: u16,
+    ) -> Arc<Self::MsiNotifier> {
         Arc::new(hvf_devices::HvfMsixNotifier::new(count))
     }
 
-    fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<dillo_hypervisor::Vcpu, RunError> {
+    fn create_vcpu(
+        &self,
+        _idx: u32,
+        _cpu_profile: &str,
+        _seed: VcpuSeed<'_>,
+    ) -> Result<Self::Vcpu, RunError> {
+        Err(RunError::Unimplemented(
+            "HVF creates vCPUs on their owning threads",
+        ))
+    }
+
+    fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<Self::Vcpu, RunError> {
         let vcpu = dillo_hypervisor::create_vcpu_current_thread().map_err(RunError::Kvm)?;
         match seed {
             VcpuSeed::Aarch64 { mpidr, state } => {
@@ -293,7 +362,26 @@ impl BackendVm for dillo_hypervisor::Vm {
         bus.register_device(device);
     }
 
-    fn wired_irq(&self, intid: u32) -> virtio_mmio::WiredIrq {
+    fn attach_x86_syscon_devices(
+        &self,
+        _bus: &mut MmioBus,
+        _poweroff: dillo_platform::Syscon,
+        _reboot: Option<dillo_platform::Syscon>,
+        _state: Arc<syscon::SysconState>,
+    ) {
+    }
+
+    fn ns16550(
+        &self,
+        window: MmioWindow,
+        reg_shift: u32,
+        _irq: Self::SerialIrq,
+        out: Box<dyn std::io::Write + Send>,
+    ) -> Result<uart::Ns16550, RunError> {
+        Ok(uart::Ns16550::new_polled(window, reg_shift, out))
+    }
+
+    fn wired_irq(&self, intid: u32) -> Self::WiredIrq {
         virtio_mmio::WiredIrq::new(
             intid,
             Arc::new(|intid, level| {
@@ -312,55 +400,18 @@ pub(crate) struct VmOptions {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) trait BackendVm {
-    fn new(opts: VmOptions) -> Result<Self, RunError>
-    where
-        Self: Sized;
-
-    fn log_guest_memory_mappings(&self);
-
-    fn msix_notifier(&self, count: u16) -> Arc<WhpMsixNotifier>;
-
-    fn create_vcpu(
-        &self,
-        idx: u32,
-        cpu_profile: &str,
-        seed: VcpuSeed<'_>,
-    ) -> Result<dillo_hypervisor::Vcpu, RunError>;
-
-    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
-    where
-        D: MmioDevice + 'static;
-
-    fn attach_x86_syscon_devices(
-        &self,
-        bus: &mut MmioBus,
-        poweroff: dillo_platform::Syscon,
-        reboot: Option<dillo_platform::Syscon>,
-        state: Arc<syscon::SysconState>,
-    );
-
-    fn ns16550(
-        &self,
-        window: MmioWindow,
-        reg_shift: u32,
-        ioapic: Arc<IoApic>,
-        gsi: u32,
-        out: Box<dyn std::io::Write + Send>,
-    ) -> uart::Ns16550;
-}
-
-#[cfg(target_os = "windows")]
 impl BackendVm for dillo_hypervisor::Vm {
-    fn new(opts: VmOptions) -> Result<Self, RunError> {
+    type Options = VmOptions;
+    type Vcpu = dillo_hypervisor::Vcpu;
+    type InterruptState = ();
+    type SerialIrq = (Arc<IoApic>, u32);
+    type WiredIrq = ();
+    type MsiNotifier = WhpMsixNotifier;
+
+    fn new(opts: Self::Options) -> Result<Self, RunError> {
         let mut vm = dillo_hypervisor::Vm::new_x86_64_with_local_apic_count(opts.vcpus)?;
         vm.set_memory(opts.guest_memory)?;
-        vm.log_guest_memory_mappings();
-        Ok(vm)
-    }
-
-    fn log_guest_memory_mappings(&self) {
-        for (gpa, host, size) in self.region_mappings() {
+        for (gpa, host, size) in vm.region_mappings() {
             log::info!(
                 "  WHP GPA mapping [{:#x}..{:#x}) -> host {:#x} ({} bytes)",
                 gpa,
@@ -369,9 +420,22 @@ impl BackendVm for dillo_hypervisor::Vm {
                 size,
             );
         }
+        Ok(vm)
     }
 
-    fn msix_notifier(&self, count: u16) -> Arc<WhpMsixNotifier> {
+    fn interrupt_state(&self) -> Result<Self::InterruptState, RunError> {
+        Ok(())
+    }
+
+    fn queue_notifier(&self) -> Box<dyn QueueNotifier> {
+        Box::new(NoopQueueNotifier)
+    }
+
+    fn msix_notifier(
+        &self,
+        _interrupt_state: Self::InterruptState,
+        count: u16,
+    ) -> Arc<Self::MsiNotifier> {
         Arc::new(WhpMsixNotifier::new(self.interrupt_controller(), count))
     }
 
@@ -380,7 +444,7 @@ impl BackendVm for dillo_hypervisor::Vm {
         idx: u32,
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
-    ) -> Result<dillo_hypervisor::Vcpu, RunError> {
+    ) -> Result<Self::Vcpu, RunError> {
         let mut vcpu =
             dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)?;
         match seed {
@@ -388,6 +452,12 @@ impl BackendVm for dillo_hypervisor::Vm {
             VcpuSeed::X86_64Secondary => {}
         }
         Ok(vcpu)
+    }
+
+    fn current_thread_vcpu(_seed: VcpuSeed<'_>) -> Result<Self::Vcpu, RunError> {
+        Err(RunError::Unimplemented(
+            "current-thread vCPU factory is HVF-only",
+        ))
     }
 
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
@@ -430,17 +500,25 @@ impl BackendVm for dillo_hypervisor::Vm {
         &self,
         window: MmioWindow,
         reg_shift: u32,
-        ioapic: Arc<IoApic>,
-        gsi: u32,
+        irq: Self::SerialIrq,
         out: Box<dyn std::io::Write + Send>,
-    ) -> uart::Ns16550 {
-        uart::Ns16550::new_whp(
+    ) -> Result<uart::Ns16550, RunError> {
+        let (ioapic, gsi) = irq;
+        Ok(uart::Ns16550::new_whp(
             window,
             reg_shift,
             self.interrupt_controller(),
             ioapic,
             gsi,
             out,
-        )
+        ))
     }
+
+    fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError> {
+        Err(RunError::Unimplemented(
+            "WHP guest memory is supplied at construction",
+        ))
+    }
+
+    fn wired_irq(&self, _intid: u32) -> Self::WiredIrq {}
 }

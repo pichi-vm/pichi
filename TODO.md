@@ -345,3 +345,41 @@ Local verification for current slice:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 cargo test -p dillo-platform -p dillo-vm --all-targets`
 - `RUSTC_BOOTSTRAP=1 cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+## Stage 11 - Stabilize backend trait shape
+
+Status: complete.
+
+Goal: correct the Stage 8 abstraction so the backend boundary has one stable
+compile-time trait contract. A cfg-variable trait did not satisfy the redesign:
+cfg may select backend implementations, but it must not redefine the API shape.
+
+Process:
+- Replace target-specific `BackendVm` trait definitions with one trait.
+- Use associated types for backend-local options, vCPU, interrupt state, serial
+  IRQ handle, wired IRQ handle, and MSI notifier.
+- Keep target-specific behavior inside cfg-selected trait implementations.
+- Update `DESIGN.md` so the mapping reflects the stable trait shape.
+
+Success criteria:
+- Exactly one `BackendVm` trait definition exists.
+- No `#[cfg(...)]` gate redefines the `BackendVm` trait contract.
+- Linux, native Windows MSVC, and macOS target checks pass locally.
+- Default local verification passes before commit and push.
+
+Completed changes:
+- Replaced the Linux/macOS/Windows-specific `BackendVm` trait definitions with
+  one trait using associated types.
+- Updated the launch paths to call the stable trait contract for VM creation,
+  vCPU creation, MSI notifier construction, UART construction, MMIO attach,
+  guest-memory access, and wired IRQ handles.
+- Made `DESIGN.md` describe the stable trait shape and identify the remaining
+  split into optional backend capabilities as future work.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-platform -p dillo-vm --all-targets`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`

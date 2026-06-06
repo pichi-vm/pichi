@@ -394,7 +394,7 @@ this where the backend doesn't do it in-kernel.
 | `MmioDevice`             | `Send + Sync` trait with owned windows and `&self` read/write          | none known |
 | serial UART              | `uart::Ns16550: MmioDevice`, attached from DTB-derived UART nodes      | none known |
 | IOAPIC / x86 syscon      | Vm-owned substrate realized as attached `MmioDevice`s                  | none known |
-| `Vm`                     | `BackendVm` compile-time trait (`dillo-vm/src/backend.rs`) with `VmOptions`/seeds/backend attach methods | converge naming with this document if desired |
+| `Vm`                     | single `BackendVm` compile-time trait shape (`dillo-vm/src/backend.rs`) with associated backend types for options, vCPU, interrupt state, IRQ handles, and MSI notifier; per-target impls are cfg-selected | split optional backend capabilities before moving this into `dillo-core` |
 | Interrupts               | backend-owned irqfd / WHP fixed interrupt / HVF SPI plus MSI notifiers | finish replacing raw GSI/SPI plumbing with resolved interrupt handles |
 | DTB ownership            | run paths use `Machine::survey`/`ResourcePlan`; stale `extract -> Platform` adapters removed | retire legacy `Platform` extractor when remaining tests/users no longer need it |
 | Run loop / PSCI          | supervisor-owned loops return `RunOutcome`; HVF warm-reboot is preserved | implement x86 warm reboot |
