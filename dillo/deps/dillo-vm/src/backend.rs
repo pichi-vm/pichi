@@ -31,6 +31,7 @@ use crate::{
     RunError,
     irq::IrqManager,
     mmio_bus::{MmioBus, MmioDevice, MmioWindow},
+    pci_irq::IrqfdNotifier,
     pci_notify::KvmQueueNotifier,
     syscon, uart,
 };
@@ -68,6 +69,7 @@ pub(crate) trait BackendVm {
 
     fn irq_manager(&self) -> Result<Arc<Mutex<IrqManager>>, RunError>;
     fn queue_notifier(&self) -> Box<dyn QueueNotifier>;
+    fn msix_notifier(&self, irq_manager: Arc<Mutex<IrqManager>>, count: u16) -> Arc<IrqfdNotifier>;
     fn create_vcpu(
         &self,
         idx: u32,
@@ -123,6 +125,10 @@ impl BackendVm for dillo_hypervisor::Vm {
 
     fn queue_notifier(&self) -> Box<dyn QueueNotifier> {
         Box::new(KvmQueueNotifier::new(self.vm_fd_arc()))
+    }
+
+    fn msix_notifier(&self, irq_manager: Arc<Mutex<IrqManager>>, count: u16) -> Arc<IrqfdNotifier> {
+        Arc::new(IrqfdNotifier::new(irq_manager, count))
     }
 
     fn create_vcpu(
@@ -225,6 +231,8 @@ pub(crate) trait BackendVm {
 
     fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError>;
 
+    fn msix_notifier(&self, count: u16) -> Arc<hvf_devices::HvfMsixNotifier>;
+
     fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<dillo_hypervisor::Vcpu, RunError>;
 
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
@@ -259,6 +267,10 @@ impl BackendVm for dillo_hypervisor::Vm {
 
     fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError> {
         hvf_devices::build_guest_memory(&self.region_mappings()).map_err(RunError::MemfdSetup)
+    }
+
+    fn msix_notifier(&self, count: u16) -> Arc<hvf_devices::HvfMsixNotifier> {
+        Arc::new(hvf_devices::HvfMsixNotifier::new(count))
     }
 
     fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<dillo_hypervisor::Vcpu, RunError> {

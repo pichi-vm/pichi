@@ -94,8 +94,6 @@ use crate::pci::{PciRoot, VirtioPciAdapter};
 use crate::pci::{PciRoot, VirtioPciAdapter};
 #[cfg(target_os = "windows")]
 use crate::pci::{PciRoot, VirtioPciAdapter};
-#[cfg(target_os = "linux")]
-use crate::pci_irq::IrqfdNotifier;
 #[cfg(target_os = "windows")]
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
@@ -653,12 +651,11 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     // 7b. PCIe (skipped on a --pci-slots 0 microVM): one virtio-console
     //     endpoint at 00:01.0 (slot 0 = host bridge). BAR0 = virtio config;
-    //     BAR2 = MSI-X table + PBA. MSI-X is injected through the in-kernel GIC
-    //     (`hv_gic_send_msi`) via HvfMsixNotifier. ECAM + each BAR register on
-    //     the MMIO bus.
+    //     BAR2 = MSI-X table + PBA. MSI-X is injected through the backend
+    //     notifier. ECAM + each BAR register on the MMIO bus.
     if platform.has_pcie {
         let msix_vectors: u16 = 3; // 2 queues (rx/tx) + config-change vector
-        let notifier = Arc::new(hvf_devices::HvfMsixNotifier::new(msix_vectors));
+        let notifier = vm.msix_notifier(msix_vectors);
         let lookup_notifier = Arc::clone(&notifier);
         let console: Arc<std::sync::Mutex<Box<dyn virtio::VirtioDevice>>> = Arc::new(
             std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
@@ -1416,10 +1413,9 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // independently registered with the MMIO bus so guest accesses
     // route directly to the transport.
     //
-    // MSI-X uses an IrqManager + IrqfdNotifier: on each MSI-X table
-    // write the guest does, a fresh GSI is allocated and an irqfd is
-    // routed. Queue completions (call fds) are then KVM-direct — no
-    // VMM relay.
+    // MSI-X uses a backend notifier: on each MSI-X table write the guest does,
+    // a fresh backend interrupt route is allocated. Queue completions are then
+    // backend-direct — no VMM relay.
     let mut mmio_bus = MmioBus::new();
     let syscon_state = Arc::new(syscon::SysconState::default());
     vm.attach_x86_syscon_devices(&mut mmio_bus, &platform, Arc::clone(&syscon_state));
@@ -1458,7 +1454,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     // num_queues + 1 vector for config-change. Console has 2 queues.
     let msix_vectors: u16 = 3;
-    let irqfd_notifier = Arc::new(IrqfdNotifier::new(Arc::clone(&irq_mgr), msix_vectors));
+    let irqfd_notifier = vm.msix_notifier(Arc::clone(&irq_mgr), msix_vectors);
 
     let call_lookup_notifier = Arc::clone(&irqfd_notifier);
 

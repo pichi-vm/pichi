@@ -241,7 +241,7 @@ Local verification:
 
 ## Stage 8 - Introduce compile-time `Vm` trait
 
-Status: in progress.
+Status: complete.
 
 Goal: add the backend abstraction boundary from `DESIGN.md` after attach surfaces are uniform.
 
@@ -274,7 +274,7 @@ Progress:
 - Moved x86 syscon MMIO attachment into the Linux/Windows backend trait implementations instead of a freestanding launch helper.
 - Added a macOS backend-owned wired-IRQ capability for virtio-mmio; the transport no longer calls HVF `set_spi` directly.
 - Added target-shaped vCPU seed/factory APIs; Linux/WHP seed x86 boot state in the backend factory, and HVF seeds MPIDR/aarch64 state in its current-thread factory.
-- Remaining work: move Linux/macOS MSI notifier construction behind `BackendVm`.
+- Added backend-owned MSI notifier construction on Linux and macOS; launch code no longer constructs backend notifier types directly.
 
 Local verification for current slice:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
