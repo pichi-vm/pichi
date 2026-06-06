@@ -144,7 +144,7 @@ Local verification:
 
 ## Stage 5 - Model substrate MMIO explicitly
 
-Status: pending.
+Status: complete.
 
 Goal: make VM-owned substrate devices explicit when they are realized through MMIO.
 
@@ -157,6 +157,22 @@ Success criteria:
 - IOAPIC and syscon are attached through the same MMIO mechanism as other MMIO devices.
 - Syscon paths return structured shutdown/reboot state instead of directly exiting where practical for the stage.
 - Default local verification passes.
+
+Completed changes:
+- Added typed x86 syscon MMIO devices that record structured poweroff/reboot actions.
+- Linux and Windows x86 run loops now observe syscon action state instead of exiting from the MMIO write handler.
+- Windows IOAPIC now owns its DTB-derived MMIO window and attaches through `MmioBus::register_device`.
+- Updated stale supervisor comments that described the removed direct-exit behavior.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --lib`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-platform -p dillo-vm --all-targets`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --all-targets`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --lib --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --lib --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 
 ## Stage 6 - Convert PCI root into an MMIO device
 

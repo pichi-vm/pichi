@@ -15,6 +15,8 @@ mod mmio_bus;
 mod overlay;
 mod pci;
 mod placement;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod syscon;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod uart;
 
@@ -264,7 +266,15 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     pci_bus.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_bus = Arc::new(pci_bus);
     let shutdown = Arc::new(AtomicBool::new(false));
-    let ioapic = Arc::new(ioapic::IoApic::new());
+    let ioapic_region = platform
+        .ioapic
+        .ok_or(RunError::MissingRequiredDevice("/intc reg[1] ioapic"))?;
+    let ioapic = Arc::new(ioapic::IoApic::new(MmioWindow {
+        name: "ioapic",
+        base: ioapic_region.base,
+        size: ioapic_region.size,
+    }));
+    let syscon_state = Arc::new(syscon::SysconState::default());
     // The MMIO bus builder also attaches the ns16550a serial (if the Platform
     // declares one), routing its IRQ through this IOAPIC + the partition's
     // interrupt controller.
@@ -273,6 +283,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         Arc::clone(&pci_bus),
         Arc::clone(&ioapic),
         vm.interrupt_controller(),
+        Arc::clone(&syscon_state),
     )?);
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
@@ -282,8 +293,16 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let mmio_c = Arc::clone(&mmio_bus);
         let legacy_c = Arc::clone(&legacy_pci);
         let pci_c = Arc::clone(&pci_bus);
+        let syscon_c = Arc::clone(&syscon_state);
         joins.push(thread::spawn(move || -> Result<()> {
-            run_windows_vcpu_loop(&mut vcpu, &shutdown_c, &mmio_c, &legacy_c, &pci_c)
+            run_windows_vcpu_loop(
+                &mut vcpu,
+                &shutdown_c,
+                &mmio_c,
+                &legacy_c,
+                &pci_c,
+                &syscon_c,
+            )
         }));
     }
 
@@ -316,6 +335,7 @@ fn windows_x86_mmio_bus(
     pci_bus: Arc<PciBus>,
     ioapic: Arc<ioapic::IoApic>,
     interrupt_controller: dillo_hypervisor::InterruptController,
+    syscon_state: Arc<syscon::SysconState>,
 ) -> Result<MmioBus, RunError> {
     let mut mmio_bus = MmioBus::new();
 
@@ -348,49 +368,8 @@ fn windows_x86_mmio_bus(
         None => log::warn!("no UART in Platform — guest console output will be dropped"),
     }
 
-    let syscon_base = platform.poweroff.base;
-    let syscon_target = platform.poweroff.base + platform.poweroff.offset;
-    let syscon_mask = platform.poweroff.mask;
-    let syscon_value_expected = platform.poweroff.value;
-    mmio_bus.register(
-        "syscon-poweroff",
-        platform.poweroff.base,
-        0x1000,
-        Arc::new(|_off, data| {
-            data.fill(0);
-            true
-        }),
-        Arc::new(move |off, data| {
-            if syscon_base + off != syscon_target {
-                return true;
-            }
-            let value = match data.len() {
-                1 => u32::from(data[0]),
-                2 => u32::from(u16::from_le_bytes([data[0], data[1]])),
-                4 => u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-                _ => return true,
-            };
-            if (value & syscon_mask) == (syscon_value_expected & syscon_mask) {
-                log::info!("guest issued syscon-poweroff via WHP MMIO bus");
-                dillo_virtio_console::flush_output();
-                std::process::exit(0);
-            }
-            true
-        }),
-    );
-
-    let ioapic_r = Arc::clone(&ioapic);
-    let ioapic_w = Arc::clone(&ioapic);
-    let ioapic_region = platform
-        .ioapic
-        .ok_or(RunError::MissingRequiredDevice("/intc reg[1] ioapic"))?;
-    mmio_bus.register(
-        "ioapic",
-        ioapic_region.base,
-        ioapic_region.size,
-        Arc::new(move |off, data| ioapic_r.read(off, data)),
-        Arc::new(move |off, data| ioapic_w.write(off, data)),
-    );
+    register_x86_syscon_devices(&mut mmio_bus, platform, syscon_state);
+    mmio_bus.register_device(ioapic);
 
     let pci_for_ecam = Arc::clone(&pci_bus);
     let pci_for_ecam_w = Arc::clone(&pci_bus);
@@ -453,10 +432,15 @@ fn run_windows_vcpu_loop(
     mmio_bus: &Arc<MmioBus>,
     legacy_pci: &Arc<pio_pci::LegacyPciState>,
     pci_bus: &Arc<PciBus>,
+    syscon_state: &Arc<syscon::SysconState>,
 ) -> Result<()> {
     let mut exit_count = 0u64;
     loop {
         if shutdown.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(action) = syscon_state.action() {
+            handle_x86_syscon_action(action, shutdown);
             return Ok(());
         }
         if SUPERVISOR_SHUTDOWN.load(Ordering::Acquire) {
@@ -1542,41 +1526,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // routed. Queue completions (call fds) are then KVM-direct — no
     // VMM relay.
     let mut mmio_bus = MmioBus::new();
-
-    // syscon-poweroff: register the 4 KiB window declared by the base
-    // DTB. Only writes at `base + offset` matching `value & mask`
-    // trigger shutdown; other writes within the window are claimed
-    // (returned `true`) but ignored.
-    let syscon_target = platform.poweroff.base + platform.poweroff.offset;
-    let syscon_mask = platform.poweroff.mask;
-    let syscon_value_expected = platform.poweroff.value;
-    let syscon_base = platform.poweroff.base;
-    mmio_bus.register(
-        "syscon-poweroff",
-        platform.poweroff.base,
-        0x1000,
-        Arc::new(|_off, data| {
-            data.fill(0);
-            true
-        }),
-        Arc::new(move |off, data| {
-            if syscon_base + off != syscon_target {
-                return true;
-            }
-            let value = match data.len() {
-                1 => u32::from(data[0]),
-                2 => u32::from(u16::from_le_bytes([data[0], data[1]])),
-                4 => u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-                _ => return true,
-            };
-            if (value & syscon_mask) == (syscon_value_expected & syscon_mask) {
-                log::info!("guest issued syscon-poweroff via MMIO bus");
-                dillo_virtio_console::flush_output();
-                std::process::exit(0);
-            }
-            true
-        }),
-    );
+    let syscon_state = Arc::new(syscon::SysconState::default());
+    register_x86_syscon_devices(&mut mmio_bus, &platform, Arc::clone(&syscon_state));
 
     // Build the device → adapter → bus chain.
     let irq_mgr = Arc::new(std::sync::Mutex::new(
@@ -1830,8 +1781,16 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let mmio_c = Arc::clone(&mmio_bus);
         let legacy_c = Arc::clone(&legacy_pci);
         let pci_c = Arc::clone(&pci_bus);
+        let syscon_c = Arc::clone(&syscon_state);
         joins.push(thread::spawn(move || -> Result<()> {
-            run_vcpu_loop(&mut vcpu, &shutdown_c, &mmio_c, &legacy_c, &pci_c)
+            run_vcpu_loop(
+                &mut vcpu,
+                &shutdown_c,
+                &mmio_c,
+                &legacy_c,
+                &pci_c,
+                &syscon_c,
+            )
         }));
     }
 
@@ -1864,10 +1823,15 @@ fn run_vcpu_loop(
     mmio_bus: &Arc<MmioBus>,
     legacy_pci: &Arc<pio_pci::LegacyPciState>,
     pci_bus: &Arc<PciBus>,
+    syscon_state: &Arc<syscon::SysconState>,
 ) -> Result<()> {
     let mut exit_count = 0u64;
     loop {
         if shutdown.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(action) = syscon_state.action() {
+            handle_x86_syscon_action(action, shutdown);
             return Ok(());
         }
         // §13.3: supervisor requested orderly shutdown.
@@ -1972,22 +1936,44 @@ pub(crate) fn syscon_match_for_gdb(
     addr: u64,
     data: &[u8],
 ) -> bool {
-    syscon_match(platform, addr, data)
+    syscon::matches_poweroff(platform, addr, data)
 }
 
-#[cfg(target_os = "linux")]
-fn syscon_match(platform: &dillo_platform::Platform, addr: u64, data: &[u8]) -> bool {
-    let target = platform.poweroff.base + platform.poweroff.offset;
-    if addr != target {
-        return false;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn register_x86_syscon_devices(
+    mmio_bus: &mut MmioBus,
+    platform: &dillo_platform::Platform,
+    state: Arc<syscon::SysconState>,
+) {
+    mmio_bus.register_device(Arc::new(syscon::SysconDevice::new(
+        "syscon-poweroff",
+        platform.poweroff,
+        syscon::SysconAction::Poweroff,
+        Arc::clone(&state),
+    )));
+    if let Some(reboot) = platform.reboot {
+        mmio_bus.register_device(Arc::new(syscon::SysconDevice::new(
+            "syscon-reboot",
+            reboot,
+            syscon::SysconAction::Reboot,
+            state,
+        )));
     }
-    let value = match data.len() {
-        1 => u32::from(data[0]),
-        2 => u32::from(u16::from_le_bytes([data[0], data[1]])),
-        4 => u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-        _ => return false,
-    };
-    (value & platform.poweroff.mask) == (platform.poweroff.value & platform.poweroff.mask)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn handle_x86_syscon_action(action: syscon::SysconAction, shutdown: &AtomicBool) {
+    match action {
+        syscon::SysconAction::Poweroff => {
+            log::info!("guest syscon poweroff observed by run loop");
+        }
+        syscon::SysconAction::Reboot => {
+            log::warn!(
+                "guest syscon reboot observed; x86 run outcome unification is not wired yet"
+            );
+        }
+    }
+    shutdown.store(true, Ordering::Release);
 }
 
 fn read_section<'a>(bytes: &'a [u8], offset: u64, size: u64) -> &'a [u8] {

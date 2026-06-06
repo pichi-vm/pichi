@@ -8,21 +8,25 @@ use std::sync::Mutex;
 
 use dillo_hypervisor::InterruptController;
 
+use crate::mmio_bus::{MmioDevice, MmioWindow};
+
 #[derive(Debug)]
 pub(crate) struct IoApic {
+    window: MmioWindow,
     select: Mutex<u32>,
     redirection: Mutex<[u64; 24]>,
 }
 
 impl IoApic {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(window: MmioWindow) -> Self {
         Self {
+            window,
             select: Mutex::new(0),
             redirection: Mutex::new([1 << 16; 24]),
         }
     }
 
-    pub(crate) fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+    fn read_register(&self, offset: u64, data: &mut [u8]) -> bool {
         let value = match offset {
             0x00..=0x03 => *self.select.lock().expect("ioapic select poisoned"),
             0x10..=0x13 => self.read_selected(),
@@ -35,7 +39,7 @@ impl IoApic {
         true
     }
 
-    pub(crate) fn write(&self, offset: u64, data: &[u8]) -> bool {
+    fn write_register(&self, offset: u64, data: &[u8]) -> bool {
         let value = match data.len() {
             1 => u32::from(data[0]),
             2 => u32::from(u16::from_le_bytes([data[0], data[1]])),
@@ -112,6 +116,20 @@ impl IoApic {
     }
 }
 
+impl MmioDevice for IoApic {
+    fn window(&self) -> MmioWindow {
+        self.window
+    }
+
+    fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+        self.read_register(offset, data)
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> bool {
+        self.write_register(offset, data)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Route {
     destination: u32,
@@ -147,10 +165,19 @@ fn decode_route(entry: u64) -> Option<Route> {
 #[cfg(test)]
 mod tests {
     use super::{IoApic, Route, decode_route};
+    use crate::mmio_bus::{MmioDevice, MmioWindow};
+
+    fn ioapic() -> IoApic {
+        IoApic::new(MmioWindow {
+            name: "ioapic",
+            base: 0xFEC0_0000,
+            size: 0x1000,
+        })
+    }
 
     #[test]
     fn reports_24_redirection_entries() {
-        let ioapic = IoApic::new();
+        let ioapic = ioapic();
         ioapic.write(0, &1u32.to_le_bytes());
         let mut data = [0; 4];
         ioapic.read(0x10, &mut data);
@@ -159,7 +186,7 @@ mod tests {
 
     #[test]
     fn stores_redirection_entry_halves() {
-        let ioapic = IoApic::new();
+        let ioapic = ioapic();
         ioapic.write(0, &0x10u32.to_le_bytes());
         ioapic.write(0x10, &0x31u32.to_le_bytes());
         ioapic.write(0, &0x11u32.to_le_bytes());

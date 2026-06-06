@@ -212,10 +212,9 @@ fn install_signal_watchers() {
                         dillo_vm::SUPERVISOR_SHUTDOWN
                             .store(true, std::sync::atomic::Ordering::Release);
                         // Spawn a watchdog: if the guest doesn't
-                        // ACPI-poweroff within 5s, hard-exit. (The
-                        // syscon-poweroff MMIO handler exits via
-                        // `process::exit(0)` so a successful guest
-                        // shutdown beats this timer.)
+                        // ACPI-poweroff within 5s, hard-exit. A successful
+                        // syscon-poweroff write makes the VM run loop exit
+                        // cleanly before this timer fires.
                         let signo_for_timer = signo;
                         thread::Builder::new()
                             .name("dillo-shutdown-watchdog".into())
