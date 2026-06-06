@@ -16,6 +16,7 @@ Reference specs: PMI (`https://github.com/pichi-vm/pmi`) and Arma's device model
   - Knows PMI and tatu only. It emits the base platform DTB, slot capacity, and PMI actions; it does not encode dillo assumptions.
 - **dillo**: PMI VM launcher.
   - Knows PMI only. It must not justify behavior from arma/tatu internals.
+  - Windows support means native MSVC/WHP; MinGW is not a substitute target.
   - Fills the declared slots/resources at launch: CPUs, memory, virtio-mmio devices, and PCI devices.
   - Every DTB node/property is consumed by exactly one owner; ignored, inferred, or substitute guest-visible hardware is a bug.
   - Addresses, interrupts, slots, buses, and memory exclusion derive from claimed DTB properties with provenance.
