@@ -214,10 +214,7 @@ impl VirtioMmio {
     /// An interrupt closure for the backing device: sets the used-buffer status
     /// bit and asserts the wired SPI. Clone of `int_status`/`irq` so it can run
     /// on the device's worker thread.
-    pub(crate) fn interrupt(
-        int_status: std::sync::Arc<AtomicU32>,
-        irq: u32,
-    ) -> virtio::Interrupt {
+    pub(crate) fn interrupt(int_status: std::sync::Arc<AtomicU32>, irq: u32) -> virtio::Interrupt {
         virtio::Interrupt::from_fn(move || {
             int_status.fetch_or(INT_VRING, Ordering::SeqCst);
             if let Err(e) = dillo_hypervisor::set_spi(irq, true) {
@@ -269,10 +266,7 @@ fn maybe_activate(g: &mut Inner) {
             return;
         }
     };
-    g.kicks = kicks
-        .iter()
-        .filter_map(|k| k.try_clone().ok())
-        .collect();
+    g.kicks = kicks.iter().filter_map(|k| k.try_clone().ok()).collect();
     if let Err(e) = g.device.activate(mem, queues, kicks) {
         log::error!("virtio-mmio: activate failed: {e}");
         return;

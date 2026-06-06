@@ -203,7 +203,7 @@ pub(crate) fn write_word_bus_number(
     buf[3] = RES_TYPE_BUS_NUMBER;
     buf[4] = GENFLAGS_FIXED_RANGE;
     buf[5] = 0; // Type-specific flags = 0 for bus numbers
-                // Granularity = 0, Min = bus_min, Max = bus_max, Translation = 0, Len.
+    // Granularity = 0, Min = bus_min, Max = bus_max, Translation = 0, Len.
     buf[6..8].copy_from_slice(&0u16.to_le_bytes());
     buf[8..10].copy_from_slice(&u16::from(bus_min).to_le_bytes());
     buf[10..12].copy_from_slice(&u16::from(bus_max).to_le_bytes());

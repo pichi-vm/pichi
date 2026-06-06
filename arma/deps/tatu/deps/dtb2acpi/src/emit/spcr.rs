@@ -17,7 +17,7 @@ use devtree::{NodeView, PropertyView, TreeView};
 use zerocopy::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use super::sdt::{GenericAddress, SdtHeader, SYSTEM_MEMORY};
+use super::sdt::{GenericAddress, SYSTEM_MEMORY, SdtHeader};
 use super::set_sdt_checksum;
 use crate::count::base_name_is;
 use crate::dtb::DtbNode;

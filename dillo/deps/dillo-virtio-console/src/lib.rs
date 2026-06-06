@@ -22,8 +22,8 @@
 
 use std::collections::VecDeque;
 use std::io::{self, BufWriter, Read, Write};
-use std::sync::mpsc;
 use std::sync::OnceLock;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -524,8 +524,8 @@ fn install_console_seccomp() {
     //     the inherited socketpair, plus epoll + eventfd for the
     //     handler-thread event loop.
     // KillProcess on anything else.
-    use extrasafe::builtins::{danger_zone::Threads, BasicCapabilities, Networking, SystemIO};
     use extrasafe::SafetyContext;
+    use extrasafe::builtins::{BasicCapabilities, Networking, SystemIO, danger_zone::Threads};
     let ctx = SafetyContext::new()
         .enable(BasicCapabilities)
         .and_then(|c| c.enable(Threads::nothing().allow_create()))
