@@ -113,8 +113,13 @@ jobs:
           </dict>
           </plist>
           EOF
-          codesign --force --sign - --entitlements "$RUNNER_TEMP/hypervisor.entitlements" target/debug/dillo
-          codesign --display --entitlements :- target/debug/dillo
+          for bin in target/debug/dillo target/debug/deps/dillo-*; do
+            [ -f "$bin" ] || continue
+            [ -x "$bin" ] || continue
+            file "$bin" | grep -q 'Mach-O' || continue
+            codesign --force --sign - --entitlements "$RUNNER_TEMP/hypervisor.entitlements" "$bin"
+            codesign --display --entitlements :- "$bin"
+          done
 
       - name: Reserve hugepages for guest RAM (Linux/KVM)
         if: runner.os == 'Linux'
