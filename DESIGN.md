@@ -5,7 +5,8 @@
 > contract that should make all device-attach code architecture- and
 > OS-independent. See "Mapping to today's code" for what already exists, and
 > `DESIGN-REVIEW.md` for the research and `file:line` evidence behind the
-> decisions recorded here.
+> decisions recorded here. See `DILLO-CRATE-SPLIT.md` for the crate-boundary
+> design that moves this trait stack out of the current monolith.
 
 ## 1. Goal & principles
 
