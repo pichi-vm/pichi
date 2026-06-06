@@ -6,6 +6,7 @@ use std::fs;
 
 use ciborium::de::from_reader;
 use pmi::vm::{Action, FillKind, Spec, vcpu};
+#[cfg(target_arch = "x86_64")]
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
