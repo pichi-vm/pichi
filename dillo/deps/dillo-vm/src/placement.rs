@@ -14,6 +14,7 @@
 //! Invariant: `MemTotal == --memory` (modulo 2 MiB rounding of the
 //! must-cover sections themselves).
 
+#[cfg(not(target_os = "macos"))]
 use dillo_platform::Platform;
 use thiserror::Error;
 
