@@ -1383,7 +1383,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     }
 
     // ── 8. create KVM VM + memslots ────────────────────────────────
-    let vm = Vm::new()?;
+    let mut memslots = Vec::with_capacity(plan.memslots.len());
     for (slot_idx, r) in plan.memslots.iter().enumerate() {
         let host_addr = gpa_map
             .lookup(r.gpa)
@@ -1392,16 +1392,14 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 gpa: r.gpa,
                 source: anyhow!("no host mapping for GPA {:#x}", r.gpa),
             })?;
-        log::info!(
-            "registering memslot {}: GPA {:#x}..{:#x} → host {:#x} ({} bytes)",
-            slot_idx,
-            r.gpa,
-            r.gpa + r.size,
+        memslots.push(backend::Memslot {
+            index: slot_idx as u32,
+            gpa: r.gpa,
             host_addr,
-            r.size
-        );
-        vm.add_memslot(slot_idx as u32, r.gpa, host_addr, r.size)?;
+            size: r.size,
+        });
     }
+    let vm = <Vm as BackendVm>::new(backend::VmOptions { memslots })?;
 
     // ── 8.5. build PCI bus + virtio-console + MMIO dispatch ────────
     //

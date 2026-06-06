@@ -18,13 +18,46 @@ use crate::{RunError, ioapic::IoApic, mmio_bus::MmioWindow, uart, whp_devices::W
 use crate::{RunError, irq::IrqManager, pci_notify::KvmQueueNotifier};
 
 #[cfg(target_os = "linux")]
+pub(crate) struct Memslot {
+    pub(crate) index: u32,
+    pub(crate) gpa: u64,
+    pub(crate) host_addr: u64,
+    pub(crate) size: u64,
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct VmOptions {
+    pub(crate) memslots: Vec<Memslot>,
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) trait BackendVm {
+    fn new(opts: VmOptions) -> Result<Self, RunError>
+    where
+        Self: Sized;
+
     fn irq_manager(&self) -> Result<Arc<Mutex<IrqManager>>, RunError>;
     fn queue_notifier(&self) -> Box<dyn QueueNotifier>;
 }
 
 #[cfg(target_os = "linux")]
 impl BackendVm for dillo_hypervisor::Vm {
+    fn new(opts: VmOptions) -> Result<Self, RunError> {
+        let vm = dillo_hypervisor::Vm::new()?;
+        for memslot in opts.memslots {
+            log::info!(
+                "registering memslot {}: GPA {:#x}..{:#x} -> host {:#x} ({} bytes)",
+                memslot.index,
+                memslot.gpa,
+                memslot.gpa + memslot.size,
+                memslot.host_addr,
+                memslot.size
+            );
+            vm.add_memslot(memslot.index, memslot.gpa, memslot.host_addr, memslot.size)?;
+        }
+        Ok(vm)
+    }
+
     fn irq_manager(&self) -> Result<Arc<Mutex<IrqManager>>, RunError> {
         let manager = IrqManager::new(self.vm_fd_arc()).map_err(|e| {
             RunError::Kvm(dillo_hypervisor::Error::RunVcpu(

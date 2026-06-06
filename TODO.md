@@ -266,7 +266,8 @@ Progress:
 - Added macOS backend-owned current-thread vCPU creation.
 - Launch code no longer calls the HVF `create_vcpu_current_thread()` primitive directly; the remaining vCPU work is to make the seed/factory shape uniform across all supported backends.
 - Added a Windows `VmOptions` constructor slice; WHP VM creation, memory installation, and mapping logging now happen behind `BackendVm`.
-- Remaining work: extend the trait boundary across construction on Linux/macOS, MMIO attach, wired IRQ, and uniform vCPU seed/factory APIs on all supported backends.
+- Added a Linux `VmOptions` constructor slice; KVM VM creation and memslot installation now happen behind `BackendVm`.
+- Remaining work: extend the trait boundary across construction on macOS, MMIO attach, wired IRQ, and uniform vCPU seed/factory APIs on all supported backends.
 
 Local verification for current slice:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
