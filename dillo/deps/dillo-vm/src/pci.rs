@@ -7,6 +7,7 @@
 
 use std::sync::Mutex;
 
+use crate::mmio_bus::{MmioDevice, MmioWindow};
 use vm_pci::PciConfiguration;
 
 /// One BAR exposed by a PCI device, in GPA terms — used by the MMIO
@@ -179,6 +180,95 @@ impl PciBus {
     }
 }
 
+/// PCIe root complex declared by the base DTB.
+///
+/// The root owns the ECAM MMIO window and the single downstream PCI bus.
+/// x86 legacy CF8/CFC access is a backend PIO decoder onto this same config
+/// accessor; it is not a second PCI fabric.
+pub(crate) struct PciRoot {
+    window: MmioWindow,
+    bus: PciBus,
+}
+
+impl std::fmt::Debug for PciRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PciRoot")
+            .field("window", &self.window)
+            .field("bus", &self.bus)
+            .finish()
+    }
+}
+
+impl PciRoot {
+    pub(crate) fn new(window: MmioWindow) -> Self {
+        Self {
+            window,
+            bus: PciBus::new_with_host_bridge(),
+        }
+    }
+
+    pub(crate) fn register(&mut self, slot: u8, device: Box<dyn PciDevice>) {
+        self.bus.register(slot, device);
+    }
+
+    pub(crate) fn config_read(&self, bus: u8, device: u8, function: u8, reg_idx: usize) -> u32 {
+        self.bus.config_read(bus, device, function, reg_idx)
+    }
+
+    pub(crate) fn config_write(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        reg_idx: usize,
+        offset: u64,
+        data: &[u8],
+    ) {
+        self.bus
+            .config_write(bus, device, function, reg_idx, offset, data);
+    }
+
+    pub(crate) fn enumerate_bars(&self) -> Vec<(u8, BarRegion)> {
+        self.bus.enumerate_bars()
+    }
+
+    pub(crate) fn bar_read(&self, slot: u8, bar_idx: u8, offset: u64, data: &mut [u8]) -> bool {
+        self.bus.bar_read(slot, bar_idx, offset, data)
+    }
+
+    pub(crate) fn bar_write(&self, slot: u8, bar_idx: u8, offset: u64, data: &[u8]) -> bool {
+        self.bus.bar_write(slot, bar_idx, offset, data)
+    }
+
+    fn decode_ecam(offset: u64) -> (u8, u8, u8, usize, usize) {
+        let (bus, device, function, register) = vm_pci::parse_ecam_offset(offset);
+        let reg_byte = register as usize;
+        (bus, device, function, reg_byte >> 2, reg_byte & 0x3)
+    }
+}
+
+impl MmioDevice for PciRoot {
+    fn window(&self) -> MmioWindow {
+        self.window
+    }
+
+    fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+        let (bus, device, function, reg_idx, in_dword) = Self::decode_ecam(offset);
+        let value = self.config_read(bus, device, function, reg_idx);
+        let bytes = value.to_le_bytes();
+        for (i, slot) in data.iter_mut().enumerate() {
+            *slot = *bytes.get(in_dword + i).unwrap_or(&0xFF);
+        }
+        true
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> bool {
+        let (bus, device, function, reg_idx, in_dword) = Self::decode_ecam(offset);
+        self.config_write(bus, device, function, reg_idx, in_dword as u64, data);
+        true
+    }
+}
+
 /// Minimal Intel-440FX-style host bridge. Pure config-space placeholder
 /// so the kernel's PCIe enumeration walk finds something at 00:00.0.
 pub(crate) struct HostBridge {
@@ -299,5 +389,34 @@ mod tests {
     fn out_of_range_device_returns_all_ones() {
         let bus = PciBus::new_with_host_bridge();
         assert_eq!(bus.config_read(0, 32, 0, 0), 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn pci_root_ecam_reads_host_bridge_config() {
+        let root = PciRoot::new(MmioWindow {
+            name: "pcie-ecam",
+            base: 0x3000_0000,
+            size: 0x1000_0000,
+        });
+        let mut data = [0u8; 4];
+
+        assert!(root.read(0, &mut data));
+
+        assert_eq!(u32::from_le_bytes(data), root.config_read(0, 0, 0, 0));
+        assert_eq!(data, [0x86, 0x80, 0x37, 0x12]);
+    }
+
+    #[test]
+    fn pci_root_ecam_reads_unaligned_bytes() {
+        let root = PciRoot::new(MmioWindow {
+            name: "pcie-ecam",
+            base: 0x3000_0000,
+            size: 0x1000_0000,
+        });
+        let mut data = [0u8; 2];
+
+        assert!(root.read(1, &mut data));
+
+        assert_eq!(data, [0x80, 0x37]);
     }
 }

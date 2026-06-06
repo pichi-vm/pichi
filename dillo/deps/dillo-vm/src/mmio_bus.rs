@@ -7,7 +7,7 @@
 //!
 //! No locking inside the dispatcher itself — the bus is built at
 //! startup and frozen for the VM's lifetime; handlers wrap whatever
-//! internal mutability they need (e.g. `Mutex<PciBus>`).
+//! internal mutability they need.
 
 use std::sync::Arc;
 

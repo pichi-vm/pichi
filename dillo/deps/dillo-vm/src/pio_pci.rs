@@ -9,11 +9,11 @@
 //!
 //! After enumeration, the kernel will also use ECAM (MCFG-declared)
 //! for extended (>256B) config reads, so both dispatch paths must
-//! return the same bytes — we feed them from the same `PciBus`.
+//! return the same bytes — we feed them from the same `PciRoot`.
 
 use std::sync::{Arc, Mutex};
 
-use crate::pci::PciBus;
+use crate::pci::PciRoot;
 
 pub(crate) const CF8_PORT: u16 = 0xCF8;
 pub(crate) const CF8_PORT_END: u16 = 0xCFB;
@@ -51,7 +51,12 @@ fn decode_cf8(cf8: u32) -> Option<(u8, u8, u8, usize, usize)> {
 
 /// Dispatch a guest PIO read on `port`. Returns the value with `size`
 /// (1/2/4) low bytes meaningful.
-pub(crate) fn pio_read(state: &Arc<LegacyPciState>, bus: &Arc<PciBus>, port: u16, size: u8) -> u32 {
+pub(crate) fn pio_read(
+    state: &Arc<LegacyPciState>,
+    bus: &Arc<PciRoot>,
+    port: u16,
+    size: u8,
+) -> u32 {
     match port {
         p if (CF8_PORT..=CF8_PORT_END).contains(&p) => {
             let cf8 = *state.cf8.lock().expect("cf8 mutex poisoned");
@@ -82,7 +87,7 @@ pub(crate) fn pio_read(state: &Arc<LegacyPciState>, bus: &Arc<PciBus>, port: u16
 }
 
 /// Dispatch a guest PIO write on `port`. `data` carries `size` bytes.
-pub(crate) fn pio_write(state: &Arc<LegacyPciState>, bus: &Arc<PciBus>, port: u16, data: &[u8]) {
+pub(crate) fn pio_write(state: &Arc<LegacyPciState>, bus: &Arc<PciRoot>, port: u16, data: &[u8]) {
     match port {
         p if (CF8_PORT..=CF8_PORT_END).contains(&p) => {
             let off = (p - CF8_PORT) as usize;
@@ -107,6 +112,7 @@ pub(crate) fn pio_write(state: &Arc<LegacyPciState>, bus: &Arc<PciBus>, port: u1
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mmio_bus::{MmioDevice, MmioWindow};
 
     #[test]
     fn decode_cf8_disable_bit_clear() {
@@ -131,12 +137,36 @@ mod tests {
     #[test]
     fn cf8_latch_accepts_byte_writes() {
         let state = Arc::new(LegacyPciState::new());
-        let bus = Arc::new(PciBus::new_with_host_bridge());
+        let bus = Arc::new(PciRoot::new(MmioWindow {
+            name: "pcie-ecam",
+            base: 0x3000_0000,
+            size: 0x1000_0000,
+        }));
 
         pio_write(&state, &bus, CF8_PORT, &[0, 0, 0, 0]);
         pio_write(&state, &bus, CF8_PORT_END, &[0x80]);
 
         assert_eq!(pio_read(&state, &bus, CF8_PORT, 4), 0x8000_0000);
         assert_eq!(pio_read(&state, &bus, CF8_PORT_END, 1), 0x80);
+    }
+
+    #[test]
+    fn legacy_cfc_and_ecam_return_identical_config_bytes() {
+        let state = Arc::new(LegacyPciState::new());
+        let root = Arc::new(PciRoot::new(MmioWindow {
+            name: "pcie-ecam",
+            base: 0x3000_0000,
+            size: 0x1000_0000,
+        }));
+        let cf8 = 0x8000_0000u32;
+        pio_write(&state, &root, CF8_PORT, &cf8.to_le_bytes());
+
+        let mut ecam = [0u8; 4];
+        assert!(root.read(0, &mut ecam));
+
+        assert_eq!(
+            pio_read(&state, &root, CFC_PORT_BASE, 4).to_le_bytes(),
+            ecam
+        );
     }
 }

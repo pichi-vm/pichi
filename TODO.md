@@ -176,7 +176,7 @@ Local verification:
 
 ## Stage 6 - Convert PCI root into an MMIO device
 
-Status: pending.
+Status: complete.
 
 Goal: make the declared PCIe host bridge a `PciRoot` with an ECAM `MmioDevice` face.
 
@@ -190,6 +190,20 @@ Success criteria:
 - BAR dispatch remains correct.
 - x86 legacy config ports and ECAM return identical base config bytes.
 - Default local verification passes.
+
+Completed changes:
+- Added `PciRoot`, which owns the DTB-derived ECAM `MmioWindow` and the single downstream PCI bus.
+- `PciRoot` implements `MmioDevice`; ECAM config reads/writes now route through it.
+- Linux, macOS, and Windows backends register `PciRoot` directly instead of per-backend ECAM closures.
+- x86 CF8/CFC PIO dispatch now targets `PciRoot`, sharing the same config accessor as ECAM.
+- Added tests for `PciRoot` ECAM reads and Linux/Windows CF8/CFC-vs-ECAM config-byte parity.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-platform -p dillo-vm --all-targets`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --all-targets`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 
 ## Stage 7 - Hide KVM handles from virtio-pci
 

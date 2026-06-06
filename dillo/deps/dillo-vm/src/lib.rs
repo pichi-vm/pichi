@@ -85,11 +85,11 @@ use crate::irq::IrqManager;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use crate::mmio_bus::{MmioBus, MmioWindow};
 #[cfg(target_os = "linux")]
-use crate::pci::{PciBus, VirtioPciAdapter};
+use crate::pci::{PciRoot, VirtioPciAdapter};
 #[cfg(target_os = "macos")]
-use crate::pci::{PciBus, VirtioPciAdapter};
+use crate::pci::{PciRoot, VirtioPciAdapter};
 #[cfg(target_os = "windows")]
-use crate::pci::{PciBus, VirtioPciAdapter};
+use crate::pci::{PciRoot, VirtioPciAdapter};
 #[cfg(target_os = "linux")]
 use crate::pci_irq::IrqfdNotifier;
 #[cfg(target_os = "windows")]
@@ -262,9 +262,13 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     );
     virtio_pci_dev.set_mem(guest_mem.clone());
 
-    let mut pci_bus = PciBus::new_with_host_bridge();
-    pci_bus.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
-    let pci_bus = Arc::new(pci_bus);
+    let mut pci_root = PciRoot::new(MmioWindow {
+        name: "pcie-ecam",
+        base: platform.pcie.ecam_base,
+        size: platform.pcie.ecam_size,
+    });
+    pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
+    let pci_root = Arc::new(pci_root);
     let shutdown = Arc::new(AtomicBool::new(false));
     let ioapic_region = platform
         .ioapic
@@ -280,7 +284,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // interrupt controller.
     let mmio_bus = Arc::new(windows_x86_mmio_bus(
         &platform,
-        Arc::clone(&pci_bus),
+        Arc::clone(&pci_root),
         Arc::clone(&ioapic),
         vm.interrupt_controller(),
         Arc::clone(&syscon_state),
@@ -292,7 +296,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let shutdown_c = Arc::clone(&shutdown);
         let mmio_c = Arc::clone(&mmio_bus);
         let legacy_c = Arc::clone(&legacy_pci);
-        let pci_c = Arc::clone(&pci_bus);
+        let pci_c = Arc::clone(&pci_root);
         let syscon_c = Arc::clone(&syscon_state);
         joins.push(thread::spawn(move || -> Result<()> {
             run_windows_vcpu_loop(
@@ -332,7 +336,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 #[cfg(target_os = "windows")]
 fn windows_x86_mmio_bus(
     platform: &dillo_platform::Platform,
-    pci_bus: Arc<PciBus>,
+    pci_root: Arc<PciRoot>,
     ioapic: Arc<ioapic::IoApic>,
     interrupt_controller: dillo_hypervisor::InterruptController,
     syscon_state: Arc<syscon::SysconState>,
@@ -370,42 +374,11 @@ fn windows_x86_mmio_bus(
 
     register_x86_syscon_devices(&mut mmio_bus, platform, syscon_state);
     mmio_bus.register_device(ioapic);
+    mmio_bus.register_device(Arc::clone(&pci_root));
 
-    let pci_for_ecam = Arc::clone(&pci_bus);
-    let pci_for_ecam_w = Arc::clone(&pci_bus);
-    mmio_bus.register(
-        "pcie-ecam",
-        platform.pcie.ecam_base,
-        platform.pcie.ecam_size,
-        Arc::new(move |off, data| {
-            let bus = ((off >> 20) & 0xFF) as u8;
-            let device = ((off >> 15) & 0x1F) as u8;
-            let function = ((off >> 12) & 0x07) as u8;
-            let reg_byte = (off & 0xFFF) as usize;
-            let reg_idx = reg_byte >> 2;
-            let in_dword = reg_byte & 0x3;
-            let val = pci_for_ecam.config_read(bus, device, function, reg_idx);
-            let bytes = val.to_le_bytes();
-            for (i, slot) in data.iter_mut().enumerate() {
-                *slot = *bytes.get(in_dword + i).unwrap_or(&0xFF);
-            }
-            true
-        }),
-        Arc::new(move |off, data| {
-            let bus = ((off >> 20) & 0xFF) as u8;
-            let device = ((off >> 15) & 0x1F) as u8;
-            let function = ((off >> 12) & 0x07) as u8;
-            let reg_byte = (off & 0xFFF) as usize;
-            let reg_idx = reg_byte >> 2;
-            let in_dword = (reg_byte & 0x3) as u64;
-            pci_for_ecam_w.config_write(bus, device, function, reg_idx, in_dword, data);
-            true
-        }),
-    );
-
-    for (slot, bar) in pci_bus.enumerate_bars() {
-        let pci_for_bar_r = Arc::clone(&pci_bus);
-        let pci_for_bar_w = Arc::clone(&pci_bus);
+    for (slot, bar) in pci_root.enumerate_bars() {
+        let pci_for_bar_r = Arc::clone(&pci_root);
+        let pci_for_bar_w = Arc::clone(&pci_root);
         let bar_idx = bar.bar_idx;
         let name: &'static str = Box::leak(format!("pci-{slot}.{bar_idx}").into_boxed_str());
         mmio_bus.register(
@@ -431,7 +404,7 @@ fn run_windows_vcpu_loop(
     shutdown: &Arc<AtomicBool>,
     mmio_bus: &Arc<MmioBus>,
     legacy_pci: &Arc<pio_pci::LegacyPciState>,
-    pci_bus: &Arc<PciBus>,
+    pci_bus: &Arc<PciRoot>,
     syscon_state: &Arc<syscon::SysconState>,
 ) -> Result<()> {
     let mut exit_count = 0u64;
@@ -732,51 +705,19 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             hvf_devices::build_guest_memory(&vm.region_mappings()).map_err(RunError::MemfdSetup)?;
         virtio_pci_dev.set_mem(guest_mem);
 
-        let mut pci_bus = PciBus::new_with_host_bridge();
-        pci_bus.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
-        let pci_bus = Arc::new(pci_bus);
-
-        // ECAM config space → PciBus::config_read / config_write.
-        let pci_ecam_r = Arc::clone(&pci_bus);
-        let pci_ecam_w = Arc::clone(&pci_bus);
-        mmio_bus.register(
-            "pcie-ecam",
-            platform.pcie.ecam_base,
-            platform.pcie.ecam_size,
-            Arc::new(move |off, data: &mut [u8]| {
-                let bus = ((off >> 20) & 0xFF) as u8;
-                let device = ((off >> 15) & 0x1F) as u8;
-                let function = ((off >> 12) & 0x07) as u8;
-                let reg_byte = (off & 0xFFF) as usize;
-                let val = pci_ecam_r.config_read(bus, device, function, reg_byte >> 2);
-                let bytes = val.to_le_bytes();
-                let in_dword = reg_byte & 0x3;
-                for (i, slot) in data.iter_mut().enumerate() {
-                    *slot = *bytes.get(in_dword + i).unwrap_or(&0xFF);
-                }
-                true
-            }),
-            Arc::new(move |off, data: &[u8]| {
-                let bus = ((off >> 20) & 0xFF) as u8;
-                let device = ((off >> 15) & 0x1F) as u8;
-                let function = ((off >> 12) & 0x07) as u8;
-                let reg_byte = (off & 0xFFF) as usize;
-                pci_ecam_w.config_write(
-                    bus,
-                    device,
-                    function,
-                    reg_byte >> 2,
-                    (reg_byte & 0x3) as u64,
-                    data,
-                );
-                true
-            }),
-        );
+        let mut pci_root = PciRoot::new(MmioWindow {
+            name: "pcie-ecam",
+            base: platform.pcie.ecam_base,
+            size: platform.pcie.ecam_size,
+        });
+        pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
+        let pci_root = Arc::new(pci_root);
+        mmio_bus.register_device(Arc::clone(&pci_root));
 
         // BAR windows: dispatch each device BAR range to bar_read / bar_write.
-        for (slot, bar) in pci_bus.enumerate_bars() {
-            let pci_bar_r = Arc::clone(&pci_bus);
-            let pci_bar_w = Arc::clone(&pci_bus);
+        for (slot, bar) in pci_root.enumerate_bars() {
+            let pci_bar_r = Arc::clone(&pci_root);
+            let pci_bar_w = Arc::clone(&pci_root);
             let bar_idx = bar.bar_idx;
             let name: &'static str = Box::leak(format!("pci-{slot}.{bar_idx}").into_boxed_str());
             mmio_bus.register(
@@ -1657,47 +1598,19 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         memory::build_guest_memory(&memfd, &region_tuples).map_err(RunError::MemfdSetup)?;
     virtio_pci_dev.set_mem(guest_mem);
 
-    let mut pci_bus = PciBus::new_with_host_bridge();
-    pci_bus.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
-    let pci_bus = Arc::new(pci_bus);
-
-    // ECAM: map the entire ECAM window to PciBus::config_read / write.
-    let pci_for_ecam = Arc::clone(&pci_bus);
-    let pci_for_ecam_w = Arc::clone(&pci_bus);
-    mmio_bus.register(
-        "pcie-ecam",
-        platform.pcie.ecam_base,
-        platform.pcie.ecam_size,
-        Arc::new(move |off, data| {
-            let bus = ((off >> 20) & 0xFF) as u8;
-            let device = ((off >> 15) & 0x1F) as u8;
-            let function = ((off >> 12) & 0x07) as u8;
-            let reg_byte = (off & 0xFFF) as usize;
-            let reg_idx = reg_byte >> 2;
-            let in_dword = reg_byte & 0x3;
-            let val = pci_for_ecam.config_read(bus, device, function, reg_idx);
-            let bytes = val.to_le_bytes();
-            for (i, slot) in data.iter_mut().enumerate() {
-                *slot = *bytes.get(in_dword + i).unwrap_or(&0xFF);
-            }
-            true
-        }),
-        Arc::new(move |off, data| {
-            let bus = ((off >> 20) & 0xFF) as u8;
-            let device = ((off >> 15) & 0x1F) as u8;
-            let function = ((off >> 12) & 0x07) as u8;
-            let reg_byte = (off & 0xFFF) as usize;
-            let reg_idx = reg_byte >> 2;
-            let in_dword = (reg_byte & 0x3) as u64;
-            pci_for_ecam_w.config_write(bus, device, function, reg_idx, in_dword, data);
-            true
-        }),
-    );
+    let mut pci_root = PciRoot::new(MmioWindow {
+        name: "pcie-ecam",
+        base: platform.pcie.ecam_base,
+        size: platform.pcie.ecam_size,
+    });
+    pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
+    let pci_root = Arc::new(pci_root);
+    mmio_bus.register_device(Arc::clone(&pci_root));
 
     // BARs: register each device's BAR ranges.
-    for (slot, bar) in pci_bus.enumerate_bars() {
-        let pci_for_bar_r = Arc::clone(&pci_bus);
-        let pci_for_bar_w = Arc::clone(&pci_bus);
+    for (slot, bar) in pci_root.enumerate_bars() {
+        let pci_for_bar_r = Arc::clone(&pci_root);
+        let pci_for_bar_w = Arc::clone(&pci_root);
         let bar_idx = bar.bar_idx;
         let leaked_name: &'static str = Box::leak(format!("pci-{slot}.{bar_idx}").into_boxed_str());
         mmio_bus.register(
@@ -1780,7 +1693,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let shutdown_c = Arc::clone(&shutdown);
         let mmio_c = Arc::clone(&mmio_bus);
         let legacy_c = Arc::clone(&legacy_pci);
-        let pci_c = Arc::clone(&pci_bus);
+        let pci_c = Arc::clone(&pci_root);
         let syscon_c = Arc::clone(&syscon_state);
         joins.push(thread::spawn(move || -> Result<()> {
             run_vcpu_loop(
@@ -1822,7 +1735,7 @@ fn run_vcpu_loop(
     shutdown: &Arc<AtomicBool>,
     mmio_bus: &Arc<MmioBus>,
     legacy_pci: &Arc<pio_pci::LegacyPciState>,
-    pci_bus: &Arc<PciBus>,
+    pci_bus: &Arc<PciRoot>,
     syscon_state: &Arc<syscon::SysconState>,
 ) -> Result<()> {
     let mut exit_count = 0u64;
