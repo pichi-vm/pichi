@@ -117,15 +117,15 @@ impl IoApic {
 }
 
 impl MmioDevice for IoApic {
-    fn window(&self) -> MmioWindow {
-        self.window
+    fn windows(&self) -> Vec<MmioWindow> {
+        vec![self.window]
     }
 
-    fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+    fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
         self.read_register(offset, data)
     }
 
-    fn write(&self, offset: u64, data: &[u8]) -> bool {
+    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
         self.write_register(offset, data)
     }
 }
@@ -178,26 +178,28 @@ mod tests {
     #[test]
     fn reports_24_redirection_entries() {
         let ioapic = ioapic();
-        ioapic.write(0, &1u32.to_le_bytes());
+        let window = ioapic.windows()[0];
+        ioapic.write(window, 0, &1u32.to_le_bytes());
         let mut data = [0; 4];
-        ioapic.read(0x10, &mut data);
+        ioapic.read(window, 0x10, &mut data);
         assert_eq!(u32::from_le_bytes(data), (23 << 16) | 0x11);
     }
 
     #[test]
     fn stores_redirection_entry_halves() {
         let ioapic = ioapic();
-        ioapic.write(0, &0x10u32.to_le_bytes());
-        ioapic.write(0x10, &0x31u32.to_le_bytes());
-        ioapic.write(0, &0x11u32.to_le_bytes());
-        ioapic.write(0x10, &0x0200_0000u32.to_le_bytes());
+        let window = ioapic.windows()[0];
+        ioapic.write(window, 0, &0x10u32.to_le_bytes());
+        ioapic.write(window, 0x10, &0x31u32.to_le_bytes());
+        ioapic.write(window, 0, &0x11u32.to_le_bytes());
+        ioapic.write(window, 0x10, &0x0200_0000u32.to_le_bytes());
 
         let mut data = [0; 4];
-        ioapic.write(0, &0x10u32.to_le_bytes());
-        ioapic.read(0x10, &mut data);
+        ioapic.write(window, 0, &0x10u32.to_le_bytes());
+        ioapic.read(window, 0x10, &mut data);
         assert_eq!(u32::from_le_bytes(data), 0x31);
-        ioapic.write(0, &0x11u32.to_le_bytes());
-        ioapic.read(0x10, &mut data);
+        ioapic.write(window, 0, &0x11u32.to_le_bytes());
+        ioapic.read(window, 0x10, &mut data);
         assert_eq!(u32::from_le_bytes(data), 0x0200_0000);
     }
 

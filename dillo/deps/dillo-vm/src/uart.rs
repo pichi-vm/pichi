@@ -208,11 +208,11 @@ impl Ns16550 {
 }
 
 impl MmioDevice for Ns16550 {
-    fn window(&self) -> MmioWindow {
-        self.window
+    fn windows(&self) -> Vec<MmioWindow> {
+        vec![self.window]
     }
 
-    fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+    fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
         data.fill(0);
         if let Some(slot) = data.first_mut()
             && let Ok(mut state) = self.state.lock()
@@ -222,7 +222,7 @@ impl MmioDevice for Ns16550 {
         true
     }
 
-    fn write(&self, offset: u64, data: &[u8]) -> bool {
+    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
         if let Ok(mut state) = self.state.lock() {
             state.write(offset, data);
         }

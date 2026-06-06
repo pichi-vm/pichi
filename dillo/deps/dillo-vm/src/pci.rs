@@ -245,27 +245,64 @@ impl PciRoot {
         let reg_byte = register as usize;
         (bus, device, function, reg_byte >> 2, reg_byte & 0x3)
     }
+
+    fn bar_window(_slot: u8, bar: &BarRegion) -> MmioWindow {
+        MmioWindow {
+            name: "pci-bar",
+            base: bar.base_gpa,
+            size: bar.size,
+        }
+    }
+
+    fn bar_route(&self, window: MmioWindow) -> Option<(u8, u8)> {
+        self.enumerate_bars()
+            .into_iter()
+            .find(|(_, bar)| bar.base_gpa == window.base && bar.size == window.size)
+            .map(|(slot, bar)| (slot, bar.bar_idx))
+    }
 }
 
 impl MmioDevice for PciRoot {
-    fn window(&self) -> MmioWindow {
-        self.window
+    fn windows(&self) -> Vec<MmioWindow> {
+        let mut windows = vec![self.window];
+        windows.extend(
+            self.enumerate_bars()
+                .into_iter()
+                .map(|(slot, bar)| Self::bar_window(slot, &bar)),
+        );
+        windows
     }
 
-    fn read(&self, offset: u64, data: &mut [u8]) -> bool {
-        let (bus, device, function, reg_idx, in_dword) = Self::decode_ecam(offset);
-        let value = self.config_read(bus, device, function, reg_idx);
-        let bytes = value.to_le_bytes();
-        for (i, slot) in data.iter_mut().enumerate() {
-            *slot = *bytes.get(in_dword + i).unwrap_or(&0xFF);
+    fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
+        if window.base == self.window.base && window.size == self.window.size {
+            let (bus, device, function, reg_idx, in_dword) = Self::decode_ecam(offset);
+            let value = self.config_read(bus, device, function, reg_idx);
+            let bytes = value.to_le_bytes();
+            for (i, slot) in data.iter_mut().enumerate() {
+                *slot = *bytes.get(in_dword + i).unwrap_or(&0xFF);
+            }
+            return true;
         }
-        true
+
+        if let Some((slot, bar_idx)) = self.bar_route(window) {
+            return self.bar_read(slot, bar_idx, offset, data);
+        }
+
+        false
     }
 
-    fn write(&self, offset: u64, data: &[u8]) -> bool {
-        let (bus, device, function, reg_idx, in_dword) = Self::decode_ecam(offset);
-        self.config_write(bus, device, function, reg_idx, in_dword as u64, data);
-        true
+    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> bool {
+        if window.base == self.window.base && window.size == self.window.size {
+            let (bus, device, function, reg_idx, in_dword) = Self::decode_ecam(offset);
+            self.config_write(bus, device, function, reg_idx, in_dword as u64, data);
+            return true;
+        }
+
+        if let Some((slot, bar_idx)) = self.bar_route(window) {
+            return self.bar_write(slot, bar_idx, offset, data);
+        }
+
+        false
     }
 }
 
@@ -400,7 +437,7 @@ mod tests {
         });
         let mut data = [0u8; 4];
 
-        assert!(root.read(0, &mut data));
+        assert!(root.read(root.window, 0, &mut data));
 
         assert_eq!(u32::from_le_bytes(data), root.config_read(0, 0, 0, 0));
         assert_eq!(data, [0x86, 0x80, 0x37, 0x12]);
@@ -415,8 +452,109 @@ mod tests {
         });
         let mut data = [0u8; 2];
 
-        assert!(root.read(1, &mut data));
+        assert!(root.read(root.window, 1, &mut data));
 
         assert_eq!(data, [0x80, 0x37]);
+    }
+
+    #[test]
+    fn pci_root_windows_include_ecam_and_bars() {
+        struct BarDevice;
+
+        impl std::fmt::Debug for BarDevice {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("BarDevice").finish()
+            }
+        }
+
+        impl PciDevice for BarDevice {
+            fn config_read(&self, _reg_idx: usize) -> u32 {
+                0
+            }
+
+            fn config_write(&mut self, _reg_idx: usize, _offset: u64, _data: &[u8]) {}
+
+            fn name(&self) -> &str {
+                "bar-device"
+            }
+
+            fn bar_regions(&self) -> Vec<BarRegion> {
+                vec![BarRegion {
+                    bar_idx: 2,
+                    base_gpa: 0x8000_0000,
+                    size: 0x1000,
+                }]
+            }
+        }
+
+        let mut root = PciRoot::new(MmioWindow {
+            name: "pcie-ecam",
+            base: 0x3000_0000,
+            size: 0x1000_0000,
+        });
+        root.register(1, Box::new(BarDevice));
+
+        let windows = root.windows();
+
+        assert!(windows.contains(&root.window));
+        assert!(
+            windows
+                .iter()
+                .any(|w| w.base == 0x8000_0000 && w.size == 0x1000)
+        );
+    }
+
+    #[test]
+    fn pci_root_routes_bar_window_reads() {
+        struct BarDevice;
+
+        impl std::fmt::Debug for BarDevice {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("BarDevice").finish()
+            }
+        }
+
+        impl PciDevice for BarDevice {
+            fn config_read(&self, _reg_idx: usize) -> u32 {
+                0
+            }
+
+            fn config_write(&mut self, _reg_idx: usize, _offset: u64, _data: &[u8]) {}
+
+            fn name(&self) -> &str {
+                "bar-device"
+            }
+
+            fn bar_regions(&self) -> Vec<BarRegion> {
+                vec![BarRegion {
+                    bar_idx: 2,
+                    base_gpa: 0x8000_0000,
+                    size: 0x1000,
+                }]
+            }
+
+            fn bar_read(&self, bar_idx: u8, offset: u64, data: &mut [u8]) -> bool {
+                data[0] = bar_idx;
+                data[1] = offset as u8;
+                true
+            }
+        }
+
+        let mut root = PciRoot::new(MmioWindow {
+            name: "pcie-ecam",
+            base: 0x3000_0000,
+            size: 0x1000_0000,
+        });
+        root.register(1, Box::new(BarDevice));
+        let bar_window = root
+            .windows()
+            .into_iter()
+            .find(|w| w.base == 0x8000_0000)
+            .expect("BAR window");
+        let mut data = [0u8; 2];
+
+        assert!(root.read(bar_window, 0x42, &mut data));
+
+        assert_eq!(data, [2, 0x42]);
     }
 }

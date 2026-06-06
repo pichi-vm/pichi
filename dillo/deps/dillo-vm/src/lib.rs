@@ -376,25 +376,6 @@ fn windows_x86_mmio_bus(
     mmio_bus.register_device(ioapic);
     mmio_bus.register_device(Arc::clone(&pci_root));
 
-    for (slot, bar) in pci_root.enumerate_bars() {
-        let pci_for_bar_r = Arc::clone(&pci_root);
-        let pci_for_bar_w = Arc::clone(&pci_root);
-        let bar_idx = bar.bar_idx;
-        let name: &'static str = Box::leak(format!("pci-{slot}.{bar_idx}").into_boxed_str());
-        mmio_bus.register(
-            name,
-            bar.base_gpa,
-            bar.size,
-            Arc::new(move |off, data| pci_for_bar_r.bar_read(slot, bar_idx, off, data)),
-            Arc::new(move |off, data| pci_for_bar_w.bar_write(slot, bar_idx, off, data)),
-        );
-        log::info!(
-            "WHP MMIO: BAR{bar_idx} of pci slot {slot} at {:#x}+{:#x}",
-            bar.base_gpa,
-            bar.size
-        );
-    }
-
     Ok(mmio_bus)
 }
 
@@ -713,26 +694,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
         let pci_root = Arc::new(pci_root);
         mmio_bus.register_device(Arc::clone(&pci_root));
-
-        // BAR windows: dispatch each device BAR range to bar_read / bar_write.
-        for (slot, bar) in pci_root.enumerate_bars() {
-            let pci_bar_r = Arc::clone(&pci_root);
-            let pci_bar_w = Arc::clone(&pci_root);
-            let bar_idx = bar.bar_idx;
-            let name: &'static str = Box::leak(format!("pci-{slot}.{bar_idx}").into_boxed_str());
-            mmio_bus.register(
-                name,
-                bar.base_gpa,
-                bar.size,
-                Arc::new(move |off, data: &mut [u8]| pci_bar_r.bar_read(slot, bar_idx, off, data)),
-                Arc::new(move |off, data: &[u8]| pci_bar_w.bar_write(slot, bar_idx, off, data)),
-            );
-            log::info!(
-                "MMIO: BAR{bar_idx} of pci slot {slot} at {:#x}+{:#x}",
-                bar.base_gpa,
-                bar.size
-            );
-        }
     } // end: if platform.has_pcie (microVM with --pci-slots 0 skips PCI fabric)
 
     // 7c. virtio-mmio (F6): bind a virtio-console to the first transport slot
@@ -1606,28 +1567,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
     mmio_bus.register_device(Arc::clone(&pci_root));
-
-    // BARs: register each device's BAR ranges.
-    for (slot, bar) in pci_root.enumerate_bars() {
-        let pci_for_bar_r = Arc::clone(&pci_root);
-        let pci_for_bar_w = Arc::clone(&pci_root);
-        let bar_idx = bar.bar_idx;
-        let leaked_name: &'static str = Box::leak(format!("pci-{slot}.{bar_idx}").into_boxed_str());
-        mmio_bus.register(
-            leaked_name,
-            bar.base_gpa,
-            bar.size,
-            Arc::new(move |off, data| pci_for_bar_r.bar_read(slot, bar_idx, off, data)),
-            Arc::new(move |off, data| pci_for_bar_w.bar_write(slot, bar_idx, off, data)),
-        );
-        log::info!(
-            "MMIO: BAR{} of pci-slot {} at {:#x}+{:#x}",
-            bar_idx,
-            slot,
-            bar.base_gpa,
-            bar.size
-        );
-    }
 
     let mmio_bus = Arc::new(mmio_bus);
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());

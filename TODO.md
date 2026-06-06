@@ -187,16 +187,17 @@ Process:
 
 Success criteria:
 - ECAM config reads/writes route through `PciRoot`.
-- BAR dispatch remains correct.
+- BAR dispatch routes through the same registered `PciRoot` object.
 - x86 legacy config ports and ECAM return identical base config bytes.
 - Default local verification passes.
 
 Completed changes:
-- Added `PciRoot`, which owns the DTB-derived ECAM `MmioWindow` and the single downstream PCI bus.
-- `PciRoot` implements `MmioDevice`; ECAM config reads/writes now route through it.
-- Linux, macOS, and Windows backends register `PciRoot` directly instead of per-backend ECAM closures.
+- Added `PciRoot`, which owns the DTB-derived ECAM `MmioWindow`, BAR windows, and the single downstream PCI bus.
+- `MmioDevice` can now expose multiple windows from one registered object.
+- `PciRoot` implements `MmioDevice`; ECAM and BAR reads/writes now route through it.
+- Linux, macOS, and Windows backends register one `PciRoot` object instead of per-backend ECAM/BAR closures.
 - x86 CF8/CFC PIO dispatch now targets `PciRoot`, sharing the same config accessor as ECAM.
-- Added tests for `PciRoot` ECAM reads and Linux/Windows CF8/CFC-vs-ECAM config-byte parity.
+- Added tests for `PciRoot` ECAM reads, ECAM+BAR window exposure, and Linux/Windows CF8/CFC-vs-ECAM config-byte parity.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

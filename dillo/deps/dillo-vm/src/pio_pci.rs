@@ -162,7 +162,8 @@ mod tests {
         pio_write(&state, &root, CF8_PORT, &cf8.to_le_bytes());
 
         let mut ecam = [0u8; 4];
-        assert!(root.read(0, &mut ecam));
+        let ecam_window = root.windows()[0];
+        assert!(root.read(ecam_window, 0, &mut ecam));
 
         assert_eq!(
             pio_read(&state, &root, CFC_PORT_BASE, 4).to_le_bytes(),

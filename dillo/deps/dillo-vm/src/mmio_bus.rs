@@ -27,11 +27,11 @@ pub(crate) struct MmioWindow {
     pub size: u64,
 }
 
-/// A device with one guest-visible MMIO window.
+/// A device with one or more guest-visible MMIO windows.
 pub(crate) trait MmioDevice: Send + Sync {
-    fn window(&self) -> MmioWindow;
-    fn read(&self, offset: u64, data: &mut [u8]) -> bool;
-    fn write(&self, offset: u64, data: &[u8]) -> bool;
+    fn windows(&self) -> Vec<MmioWindow>;
+    fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> bool;
+    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> bool;
 }
 
 struct Range {
@@ -46,15 +46,15 @@ struct ClosureMmioDevice {
 }
 
 impl MmioDevice for ClosureMmioDevice {
-    fn window(&self) -> MmioWindow {
-        self.window
+    fn windows(&self) -> Vec<MmioWindow> {
+        vec![self.window]
     }
 
-    fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+    fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
         (self.read)(offset, data)
     }
 
-    fn write(&self, offset: u64, data: &[u8]) -> bool {
+    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
         (self.write)(offset, data)
     }
 }
@@ -103,33 +103,43 @@ impl MmioBus {
     where
         D: MmioDevice + 'static,
     {
-        let window = device.window();
-        let new_end = window
-            .base
-            .checked_add(window.size)
-            .expect("MMIO range size overflow");
-        for r in &self.ranges {
-            let end = r.window.base + r.window.size;
-            let overlap = window.base < end && r.window.base < new_end;
-            assert!(
-                !overlap,
-                "MMIO range overlap: new `{name}` [{:#x}..{:#x}) collides with `{}` [{:#x}..{:#x})",
-                window.base,
-                new_end,
-                r.window.name,
-                r.window.base,
-                end,
-                name = window.name,
-            );
+        let device: Arc<dyn MmioDevice> = device;
+        let windows = device.windows();
+        assert!(
+            !windows.is_empty(),
+            "MMIO device must expose at least one window"
+        );
+        for window in windows {
+            let new_end = window
+                .base
+                .checked_add(window.size)
+                .expect("MMIO range size overflow");
+            for r in &self.ranges {
+                let end = r.window.base + r.window.size;
+                let overlap = window.base < end && r.window.base < new_end;
+                assert!(
+                    !overlap,
+                    "MMIO range overlap: new `{name}` [{:#x}..{:#x}) collides with `{}` [{:#x}..{:#x})",
+                    window.base,
+                    new_end,
+                    r.window.name,
+                    r.window.base,
+                    end,
+                    name = window.name,
+                );
+            }
+            self.ranges.push(Range {
+                window,
+                device: Arc::clone(&device),
+            });
         }
-        self.ranges.push(Range { window, device });
     }
 
     /// Dispatch a guest MMIO read. Returns `true` if a registered
     /// handler claimed the address (in which case `data` is filled).
     pub(crate) fn read(&self, addr: u64, data: &mut [u8]) -> bool {
         if let Some(r) = self.find(addr, data.len() as u64) {
-            return r.device.read(addr - r.window.base, data);
+            return r.device.read(r.window, addr - r.window.base, data);
         }
         false
     }
@@ -138,7 +148,7 @@ impl MmioBus {
     /// handler claimed the address.
     pub(crate) fn write(&self, addr: u64, data: &[u8]) -> bool {
         if let Some(r) = self.find(addr, data.len() as u64) {
-            return r.device.write(addr - r.window.base, data);
+            return r.device.write(r.window, addr - r.window.base, data);
         }
         false
     }
@@ -171,16 +181,16 @@ mod tests {
     }
 
     impl MmioDevice for TestDevice {
-        fn window(&self) -> MmioWindow {
-            self.window
+        fn windows(&self) -> Vec<MmioWindow> {
+            vec![self.window]
         }
 
-        fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+        fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
             data.fill(offset as u8);
             true
         }
 
-        fn write(&self, offset: u64, data: &[u8]) -> bool {
+        fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
             let mut buf = [0u8; 8];
             let n = data.len().min(8);
             buf[..n].copy_from_slice(&data[..n]);

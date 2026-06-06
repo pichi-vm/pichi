@@ -96,16 +96,16 @@ impl SysconDevice {
 }
 
 impl MmioDevice for SysconDevice {
-    fn window(&self) -> MmioWindow {
-        self.window
+    fn windows(&self) -> Vec<MmioWindow> {
+        vec![self.window]
     }
 
-    fn read(&self, _offset: u64, data: &mut [u8]) -> bool {
+    fn read(&self, _window: MmioWindow, _offset: u64, data: &mut [u8]) -> bool {
         data.fill(0);
         true
     }
 
-    fn write(&self, offset: u64, data: &[u8]) -> bool {
+    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
         if self.matches(offset, data) {
             log::info!("guest issued {:?} via {}", self.action, self.window.name);
             self.state.request(self.action);
@@ -152,8 +152,9 @@ mod tests {
             SysconAction::Poweroff,
             std::sync::Arc::clone(&state),
         );
+        let window = device.windows()[0];
 
-        assert!(device.write(0x10, &0xCAFEu32.to_le_bytes()));
+        assert!(device.write(window, 0x10, &0xCAFEu32.to_le_bytes()));
 
         assert_eq!(state.action(), Some(SysconAction::Poweroff));
     }
@@ -167,8 +168,9 @@ mod tests {
             SysconAction::Reboot,
             std::sync::Arc::clone(&state),
         );
+        let window = device.windows()[0];
 
-        assert!(device.write(0x14, &0xCAFEu32.to_le_bytes()));
+        assert!(device.write(window, 0x14, &0xCAFEu32.to_le_bytes()));
 
         assert_eq!(state.action(), None);
     }
