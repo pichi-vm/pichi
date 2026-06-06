@@ -8,6 +8,8 @@
 
 #![allow(clippy::needless_lifetimes)]
 
+#[cfg(target_os = "linux")]
+mod backend;
 mod cpu_id;
 mod error;
 mod fdt_writer;
@@ -65,6 +67,8 @@ use std::sync::atomic::Ordering;
 use std::thread;
 
 use anyhow::{Result, anyhow};
+#[cfg(target_os = "linux")]
+use backend::BackendVm;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_hypervisor::Vm;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -82,8 +86,6 @@ pub use error::RunError;
 /// dillo-vm exits 0 cleanly within the §13.2 grace period.
 pub static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-#[cfg(target_os = "linux")]
-use crate::irq::IrqManager;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use crate::mmio_bus::{MmioBus, MmioWindow};
 #[cfg(target_os = "linux")]
@@ -1432,14 +1434,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     register_x86_syscon_devices(&mut mmio_bus, &platform, Arc::clone(&syscon_state));
 
     // Build the device → adapter → bus chain.
-    let irq_mgr = Arc::new(std::sync::Mutex::new(
-        IrqManager::new(vm.vm_fd_arc()).map_err(|e| {
-            RunError::Kvm(dillo_hypervisor::Error::RunVcpu(
-                0,
-                std::io::Error::other(format!("irq manager: {e}")),
-            ))
-        })?,
-    ));
+    let irq_mgr = vm.irq_manager()?;
 
     // Platform-driven UART attach (device-model §"Serial port"): the serial
     // port is an MMIO ns16550a. If the Platform declares one, attach it with a
@@ -1544,7 +1539,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         bar2_gpa,
         irqfd_notifier as Arc<dyn vm_pci::MsixNotifier>,
     );
-    virtio_pci_dev.set_queue_notifier(Box::new(pci_notify::KvmQueueNotifier::new(vm.vm_fd_arc())));
+    virtio_pci_dev.set_queue_notifier(vm.queue_notifier());
     // Build a vm-memory view over our memfd regions so virtio-pci can
     // access queues / descriptors when the guest activates the device.
     let region_tuples: Vec<(u64, u64, u64)> = plan
