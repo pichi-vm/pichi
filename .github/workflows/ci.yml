@@ -43,6 +43,12 @@ jobs:
       - name: Install toolchain
         shell: bash
         run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
           rustup default "$NIGHTLY"
           # arma always emits both-arch PMIs (both tatu none targets); snuffler
