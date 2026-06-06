@@ -268,6 +268,7 @@ Progress:
 - Added a Windows `VmOptions` constructor slice; WHP VM creation, memory installation, and mapping logging now happen behind `BackendVm`.
 - Added a Linux `VmOptions` constructor slice; KVM VM creation and memslot installation now happen behind `BackendVm`.
 - Added a macOS `VmOptions` constructor slice; HVF VM creation, max-vCPU validation, and memory installation now happen behind `BackendVm`.
+- Added Linux/WHP backend-owned vCPU creation; launch code no longer calls `create_vcpu` directly on those VMs.
 - Remaining work: extend the trait boundary across MMIO attach, wired IRQ, and uniform vCPU seed/factory APIs on all supported backends.
 
 Local verification for current slice:

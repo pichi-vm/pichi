@@ -38,6 +38,7 @@ pub(crate) trait BackendVm {
 
     fn irq_manager(&self) -> Result<Arc<Mutex<IrqManager>>, RunError>;
     fn queue_notifier(&self) -> Box<dyn QueueNotifier>;
+    fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError>;
 }
 
 #[cfg(target_os = "linux")]
@@ -70,6 +71,10 @@ impl BackendVm for dillo_hypervisor::Vm {
 
     fn queue_notifier(&self) -> Box<dyn QueueNotifier> {
         Box::new(KvmQueueNotifier::new(self.vm_fd_arc()))
+    }
+
+    fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError> {
+        dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)
     }
 }
 
@@ -146,6 +151,8 @@ pub(crate) trait BackendVm {
 
     fn msix_notifier(&self, count: u16) -> Arc<WhpMsixNotifier>;
 
+    fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError>;
+
     fn ns16550(
         &self,
         window: MmioWindow,
@@ -179,6 +186,10 @@ impl BackendVm for dillo_hypervisor::Vm {
 
     fn msix_notifier(&self, count: u16) -> Arc<WhpMsixNotifier> {
         Arc::new(WhpMsixNotifier::new(self.interrupt_controller(), count))
+    }
+
+    fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError> {
+        dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)
     }
 
     fn ns16550(

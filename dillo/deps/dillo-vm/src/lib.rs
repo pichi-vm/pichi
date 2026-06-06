@@ -222,7 +222,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
     let cpu_profile = parsed.cpu_profile.as_str();
     for idx in 0..vcpus {
-        let mut vcpu = vm.create_vcpu(idx, cpu_profile)?;
+        let mut vcpu = BackendVm::create_vcpu(&vm, idx, cpu_profile)?;
         if idx == 0 {
             match &parsed.vcpu {
                 VcpuState::X86_64(state) => vcpu.set_x86_64_state(state)?,
@@ -1551,7 +1551,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
     let cpu_profile = parsed.cpu_profile.as_str();
     for idx in 0..vcpus {
-        let mut vcpu = vm.create_vcpu(idx, cpu_profile)?;
+        let mut vcpu = BackendVm::create_vcpu(&vm, idx, cpu_profile)?;
         if idx == 0 {
             match &parsed.vcpu {
                 VcpuState::X86_64(state) => {
