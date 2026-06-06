@@ -14,8 +14,6 @@
 //! Invariant: `MemTotal == --memory` (modulo 2 MiB rounding of the
 //! must-cover sections themselves).
 
-#[cfg(not(target_os = "macos"))]
-use dillo_platform::Platform;
 use thiserror::Error;
 
 const HUGE_PAGE: u64 = 2 << 20;
@@ -60,19 +58,6 @@ pub(crate) enum PlanError {
 /// Identity-map ceiling on x86: 4 GiB. Big chunk must end at or below this
 /// (so its GPAs are reachable from tatu's 4 GiB identity pgtable).
 const IDENTITY_CEILING: u64 = 1u64 << 32;
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn plan(
-    must_cover: &[(u64, u64)],
-    memory_mib: u32,
-    platform: &Platform,
-) -> Result<MemoryPlan, PlanError> {
-    plan_around_regions(
-        must_cover,
-        memory_mib,
-        platform.device_regions.iter().copied(),
-    )
-}
 
 pub(crate) fn plan_around_regions<I>(
     must_cover: &[(u64, u64)],
