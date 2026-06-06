@@ -109,7 +109,6 @@ impl MmioDevice for SysconDevice {
         if self.matches(offset, data) {
             log::info!("guest issued {:?} via {}", self.action, self.window.name);
             self.state.request(self.action);
-            dillo_virtio_console::flush_output();
         }
         true
     }

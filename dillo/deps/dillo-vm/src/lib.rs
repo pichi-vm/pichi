@@ -1966,6 +1966,7 @@ fn handle_x86_syscon_action(action: syscon::SysconAction, shutdown: &AtomicBool)
     match action {
         syscon::SysconAction::Poweroff => {
             log::info!("guest syscon poweroff observed by run loop");
+            dillo_virtio_console::flush_output();
         }
         syscon::SysconAction::Reboot => {
             log::warn!(
