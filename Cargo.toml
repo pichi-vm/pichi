@@ -6,7 +6,6 @@ members = [
     "dillo",
     # Cross-product shared libraries (no single owner)
     "deps/devtree",
-    "deps/pmi",
     # Shared test-support (dev-only): generic caching URL downloader
     "deps/burrow",
     # arma-owned (nested by sole consumer)
@@ -65,7 +64,7 @@ uninlined_format_args = "allow"
 
 [workspace.dependencies]
 # Cross-product shared crates
-pmi = { path = "deps/pmi" }
+pmi = { git = "https://github.com/pichi-vm/pmi" }
 devtree = { path = "deps/devtree" }
 
 # dillo-internal crates

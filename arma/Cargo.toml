@@ -13,7 +13,7 @@ path = "src/main.rs"
 # arma only builds PMIs for its native host arch, so each build has exactly one
 # tatu artifact dependency and does not require Cargo multidep support.
 
-pmi = { path = "../deps/pmi" }
+pmi.workspace = true
 ciborium = "0.2"
 goblin = { version = "0.10", default-features = false, features = [
     "elf32",
