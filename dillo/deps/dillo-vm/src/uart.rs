@@ -8,9 +8,9 @@
 //!
 //! Per the arma device model (see `arma/docs/device-model.md` §"Serial
 //! port") the serial port is an **MMIO `ns16550a`** on every arch — there
-//! is no legacy x86 `0x3f8` port-I/O UART. `init_ns16550` is called once
-//! from `dillo_vm::run` when the PMI's `Platform` declares a UART, and the
-//! node's register window is mapped on the MMIO bus (register `N` at offset
+//! is no legacy x86 `0x3f8` port-I/O UART. When the PMI Platform declares a
+//! UART, dillo constructs an owned [`Ns16550`] with the node's register
+//! window and attaches it to the MMIO bus (register `N` at offset
 //! `N << reg_shift`). The IRQ is delivered per host: a KVM irqfd on Linux,
 //! WHP's fixed-interrupt injection through the userspace IOAPIC on Windows,
 //! and polled (no IRQ) on macOS/HVF.
@@ -31,7 +31,7 @@
 //! fully usable console rather than an early-boot-only channel.
 
 use std::io::{self, Write};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use vm_superio::Serial;
 use vm_superio::Trigger;
@@ -40,6 +40,8 @@ use vm_superio::serial::NoEvents;
 use vmm_sys_util::eventfd::EventFd;
 #[cfg(target_os = "windows")]
 use {crate::ioapic::IoApic, dillo_hypervisor::InterruptController, std::sync::Arc};
+
+use crate::mmio_bus::{MmioDevice, MmioWindow};
 
 // 16550 register offsets and bits we post-process on top of vm-superio.
 // Offsets are pre-`reg_shift` register indices (0..=7).
@@ -145,7 +147,90 @@ type Mmio16550 = Serial<Trig, NoEvents, Box<dyn Write + Send>>;
 
 /// MMIO ns16550a: a `vm-superio` `Serial` plus the THR-empty-on-enable
 /// emulation it lacks (see module docs).
-struct Ns16550 {
+pub(crate) struct Ns16550 {
+    window: MmioWindow,
+    state: Mutex<Ns16550State>,
+}
+
+impl Ns16550 {
+    fn with_serial(window: MmioWindow, reg_shift: u32, serial: Mmio16550) -> Self {
+        Self {
+            window,
+            state: Mutex::new(Ns16550State::new(reg_shift, serial)),
+        }
+    }
+
+    /// Build the MMIO ns16550a, wiring its IRQ to a KVM irqfd at the declared
+    /// GSI. Console output (THR) uses the supplied host sink.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn new_irqfd(
+        window: MmioWindow,
+        reg_shift: u32,
+        irqfd: EventFd,
+        out: Box<dyn Write + Send>,
+    ) -> Self {
+        Self::with_serial(
+            window,
+            reg_shift,
+            Serial::new(IrqfdTrigger::new(irqfd), out),
+        )
+    }
+
+    /// Build the MMIO ns16550a in polled mode. Console output (THR) uses the
+    /// supplied host sink.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn new_polled(
+        window: MmioWindow,
+        reg_shift: u32,
+        out: Box<dyn Write + Send>,
+    ) -> Self {
+        Self::with_serial(window, reg_shift, Serial::new(NoopTrigger, out))
+    }
+
+    /// Build the MMIO ns16550a, routing its IRQ through the userspace IOAPIC to
+    /// WHP's fixed-interrupt injection at the declared GSI. Console output
+    /// (THR) uses the supplied host sink.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn new_whp(
+        window: MmioWindow,
+        reg_shift: u32,
+        interrupt_controller: InterruptController,
+        ioapic: Arc<IoApic>,
+        gsi: u32,
+        out: Box<dyn Write + Send>,
+    ) -> Self {
+        Self::with_serial(
+            window,
+            reg_shift,
+            Serial::new(WhpTrigger::new(interrupt_controller, ioapic, gsi), out),
+        )
+    }
+}
+
+impl MmioDevice for Ns16550 {
+    fn window(&self) -> MmioWindow {
+        self.window
+    }
+
+    fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+        data.fill(0);
+        if let Some(slot) = data.first_mut()
+            && let Ok(mut state) = self.state.lock()
+        {
+            *slot = state.read(offset);
+        }
+        true
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> bool {
+        if let Ok(mut state) = self.state.lock() {
+            state.write(offset, data);
+        }
+        true
+    }
+}
+
+struct Ns16550State {
     reg_shift: u32,
     serial: Mmio16550,
     /// Mirror of IER.THRE (DLAB-aware). When set, the THR-empty interrupt is
@@ -154,7 +239,7 @@ struct Ns16550 {
     thri_enabled: bool,
 }
 
-impl Ns16550 {
+impl Ns16550State {
     fn new(reg_shift: u32, serial: Mmio16550) -> Self {
         Self {
             reg_shift,
@@ -209,71 +294,6 @@ impl Ns16550 {
     }
 }
 
-static NS16550: OnceLock<Mutex<Ns16550>> = OnceLock::new();
-
-/// Attach the MMIO ns16550a. Set-once; `dillo_vm::run` calls this exactly
-/// once when the Platform declares a UART. Console output (THR) → host
-/// stderr; polled mode (no IRQ delivery).
-#[cfg(target_os = "macos")]
-pub(crate) fn init_ns16550(reg_shift: u32) {
-    let out: Box<dyn Write + Send> = Box::new(io::stderr());
-    let _ = NS16550.set(Mutex::new(Ns16550::new(
-        reg_shift,
-        Serial::new(NoopTrigger, out),
-    )));
-}
-
-/// Attach the MMIO ns16550a, wiring its IRQ to a KVM irqfd at the declared
-/// GSI. Set-once. Console output (THR) → stdout (the `--console stdio`
-/// endpoint).
-#[cfg(target_os = "linux")]
-pub(crate) fn init_ns16550(reg_shift: u32, irqfd: EventFd) {
-    let out: Box<dyn Write + Send> = Box::new(io::stdout());
-    let _ = NS16550.set(Mutex::new(Ns16550::new(
-        reg_shift,
-        Serial::new(IrqfdTrigger::new(irqfd), out),
-    )));
-}
-
-/// Attach the MMIO ns16550a, routing its IRQ through the userspace IOAPIC to
-/// WHP's fixed-interrupt injection at the declared GSI. Set-once. Console
-/// output (THR) → host stderr.
-#[cfg(target_os = "windows")]
-pub(crate) fn init_ns16550(
-    reg_shift: u32,
-    interrupt_controller: InterruptController,
-    ioapic: Arc<IoApic>,
-    gsi: u32,
-) {
-    let out: Box<dyn Write + Send> = Box::new(io::stderr());
-    let _ = NS16550.set(Mutex::new(Ns16550::new(
-        reg_shift,
-        Serial::new(WhpTrigger::new(interrupt_controller, ioapic, gsi), out),
-    )));
-}
-
-/// MMIO write to the ns16550a register file (`offset` within the node reg).
-pub(crate) fn ns16550_write(offset: u64, data: &[u8]) -> bool {
-    if let Some(state) = NS16550.get()
-        && let Ok(mut s) = state.lock()
-    {
-        s.write(offset, data);
-    }
-    true
-}
-
-/// MMIO read from the ns16550a register file.
-pub(crate) fn ns16550_read(offset: u64, data: &mut [u8]) -> bool {
-    data.fill(0);
-    if let Some(state) = NS16550.get()
-        && let Some(slot) = data.first_mut()
-        && let Ok(mut s) = state.lock()
-    {
-        *slot = s.read(offset);
-    }
-    true
-}
-
 // The THR-empty-on-enable emulation is identical across backends; we exercise
 // it on Linux, where the trigger is a real `EventFd` we can observe directly.
 #[cfg(all(test, target_os = "linux"))]
@@ -282,12 +302,12 @@ mod tests {
     use vmm_sys_util::eventfd::EventFd;
 
     /// Build an `Ns16550` whose trigger writes an observable `EventFd`.
-    fn harness() -> (Ns16550, EventFd) {
+    fn harness() -> (Ns16550State, EventFd) {
         let efd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
         let observe = efd.try_clone().unwrap();
         let out: Box<dyn Write + Send> = Box::new(io::sink());
         let serial = Serial::new(IrqfdTrigger::new(efd), out);
-        (Ns16550::new(0, serial), observe)
+        (Ns16550State::new(0, serial), observe)
     }
 
     /// Enabling THRI while THR is empty must immediately raise the interrupt

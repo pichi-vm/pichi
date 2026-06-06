@@ -81,7 +81,7 @@ pub static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "linux")]
 use crate::irq::IrqManager;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use crate::mmio_bus::MmioBus;
+use crate::mmio_bus::{MmioBus, MmioWindow};
 #[cfg(target_os = "linux")]
 use crate::pci::{PciBus, VirtioPciAdapter};
 #[cfg(target_os = "macos")]
@@ -324,19 +324,19 @@ fn windows_x86_mmio_bus(
     // WHP's fixed-interrupt primitive. Absent UART → no serial on the bus.
     match &platform.uart {
         Some(uart) => {
-            uart::init_ns16550(
+            let serial = uart::Ns16550::new_whp(
+                MmioWindow {
+                    name: "ns16550a",
+                    base: uart.base,
+                    size: uart.size,
+                },
                 uart.reg_shift,
                 interrupt_controller,
                 Arc::clone(&ioapic),
                 uart.irq,
+                Box::new(std::io::stderr()),
             );
-            mmio_bus.register(
-                "ns16550a",
-                uart.base,
-                uart.size,
-                Arc::new(|off, data| uart::ns16550_read(off, data)),
-                Arc::new(|off, data| uart::ns16550_write(off, data)),
-            );
+            mmio_bus.register_device(Arc::new(serial));
             log::info!(
                 "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
                 uart.base,
@@ -706,14 +706,15 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 uart.size,
                 uart.reg_shift
             );
-            uart::init_ns16550(uart.reg_shift);
-            mmio_bus.register(
-                "ns16550a",
-                uart.base,
-                uart.size,
-                Arc::new(|off, data| uart::ns16550_read(off, data)),
-                Arc::new(|off, data| uart::ns16550_write(off, data)),
-            );
+            mmio_bus.register_device(Arc::new(uart::Ns16550::new_polled(
+                MmioWindow {
+                    name: "ns16550a",
+                    base: uart.base,
+                    size: uart.size,
+                },
+                uart.reg_shift,
+                Box::new(std::io::stderr()),
+            )));
         }
         None => log::warn!("no UART in Platform — guest console output will be dropped"),
     }
@@ -1253,15 +1254,16 @@ mod macos_tests {
         vm.write_guest(code_base, &bytes).expect("write");
 
         let serial_base = 0x0A11_0000u64;
-        uart::init_ns16550(0);
         let mut mmio_bus = MmioBus::new();
-        mmio_bus.register(
-            "ns16550a",
-            serial_base,
-            0x1000,
-            Arc::new(|o, d| uart::ns16550_read(o, d)),
-            Arc::new(|o, d| uart::ns16550_write(o, d)),
-        );
+        mmio_bus.register_device(Arc::new(uart::Ns16550::new_polled(
+            MmioWindow {
+                name: "ns16550a",
+                base: serial_base,
+                size: 0x1000,
+            },
+            0,
+            Box::new(std::io::stderr()),
+        )));
 
         // GPRs are carried in the boot state (set_aarch64_state programs
         // x0..x30): x1=serial THR, x2='h', x0=PSCI SYSTEM_OFF.
@@ -1599,14 +1601,16 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                         source: anyhow!("irqfd for serial GSI {}: {e}", uart.irq),
                     })?
             };
-            uart::init_ns16550(uart.reg_shift, eventfd);
-            mmio_bus.register(
-                "ns16550a",
-                uart.base,
-                uart.size,
-                Arc::new(|off, data| uart::ns16550_read(off, data)),
-                Arc::new(|off, data| uart::ns16550_write(off, data)),
-            );
+            mmio_bus.register_device(Arc::new(uart::Ns16550::new_irqfd(
+                MmioWindow {
+                    name: "ns16550a",
+                    base: uart.base,
+                    size: uart.size,
+                },
+                uart.reg_shift,
+                eventfd,
+                Box::new(std::io::stdout()),
+            )));
             log::info!(
                 "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
                 uart.base,

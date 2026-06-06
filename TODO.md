@@ -117,7 +117,7 @@ Local verification:
 
 ## Stage 4 - Convert UART to an owned MMIO device
 
-Status: pending.
+Status: complete.
 
 Goal: replace global UART state and per-OS init functions with an owned `Ns16550` `MmioDevice`.
 
@@ -131,6 +131,16 @@ Success criteria:
 - No per-OS UART init signature remains in the device model.
 - Existing THR-empty behavior tests still pass.
 - Default local verification passes.
+
+Completed changes:
+- Replaced process-global UART state with owned `Ns16550` devices.
+- `Ns16550` now carries its DTB-derived `MmioWindow` and attaches through `MmioBus::register_device`.
+- Backend launch paths construct the UART with their host interrupt trigger and output sink, then plug it into the MMIO bus.
+- Removed the global init/read/write UART callback API.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --lib`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-platform -p dillo-vm --all-targets`
 
 ## Stage 5 - Model substrate MMIO explicitly
 
