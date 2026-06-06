@@ -286,7 +286,7 @@ Local verification for current slice:
 
 ## Stage 9 - Unify supervisor run outcome
 
-Status: pending.
+Status: complete.
 
 Goal: supervisor owns vCPU threads and returns uniform `RunOutcome`.
 
@@ -299,6 +299,20 @@ Success criteria:
 - Guest poweroff and reboot are represented structurally.
 - vCPU loops remain backend-correct.
 - Default local verification passes.
+
+Completed changes:
+- Promoted `RunOutcome` to the Linux, macOS, and Windows run paths.
+- Linux and Windows vCPU loops now return `RunOutcome` instead of calling `process::exit`.
+- x86 syscon poweroff and reboot are represented structurally; reboot still exits after reporting that x86 warm reboot is not implemented.
+- Preserved HVF warm reboot behavior.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-platform -p dillo-vm --all-targets`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 
 ## Stage 10 - Remove temporary compatibility paths
 

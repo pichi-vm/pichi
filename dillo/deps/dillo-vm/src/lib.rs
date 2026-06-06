@@ -292,7 +292,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let legacy_c = Arc::clone(&legacy_pci);
         let pci_c = Arc::clone(&pci_root);
         let syscon_c = Arc::clone(&syscon_state);
-        joins.push(thread::spawn(move || -> Result<()> {
+        joins.push(thread::spawn(move || -> Result<RunOutcome> {
             run_windows_vcpu_loop(
                 &mut vcpu,
                 &shutdown_c,
@@ -305,9 +305,14 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     }
 
     let mut err: Option<RunError> = None;
+    let mut outcome = RunOutcome::Exit(0);
     for join in joins {
         match join.join() {
-            Ok(Ok(())) => {}
+            Ok(Ok(thread_outcome)) => {
+                if matches!(thread_outcome, RunOutcome::Reboot) {
+                    outcome = RunOutcome::Reboot;
+                }
+            }
             Ok(Err(e)) => {
                 let msg = format!("{e:#}");
                 log::error!("Windows/WHP vCPU thread error: {msg}");
@@ -324,7 +329,13 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     }
 
     let _guest_mem = guest_mem;
-    Ok(0)
+    match outcome {
+        RunOutcome::Exit(code) => Ok(code),
+        RunOutcome::Reboot => {
+            log::warn!("WHP guest reboot requested; exiting until x86 warm reboot is implemented");
+            Ok(0)
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -380,19 +391,19 @@ fn run_windows_vcpu_loop(
     legacy_pci: &Arc<pio_pci::LegacyPciState>,
     pci_bus: &Arc<PciRoot>,
     syscon_state: &Arc<syscon::SysconState>,
-) -> Result<()> {
+) -> Result<RunOutcome> {
     let mut exit_count = 0u64;
     loop {
         if shutdown.load(Ordering::Acquire) {
-            return Ok(());
+            return Ok(RunOutcome::Exit(0));
         }
         if let Some(action) = syscon_state.action() {
-            handle_x86_syscon_action(action, shutdown);
-            return Ok(());
+            return Ok(action.run_outcome(shutdown));
         }
         if SUPERVISOR_SHUTDOWN.load(Ordering::Acquire) {
             log::info!("vCPU {}: supervisor shutdown observed", vcpu.index());
-            std::process::exit(0);
+            shutdown.store(true, Ordering::Release);
+            return Ok(RunOutcome::Exit(0));
         }
 
         let mmio_bus_for_read = Arc::clone(mmio_bus);
@@ -460,7 +471,7 @@ fn run_windows_vcpu_loop(
             VmExit::Shutdown => {
                 log::warn!("guest shutdown via WHP shutdown exit");
                 shutdown.store(true, Ordering::Release);
-                return Ok(());
+                return Ok(RunOutcome::Exit(0));
             }
             VmExit::Debug => {}
             VmExit::Hvc { args } | VmExit::Smc { args } => {
@@ -802,10 +813,29 @@ fn apply_load_sections(
 
 /// Outcome of a full `run_smp` invocation: the guest powered off (process exit
 /// code) or requested a reboot (warm in-VM restart).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 enum RunOutcome {
     Exit(i32),
     Reboot,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl syscon::SysconAction {
+    fn run_outcome(self, shutdown: &AtomicBool) -> RunOutcome {
+        match self {
+            syscon::SysconAction::Poweroff => {
+                log::info!("guest syscon poweroff observed by run loop");
+                dillo_virtio_console::flush_output();
+                shutdown.store(true, Ordering::Release);
+                RunOutcome::Exit(0)
+            }
+            syscon::SysconAction::Reboot => {
+                log::warn!("guest syscon reboot observed; x86 warm reboot is not wired yet");
+                shutdown.store(true, Ordering::Release);
+                RunOutcome::Reboot
+            }
+        }
+    }
 }
 
 /// Validate the `cpu:profile` *name* against the machine architecture
@@ -1606,7 +1636,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let legacy_c = Arc::clone(&legacy_pci);
         let pci_c = Arc::clone(&pci_root);
         let syscon_c = Arc::clone(&syscon_state);
-        joins.push(thread::spawn(move || -> Result<()> {
+        joins.push(thread::spawn(move || -> Result<RunOutcome> {
             run_vcpu_loop(
                 &mut vcpu,
                 &shutdown_c,
@@ -1620,9 +1650,14 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     // ── 11. wait for shutdown ──────────────────────────────────────
     let mut err: Option<RunError> = None;
+    let mut outcome = RunOutcome::Exit(0);
     for j in joins {
         match j.join() {
-            Ok(Ok(())) => {}
+            Ok(Ok(thread_outcome)) => {
+                if matches!(thread_outcome, RunOutcome::Reboot) {
+                    outcome = RunOutcome::Reboot;
+                }
+            }
             Ok(Err(e)) => {
                 let msg = format!("{e:#}");
                 log::error!("vCPU thread error: {msg}");
@@ -1637,7 +1672,13 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     if let Some(e) = err {
         return Err(e);
     }
-    Ok(0)
+    match outcome {
+        RunOutcome::Exit(code) => Ok(code),
+        RunOutcome::Reboot => {
+            log::warn!("KVM guest reboot requested; exiting until x86 warm reboot is implemented");
+            Ok(0)
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1648,20 +1689,20 @@ fn run_vcpu_loop(
     legacy_pci: &Arc<pio_pci::LegacyPciState>,
     pci_bus: &Arc<PciRoot>,
     syscon_state: &Arc<syscon::SysconState>,
-) -> Result<()> {
+) -> Result<RunOutcome> {
     let mut exit_count = 0u64;
     loop {
         if shutdown.load(Ordering::Acquire) {
-            return Ok(());
+            return Ok(RunOutcome::Exit(0));
         }
         if let Some(action) = syscon_state.action() {
-            handle_x86_syscon_action(action, shutdown);
-            return Ok(());
+            return Ok(action.run_outcome(shutdown));
         }
         // §13.3: supervisor requested orderly shutdown.
         if SUPERVISOR_SHUTDOWN.load(Ordering::Acquire) {
             log::info!("vCPU {}: supervisor shutdown observed", vcpu.index());
-            std::process::exit(0);
+            shutdown.store(true, Ordering::Release);
+            return Ok(RunOutcome::Exit(0));
         }
         let mmio_bus_for_read = Arc::clone(mmio_bus);
         let legacy_for_read = Arc::clone(legacy_pci);
@@ -1739,7 +1780,7 @@ fn run_vcpu_loop(
                      not a syscon-poweroff write. Attach gdb (DILLO_GDB=<port>) to inspect."
                 );
                 shutdown.store(true, Ordering::Release);
-                return Ok(());
+                return Ok(RunOutcome::Exit(0));
             }
             VmExit::Hvc { args } | VmExit::Smc { args } => {
                 log::warn!("unhandled HVC/SMC: args={args:?}");
@@ -1761,23 +1802,6 @@ pub(crate) fn syscon_match_for_gdb(
     data: &[u8],
 ) -> bool {
     syscon::matches_poweroff(platform, addr, data)
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn handle_x86_syscon_action(action: syscon::SysconAction, shutdown: &AtomicBool) {
-    match action {
-        syscon::SysconAction::Poweroff => {
-            log::info!("guest syscon poweroff observed by run loop");
-            dillo_virtio_console::flush_output();
-        }
-        syscon::SysconAction::Reboot => {
-            log::warn!(
-                "guest syscon reboot observed; x86 run outcome unification is not wired yet"
-            );
-        }
-    }
-    shutdown.store(true, Ordering::Release);
-    std::process::exit(0);
 }
 
 fn read_section<'a>(bytes: &'a [u8], offset: u64, size: u64) -> &'a [u8] {
