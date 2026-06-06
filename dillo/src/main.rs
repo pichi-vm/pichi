@@ -207,14 +207,15 @@ fn install_signal_watchers() {
                              waiting 5s for guest before hard exit"
                         );
                         // §13.3: tell dillo-vm the supervisor wants
-                        // shutdown. Each vCPU thread checks the flag
-                        // each iteration and exits 0 cleanly.
+                        // shutdown. vCPU threads check the flag between
+                        // hypervisor runs; the watchdog covers blocked
+                        // sibling vCPUs.
                         dillo_vm::SUPERVISOR_SHUTDOWN
                             .store(true, std::sync::atomic::Ordering::Release);
                         // Spawn a watchdog: if the guest doesn't
                         // ACPI-poweroff within 5s, hard-exit. A successful
-                        // syscon-poweroff write makes the VM run loop exit
-                        // cleanly before this timer fires.
+                        // syscon-poweroff write makes the VM run loop flush
+                        // output and exit before this timer fires.
                         let signo_for_timer = signo;
                         thread::Builder::new()
                             .name("dillo-shutdown-watchdog".into())

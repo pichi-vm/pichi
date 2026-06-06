@@ -1975,6 +1975,7 @@ fn handle_x86_syscon_action(action: syscon::SysconAction, shutdown: &AtomicBool)
         }
     }
     shutdown.store(true, Ordering::Release);
+    std::process::exit(0);
 }
 
 fn read_section<'a>(bytes: &'a [u8], offset: u64, size: u64) -> &'a [u8] {
