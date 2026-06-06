@@ -71,10 +71,12 @@ fn prop_str<N: NodeView>(node: &N, name: &str) -> Option<String> {
     p.as_str().map(str::to_string)
 }
 
+#[cfg(target_arch = "x86_64")]
 fn prop_u64<N: NodeView>(node: &N, name: &str) -> Option<u64> {
     node.property(name)?.as_u64()
 }
 
+#[cfg(target_arch = "x86_64")]
 fn prop_u32s<N: NodeView>(node: &N, name: &str) -> Option<Vec<u32>> {
     let p = node.property(name)?;
     Some(p.as_u32s()?.collect())
