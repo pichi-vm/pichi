@@ -711,19 +711,17 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let guest_mem =
             hvf_devices::build_guest_memory(&vm.region_mappings()).map_err(RunError::MemfdSetup)?;
         let transport = Arc::new(virtio_mmio::VirtioMmio::new(
+            MmioWindow {
+                name: "virtio-mmio-console",
+                base: slot.base,
+                size: slot.size,
+            },
             console,
             Arc::clone(&int_status),
             irq,
             guest_mem,
         ));
-        let (tr, tw) = (Arc::clone(&transport), Arc::clone(&transport));
-        mmio_bus.register(
-            "virtio-mmio-console",
-            slot.base,
-            slot.size,
-            Arc::new(move |off, data: &mut [u8]| tr.read(off, data)),
-            Arc::new(move |off, data: &[u8]| tw.write(off, data)),
-        );
+        mmio_bus.register_device(transport);
         log::info!(
             "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
             slot.base,

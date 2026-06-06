@@ -12,6 +12,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::mmio_bus::{MmioDevice, MmioWindow};
 use virtio::queue::Queue;
 use virtio::{Kick, VirtioDevice};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
@@ -74,6 +75,7 @@ struct Inner {
 
 /// A single virtio-mmio transport slot bound to one [`VirtioDevice`].
 pub(crate) struct VirtioMmio {
+    window: MmioWindow,
     inner: Mutex<Inner>,
     /// Shared with the device's interrupt closure (raised on the worker thread,
     /// read here on `INTERRUPT_STATUS`).
@@ -84,6 +86,7 @@ pub(crate) struct VirtioMmio {
 
 impl VirtioMmio {
     pub(crate) fn new(
+        window: MmioWindow,
         device: Box<dyn VirtioDevice>,
         int_status: std::sync::Arc<AtomicU32>,
         irq: u32,
@@ -101,6 +104,7 @@ impl VirtioMmio {
             })
             .collect();
         Self {
+            window,
             inner: Mutex::new(Inner {
                 device,
                 device_id,
@@ -221,6 +225,20 @@ impl VirtioMmio {
                 log::warn!("virtio-mmio SPI {irq} inject failed: {e}");
             }
         })
+    }
+}
+
+impl MmioDevice for VirtioMmio {
+    fn windows(&self) -> Vec<MmioWindow> {
+        vec![self.window]
+    }
+
+    fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
+        Self::read(self, offset, data)
+    }
+
+    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
+        Self::write(self, offset, data)
     }
 }
 
