@@ -194,14 +194,14 @@ fn serial_earlycon_hands_off_to_hvc0() {
         "ttyS0 not among serial ports: {:?}",
         r.serial
     );
-    let kernel_messages: Vec<&str> = r
-        .kernel_log
-        .entries
-        .iter()
-        .map(|e| e.message.as_str())
-        .collect();
     #[cfg(target_arch = "x86_64")]
     {
+        let kernel_messages: Vec<&str> = r
+            .kernel_log
+            .entries
+            .iter()
+            .map(|e| e.message.as_str())
+            .collect();
         assert!(
             kernel_messages
                 .iter()
