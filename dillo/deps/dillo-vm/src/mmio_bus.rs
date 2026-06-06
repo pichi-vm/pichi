@@ -19,12 +19,25 @@ pub(crate) type ReadFn = Arc<dyn Fn(u64, &mut [u8]) -> bool + Send + Sync>;
 /// guest wrote. Returns `true` if handled.
 pub(crate) type WriteFn = Arc<dyn Fn(u64, &[u8]) -> bool + Send + Sync>;
 
+/// A guest-physical MMIO window owned by one device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MmioWindow {
+    pub name: &'static str,
+    pub base: u64,
+    pub size: u64,
+}
+
+/// A device with one guest-visible MMIO window.
+pub(crate) trait MmioDevice: Send + Sync {
+    fn window(&self) -> MmioWindow;
+    fn read(&self, offset: u64, data: &mut [u8]) -> bool;
+    fn write(&self, offset: u64, data: &[u8]) -> bool;
+}
+
 struct Range {
-    base: u64,
-    size: u64,
+    window: MmioWindow,
     read: ReadFn,
     write: WriteFn,
-    name: &'static str,
 }
 
 /// MMIO bus. Built at startup via [`MmioBus::register`]; queried per
@@ -58,22 +71,48 @@ impl MmioBus {
         read: ReadFn,
         write: WriteFn,
     ) {
-        let new_end = base.checked_add(size).expect("MMIO range size overflow");
+        self.register_window(MmioWindow { name, base, size }, read, write);
+    }
+
+    /// Register an MMIO device. This is the typed attach path; closure-based
+    /// registration remains while existing devices migrate.
+    pub(crate) fn register_device<D>(&mut self, device: Arc<D>)
+    where
+        D: MmioDevice + ?Sized + 'static,
+    {
+        let window = device.window();
+        let read_device = Arc::clone(&device);
+        let write_device = device;
+        self.register_window(
+            window,
+            Arc::new(move |offset, data| read_device.read(offset, data)),
+            Arc::new(move |offset, data| write_device.write(offset, data)),
+        );
+    }
+
+    fn register_window(&mut self, window: MmioWindow, read: ReadFn, write: WriteFn) {
+        let new_end = window
+            .base
+            .checked_add(window.size)
+            .expect("MMIO range size overflow");
         for r in &self.ranges {
-            let end = r.base + r.size;
-            let overlap = base < end && r.base < new_end;
+            let end = r.window.base + r.window.size;
+            let overlap = window.base < end && r.window.base < new_end;
             assert!(
                 !overlap,
                 "MMIO range overlap: new `{name}` [{:#x}..{:#x}) collides with `{}` [{:#x}..{:#x})",
-                base, new_end, r.name, r.base, end
+                window.base,
+                new_end,
+                r.window.name,
+                r.window.base,
+                end,
+                name = window.name,
             );
         }
         self.ranges.push(Range {
-            base,
-            size,
+            window,
             read,
             write,
-            name,
         });
     }
 
@@ -81,7 +120,7 @@ impl MmioBus {
     /// handler claimed the address (in which case `data` is filled).
     pub(crate) fn read(&self, addr: u64, data: &mut [u8]) -> bool {
         if let Some(r) = self.find(addr, data.len() as u64) {
-            return (r.read)(addr - r.base, data);
+            return (r.read)(addr - r.window.base, data);
         }
         false
     }
@@ -90,7 +129,7 @@ impl MmioBus {
     /// handler claimed the address.
     pub(crate) fn write(&self, addr: u64, data: &[u8]) -> bool {
         if let Some(r) = self.find(addr, data.len() as u64) {
-            return (r.write)(addr - r.base, data);
+            return (r.write)(addr - r.window.base, data);
         }
         false
     }
@@ -99,7 +138,7 @@ impl MmioBus {
         let end = addr.checked_add(len)?;
         self.ranges
             .iter()
-            .find(|r| r.base <= addr && end <= r.base + r.size)
+            .find(|r| r.window.base <= addr && end <= r.window.base + r.window.size)
     }
 }
 
@@ -107,6 +146,40 @@ impl MmioBus {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TestDevice {
+        window: MmioWindow,
+        written: AtomicU64,
+    }
+
+    impl TestDevice {
+        fn new(name: &'static str, base: u64, size: u64) -> Self {
+            Self {
+                window: MmioWindow { name, base, size },
+                written: AtomicU64::new(0),
+            }
+        }
+    }
+
+    impl MmioDevice for TestDevice {
+        fn window(&self) -> MmioWindow {
+            self.window
+        }
+
+        fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+            data.fill(offset as u8);
+            true
+        }
+
+        fn write(&self, offset: u64, data: &[u8]) -> bool {
+            let mut buf = [0u8; 8];
+            let n = data.len().min(8);
+            buf[..n].copy_from_slice(&data[..n]);
+            self.written
+                .store(offset | (u64::from_le_bytes(buf) << 32), Ordering::SeqCst);
+            true
+        }
+    }
 
     #[test]
     fn read_dispatches_with_offset() {
@@ -150,6 +223,27 @@ mod tests {
     }
 
     #[test]
+    fn device_read_dispatches_with_offset() {
+        let mut bus = MmioBus::new();
+        bus.register_device(Arc::new(TestDevice::new("device", 0x3000, 0x100)));
+
+        let mut buf = [0u8; 4];
+        assert!(bus.read(0x3042, &mut buf));
+        assert_eq!(buf, [0x42; 4]);
+        assert!(!bus.read(0x2fff, &mut buf));
+    }
+
+    #[test]
+    fn device_write_dispatches_with_offset() {
+        let device = Arc::new(TestDevice::new("device", 0x4000, 0x100));
+        let mut bus = MmioBus::new();
+        bus.register_device(Arc::clone(&device));
+
+        assert!(bus.write(0x4080, &[0xAA, 0xBB]));
+        assert_eq!(device.written.load(Ordering::SeqCst) & 0xFFFF_FFFF, 0x80);
+    }
+
+    #[test]
     #[should_panic(expected = "MMIO range overlap")]
     fn overlap_panics() {
         let mut bus = MmioBus::new();
@@ -157,5 +251,15 @@ mod tests {
         let nop_w: WriteFn = Arc::new(|_, _| true);
         bus.register("a", 0x1000, 0x100, Arc::clone(&nop_r), Arc::clone(&nop_w));
         bus.register("b", 0x1080, 0x100, nop_r, nop_w);
+    }
+
+    #[test]
+    #[should_panic(expected = "MMIO range overlap")]
+    fn device_overlap_panics() {
+        let mut bus = MmioBus::new();
+        let nop_r: ReadFn = Arc::new(|_, _| true);
+        let nop_w: WriteFn = Arc::new(|_, _| true);
+        bus.register("a", 0x1000, 0x100, nop_r, nop_w);
+        bus.register_device(Arc::new(TestDevice::new("b", 0x1080, 0x100)));
     }
 }

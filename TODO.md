@@ -89,7 +89,7 @@ Local verification:
 
 ## Stage 3 - Add `MmioDevice` beside `MmioBus`
 
-Status: pending.
+Status: complete.
 
 Goal: introduce the universal MMIO attach trait without breaking existing closure-based bus wiring.
 
@@ -104,6 +104,15 @@ Success criteria:
 - Trait-device registration routes offsets identically to closure registration.
 - Overlap detection works for trait devices.
 - Default local verification passes.
+
+Completed changes:
+- Added `MmioWindow`.
+- Added `MmioDevice: Send + Sync` with `window`, `read`, and `write`.
+- Added `MmioBus::register_device(...)`.
+- Kept existing closure registration intact.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-platform -p dillo-vm --all-targets`
 
 ## Stage 4 - Convert UART to an owned MMIO device
 
