@@ -263,7 +263,9 @@ Progress:
 - Windows launch code no longer calls `interrupt_controller()` directly; WHP handle access is isolated behind the backend trait implementation.
 - Added macOS backend-owned guest-memory view construction and Windows backend-owned guest-memory mapping logging.
 - Launch code no longer calls `region_mappings()` directly; HVF/WHP mapping access is isolated behind backend trait implementations.
-- Remaining work: extend the trait boundary across construction, MMIO attach, wired IRQ, and vCPU seed/factory APIs on all supported backends.
+- Added macOS backend-owned current-thread vCPU creation.
+- Launch code no longer calls the HVF `create_vcpu_current_thread()` primitive directly; the remaining vCPU work is to make the seed/factory shape uniform across all supported backends.
+- Remaining work: extend the trait boundary across construction, MMIO attach, wired IRQ, and uniform vCPU seed/factory APIs on all supported backends.
 
 Local verification for current slice:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

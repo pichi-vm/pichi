@@ -993,7 +993,7 @@ fn vcpu_thread(
     reboot: &AtomicBool,
     exit_code: &std::sync::atomic::AtomicI32,
 ) -> Result<(), RunError> {
-    let vcpu = dillo_hypervisor::create_vcpu_current_thread()?;
+    let vcpu = Vm::current_thread_vcpu()?;
     *handles[idx].lock().expect("handle poisoned") = Some(vcpu.handle());
     vcpu.set_mpidr(mpidr_for(idx))?;
 

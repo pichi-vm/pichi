@@ -41,12 +41,18 @@ impl BackendVm for dillo_hypervisor::Vm {
 #[cfg(target_os = "macos")]
 pub(crate) trait BackendVm {
     fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError>;
+
+    fn current_thread_vcpu() -> Result<dillo_hypervisor::Vcpu, RunError>;
 }
 
 #[cfg(target_os = "macos")]
 impl BackendVm for dillo_hypervisor::Vm {
     fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError> {
         hvf_devices::build_guest_memory(&self.region_mappings()).map_err(RunError::MemfdSetup)
+    }
+
+    fn current_thread_vcpu() -> Result<dillo_hypervisor::Vcpu, RunError> {
+        dillo_hypervisor::create_vcpu_current_thread().map_err(RunError::Kvm)
     }
 }
 
