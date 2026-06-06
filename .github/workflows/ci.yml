@@ -38,7 +38,7 @@ jobs:
             guest_musl: aarch64-unknown-linux-musl
     runs-on: ${{ fromJSON(matrix.runs_on) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.3
 
       - name: Install toolchain
         shell: bash
@@ -53,7 +53,7 @@ jobs:
 
       - name: Cache patched cargo
         id: cargo-bin
-        uses: actions/cache@v4
+        uses: actions/cache@v5.0.5
         with:
           path: cargo-bindeps
           key: cargo-bindeps-${{ matrix.name }}-${{ env.CARGO_PR_SHA }}
