@@ -74,7 +74,25 @@ impl BackendVm for dillo_hypervisor::Vm {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) struct MemoryRegion {
+    pub(crate) gpa: u64,
+    pub(crate) size: u64,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) struct VmOptions {
+    pub(crate) gic_params: dillo_hypervisor::GicParams,
+    pub(crate) min_addr_space_bits: u32,
+    pub(crate) vcpus: u32,
+    pub(crate) memory_regions: Vec<MemoryRegion>,
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) trait BackendVm {
+    fn new(opts: VmOptions) -> Result<Self, RunError>
+    where
+        Self: Sized;
+
     fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError>;
 
     fn current_thread_vcpu() -> Result<dillo_hypervisor::Vcpu, RunError>;
@@ -82,6 +100,27 @@ pub(crate) trait BackendVm {
 
 #[cfg(target_os = "macos")]
 impl BackendVm for dillo_hypervisor::Vm {
+    fn new(opts: VmOptions) -> Result<Self, RunError> {
+        let mut vm = dillo_hypervisor::Vm::new(&opts.gic_params, opts.min_addr_space_bits)?;
+        let max_vcpus = vm.max_vcpus()?;
+        if opts.vcpus > max_vcpus {
+            return Err(RunError::TooManyVcpus {
+                requested: opts.vcpus,
+                max: max_vcpus,
+            });
+        }
+        for region in opts.memory_regions {
+            log::info!(
+                "  memslot [{:#x}..{:#x}) ({} bytes)",
+                region.gpa,
+                region.gpa + region.size,
+                region.size
+            );
+            vm.add_memory(region.gpa, region.size)?;
+        }
+        Ok(vm)
+    }
+
     fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError> {
         hvf_devices::build_guest_memory(&self.region_mappings()).map_err(RunError::MemfdSetup)
     }

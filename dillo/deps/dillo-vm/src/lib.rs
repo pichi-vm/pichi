@@ -605,24 +605,20 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         msi_intid_base: gic.spi_base,
         msi_intid_count: gic.spi_count,
     };
-    let min_addr_space_bits = machine.min_addr_space_bits();
-    let mut vm = Vm::new(&gic_params, min_addr_space_bits)?;
-    let max_vcpus = vm.max_vcpus()?;
-    if vcpus > max_vcpus {
-        return Err(RunError::TooManyVcpus {
-            requested: vcpus,
-            max: max_vcpus,
-        });
-    }
-    for r in &plan.memslots {
-        log::info!(
-            "  memslot [{:#x}..{:#x}) ({} bytes)",
-            r.gpa,
-            r.gpa + r.size,
-            r.size
-        );
-        vm.add_memory(r.gpa, r.size)?;
-    }
+    let memory_regions = plan
+        .memslots
+        .iter()
+        .map(|r| backend::MemoryRegion {
+            gpa: r.gpa,
+            size: r.size,
+        })
+        .collect();
+    let mut vm = <Vm as BackendVm>::new(backend::VmOptions {
+        gic_params,
+        min_addr_space_bits: machine.min_addr_space_bits(),
+        vcpus,
+        memory_regions,
+    })?;
 
     // 7. Build the MMIO bus once (reused across warm reboots): the ns16550a
     //    serial console (TX → stderr) here, then the PCIe ECAM + virtio-console BARs
