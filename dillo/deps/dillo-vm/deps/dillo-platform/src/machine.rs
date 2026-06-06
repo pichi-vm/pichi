@@ -85,6 +85,21 @@ pub enum SurveyError {
         region_start: u64,
         region_end: u64,
     },
+
+    #[error("property `{prop}` on `{node}` references unknown phandle {phandle}")]
+    UnknownPhandle {
+        node: &'static str,
+        prop: &'static str,
+        phandle: u32,
+    },
+
+    #[error("property `{prop}` on `{node}` references {actual:?}, expected {expected:?}")]
+    UnexpectedController {
+        node: &'static str,
+        prop: &'static str,
+        actual: ControllerKind,
+        expected: ControllerKind,
+    },
 }
 
 /// What a declared region is, so the realize step can map RAM, install MMIO
@@ -241,6 +256,185 @@ pub struct GicConfig {
     pub spi_count: u32,
 }
 
+/// Interrupt controller kinds that guest-visible interrupt specifiers may
+/// target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControllerKind {
+    GicV3,
+    Lapic,
+    IoApic,
+    GicV2mFrame,
+}
+
+/// DTB phandle metadata for an interrupt controller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptControllerRef {
+    pub node: String,
+    pub phandle: u32,
+    pub kind: ControllerKind,
+    pub interrupt_cells: u32,
+}
+
+/// A wired interrupt source decoded through its declared `interrupt-parent`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WiredInterrupt {
+    pub node: String,
+    pub controller: InterruptControllerRef,
+    pub cells: Vec<u32>,
+    pub irq: u32,
+}
+
+/// DTB phandle metadata for an MSI controller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MsiControllerRef {
+    pub node: String,
+    pub phandle: u32,
+    pub kind: ControllerKind,
+}
+
+/// MSI parentage decoded from a device node's `msi-parent`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MsiParentage {
+    pub node: String,
+    pub controller: MsiControllerRef,
+}
+
+#[derive(Debug, Default)]
+struct Topology {
+    interrupt_controllers: Vec<InterruptControllerRef>,
+    msi_controllers: Vec<MsiControllerRef>,
+}
+
+impl Topology {
+    fn register_interrupt_controller(&mut self, controller: InterruptControllerRef) {
+        self.interrupt_controllers.push(controller);
+    }
+
+    fn register_msi_controller(&mut self, controller: MsiControllerRef) {
+        self.msi_controllers.push(controller);
+    }
+
+    fn claim_wired_interrupt(
+        &self,
+        node: &mut OwnedNode,
+        node_path: &'static str,
+        expected: ControllerKind,
+    ) -> Result<WiredInterrupt, SurveyError> {
+        let parent = node.require_u32("interrupt-parent", node_path)?;
+        let controller =
+            self.resolve_interrupt_controller(parent, node_path, "interrupt-parent", expected)?;
+        let interrupts = node.require("interrupts", node_path)?;
+        let cells = interrupt_cells(&interrupts, node_path)?;
+        if cells.len() != controller.interrupt_cells as usize {
+            return Err(SurveyError::BadProperty {
+                node: node_path,
+                prop: "interrupts",
+                reason: "cell count does not match interrupt-parent #interrupt-cells",
+            });
+        }
+        let irq = interrupt_irq(&cells, controller.kind, node_path)?;
+        Ok(WiredInterrupt {
+            node: node_path.to_string(),
+            controller,
+            cells,
+            irq,
+        })
+    }
+
+    fn validate_interrupts(
+        &self,
+        node: &mut OwnedNode,
+        node_path: &'static str,
+        expected: ControllerKind,
+    ) -> Result<(), SurveyError> {
+        let parent = node.require_u32("interrupt-parent", node_path)?;
+        let controller =
+            self.resolve_interrupt_controller(parent, node_path, "interrupt-parent", expected)?;
+        let interrupts = node.require("interrupts", node_path)?;
+        let cells = interrupt_cells(&interrupts, node_path)?;
+        let interrupt_cells = controller.interrupt_cells as usize;
+        if interrupt_cells == 0 || cells.len() % interrupt_cells != 0 {
+            return Err(SurveyError::BadProperty {
+                node: node_path,
+                prop: "interrupts",
+                reason: "cell count does not match interrupt-parent #interrupt-cells",
+            });
+        }
+        Ok(())
+    }
+
+    fn claim_msi_parent(
+        &self,
+        node: &mut OwnedNode,
+        node_path: &'static str,
+        expected: ControllerKind,
+    ) -> Result<Option<MsiParentage>, SurveyError> {
+        if self.msi_controllers.is_empty() && node.property("msi-parent").is_none() {
+            return Ok(None);
+        }
+        let parent = node.require_u32("msi-parent", node_path)?;
+        let controller = self.resolve_msi_controller(parent, node_path, "msi-parent", expected)?;
+        Ok(Some(MsiParentage {
+            node: node_path.to_string(),
+            controller,
+        }))
+    }
+
+    fn resolve_interrupt_controller(
+        &self,
+        phandle: u32,
+        node: &'static str,
+        prop: &'static str,
+        expected: ControllerKind,
+    ) -> Result<InterruptControllerRef, SurveyError> {
+        let controller = self
+            .interrupt_controllers
+            .iter()
+            .find(|controller| controller.phandle == phandle)
+            .ok_or(SurveyError::UnknownPhandle {
+                node,
+                prop,
+                phandle,
+            })?;
+        if controller.kind != expected {
+            return Err(SurveyError::UnexpectedController {
+                node,
+                prop,
+                actual: controller.kind,
+                expected,
+            });
+        }
+        Ok(controller.clone())
+    }
+
+    fn resolve_msi_controller(
+        &self,
+        phandle: u32,
+        node: &'static str,
+        prop: &'static str,
+        expected: ControllerKind,
+    ) -> Result<MsiControllerRef, SurveyError> {
+        let controller = self
+            .msi_controllers
+            .iter()
+            .find(|controller| controller.phandle == phandle)
+            .ok_or(SurveyError::UnknownPhandle {
+                node,
+                prop,
+                phandle,
+            })?;
+        if controller.kind != expected {
+            return Err(SurveyError::UnexpectedController {
+                node,
+                prop,
+                actual: controller.kind,
+                expected,
+            });
+        }
+        Ok(controller.clone())
+    }
+}
+
 /// A fully surveyed machine: every base-DTB node was claimed, every region
 /// traces to a property, and the regions are pairwise disjoint. Fields populate
 /// per architecture (aarch64: `gic`/`psci`; x86: `lapic`/`ioapic`/`poweroff`/
@@ -274,6 +468,8 @@ pub struct Machine {
     pub ioapic: Option<MmioRegion>,
     pub poweroff: Option<Syscon>,
     pub reboot: Option<Syscon>,
+    pub wired_interrupts: Vec<WiredInterrupt>,
+    pub msi_parentage: Vec<MsiParentage>,
 }
 
 impl Machine {
@@ -282,6 +478,9 @@ impl Machine {
         let tree: Tree<'_> = Tree::parse(dtb).map_err(SurveyError::Parse)?;
         let mut t = OwnedTree::materialize(&tree);
         let mut plan = ResourcePlan::default();
+        let mut topology = Topology::default();
+        let mut wired_interrupts = Vec::new();
+        let mut msi_parentage = Vec::new();
 
         let mut gic = None;
         let mut psci = None;
@@ -293,12 +492,12 @@ impl Machine {
         // arch-specific substrate (specific → general within the arch).
         match arch {
             Arch::Aarch64 => {
-                gic = Some(GicConfig::from_tree(&mut t, &mut plan)?);
-                Timer::from_tree(&mut t, &mut plan)?;
+                gic = Some(GicConfig::from_tree(&mut t, &mut plan, &mut topology)?);
+                Timer::from_tree(&mut t, &mut plan, &topology)?;
                 psci = Some(Psci::from_tree(&mut t, &mut plan)?);
             }
             Arch::X86_64 => {
-                let (l, io) = X86Intc::from_tree(&mut t, &mut plan)?;
+                let (l, io) = X86Intc::from_tree(&mut t, &mut plan, &mut topology)?;
                 lapic = Some(l);
                 ioapic = Some(io);
                 let (po, rb) = X86Syscon::from_tree(&mut t, &mut plan)?;
@@ -309,12 +508,14 @@ impl Machine {
 
         // Shared devices, then the general device last. The serial is the same
         // MMIO `ns16550a` on both arches (present only under `--serial`).
-        let uart = Uart::from_tree(&mut t, &mut plan, arch)?;
-        let virtio_mmio = VirtioMmioSlots::from_tree(&mut t, &mut plan, arch)?;
-        let (pcie, has_pcie) = match Pcie::from_tree(&mut t, &mut plan)? {
-            Some(p) => (p, true),
-            None => (Pcie::ZEROED, false),
-        };
+        let uart = Uart::from_tree(&mut t, &mut plan, arch, &topology, &mut wired_interrupts)?;
+        let virtio_mmio =
+            VirtioMmioSlots::from_tree(&mut t, &mut plan, arch, &topology, &mut wired_interrupts)?;
+        let (pcie, has_pcie) =
+            match Pcie::from_tree(&mut t, &mut plan, &topology, &mut msi_parentage)? {
+                Some(p) => (p, true),
+                None => (Pcie::ZEROED, false),
+            };
         CoreVm::from_tree(&mut t, &mut plan)?;
 
         // (a) total coverage: nothing left.
@@ -338,6 +539,8 @@ impl Machine {
             ioapic,
             poweroff,
             reboot,
+            wired_interrupts,
+            msi_parentage,
         })
     }
 
@@ -371,11 +574,16 @@ impl GicConfig {
     /// Claim the GICv3 (`interrupt-controller@…`, `arm,gic-v3`) and the GICv2m
     /// MSI frame (`msi-controller@…`, `arm,gic-v2m-frame`). Nodes are
     /// unit-addressed; matched by name-prefix, then verified by compatible.
-    fn from_tree(t: &mut OwnedTree, plan: &mut ResourcePlan) -> Result<GicConfig, SurveyError> {
+    fn from_tree(
+        t: &mut OwnedTree,
+        plan: &mut ResourcePlan,
+        topology: &mut Topology,
+    ) -> Result<GicConfig, SurveyError> {
         let root = t.root_mut();
 
         let intc_name = child_name_prefixed(root, "interrupt-controller@")
             .ok_or(SurveyError::MissingNode("/interrupt-controller@*"))?;
+        let intc_path = format!("/{intc_name}");
         let mut intc = root.remove_child(&intc_name).expect("just located");
         require_compatible(&mut intc, "/interrupt-controller", "arm,gic-v3")?;
         let reg = intc.require("reg", "/interrupt-controller")?;
@@ -403,13 +611,27 @@ impl GicConfig {
             redist_size,
             RegionKind::SubstrateMmio,
         );
-        intc.ack("#interrupt-cells");
+        let interrupt_cells = intc.require_u32("#interrupt-cells", "/interrupt-controller")?;
+        if interrupt_cells != 3 {
+            return Err(SurveyError::BadProperty {
+                node: "/interrupt-controller",
+                prop: "#interrupt-cells",
+                reason: "expected GICv3 3-cell interrupt specifier",
+            });
+        }
         intc.ack("interrupt-controller");
-        intc.ack("phandle");
+        let intc_phandle = intc.require_u32("phandle", "/interrupt-controller")?;
+        topology.register_interrupt_controller(InterruptControllerRef {
+            node: intc_path,
+            phandle: intc_phandle,
+            kind: ControllerKind::GicV3,
+            interrupt_cells,
+        });
         intc.ensure_drained()?;
 
         let v2m_name = child_name_prefixed(root, "msi-controller@")
             .ok_or(SurveyError::MissingNode("/msi-controller@*"))?;
+        let v2m_path = format!("/{v2m_name}");
         let mut v2m = root.remove_child(&v2m_name).expect("just located");
         require_compatible(&mut v2m, "/msi-controller", "arm,gic-v2m-frame")?;
         let vreg = v2m.require("reg", "/msi-controller")?;
@@ -429,7 +651,12 @@ impl GicConfig {
         let spi_base = v2m.require_u32("arm,msi-base-spi", "/msi-controller")?;
         let spi_count = v2m.require_u32("arm,msi-num-spis", "/msi-controller")?;
         v2m.ack("msi-controller");
-        v2m.ack("phandle");
+        let v2m_phandle = v2m.require_u32("phandle", "/msi-controller")?;
+        topology.register_msi_controller(MsiControllerRef {
+            node: v2m_path,
+            phandle: v2m_phandle,
+            kind: ControllerKind::GicV2mFrame,
+        });
         v2m.ensure_drained()?;
 
         Ok(GicConfig {
@@ -449,14 +676,17 @@ impl GicConfig {
 struct Timer;
 
 impl Timer {
-    fn from_tree(t: &mut OwnedTree, _plan: &mut ResourcePlan) -> Result<(), SurveyError> {
+    fn from_tree(
+        t: &mut OwnedTree,
+        _plan: &mut ResourcePlan,
+        topology: &Topology,
+    ) -> Result<(), SurveyError> {
         let mut timer = t
             .root_mut()
             .remove_child("timer")
             .ok_or(SurveyError::MissingNode("/timer"))?;
         require_compatible(&mut timer, "/timer", "arm,armv8-timer")?;
-        timer.ack("interrupts");
-        timer.ack("interrupt-parent");
+        topology.validate_interrupts(&mut timer, "/timer", ControllerKind::GicV3)?;
         timer.ack("always-on");
         timer.ensure_drained()
     }
@@ -506,6 +736,8 @@ impl Uart {
         t: &mut OwnedTree,
         plan: &mut ResourcePlan,
         arch: Arch,
+        topology: &Topology,
+        wired_interrupts: &mut Vec<WiredInterrupt>,
     ) -> Result<Option<Uart>, SurveyError> {
         let root = t.root_mut();
         let Some(name) = child_name_prefixed(root, "serial@") else {
@@ -521,12 +753,13 @@ impl Uart {
         })?;
         plan.declare_from(&reg, "/serial", base, size, RegionKind::Mmio);
         let reg_shift = serial.require_u32("reg-shift", "/serial")?;
-        let ints = serial.require("interrupts", "/serial")?;
-        let irq = decode_interrupt_irq(&ints, arch, "/serial")?;
+        let interrupt =
+            topology.claim_wired_interrupt(&mut serial, "/serial", interrupt_parent_kind(arch)?)?;
+        let irq = interrupt.irq;
+        wired_interrupts.push(interrupt);
         serial.ack("reg-io-width");
         serial.ack("clock-frequency");
         serial.ack("current-speed");
-        serial.ack("interrupt-parent");
         serial.ensure_drained()?;
 
         Ok(Some(Uart {
@@ -548,6 +781,8 @@ impl VirtioMmioSlots {
         t: &mut OwnedTree,
         plan: &mut ResourcePlan,
         arch: Arch,
+        topology: &Topology,
+        wired_interrupts: &mut Vec<WiredInterrupt>,
     ) -> Result<Vec<VirtioMmio>, SurveyError> {
         let root = t.root_mut();
         let mut slots = Vec::new();
@@ -561,9 +796,13 @@ impl VirtioMmioSlots {
                 reason: "missing reg pair",
             })?;
             plan.declare_from(&reg, "/virtio_mmio", base, size, RegionKind::Mmio);
-            let ints = node.require("interrupts", "/virtio_mmio")?;
-            let irq = decode_interrupt_irq(&ints, arch, "/virtio_mmio")?;
-            node.ack("interrupt-parent");
+            let interrupt = topology.claim_wired_interrupt(
+                &mut node,
+                "/virtio_mmio",
+                interrupt_parent_kind(arch)?,
+            )?;
+            let irq = interrupt.irq;
+            wired_interrupts.push(interrupt);
             node.ensure_drained()?;
             slots.push(VirtioMmio { base, size, irq });
         }
@@ -576,7 +815,12 @@ impl Pcie {
     /// Claim the `pcie@*` ECAM host bridge (`pci-host-ecam-generic`), matched by
     /// name-prefix then verified by compatible. A `--pci-slots 0` microVM
     /// declares no bridge ⇒ `Ok(None)`.
-    fn from_tree(t: &mut OwnedTree, plan: &mut ResourcePlan) -> Result<Option<Pcie>, SurveyError> {
+    fn from_tree(
+        t: &mut OwnedTree,
+        plan: &mut ResourcePlan,
+        topology: &Topology,
+        msi_parentage: &mut Vec<MsiParentage>,
+    ) -> Result<Option<Pcie>, SurveyError> {
         let root = t.root_mut();
         let Some(name) = child_name_prefixed(root, "pcie@") else {
             return Ok(None); // no host bridge in this base
@@ -628,7 +872,11 @@ impl Pcie {
         pci.ack("#size-cells");
         pci.ack("dma-coherent");
         pci.ack("dma-ranges");
-        pci.ack("msi-parent");
+        if let Some(parentage) =
+            topology.claim_msi_parent(&mut pci, "/pcie", ControllerKind::GicV2mFrame)?
+        {
+            msi_parentage.push(parentage);
+        }
         pci.ensure_drained()?;
 
         Ok(Some(Pcie {
@@ -692,9 +940,24 @@ impl X86Intc {
     fn from_tree(
         t: &mut OwnedTree,
         plan: &mut ResourcePlan,
+        topology: &mut Topology,
     ) -> Result<(MmioRegion, MmioRegion), SurveyError> {
-        let lapic = X86Intc::claim_one(t, "intel,ce4100-lapic", "/lapic", plan)?;
-        let ioapic = X86Intc::claim_one(t, "intel,ce4100-ioapic", "/ioapic", plan)?;
+        let lapic = X86Intc::claim_one(
+            t,
+            "intel,ce4100-lapic",
+            "/lapic",
+            plan,
+            topology,
+            ControllerKind::Lapic,
+        )?;
+        let ioapic = X86Intc::claim_one(
+            t,
+            "intel,ce4100-ioapic",
+            "/ioapic",
+            plan,
+            topology,
+            ControllerKind::IoApic,
+        )?;
         Ok((lapic, ioapic))
     }
 
@@ -706,6 +969,8 @@ impl X86Intc {
         compat: &'static str,
         path: &'static str,
         plan: &mut ResourcePlan,
+        topology: &mut Topology,
+        controller_kind: ControllerKind,
     ) -> Result<MmioRegion, SurveyError> {
         let root = t.root_mut();
         let name = root
@@ -727,9 +992,15 @@ impl X86Intc {
             reason: "missing reg pair",
         })?;
         plan.declare_from(&reg, path, base, size, RegionKind::SubstrateMmio);
-        node.ack("#interrupt-cells");
+        let interrupt_cells = node.require_u32("#interrupt-cells", path)?;
         node.ack("interrupt-controller");
-        node.ack("phandle");
+        let phandle = node.require_u32("phandle", path)?;
+        topology.register_interrupt_controller(InterruptControllerRef {
+            node: path.to_string(),
+            phandle,
+            kind: controller_kind,
+            interrupt_cells,
+        });
         node.ensure_drained()?;
         Ok(MmioRegion { base, size })
     }
@@ -804,12 +1075,15 @@ fn require_compatible(
     }
 }
 
-fn decode_interrupt_irq(
-    prop: &OwnedProperty,
-    arch: Arch,
-    node: &'static str,
-) -> Result<u32, SurveyError> {
-    let cells: Vec<u32> = prop
+fn interrupt_parent_kind(arch: Arch) -> Result<ControllerKind, SurveyError> {
+    Ok(match arch {
+        Arch::Aarch64 => ControllerKind::GicV3,
+        Arch::X86_64 => ControllerKind::IoApic,
+    })
+}
+
+fn interrupt_cells(prop: &OwnedProperty, node: &'static str) -> Result<Vec<u32>, SurveyError> {
+    let cells = prop
         .as_u32s()
         .ok_or(SurveyError::BadProperty {
             node,
@@ -817,12 +1091,27 @@ fn decode_interrupt_irq(
             reason: "not u32 cells",
         })?
         .collect();
-    let index = match arch {
+    Ok(cells)
+}
+
+fn interrupt_irq(
+    cells: &[u32],
+    controller: ControllerKind,
+    node: &'static str,
+) -> Result<u32, SurveyError> {
+    let index = match controller {
         // GIC form: <type number flags>. The runtime wants the interrupt number,
         // not the type cell.
-        Arch::Aarch64 => 1,
+        ControllerKind::GicV3 => 1,
         // IO-APIC form: <pin sense>. The runtime wants the pin/GSI.
-        Arch::X86_64 => 0,
+        ControllerKind::IoApic => 0,
+        ControllerKind::Lapic | ControllerKind::GicV2mFrame => {
+            return Err(SurveyError::BadProperty {
+                node,
+                prop: "interrupts",
+                reason: "controller cannot decode wired device interrupts",
+            });
+        }
     };
     cells.get(index).copied().ok_or(SurveyError::BadProperty {
         node,
@@ -1074,15 +1363,31 @@ mod tests {
         assert_eq!(uart.size, 0x1000);
         assert_eq!(uart.reg_shift, 2);
         assert_eq!(uart.irq, 1);
+        assert_eq!(m.wired_interrupts.len(), 2);
+        assert_eq!(m.wired_interrupts[0].node, "/serial");
+        assert_eq!(m.wired_interrupts[0].controller.kind, ControllerKind::GicV3);
+        assert_eq!(m.wired_interrupts[0].controller.phandle, 1);
+        assert_eq!(m.wired_interrupts[0].controller.interrupt_cells, 3);
+        assert_eq!(m.wired_interrupts[0].cells, vec![0, 1, 4]);
 
         assert_eq!(m.virtio_mmio.len(), 1);
         assert_eq!(m.virtio_mmio[0].base, VIRTIO_BASE);
         assert_eq!(m.virtio_mmio[0].size, 0x200);
         assert_eq!(m.virtio_mmio[0].irq, 16);
+        assert_eq!(m.wired_interrupts[1].node, "/virtio_mmio");
+        assert_eq!(m.wired_interrupts[1].controller.kind, ControllerKind::GicV3);
+        assert_eq!(m.wired_interrupts[1].cells, vec![0, 16, 1]);
 
         assert!(m.has_pcie);
         assert_eq!(m.pcie.ecam_base, ECAM_BASE);
         assert_eq!(m.pcie.mmio_base, PCI_MMIO_BASE);
+        assert_eq!(m.msi_parentage.len(), 1);
+        assert_eq!(m.msi_parentage[0].node, "/pcie");
+        assert_eq!(
+            m.msi_parentage[0].controller.kind,
+            ControllerKind::GicV2mFrame
+        );
+        assert_eq!(m.msi_parentage[0].controller.phandle, 3);
         assert_eq!(m.psci.map(|p| p.method), Some(PsciMethod::Hvc));
 
         // Regions: GICD, GICR, MSI frame, serial, virtio-mmio, ECAM, PCI MMIO.
@@ -1155,6 +1460,92 @@ mod tests {
         );
         // GICD, GICR, MSI frame, serial, four virtio-mmio (1 base + 3 added).
         assert_eq!(m.plan.regions().len(), 8);
+    }
+
+    #[test]
+    fn aarch64_missing_interrupt_parent_is_rejected() {
+        let mut root = base_root();
+        root.child_mut("serial@9000000")
+            .unwrap()
+            .remove_property("interrupt-parent");
+
+        let err = Machine::survey(&dtb(root), Arch::Aarch64).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SurveyError::MissingProperty {
+                    ref node,
+                    prop: "interrupt-parent"
+                } if node == "/serial"
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn aarch64_unknown_interrupt_parent_is_rejected() {
+        let mut root = base_root();
+        root.child_mut("serial@9000000")
+            .unwrap()
+            .property_mut("interrupt-parent")
+            .unwrap()
+            .set_u32(99);
+
+        let err = Machine::survey(&dtb(root), Arch::Aarch64).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SurveyError::UnknownPhandle {
+                    node: "/serial",
+                    prop: "interrupt-parent",
+                    phandle: 99
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn aarch64_interrupt_cells_must_match_parent() {
+        let mut root = base_root();
+        root.child_mut("virtio_mmio@a000000")
+            .unwrap()
+            .property_mut("interrupts")
+            .unwrap()
+            .set_u32s(&[0, 16]);
+
+        let err = Machine::survey(&dtb(root), Arch::Aarch64).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SurveyError::BadProperty {
+                    node: "/virtio_mmio",
+                    prop: "interrupts",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn aarch64_missing_msi_parent_is_rejected() {
+        let mut root = base_root();
+        root.child_mut("pcie@c000000")
+            .unwrap()
+            .remove_property("msi-parent");
+
+        let err = Machine::survey(&dtb(root), Arch::Aarch64).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SurveyError::MissingProperty {
+                    ref node,
+                    prop: "msi-parent"
+                } if node == "/pcie"
+            ),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1355,6 +1746,15 @@ mod tests {
         // Serial is the shared MMIO ns16550a; on x86 the IRQ is the IO-APIC pin.
         let s = m.uart.expect("serial");
         assert_eq!((s.base, s.irq), (X86_SERIAL_BASE, 4));
+        assert_eq!(m.wired_interrupts.len(), 1);
+        assert_eq!(m.wired_interrupts[0].node, "/serial");
+        assert_eq!(
+            m.wired_interrupts[0].controller.kind,
+            ControllerKind::IoApic
+        );
+        assert_eq!(m.wired_interrupts[0].controller.phandle, 2);
+        assert_eq!(m.wired_interrupts[0].controller.interrupt_cells, 2);
+        assert_eq!(m.wired_interrupts[0].cells, vec![4, 1]);
         assert!(m.has_pcie);
         assert_eq!(m.pcie.ecam_base, X86_ECAM_BASE);
         assert_eq!(m.pcie.mmio_base, X86_PCI_MMIO_BASE);
@@ -1386,6 +1786,58 @@ mod tests {
         let m = Machine::survey(&dtb(root), Arch::X86_64).expect("survey ok");
         assert_eq!(m.virtio_mmio.len(), 1);
         assert_eq!(m.virtio_mmio[0].irq, 16);
+        assert_eq!(
+            m.wired_interrupts[1].controller.kind,
+            ControllerKind::IoApic
+        );
+        assert_eq!(m.wired_interrupts[1].cells, vec![16, 1]);
+    }
+
+    #[test]
+    fn x86_interrupt_parent_must_be_ioapic() {
+        let mut root = x86_base_root();
+        root.child_mut("serial@9000000")
+            .unwrap()
+            .property_mut("interrupt-parent")
+            .unwrap()
+            .set_u32(1);
+
+        let err = Machine::survey(&dtb(root), Arch::X86_64).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SurveyError::UnexpectedController {
+                    node: "/serial",
+                    prop: "interrupt-parent",
+                    actual: ControllerKind::Lapic,
+                    expected: ControllerKind::IoApic
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn x86_interrupt_cells_must_match_ioapic_parent() {
+        let mut root = x86_base_root();
+        root.child_mut("serial@9000000")
+            .unwrap()
+            .property_mut("interrupts")
+            .unwrap()
+            .set_u32s(&[4, 1, 0]);
+
+        let err = Machine::survey(&dtb(root), Arch::X86_64).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SurveyError::BadProperty {
+                    node: "/serial",
+                    prop: "interrupts",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
     }
 
     #[test]

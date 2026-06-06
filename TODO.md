@@ -63,7 +63,7 @@ Local verification:
 
 ## Stage 2 - Preserve DTB relationship provenance
 
-Status: pending.
+Status: complete.
 
 Goal: dillo retains enough DTB relationship data to resolve interrupts and MSI from declared controller links, not positional heuristics.
 
@@ -77,6 +77,15 @@ Success criteria:
 - Tests cover aarch64 GIC interrupt cells and x86 IOAPIC interrupt cells.
 - Tests fail when required interrupt/MSI parentage is missing or inconsistent.
 - Default local verification passes.
+
+Completed changes:
+- `Machine::survey` records interrupt controller phandles, kinds, and `#interrupt-cells`.
+- Serial and virtio-mmio interrupts are resolved through `interrupt-parent`.
+- PCIe MSI parentage is resolved through `msi-parent`.
+- Missing, unknown, and malformed interrupt/MSI relationships fail during survey.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-platform -p dillo-vm --all-targets`
 
 ## Stage 3 - Add `MmioDevice` beside `MmioBus`
 
