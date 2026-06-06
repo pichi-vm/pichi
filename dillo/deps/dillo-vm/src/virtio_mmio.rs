@@ -120,7 +120,7 @@ impl VirtioMmio {
     }
 
     pub(crate) fn read(&self, offset: u64, data: &mut [u8]) -> bool {
-        let mut g = self.inner.lock().expect("virtio-mmio poisoned");
+        let g = self.inner.lock().expect("virtio-mmio poisoned");
         if offset >= CONFIG {
             g.device.read_config(offset - CONFIG, data);
             return true;

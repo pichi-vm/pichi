@@ -60,6 +60,7 @@ pub(crate) enum PlanError {
 /// (so its GPAs are reachable from tatu's 4 GiB identity pgtable).
 const IDENTITY_CEILING: u64 = 1u64 << 32;
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn plan(
     must_cover: &[(u64, u64)],
     memory_mib: u32,

@@ -31,7 +31,6 @@ mod fid {
 mod ret {
     pub(super) const SUCCESS: u64 = 0;
     pub(super) const NOT_SUPPORTED: u64 = (-1i64) as u64;
-    pub(super) const INVALID_PARAMETERS: u64 = (-2i64) as u64;
     /// AFFINITY_INFO: target core is ON.
     pub(super) const AFF_ON: u64 = 0;
     /// MIGRATE_INFO_TYPE: Trusted OS migration not required / not present.
