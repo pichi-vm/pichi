@@ -1,5 +1,7 @@
 #[cfg(target_os = "windows")]
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex};
 
@@ -11,11 +13,26 @@ use vm_memory::GuestMemoryMmap;
 use vm_memory::GuestMemoryMmap;
 
 #[cfg(target_os = "macos")]
-use crate::{RunError, hvf_devices};
+use crate::{
+    RunError, hvf_devices,
+    mmio_bus::{MmioBus, MmioDevice},
+};
 #[cfg(target_os = "windows")]
-use crate::{RunError, ioapic::IoApic, mmio_bus::MmioWindow, uart, whp_devices::WhpMsixNotifier};
+use crate::{
+    RunError,
+    ioapic::IoApic,
+    mmio_bus::{MmioBus, MmioDevice, MmioWindow},
+    syscon, uart,
+    whp_devices::WhpMsixNotifier,
+};
 #[cfg(target_os = "linux")]
-use crate::{RunError, irq::IrqManager, mmio_bus::MmioWindow, pci_notify::KvmQueueNotifier, uart};
+use crate::{
+    RunError,
+    irq::IrqManager,
+    mmio_bus::{MmioBus, MmioDevice, MmioWindow},
+    pci_notify::KvmQueueNotifier,
+    syscon, uart,
+};
 
 #[cfg(target_os = "linux")]
 pub(crate) struct Memslot {
@@ -39,6 +56,15 @@ pub(crate) trait BackendVm {
     fn irq_manager(&self) -> Result<Arc<Mutex<IrqManager>>, RunError>;
     fn queue_notifier(&self) -> Box<dyn QueueNotifier>;
     fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError>;
+    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
+    where
+        D: MmioDevice + 'static;
+    fn attach_x86_syscon_devices(
+        &self,
+        bus: &mut MmioBus,
+        platform: &dillo_platform::Platform,
+        state: Arc<syscon::SysconState>,
+    );
     fn ns16550(
         &self,
         irq_manager: Arc<Mutex<IrqManager>>,
@@ -85,6 +111,41 @@ impl BackendVm for dillo_hypervisor::Vm {
         dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)
     }
 
+    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
+    where
+        D: MmioDevice + 'static,
+    {
+        bus.register_device(device);
+    }
+
+    fn attach_x86_syscon_devices(
+        &self,
+        bus: &mut MmioBus,
+        platform: &dillo_platform::Platform,
+        state: Arc<syscon::SysconState>,
+    ) {
+        self.attach_mmio(
+            bus,
+            Arc::new(syscon::SysconDevice::new(
+                "syscon-poweroff",
+                platform.poweroff,
+                syscon::SysconAction::Poweroff,
+                Arc::clone(&state),
+            )),
+        );
+        if let Some(reboot) = platform.reboot {
+            self.attach_mmio(
+                bus,
+                Arc::new(syscon::SysconDevice::new(
+                    "syscon-reboot",
+                    reboot,
+                    syscon::SysconAction::Reboot,
+                    state,
+                )),
+            );
+        }
+    }
+
     fn ns16550(
         &self,
         irq_manager: Arc<Mutex<IrqManager>>,
@@ -128,6 +189,10 @@ pub(crate) trait BackendVm {
     fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError>;
 
     fn current_thread_vcpu() -> Result<dillo_hypervisor::Vcpu, RunError>;
+
+    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
+    where
+        D: MmioDevice + 'static;
 }
 
 #[cfg(target_os = "macos")]
@@ -160,6 +225,13 @@ impl BackendVm for dillo_hypervisor::Vm {
     fn current_thread_vcpu() -> Result<dillo_hypervisor::Vcpu, RunError> {
         dillo_hypervisor::create_vcpu_current_thread().map_err(RunError::Kvm)
     }
+
+    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
+    where
+        D: MmioDevice + 'static,
+    {
+        bus.register_device(device);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -179,6 +251,17 @@ pub(crate) trait BackendVm {
     fn msix_notifier(&self, count: u16) -> Arc<WhpMsixNotifier>;
 
     fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError>;
+
+    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
+    where
+        D: MmioDevice + 'static;
+
+    fn attach_x86_syscon_devices(
+        &self,
+        bus: &mut MmioBus,
+        platform: &dillo_platform::Platform,
+        state: Arc<syscon::SysconState>,
+    );
 
     fn ns16550(
         &self,
@@ -217,6 +300,41 @@ impl BackendVm for dillo_hypervisor::Vm {
 
     fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError> {
         dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)
+    }
+
+    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
+    where
+        D: MmioDevice + 'static,
+    {
+        bus.register_device(device);
+    }
+
+    fn attach_x86_syscon_devices(
+        &self,
+        bus: &mut MmioBus,
+        platform: &dillo_platform::Platform,
+        state: Arc<syscon::SysconState>,
+    ) {
+        self.attach_mmio(
+            bus,
+            Arc::new(syscon::SysconDevice::new(
+                "syscon-poweroff",
+                platform.poweroff,
+                syscon::SysconAction::Poweroff,
+                Arc::clone(&state),
+            )),
+        );
+        if let Some(reboot) = platform.reboot {
+            self.attach_mmio(
+                bus,
+                Arc::new(syscon::SysconDevice::new(
+                    "syscon-reboot",
+                    reboot,
+                    syscon::SysconAction::Reboot,
+                    state,
+                )),
+            );
+        }
     }
 
     fn ns16550(

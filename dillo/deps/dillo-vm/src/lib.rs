@@ -353,7 +353,7 @@ fn windows_x86_mmio_bus(
                 uart.irq,
                 Box::new(std::io::stderr()),
             );
-            mmio_bus.register_device(Arc::new(serial));
+            vm.attach_mmio(&mut mmio_bus, Arc::new(serial));
             log::info!(
                 "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
                 uart.base,
@@ -365,9 +365,9 @@ fn windows_x86_mmio_bus(
         None => log::warn!("no UART in Platform — guest console output will be dropped"),
     }
 
-    register_x86_syscon_devices(&mut mmio_bus, platform, syscon_state);
-    mmio_bus.register_device(ioapic);
-    mmio_bus.register_device(Arc::clone(&pci_root));
+    vm.attach_x86_syscon_devices(&mut mmio_bus, platform, syscon_state);
+    vm.attach_mmio(&mut mmio_bus, ioapic);
+    vm.attach_mmio(&mut mmio_bus, Arc::clone(&pci_root));
 
     Ok(mmio_bus)
 }
@@ -633,15 +633,18 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 uart.size,
                 uart.reg_shift
             );
-            mmio_bus.register_device(Arc::new(uart::Ns16550::new_polled(
-                MmioWindow {
-                    name: "ns16550a",
-                    base: uart.base,
-                    size: uart.size,
-                },
-                uart.reg_shift,
-                Box::new(std::io::stderr()),
-            )));
+            vm.attach_mmio(
+                &mut mmio_bus,
+                Arc::new(uart::Ns16550::new_polled(
+                    MmioWindow {
+                        name: "ns16550a",
+                        base: uart.base,
+                        size: uart.size,
+                    },
+                    uart.reg_shift,
+                    Box::new(std::io::stderr()),
+                )),
+            );
         }
         None => log::warn!("no UART in Platform — guest console output will be dropped"),
     }
@@ -681,7 +684,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         });
         pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
         let pci_root = Arc::new(pci_root);
-        mmio_bus.register_device(Arc::clone(&pci_root));
+        vm.attach_mmio(&mut mmio_bus, Arc::clone(&pci_root));
     } // end: if platform.has_pcie (microVM with --pci-slots 0 skips PCI fabric)
 
     // 7c. virtio-mmio (F6): bind a virtio-console to the first transport slot
@@ -708,7 +711,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             irq,
             guest_mem,
         ));
-        mmio_bus.register_device(transport);
+        vm.attach_mmio(&mut mmio_bus, transport);
         log::info!(
             "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
             slot.base,
@@ -1412,7 +1415,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // VMM relay.
     let mut mmio_bus = MmioBus::new();
     let syscon_state = Arc::new(syscon::SysconState::default());
-    register_x86_syscon_devices(&mut mmio_bus, &platform, Arc::clone(&syscon_state));
+    vm.attach_x86_syscon_devices(&mut mmio_bus, &platform, Arc::clone(&syscon_state));
 
     // Build the device → adapter → bus chain.
     let irq_mgr = vm.irq_manager()?;
@@ -1434,7 +1437,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 uart.irq,
                 Box::new(std::io::stdout()),
             )?;
-            mmio_bus.register_device(Arc::new(serial));
+            vm.attach_mmio(&mut mmio_bus, Arc::new(serial));
             log::info!(
                 "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
                 uart.base,
@@ -1537,7 +1540,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     });
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
-    mmio_bus.register_device(Arc::clone(&pci_root));
+    vm.attach_mmio(&mut mmio_bus, Arc::clone(&pci_root));
 
     let mmio_bus = Arc::new(mmio_bus);
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
@@ -1760,28 +1763,6 @@ pub(crate) fn syscon_match_for_gdb(
     data: &[u8],
 ) -> bool {
     syscon::matches_poweroff(platform, addr, data)
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn register_x86_syscon_devices(
-    mmio_bus: &mut MmioBus,
-    platform: &dillo_platform::Platform,
-    state: Arc<syscon::SysconState>,
-) {
-    mmio_bus.register_device(Arc::new(syscon::SysconDevice::new(
-        "syscon-poweroff",
-        platform.poweroff,
-        syscon::SysconAction::Poweroff,
-        Arc::clone(&state),
-    )));
-    if let Some(reboot) = platform.reboot {
-        mmio_bus.register_device(Arc::new(syscon::SysconDevice::new(
-            "syscon-reboot",
-            reboot,
-            syscon::SysconAction::Reboot,
-            state,
-        )));
-    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
