@@ -15,29 +15,29 @@
 /// PSCI function IDs (SMC32 / SMC64 variants share the low 16 bits; the
 /// SMC64 variants set bit 30 = `0x4000_0000`).
 mod fid {
-    pub const VERSION: u32 = 0x8400_0000;
-    pub const CPU_OFF: u32 = 0x8400_0002;
-    pub const CPU_ON_32: u32 = 0x8400_0003;
-    pub const CPU_ON_64: u32 = 0xC400_0003;
-    pub const AFFINITY_INFO_32: u32 = 0x8400_0004;
-    pub const AFFINITY_INFO_64: u32 = 0xC400_0004;
-    pub const MIGRATE_INFO_TYPE: u32 = 0x8400_0006;
-    pub const SYSTEM_OFF: u32 = 0x8400_0008;
-    pub const SYSTEM_RESET: u32 = 0x8400_0009;
-    pub const FEATURES: u32 = 0x8400_000A;
+    pub(super) const VERSION: u32 = 0x8400_0000;
+    pub(super) const CPU_OFF: u32 = 0x8400_0002;
+    pub(super) const CPU_ON_32: u32 = 0x8400_0003;
+    pub(super) const CPU_ON_64: u32 = 0xC400_0003;
+    pub(super) const AFFINITY_INFO_32: u32 = 0x8400_0004;
+    pub(super) const AFFINITY_INFO_64: u32 = 0xC400_0004;
+    pub(super) const MIGRATE_INFO_TYPE: u32 = 0x8400_0006;
+    pub(super) const SYSTEM_OFF: u32 = 0x8400_0008;
+    pub(super) const SYSTEM_RESET: u32 = 0x8400_0009;
+    pub(super) const FEATURES: u32 = 0x8400_000A;
 }
 
 /// PSCI return codes (per the PSCI spec; negative i32 widened to u64 in `x0`).
 mod ret {
-    pub const SUCCESS: u64 = 0;
-    pub const NOT_SUPPORTED: u64 = (-1i64) as u64;
-    pub const INVALID_PARAMETERS: u64 = (-2i64) as u64;
+    pub(super) const SUCCESS: u64 = 0;
+    pub(super) const NOT_SUPPORTED: u64 = (-1i64) as u64;
+    pub(super) const INVALID_PARAMETERS: u64 = (-2i64) as u64;
     /// AFFINITY_INFO: target core is ON.
-    pub const AFF_ON: u64 = 0;
+    pub(super) const AFF_ON: u64 = 0;
     /// MIGRATE_INFO_TYPE: Trusted OS migration not required / not present.
-    pub const MIGRATE_NOT_REQUIRED: u64 = 2;
+    pub(super) const MIGRATE_NOT_REQUIRED: u64 = 2;
     /// PSCI v1.1 (major 1, minor 1).
-    pub const VERSION_1_1: u64 = 0x0001_0001;
+    pub(super) const VERSION_1_1: u64 = 0x0001_0001;
 }
 
 /// What the run loop should do in response to a PSCI call.

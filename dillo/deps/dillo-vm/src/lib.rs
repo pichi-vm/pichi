@@ -954,9 +954,9 @@ fn parse_armv_profile(s: &str) -> Option<(u32, u32)> {
 /// PSCI return codes the SMP launcher writes into `x0`.
 #[cfg(target_os = "macos")]
 mod psci_ret {
-    pub const SUCCESS: u64 = 0;
-    pub const INVALID_PARAMETERS: u64 = (-2i64) as u64;
-    pub const ALREADY_ON: u64 = (-4i64) as u64;
+    pub(crate) const SUCCESS: u64 = 0;
+    pub(crate) const INVALID_PARAMETERS: u64 = (-2i64) as u64;
+    pub(crate) const ALREADY_ON: u64 = (-4i64) as u64;
 }
 
 /// Per-vCPU power-on mailbox. A core parks on the condvar until another core's
