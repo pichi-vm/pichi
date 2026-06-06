@@ -215,7 +215,15 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         guest_memory: guest_mem.clone(),
     })?;
 
-    apply_load_sections(&mut vm, &parsed, &bytes, &platform, &plan, vcpus)?;
+    apply_load_sections(
+        &mut vm,
+        &parsed,
+        &bytes,
+        platform.arch,
+        platform.psci.is_some(),
+        &plan,
+        vcpus,
+    )?;
 
     let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
     let cpu_profile = parsed.cpu_profile.as_str();
@@ -549,19 +557,15 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         machine.plan.regions().len(),
         machine.has_pcie
     );
-    // Temporary adapter: realization below still consumes Platform-shaped fields,
-    // but validation and placement are driven by the surveyed ResourcePlan.
-    let platform =
-        dillo_platform::extract(dtb_bytes, platform_arch).map_err(RunError::DtbExtract)?;
-    if platform.has_pcie {
+    if machine.has_pcie {
         log::info!(
-            "platform: pcie ecam {:#x}, mmio {:#x}, intc {:?}",
-            platform.pcie.ecam_base,
-            platform.pcie.mmio_base,
-            platform.intc.kind,
+            "machine: pcie ecam {:#x}, mmio {:#x}, gic={}",
+            machine.pcie.ecam_base,
+            machine.pcie.mmio_base,
+            machine.gic.is_some(),
         );
     } else {
-        log::info!("platform: no PCIe (microVM), intc {:?}", platform.intc.kind);
+        log::info!("machine: no PCIe (microVM), gic={}", machine.gic.is_some());
     }
     let load_ranges: Vec<(String, u64, u64)> = parsed
         .sections
@@ -603,9 +607,9 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     // 6. create the HVF VM (in-kernel GICv3 from the DTB) and map guest RAM.
     //    GIC placement (F7a) and the address-space watermark X (F7) come from
-    //    the platform — never hardcoded. 2^X = the BAR window's burned-buddy
+    //    the machine — never hardcoded. 2^X = the BAR window's burned-buddy
     //    top when PCIe is present, else enough bits to cover the device island.
-    let gic = platform
+    let gic = machine
         .gic
         .as_ref()
         .ok_or_else(|| RunError::DtbExtract(dillo_platform::Error::MissingNode("GIC config")))?;
@@ -636,7 +640,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     //    in 7b. aarch64 shutdown/reboot is PSCI (handled in the run loop), so
     //    there is no syscon device.
     let mut mmio_bus = MmioBus::new();
-    match &platform.uart {
+    match &machine.uart {
         Some(uart) => {
             log::info!(
                 "registering ns16550a at {:#x} (size {:#x}, reg-shift {})",
@@ -657,14 +661,14 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 )),
             );
         }
-        None => log::warn!("no UART in Platform — guest console output will be dropped"),
+        None => log::warn!("no UART in Machine — guest console output will be dropped"),
     }
 
     // 7b. PCIe (skipped on a --pci-slots 0 microVM): one virtio-console
     //     endpoint at 00:01.0 (slot 0 = host bridge). BAR0 = virtio config;
     //     BAR2 = MSI-X table + PBA. MSI-X is injected through the backend
     //     notifier. ECAM + each BAR register on the MMIO bus.
-    if platform.has_pcie {
+    if machine.has_pcie {
         let msix_vectors: u16 = 3; // 2 queues (rx/tx) + config-change vector
         let notifier = vm.msix_notifier(msix_vectors);
         let lookup_notifier = Arc::clone(&notifier);
@@ -674,8 +678,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             ))),
         );
 
-        let bar0_gpa = platform.pcie.mmio_base;
-        let bar2_gpa = platform.pcie.mmio_base + 0x1000;
+        let bar0_gpa = machine.pcie.mmio_base;
+        let bar2_gpa = machine.pcie.mmio_base + 0x1000;
         let mut virtio_pci_dev = virtio_pci::VirtioPciDevice::new(
             console,
             msix_vectors,
@@ -689,8 +693,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
         let mut pci_root = PciRoot::new(MmioWindow {
             name: "pcie-ecam",
-            base: platform.pcie.ecam_base,
-            size: platform.pcie.ecam_size,
+            base: machine.pcie.ecam_base,
+            size: machine.pcie.ecam_size,
         });
         pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
         let pci_root = Arc::new(pci_root);
@@ -701,7 +705,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     //     so a microVM (no PCIe) still gets an hvc console. Remaining slots stay
     //     empty — the guest reads DeviceID 0 (unmapped MMIO ⇒ 0) and skips them.
     //     The wired GIC SPI is injected through a backend-owned IRQ capability.
-    if let Some(slot) = platform.virtio_mmio.first() {
+    if let Some(slot) = machine.virtio_mmio.first() {
         let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let irq = vm.wired_irq(slot.irq);
         let interrupt_irq = irq.clone();
@@ -731,7 +735,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
             slot.base,
             irq.intid(),
-            platform.virtio_mmio.len()
+            machine.virtio_mmio.len()
         );
     }
 
@@ -749,7 +753,15 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     //    boot image (Phase 2 in-VM restart); SYSTEM_OFF exits. `vm` (and its
     //    memory mappings) lives across the whole loop on this thread.
     loop {
-        apply_load_sections(&mut vm, &parsed, &bytes, &platform, &plan, vcpus)?;
+        apply_load_sections(
+            &mut vm,
+            &parsed,
+            &bytes,
+            machine.arch,
+            machine.psci.is_some(),
+            &plan,
+            vcpus,
+        )?;
         log::info!(
             "macOS/HVF: {} memslot(s) mapped, load sections + DTBO written; boot vCPU0 pc={:#x}, launching {} vCPU(s)",
             plan.memslots.len(),
@@ -777,7 +789,8 @@ fn apply_load_sections(
     vm: &mut Vm,
     parsed: &dillo_pmi::ParsedPmi,
     bytes: &[u8],
-    platform: &dillo_platform::Platform,
+    arch: dillo_platform::Arch,
+    psci_present: bool,
     plan: &placement::MemoryPlan,
     vcpus: u32,
 ) -> Result<(), RunError> {
@@ -799,8 +812,8 @@ fn apply_load_sections(
                 let overlay_bytes = overlay::synthesize_dtbo(
                     &plan.memory_nodes,
                     vcpus,
-                    platform.psci.is_some().then_some("psci"),
-                    cpu_id::host_cpu_compatible(platform.arch),
+                    psci_present.then_some("psci"),
+                    cpu_id::host_cpu_compatible(arch),
                     s.virtual_size,
                 )
                 .map_err(RunError::DtboSynth)?;

@@ -316,7 +316,7 @@ Local verification:
 
 ## Stage 10 - Remove temporary compatibility paths
 
-Status: pending.
+Status: in progress.
 
 Goal: finish the migration by deleting bridge code that kept old and new attach paths alive together.
 
@@ -329,3 +329,15 @@ Success criteria:
 - dillo enables no guest-visible hardware unless derived from the PMI DTB.
 - The trait stack in `DESIGN.md` matches implementation.
 - Default local verification passes.
+
+Progress:
+- Removed the macOS/HVF `extract -> Platform` adapter; the HVF launch path now realizes devices from the surveyed `Machine`.
+- Narrowed the shared load-section helper to the exact DTB facts it consumes (`arch` and PSCI presence) instead of a whole `Platform`.
+
+Local verification for current slice:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 cargo test -p dillo-platform -p dillo-vm --all-targets`
+- `RUSTC_BOOTSTRAP=1 cargo test --workspace --exclude vhost-backend --exclude snuffler`
