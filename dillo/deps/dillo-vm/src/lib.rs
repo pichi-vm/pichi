@@ -1,6 +1,6 @@
 //! VM-side integration crate for dillo.
 //!
-//! Orchestrates the VM child's work: PMI loader → Platform extraction →
+//! Orchestrates the VM child's work: PMI loader → Machine survey →
 //! DTBO synthesis → memfd setup → KVM wiring → vCPU thread launch →
 //! MMIO/PIO dispatch.
 //!
@@ -474,7 +474,7 @@ fn run_windows_vcpu_loop(
 
 /// Top-level VM-child entry point (macOS / Hypervisor.framework).
 ///
-/// Parses the PMI, extracts the Platform, computes memory placement, creates the
+/// Parses the PMI, surveys the Machine, computes memory placement, creates the
 /// HVF VM, maps + loads guest RAM, writes the host DTBO, builds the MMIO bus
 /// (ns16550a serial + PCIe ECAM + virtio-console BARs), and runs all vCPUs (thread-per-vCPU
 /// with userspace PSCI). A guest reboot warm-restarts in place; SYSTEM_OFF exits.
@@ -514,7 +514,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     //     check is tracked separately — see §J.)
     validate_cpu_profile(parsed.cpu_profile.as_str(), arch)?;
 
-    // 3. extract Platform from base DTB + cross-validate loads vs MMIO.
+    // 3. survey Machine from base DTB + cross-validate loads vs MMIO.
     let dtb_info = parsed
         .sections
         .get(&parsed.merged_dtb_section)
@@ -1280,7 +1280,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         parsed.merged_dtb_section
     );
 
-    // ── 3. extract Platform from base DTB ──────────────────────────
+    // ── 3. survey Machine from base DTB ───────────────────────────
     let dtb_info = parsed
         .sections
         .get(&parsed.merged_dtb_section)
@@ -1299,19 +1299,21 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         machine.plan.regions().len(),
         machine.has_pcie
     );
-    // Temporary adapter: realization below still consumes Platform-shaped fields,
-    // but validation and placement are driven by the surveyed ResourcePlan.
-    let platform =
-        dillo_platform::extract(dtb_bytes, platform_arch).map_err(RunError::DtbExtract)?;
+    if !machine.has_pcie {
+        return Err(RunError::MissingRequiredDevice("/pcie"));
+    }
+    let poweroff = machine
+        .poweroff
+        .ok_or(RunError::MissingRequiredDevice("/syscon-poweroff"))?;
     log::info!(
-        "platform: pcie@{:#x} (ecam {:#x}), intc {:?}, poweroff @ {:#x}+{:#x} = {:#x} & {:#x}",
-        platform.pcie.mmio_base,
-        platform.pcie.ecam_base,
-        platform.intc.kind,
-        platform.poweroff.base,
-        platform.poweroff.offset,
-        platform.poweroff.value,
-        platform.poweroff.mask,
+        "machine: pcie@{:#x} (ecam {:#x}), ioapic={:?}, poweroff @ {:#x}+{:#x} = {:#x} & {:#x}",
+        machine.pcie.mmio_base,
+        machine.pcie.ecam_base,
+        machine.ioapic,
+        poweroff.base,
+        poweroff.offset,
+        poweroff.value,
+        poweroff.mask,
     );
 
     // Cross-validate load GPAs vs MMIO declared by DTB.
@@ -1391,8 +1393,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 let overlay_bytes = overlay::synthesize_dtbo(
                     &plan.memory_nodes,
                     vcpus,
-                    platform.psci.is_some().then_some("psci"),
-                    cpu_id::host_cpu_compatible(platform.arch),
+                    machine.psci.is_some().then_some("psci"),
+                    cpu_id::host_cpu_compatible(machine.arch),
                     s.virtual_size,
                 )
                 .map_err(RunError::DtboSynth)?;
@@ -1442,19 +1444,19 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let syscon_state = Arc::new(syscon::SysconState::default());
     vm.attach_x86_syscon_devices(
         &mut mmio_bus,
-        platform.poweroff,
-        platform.reboot,
+        poweroff,
+        machine.reboot,
         Arc::clone(&syscon_state),
     );
 
     // Build the device → adapter → bus chain.
     let irq_mgr = vm.irq_manager()?;
 
-    // Platform-driven UART attach (device-model §"Serial port"): the serial
-    // port is an MMIO ns16550a. If the Platform declares one, attach it with a
+    // Machine-driven UART attach (device-model §"Serial port"): the serial
+    // port is an MMIO ns16550a. If the Machine declares one, attach it with a
     // KVM irqfd at the declared GSI and map its register window on the MMIO
     // bus. Absent → no UART emulation at all.
-    match platform.uart {
+    match machine.uart {
         Some(uart) => {
             let serial = vm.ns16550(
                 Arc::clone(&irq_mgr),
@@ -1476,7 +1478,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 uart.irq
             );
         }
-        None => log::warn!("no UART in Platform — guest console output will be dropped"),
+        None => log::warn!("no UART in Machine — guest console output will be dropped"),
     }
 
     // num_queues + 1 vector for config-change. Console has 2 queues.
@@ -1538,7 +1540,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     // Pick a BAR layout inside the DTB-declared MMIO window. Two 4 KiB
     // BARs per device (BAR0 + BAR2); slot 1 is the first endpoint.
-    let bar_window_base = platform.pcie.mmio_base;
+    let bar_window_base = machine.pcie.mmio_base;
     let bar0_gpa = bar_window_base + 0x0000;
     let bar2_gpa = bar_window_base + 0x1000;
     let mut virtio_pci_dev = virtio_pci::VirtioPciDevice::new(
@@ -1565,8 +1567,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     let mut pci_root = PciRoot::new(MmioWindow {
         name: "pcie-ecam",
-        base: platform.pcie.ecam_base,
-        size: platform.pcie.ecam_size,
+        base: machine.pcie.ecam_base,
+        size: machine.pcie.ecam_size,
     });
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
@@ -1596,7 +1598,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     // ── 10. spawn vCPU threads + dispatch loop ─────────────────────
     let shutdown = Arc::new(AtomicBool::new(false));
-    let platform_for_uart = Arc::new(platform);
 
     // gdb mode: take vCPU 0, ignore the rest, hand it to the gdb stub.
     // Useful for debugging tatu / early-boot Linux without rebuilding
@@ -1616,12 +1617,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         }
         let stream = gdb::wait_for_gdb(port).map_err(|e| RunError::VcpuThread(e.to_string()))?;
         let gpa_arc = Arc::new(gpa_map);
-        let target = gdb::GdbTarget::new(
-            vcpu0,
-            gpa_arc,
-            Arc::clone(&platform_for_uart),
-            Arc::clone(&shutdown),
-        );
+        let target = gdb::GdbTarget::new(vcpu0, gpa_arc, poweroff, Arc::clone(&shutdown));
         gdb::run_loop(target, stream);
         return Ok(0);
     }
@@ -1788,17 +1784,6 @@ fn run_vcpu_loop(
             }
         }
     }
-}
-
-/// Wrapper exposing `syscon_match` to the `gdb` module without
-/// widening the crate-private function's visibility.
-#[cfg(target_os = "linux")]
-pub(crate) fn syscon_match_for_gdb(
-    platform: &dillo_platform::Platform,
-    addr: u64,
-    data: &[u8],
-) -> bool {
-    syscon::matches_poweroff(platform, addr, data)
 }
 
 fn read_section<'a>(bytes: &'a [u8], offset: u64, size: u64) -> &'a [u8] {

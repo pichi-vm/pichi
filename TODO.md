@@ -42,7 +42,7 @@ Status: complete.
 Goal: dillo launch paths consume the total-coverage `Machine::survey` result instead of partial `extract -> Platform` state.
 
 Process:
-- Replace dillo run-path `dillo_platform::extract` usage with `Machine::survey` where possible.
+- Replace dillo run-path partial platform extraction with `Machine::survey`.
 - Drive placement and load-vs-device validation from `ResourcePlan` / claimed regions.
 - Keep compatibility helpers only as temporary adapters around surveyed data.
 
@@ -316,7 +316,7 @@ Local verification:
 
 ## Stage 10 - Remove temporary compatibility paths
 
-Status: in progress.
+Status: complete.
 
 Goal: finish the migration by deleting bridge code that kept old and new attach paths alive together.
 
@@ -335,6 +335,8 @@ Progress:
 - Narrowed the shared load-section helper to the exact DTB facts it consumes (`arch` and PSCI presence) instead of a whole `Platform`.
 - Removed the Windows/WHP `extract -> Platform` adapter; WHP now realizes PCIe, IOAPIC, syscon, UART, and overlay facts from the surveyed `Machine`.
 - Removed the single-use WHP MMIO bus helper and changed x86 backend syscon attachment to take concrete DTB-derived syscon registers instead of a whole `Platform`.
+- Removed the Linux/KVM `extract -> Platform` adapter; KVM now realizes PCIe, syscon, UART, overlay facts, and GDB poweroff matching from the surveyed `Machine`.
+- Updated `DESIGN.md`'s implementation mapping to match the current trait stack and DTB ownership state.
 
 Local verification for current slice:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

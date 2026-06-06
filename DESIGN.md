@@ -383,21 +383,21 @@ this where the backend doesn't do it in-kernel.
 
 ## 10. Mapping to today's code
 
-| Layer / piece            | Today                                                                 | Change to reach this design |
-| ------------------------ | --------------------------------------------------------------------- | --------------------------- |
+| Layer / piece            | Today                                                                 | Remaining work |
+| ------------------------ | --------------------------------------------------------------------- | -------------- |
 | `VirtioDevice`           | trait, transport-agnostic (`virtio/src/device.rs`)                    | add `num_queues` to the sketch; pass resolved interrupts into `activate` |
-| `VirtioPci` adapter      | `VirtioPciAdapter: PciDevice` (`dillo-vm/src/pci.rs`)                  | de-leak KVM `set_vm_fd`/ioeventfd behind a backend notify-hook |
-| `PciDevice`              | trait (`dillo-vm/src/pci.rs`)                                          | none — drop the imagined `msix` method from the design |
-| `PciRoot`                | `PciBus` (host bridge + config + BARs) wired via closures             | encapsulate as one `MmioDevice` (ECAM) + transport-neutral config accessor |
-| `0xcf8`/`0xcfc`          | `pio_pci.rs` + `LegacyPciState`, dispatched in the vCPU loop          | keep below the `Vm` trait as a second decoder onto `PciRoot`; not in the model |
-| `VirtioMmio` adapter     | `virtio_mmio::VirtioMmio` with `read`/`write`; used on the macOS path  | implement `MmioDevice`; make cross-platform (it is *not* macOS-gated) |
-| `MmioDevice`             | not a trait — `MmioBus` takes raw `read`/`write` closures              | introduce the `Send + Sync`, `&self` trait |
-| serial UART             | process-global `OnceLock<Mutex<…>>` + 3 per-OS `init`s (`uart.rs`)     | rebuild as one **external** `MmioDevice` (device layer, not substrate) taking an injected `Interrupt`; needs nothing else from the Vm |
-| IOAPIC / x86 syscon      | register models on the bus (`ioapic.rs`; syscon closures)             | Vm-owned substrate realized as attached `MmioDevice`s |
-| `Vm`                     | concrete, `#[cfg]`-selected per OS; "no trait" by design               | introduce the compile-time `Vm` trait with `VmOptions`/`RunOutcome`/seeds |
-| Interrupts               | per-backend (irqfd / userspace IOAPIC / GIC SPI) + `MsixNotifier` + `Interrupt` | unify wired behind `wired_irq → Interrupt`; keep `MsixNotifier` for MSI |
-| DTB ownership            | `extract → Platform` (no coverage) *and* unused `Machine::survey`      | promote `survey`/`ResourcePlan` into the run path; split owners by `RegionKind` |
-| Run loop / PSCI          | three near-parallel `run()`s; HVF warm-reboot + userspace PSCI         | supervisor-owned loop + `RunOutcome`; userspace-vs-kernel PSCI per backend |
+| `VirtioPci` adapter      | `VirtioPciAdapter: PciDevice` (`dillo-vm/src/pci.rs`) with backend-owned queue notification | none known |
+| `PciDevice`              | trait (`dillo-vm/src/pci.rs`)                                          | none known |
+| `PciRoot`                | owns ECAM plus BAR windows and implements `MmioDevice`                 | none known |
+| `0xcf8`/`0xcfc`          | `pio_pci.rs` + `LegacyPciState`, dispatched in the x86 vCPU loop       | keep below the `Vm` trait as a second decoder onto `PciRoot`; not in the model |
+| `VirtioMmio` adapter     | `virtio_mmio::VirtioMmio: MmioDevice`; used on the macOS path          | make cross-platform when dillo plugs virtio-mmio devices on x86 |
+| `MmioDevice`             | `Send + Sync` trait with owned windows and `&self` read/write          | none known |
+| serial UART              | `uart::Ns16550: MmioDevice`, attached from DTB-derived UART nodes      | none known |
+| IOAPIC / x86 syscon      | Vm-owned substrate realized as attached `MmioDevice`s                  | none known |
+| `Vm`                     | `BackendVm` compile-time trait (`dillo-vm/src/backend.rs`) with `VmOptions`/seeds/backend attach methods | converge naming with this document if desired |
+| Interrupts               | backend-owned irqfd / WHP fixed interrupt / HVF SPI plus MSI notifiers | finish replacing raw GSI/SPI plumbing with resolved interrupt handles |
+| DTB ownership            | run paths use `Machine::survey`/`ResourcePlan`; stale `extract -> Platform` adapters removed | retire legacy `Platform` extractor when remaining tests/users no longer need it |
+| Run loop / PSCI          | supervisor-owned loops return `RunOutcome`; HVF warm-reboot is preserved | implement x86 warm reboot |
 | Process/thread model     | vhost-user proxy on Linux; in-process threads on macOS/Windows         | keep; express both behind the device trait |
 
 ## 11. Open questions to tease out

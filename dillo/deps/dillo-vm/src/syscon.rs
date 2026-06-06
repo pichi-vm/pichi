@@ -93,6 +93,22 @@ impl SysconDevice {
         };
         (value & self.mask) == (self.value & self.mask)
     }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn matches_poweroff(
+        poweroff: dillo_platform::Syscon,
+        addr: u64,
+        data: &[u8],
+    ) -> bool {
+        let device = Self::new(
+            "syscon-poweroff",
+            poweroff,
+            SysconAction::Poweroff,
+            std::sync::Arc::new(SysconState::default()),
+        );
+        addr.checked_sub(poweroff.base)
+            .is_some_and(|offset| device.matches(offset, data))
+    }
 }
 
 impl MmioDevice for SysconDevice {
@@ -112,22 +128,6 @@ impl MmioDevice for SysconDevice {
         }
         true
     }
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) fn matches_poweroff(
-    platform: &dillo_platform::Platform,
-    addr: u64,
-    data: &[u8],
-) -> bool {
-    let device = SysconDevice::new(
-        "syscon-poweroff",
-        platform.poweroff,
-        SysconAction::Poweroff,
-        std::sync::Arc::new(SysconState::default()),
-    );
-    addr.checked_sub(platform.poweroff.base)
-        .is_some_and(|offset| device.matches(offset, data))
 }
 
 #[cfg(test)]
