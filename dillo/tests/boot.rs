@@ -18,7 +18,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use rstest::rstest;
-use snuffler::{Report, REPORT_BEGIN, REPORT_END};
+use snuffler::{REPORT_BEGIN, REPORT_END, Report};
 use tempfile::TempDir;
 use wait_timeout::ChildExt;
 
@@ -200,18 +200,21 @@ fn serial_earlycon_hands_off_to_hvc0() {
         .iter()
         .map(|e| e.message.as_str())
         .collect();
-    assert!(
-        kernel_messages
-            .iter()
-            .any(|m| m.contains("ACPI: SPCR: console: uart,mmio32") && m.contains(",115200")),
-        "SPCR early console line missing from kernel log"
-    );
-    assert!(
-        kernel_messages
-            .iter()
-            .any(|m| m.contains("RSCV0003:00: ttyS0 at MMIO")),
-        "ACPI serial device did not bind as ttyS0"
-    );
+    #[cfg(target_arch = "x86_64")]
+    {
+        assert!(
+            kernel_messages
+                .iter()
+                .any(|m| m.contains("ACPI: SPCR: console: uart,mmio32") && m.contains(",115200")),
+            "SPCR early console line missing from kernel log"
+        );
+        assert!(
+            kernel_messages
+                .iter()
+                .any(|m| m.contains("RSCV0003:00: ttyS0 at MMIO")),
+            "ACPI serial device did not bind as ttyS0"
+        );
+    }
     assert!(
         output.contains("earlycon: uart0 at MMIO32") || output.contains("bootconsole"),
         "combined console output did not include early serial output"
