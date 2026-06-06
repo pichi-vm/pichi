@@ -14,6 +14,23 @@ env:
 # (KVM), Windows x86_64 (WHP), and macOS arm64 (HVF on a bare-metal
 # organization runner). GitHub-hosted runners only cover the first two.
 jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rustfmt
+          rustup default "$NIGHTLY"
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          cargo fmt --all -- --check
+
   ci:
     name: ${{ matrix.name }}
     strategy:
