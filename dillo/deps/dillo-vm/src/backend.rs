@@ -7,13 +7,15 @@ use std::sync::{Arc, Mutex};
 use virtio_pci::QueueNotifier;
 #[cfg(target_os = "macos")]
 use vm_memory::GuestMemoryMmap;
+#[cfg(target_os = "windows")]
+use vm_memory::GuestMemoryMmap;
 
 #[cfg(target_os = "macos")]
 use crate::{RunError, hvf_devices};
+#[cfg(target_os = "windows")]
+use crate::{RunError, ioapic::IoApic, mmio_bus::MmioWindow, uart, whp_devices::WhpMsixNotifier};
 #[cfg(target_os = "linux")]
 use crate::{RunError, irq::IrqManager, pci_notify::KvmQueueNotifier};
-#[cfg(target_os = "windows")]
-use crate::{ioapic::IoApic, mmio_bus::MmioWindow, uart, whp_devices::WhpMsixNotifier};
 
 #[cfg(target_os = "linux")]
 pub(crate) trait BackendVm {
@@ -57,7 +59,17 @@ impl BackendVm for dillo_hypervisor::Vm {
 }
 
 #[cfg(target_os = "windows")]
+pub(crate) struct VmOptions {
+    pub(crate) vcpus: u32,
+    pub(crate) guest_memory: GuestMemoryMmap,
+}
+
+#[cfg(target_os = "windows")]
 pub(crate) trait BackendVm {
+    fn new(opts: VmOptions) -> Result<Self, RunError>
+    where
+        Self: Sized;
+
     fn log_guest_memory_mappings(&self);
 
     fn msix_notifier(&self, count: u16) -> Arc<WhpMsixNotifier>;
@@ -74,6 +86,13 @@ pub(crate) trait BackendVm {
 
 #[cfg(target_os = "windows")]
 impl BackendVm for dillo_hypervisor::Vm {
+    fn new(opts: VmOptions) -> Result<Self, RunError> {
+        let mut vm = dillo_hypervisor::Vm::new_x86_64_with_local_apic_count(opts.vcpus)?;
+        vm.set_memory(opts.guest_memory)?;
+        vm.log_guest_memory_mappings();
+        Ok(vm)
+    }
+
     fn log_guest_memory_mappings(&self) {
         for (gpa, host, size) in self.region_mappings() {
             log::info!(

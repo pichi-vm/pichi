@@ -212,9 +212,10 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let guest_mem: GuestMemoryMmap = GuestMemoryMmap::from_ranges(&ranges)
         .map_err(|e| RunError::MemfdSetup(anyhow!("GuestMemoryMmap: {e}")))?;
 
-    let mut vm = dillo_hypervisor::Vm::new_x86_64_with_local_apic_count(vcpus)?;
-    vm.set_memory(guest_mem.clone())?;
-    vm.log_guest_memory_mappings();
+    let mut vm = <dillo_hypervisor::Vm as BackendVm>::new(backend::VmOptions {
+        vcpus,
+        guest_memory: guest_mem.clone(),
+    })?;
 
     apply_load_sections(&mut vm, &parsed, &bytes, &platform, &plan, vcpus)?;
 
