@@ -19,7 +19,7 @@
 use devtree::{OwnedNode, OwnedProperty, OwnedTree, Tree};
 use thiserror::Error;
 
-use crate::{Arch, MmioRegion, Pcie, Psci, PsciMethod, Syscon, Uart};
+use crate::{Arch, MmioRegion, Pcie, Psci, PsciMethod, Syscon, Uart, VirtioMmio};
 
 /// Failures surveying the base DTB into a [`Machine`].
 #[derive(Debug, Error)]
@@ -204,6 +204,9 @@ pub struct Machine {
     /// The `ns16550a` serial (MMIO), shared by both arches; `None` unless the
     /// base was built with `--serial`.
     pub uart: Option<Uart>,
+    /// virtio-mmio transport slots declared by the base DTB. The survey claims
+    /// all slots whether or not dillo currently plugs a device into each one.
+    pub virtio_mmio: Vec<VirtioMmio>,
     // aarch64
     pub gic: Option<GicConfig>,
     pub psci: Option<Psci>,
@@ -247,8 +250,8 @@ impl Machine {
 
         // Shared devices, then the general device last. The serial is the same
         // MMIO `ns16550a` on both arches (present only under `--serial`).
-        let uart = Uart::from_tree(&mut t, &mut plan)?;
-        VirtioMmioSlots::from_tree(&mut t, &mut plan)?;
+        let uart = Uart::from_tree(&mut t, &mut plan, arch)?;
+        let virtio_mmio = VirtioMmioSlots::from_tree(&mut t, &mut plan, arch)?;
         let (pcie, has_pcie) = match Pcie::from_tree(&mut t, &mut plan)? {
             Some(p) => (p, true),
             None => (Pcie::ZEROED, false),
@@ -269,6 +272,7 @@ impl Machine {
             has_pcie,
             plan,
             uart,
+            virtio_mmio,
             gic,
             psci,
             lapic,
@@ -416,7 +420,11 @@ impl Uart {
     /// Claim `serial@*` (`ns16550a`, a 16550 over MMIO) — present only under
     /// `--serial`. Absent ⇒ `Ok(None)`. There is no `/apb-pclk` clock node in
     /// the device model.
-    fn from_tree(t: &mut OwnedTree, plan: &mut ResourcePlan) -> Result<Option<Uart>, SurveyError> {
+    fn from_tree(
+        t: &mut OwnedTree,
+        plan: &mut ResourcePlan,
+        arch: Arch,
+    ) -> Result<Option<Uart>, SurveyError> {
         let root = t.root_mut();
         let Some(name) = child_name_prefixed(root, "serial@") else {
             return Ok(None); // no serial in this base
@@ -432,14 +440,7 @@ impl Uart {
         plan.declare_from(&reg, "/serial", base, size, RegionKind::Mmio);
         let reg_shift = serial.require_u32("reg-shift", "/serial")?;
         let ints = serial.require("interrupts", "/serial")?;
-        let irq = ints
-            .as_u32s()
-            .and_then(|mut it| it.next())
-            .ok_or(SurveyError::BadProperty {
-                node: "/serial",
-                prop: "interrupts",
-                reason: "expected at least one interrupt cell",
-            })?;
+        let irq = decode_interrupt_irq(&ints, arch, "/serial")?;
         serial.ack("reg-io-width");
         serial.ack("clock-frequency");
         serial.ack("current-speed");
@@ -461,8 +462,13 @@ impl Uart {
 struct VirtioMmioSlots;
 
 impl VirtioMmioSlots {
-    fn from_tree(t: &mut OwnedTree, plan: &mut ResourcePlan) -> Result<(), SurveyError> {
+    fn from_tree(
+        t: &mut OwnedTree,
+        plan: &mut ResourcePlan,
+        arch: Arch,
+    ) -> Result<Vec<VirtioMmio>, SurveyError> {
         let root = t.root_mut();
+        let mut slots = Vec::new();
         while let Some(name) = child_name_prefixed(root, "virtio_mmio@") {
             let mut node = root.remove_child(&name).expect("just located");
             require_compatible(&mut node, "/virtio_mmio", "virtio,mmio")?;
@@ -473,11 +479,14 @@ impl VirtioMmioSlots {
                 reason: "missing reg pair",
             })?;
             plan.declare_from(&reg, "/virtio_mmio", base, size, RegionKind::Mmio);
-            node.ack("interrupts");
+            let ints = node.require("interrupts", "/virtio_mmio")?;
+            let irq = decode_interrupt_irq(&ints, arch, "/virtio_mmio")?;
             node.ack("interrupt-parent");
             node.ensure_drained()?;
+            slots.push(VirtioMmio { base, size, irq });
         }
-        Ok(())
+        slots.sort_by_key(|slot| slot.base);
+        Ok(slots)
     }
 }
 
@@ -711,6 +720,33 @@ fn require_compatible(
             value: compat.as_str().unwrap_or("<non-string>").to_string(),
         }),
     }
+}
+
+fn decode_interrupt_irq(
+    prop: &OwnedProperty,
+    arch: Arch,
+    node: &'static str,
+) -> Result<u32, SurveyError> {
+    let cells: Vec<u32> = prop
+        .as_u32s()
+        .ok_or(SurveyError::BadProperty {
+            node,
+            prop: "interrupts",
+            reason: "not u32 cells",
+        })?
+        .collect();
+    let index = match arch {
+        // GIC form: <type number flags>. The runtime wants the interrupt number,
+        // not the type cell.
+        Arch::Aarch64 => 1,
+        // IO-APIC form: <pin sense>. The runtime wants the pin/GSI.
+        Arch::X86_64 => 0,
+    };
+    cells.get(index).copied().ok_or(SurveyError::BadProperty {
+        node,
+        prop: "interrupts",
+        reason: "too few interrupt cells",
+    })
 }
 
 fn child_name_prefixed(node: &OwnedNode, prefix: &str) -> Option<String> {
@@ -955,6 +991,12 @@ mod tests {
         assert_eq!(uart.base, SERIAL_BASE);
         assert_eq!(uart.size, 0x1000);
         assert_eq!(uart.reg_shift, 2);
+        assert_eq!(uart.irq, 1);
+
+        assert_eq!(m.virtio_mmio.len(), 1);
+        assert_eq!(m.virtio_mmio[0].base, VIRTIO_BASE);
+        assert_eq!(m.virtio_mmio[0].size, 0x200);
+        assert_eq!(m.virtio_mmio[0].irq, 16);
 
         assert!(m.has_pcie);
         assert_eq!(m.pcie.ecam_base, ECAM_BASE);
@@ -999,7 +1041,15 @@ mod tests {
         let m = Machine::survey(&dtb(root), Arch::Aarch64).expect("survey ok");
         assert!(!m.has_pcie);
         assert_eq!(m.pcie.ecam_base, 0); // ZEROED sentinel
-                                         // GICD, GICR, MSI frame, serial, four virtio-mmio (1 base + 3 added).
+        assert_eq!(m.virtio_mmio.len(), 4);
+        assert_eq!(
+            m.virtio_mmio
+                .iter()
+                .map(|slot| slot.irq)
+                .collect::<Vec<_>>(),
+            vec![16, 17, 18, 19]
+        );
+        // GICD, GICR, MSI frame, serial, four virtio-mmio (1 base + 3 added).
         assert_eq!(m.plan.regions().len(), 8);
     }
 
@@ -1166,6 +1216,22 @@ mod tests {
         root.remove_child("serial@9000000");
         let m = Machine::survey(&dtb(root), Arch::X86_64).expect("survey ok");
         assert!(m.uart.is_none());
+    }
+
+    #[test]
+    fn x86_virtio_mmio_interrupt_uses_ioapic_pin_cell() {
+        let mut root = x86_base_root();
+        root.set_child(
+            OwnedNode::new("virtio_mmio@9100000")
+                .with_property(OwnedProperty::new("compatible").with_str("virtio,mmio"))
+                .with_property(OwnedProperty::new("reg").with_u32s(&reg2(0x0910_0000, 0x200)))
+                .with_property(OwnedProperty::new("interrupt-parent").with_u32(2))
+                .with_property(OwnedProperty::new("interrupts").with_u32s(&[16, 1])),
+        );
+
+        let m = Machine::survey(&dtb(root), Arch::X86_64).expect("survey ok");
+        assert_eq!(m.virtio_mmio.len(), 1);
+        assert_eq!(m.virtio_mmio[0].irq, 16);
     }
 
     #[test]

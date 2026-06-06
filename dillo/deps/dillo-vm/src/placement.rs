@@ -65,6 +65,21 @@ pub(crate) fn plan(
     memory_mib: u32,
     platform: &Platform,
 ) -> Result<MemoryPlan, PlanError> {
+    plan_around_regions(
+        must_cover,
+        memory_mib,
+        platform.device_regions.iter().copied(),
+    )
+}
+
+pub(crate) fn plan_around_regions<I>(
+    must_cover: &[(u64, u64)],
+    memory_mib: u32,
+    device_regions: I,
+) -> Result<MemoryPlan, PlanError>
+where
+    I: IntoIterator<Item = (u64, u64)>,
+{
     let budget = round_up_2mib(u64::from(memory_mib) * (1 << 20));
 
     // ── 1. Islands ────────────────────────────────────────────────
@@ -104,7 +119,7 @@ pub(crate) fn plan(
     let remaining = budget - islands_total;
 
     // ── 2. Big chunk ─────────────────────────────────────────────
-    let mut holes: Vec<Interval> = device_holes(platform);
+    let mut holes: Vec<Interval> = device_holes(device_regions);
     holes.extend(islands.iter().copied());
     merge_intervals(&mut holes);
 
@@ -145,12 +160,15 @@ pub(crate) fn plan(
     })
 }
 
-/// Platform device MMIO regions, rounded outward to 2 MiB.
-fn device_holes(p: &Platform) -> Vec<Interval> {
-    p.device_regions
-        .iter()
+/// Device MMIO regions, rounded outward to 2 MiB.
+fn device_holes<I>(regions: I) -> Vec<Interval>
+where
+    I: IntoIterator<Item = (u64, u64)>,
+{
+    regions
+        .into_iter()
         .filter(|(_, size)| *size > 0)
-        .map(|&(base, size)| Interval {
+        .map(|(base, size)| Interval {
             start: base & !(HUGE_PAGE - 1),
             end: round_up_2mib(base.saturating_add(size)),
         })
@@ -264,5 +282,17 @@ mod tests {
         // → candidate at 0 (size 4M) ends at 4M, ≤ ceiling? No — overlaps hole.
         // → candidate at 2M ends at 6M > 5M → rejected.
         assert!(find_lowest_fit(0x40_0000, &holes, 0x50_0000).is_none());
+    }
+
+    #[test]
+    fn plan_around_regions_uses_declared_holes() {
+        let plan =
+            plan_around_regions(&[(0, 0x20_0000)], 8, [(0x20_0000, 0x20_0000)]).expect("placement");
+
+        assert_eq!(plan.memslots.len(), 2);
+        assert_eq!(plan.memslots[0].gpa, 0);
+        assert_eq!(plan.memslots[0].size, 0x20_0000);
+        assert_eq!(plan.memslots[1].gpa, 0x40_0000);
+        assert_eq!(plan.memslots[1].size, 0x60_0000);
     }
 }

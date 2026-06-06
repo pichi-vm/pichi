@@ -623,10 +623,17 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         .values()
         .map(|s| (s.gpa, s.virtual_size))
         .collect();
-    let plan = placement::plan(&must_cover, memory_mib, &platform).map_err(|source| {
-        RunError::Placement {
-            source: source.into(),
-        }
+    let plan = placement::plan_around_regions(
+        &must_cover,
+        memory_mib,
+        machine
+            .plan
+            .regions()
+            .iter()
+            .map(|region| (region.gpa, region.size)),
+    )
+    .map_err(|source| RunError::Placement {
+        source: source.into(),
     })?;
     let total_backed: u64 = plan.memslots.iter().map(|r| r.size).sum();
     log::info!(
@@ -818,8 +825,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             Box::new(dillo_virtio_console::VirtioConsole::new(Arc::new(
                 move |_vector| Some(virtio_mmio::VirtioMmio::interrupt(Arc::clone(&is), irq)),
             )));
-        let guest_mem = hvf_devices::build_guest_memory(&vm.region_mappings())
-            .map_err(RunError::MemfdSetup)?;
+        let guest_mem =
+            hvf_devices::build_guest_memory(&vm.region_mappings()).map_err(RunError::MemfdSetup)?;
         let transport = Arc::new(virtio_mmio::VirtioMmio::new(
             console,
             Arc::clone(&int_status),
