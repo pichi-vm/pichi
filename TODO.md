@@ -112,6 +112,7 @@ Completed changes:
 - Kept existing closure registration intact.
 
 Local verification:
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --lib`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-platform -p dillo-vm --all-targets`
 
 ## Stage 4 - Convert UART to an owned MMIO device

@@ -36,8 +36,27 @@ pub(crate) trait MmioDevice: Send + Sync {
 
 struct Range {
     window: MmioWindow,
+    device: Arc<dyn MmioDevice>,
+}
+
+struct ClosureMmioDevice {
+    window: MmioWindow,
     read: ReadFn,
     write: WriteFn,
+}
+
+impl MmioDevice for ClosureMmioDevice {
+    fn window(&self) -> MmioWindow {
+        self.window
+    }
+
+    fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+        (self.read)(offset, data)
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> bool {
+        (self.write)(offset, data)
+    }
 }
 
 /// MMIO bus. Built at startup via [`MmioBus::register`]; queried per
@@ -71,26 +90,20 @@ impl MmioBus {
         read: ReadFn,
         write: WriteFn,
     ) {
-        self.register_window(MmioWindow { name, base, size }, read, write);
+        self.register_device(Arc::new(ClosureMmioDevice {
+            window: MmioWindow { name, base, size },
+            read,
+            write,
+        }));
     }
 
     /// Register an MMIO device. This is the typed attach path; closure-based
     /// registration remains while existing devices migrate.
     pub(crate) fn register_device<D>(&mut self, device: Arc<D>)
     where
-        D: MmioDevice + ?Sized + 'static,
+        D: MmioDevice + 'static,
     {
         let window = device.window();
-        let read_device = Arc::clone(&device);
-        let write_device = device;
-        self.register_window(
-            window,
-            Arc::new(move |offset, data| read_device.read(offset, data)),
-            Arc::new(move |offset, data| write_device.write(offset, data)),
-        );
-    }
-
-    fn register_window(&mut self, window: MmioWindow, read: ReadFn, write: WriteFn) {
         let new_end = window
             .base
             .checked_add(window.size)
@@ -109,18 +122,14 @@ impl MmioBus {
                 name = window.name,
             );
         }
-        self.ranges.push(Range {
-            window,
-            read,
-            write,
-        });
+        self.ranges.push(Range { window, device });
     }
 
     /// Dispatch a guest MMIO read. Returns `true` if a registered
     /// handler claimed the address (in which case `data` is filled).
     pub(crate) fn read(&self, addr: u64, data: &mut [u8]) -> bool {
         if let Some(r) = self.find(addr, data.len() as u64) {
-            return (r.read)(addr - r.window.base, data);
+            return r.device.read(addr - r.window.base, data);
         }
         false
     }
@@ -129,7 +138,7 @@ impl MmioBus {
     /// handler claimed the address.
     pub(crate) fn write(&self, addr: u64, data: &[u8]) -> bool {
         if let Some(r) = self.find(addr, data.len() as u64) {
-            return (r.write)(addr - r.window.base, data);
+            return r.device.write(addr - r.window.base, data);
         }
         false
     }
