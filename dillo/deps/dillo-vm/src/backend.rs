@@ -48,6 +48,18 @@ pub(crate) struct VmOptions {
     pub(crate) memslots: Vec<Memslot>,
 }
 
+pub(crate) enum VcpuSeed<'a> {
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    X86_64Boot(&'a pmi::vm::vcpu::x86_64::CpuState),
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    X86_64Secondary,
+    #[cfg(target_os = "macos")]
+    Aarch64 {
+        mpidr: u64,
+        state: &'a pmi::vm::vcpu::aarch64::CpuState,
+    },
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) trait BackendVm {
     fn new(opts: VmOptions) -> Result<Self, RunError>
@@ -56,7 +68,12 @@ pub(crate) trait BackendVm {
 
     fn irq_manager(&self) -> Result<Arc<Mutex<IrqManager>>, RunError>;
     fn queue_notifier(&self) -> Box<dyn QueueNotifier>;
-    fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError>;
+    fn create_vcpu(
+        &self,
+        idx: u32,
+        cpu_profile: &str,
+        seed: VcpuSeed<'_>,
+    ) -> Result<dillo_hypervisor::Vcpu, RunError>;
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
     where
         D: MmioDevice + 'static;
@@ -108,8 +125,27 @@ impl BackendVm for dillo_hypervisor::Vm {
         Box::new(KvmQueueNotifier::new(self.vm_fd_arc()))
     }
 
-    fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError> {
-        dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)
+    fn create_vcpu(
+        &self,
+        idx: u32,
+        cpu_profile: &str,
+        seed: VcpuSeed<'_>,
+    ) -> Result<dillo_hypervisor::Vcpu, RunError> {
+        let mut vcpu =
+            dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)?;
+        match seed {
+            VcpuSeed::X86_64Boot(state) => {
+                #[cfg(target_arch = "x86_64")]
+                vcpu.set_x86_64_state(state)?;
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    let _ = state;
+                    return Err(RunError::ArchMismatch);
+                }
+            }
+            VcpuSeed::X86_64Secondary => {}
+        }
+        Ok(vcpu)
     }
 
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
@@ -189,7 +225,7 @@ pub(crate) trait BackendVm {
 
     fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError>;
 
-    fn current_thread_vcpu() -> Result<dillo_hypervisor::Vcpu, RunError>;
+    fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<dillo_hypervisor::Vcpu, RunError>;
 
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
     where
@@ -225,8 +261,15 @@ impl BackendVm for dillo_hypervisor::Vm {
         hvf_devices::build_guest_memory(&self.region_mappings()).map_err(RunError::MemfdSetup)
     }
 
-    fn current_thread_vcpu() -> Result<dillo_hypervisor::Vcpu, RunError> {
-        dillo_hypervisor::create_vcpu_current_thread().map_err(RunError::Kvm)
+    fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<dillo_hypervisor::Vcpu, RunError> {
+        let vcpu = dillo_hypervisor::create_vcpu_current_thread().map_err(RunError::Kvm)?;
+        match seed {
+            VcpuSeed::Aarch64 { mpidr, state } => {
+                vcpu.set_mpidr(mpidr)?;
+                vcpu.set_aarch64_state(state)?;
+            }
+        }
+        Ok(vcpu)
     }
 
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
@@ -264,7 +307,12 @@ pub(crate) trait BackendVm {
 
     fn msix_notifier(&self, count: u16) -> Arc<WhpMsixNotifier>;
 
-    fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError>;
+    fn create_vcpu(
+        &self,
+        idx: u32,
+        cpu_profile: &str,
+        seed: VcpuSeed<'_>,
+    ) -> Result<dillo_hypervisor::Vcpu, RunError>;
 
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
     where
@@ -312,8 +360,19 @@ impl BackendVm for dillo_hypervisor::Vm {
         Arc::new(WhpMsixNotifier::new(self.interrupt_controller(), count))
     }
 
-    fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<dillo_hypervisor::Vcpu, RunError> {
-        dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)
+    fn create_vcpu(
+        &self,
+        idx: u32,
+        cpu_profile: &str,
+        seed: VcpuSeed<'_>,
+    ) -> Result<dillo_hypervisor::Vcpu, RunError> {
+        let mut vcpu =
+            dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)?;
+        match seed {
+            VcpuSeed::X86_64Boot(state) => vcpu.set_x86_64_state(state)?,
+            VcpuSeed::X86_64Secondary => {}
+        }
+        Ok(vcpu)
     }
 
     fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)

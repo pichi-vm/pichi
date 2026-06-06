@@ -68,7 +68,7 @@ use std::thread;
 
 use anyhow::{Result, anyhow};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use backend::BackendVm;
+use backend::{BackendVm, VcpuSeed};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_hypervisor::Vm;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -221,15 +221,17 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
     let cpu_profile = parsed.cpu_profile.as_str();
+    let boot_state = match &parsed.vcpu {
+        VcpuState::X86_64(state) => state,
+        VcpuState::Aarch64(_) => return Err(RunError::ArchMismatch),
+    };
     for idx in 0..vcpus {
-        let mut vcpu = BackendVm::create_vcpu(&vm, idx, cpu_profile)?;
-        if idx == 0 {
-            match &parsed.vcpu {
-                VcpuState::X86_64(state) => vcpu.set_x86_64_state(state)?,
-                VcpuState::Aarch64(_) => return Err(RunError::ArchMismatch),
-            }
-        }
-        vcpu_handles.push(vcpu);
+        let seed = if idx == 0 {
+            VcpuSeed::X86_64Boot(boot_state)
+        } else {
+            VcpuSeed::X86_64Secondary
+        };
+        vcpu_handles.push(BackendVm::create_vcpu(&vm, idx, cpu_profile, seed)?);
     }
     log::info!(
         "WHP created {} vCPU(s); boot vCPU state programmed",
@@ -998,10 +1000,6 @@ fn vcpu_thread(
     reboot: &AtomicBool,
     exit_code: &std::sync::atomic::AtomicI32,
 ) -> Result<(), RunError> {
-    let vcpu = Vm::current_thread_vcpu()?;
-    *handles[idx].lock().expect("handle poisoned") = Some(vcpu.handle());
-    vcpu.set_mpidr(mpidr_for(idx))?;
-
     // vCPU0 boots immediately; secondaries park until powered on.
     let init = if idx == 0 {
         slots[0].started.store(true, Ordering::SeqCst);
@@ -1012,7 +1010,11 @@ fn vcpu_thread(
             None => return Ok(()), // shutdown before this core was ever powered on
         }
     };
-    vcpu.set_aarch64_state(&init)?;
+    let vcpu = Vm::current_thread_vcpu(VcpuSeed::Aarch64 {
+        mpidr: mpidr_for(idx),
+        state: &init,
+    })?;
+    *handles[idx].lock().expect("handle poisoned") = Some(vcpu.handle());
     if idx != 0 {
         log::info!("vCPU{idx} powered on: pc={:#x}", init.pc);
     }
@@ -1553,24 +1555,19 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // ── 9. create vCPUs + set boot vCPU state ──────────────────────
     let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
     let cpu_profile = parsed.cpu_profile.as_str();
-    for idx in 0..vcpus {
-        let mut vcpu = BackendVm::create_vcpu(&vm, idx, cpu_profile)?;
-        if idx == 0 {
-            match &parsed.vcpu {
-                VcpuState::X86_64(state) => {
-                    #[cfg(target_arch = "x86_64")]
-                    vcpu.set_x86_64_state(state)?;
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        let _ = state;
-                        return Err(RunError::ArchMismatch);
-                    }
-                }
-                VcpuState::Aarch64(_) => {
-                    return Err(RunError::ArchMismatch);
-                }
-            }
+    let boot_state = match &parsed.vcpu {
+        VcpuState::X86_64(state) => state,
+        VcpuState::Aarch64(_) => {
+            return Err(RunError::ArchMismatch);
         }
+    };
+    for idx in 0..vcpus {
+        let seed = if idx == 0 {
+            VcpuSeed::X86_64Boot(boot_state)
+        } else {
+            VcpuSeed::X86_64Secondary
+        };
+        let vcpu = BackendVm::create_vcpu(&vm, idx, cpu_profile, seed)?;
         vcpu_handles.push(vcpu);
     }
 

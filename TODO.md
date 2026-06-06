@@ -273,7 +273,8 @@ Progress:
 - Added backend-owned MMIO attach methods on Linux, macOS, and Windows; runtime launch paths no longer register MMIO devices directly.
 - Moved x86 syscon MMIO attachment into the Linux/Windows backend trait implementations instead of a freestanding launch helper.
 - Added a macOS backend-owned wired-IRQ capability for virtio-mmio; the transport no longer calls HVF `set_spi` directly.
-- Remaining work: extend the trait boundary across uniform vCPU seed/factory APIs on all supported backends.
+- Added target-shaped vCPU seed/factory APIs; Linux/WHP seed x86 boot state in the backend factory, and HVF seeds MPIDR/aarch64 state in its current-thread factory.
+- Remaining work: move Linux/macOS MSI notifier construction behind `BackendVm`.
 
 Local verification for current slice:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
