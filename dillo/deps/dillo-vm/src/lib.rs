@@ -8,7 +8,7 @@
 
 #![allow(clippy::needless_lifetimes)]
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod backend;
 mod cpu_id;
 mod error;
@@ -67,7 +67,7 @@ use std::sync::atomic::Ordering;
 use std::thread;
 
 use anyhow::{Result, anyhow};
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use backend::BackendVm;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_hypervisor::Vm;
@@ -214,15 +214,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     let mut vm = dillo_hypervisor::Vm::new_x86_64_with_local_apic_count(vcpus)?;
     vm.set_memory(guest_mem.clone())?;
-    for (gpa, host, size) in vm.region_mappings() {
-        log::info!(
-            "  WHP GPA mapping [{:#x}..{:#x}) -> host {:#x} ({} bytes)",
-            gpa,
-            gpa + size,
-            host,
-            size,
-        );
-    }
+    vm.log_guest_memory_mappings();
 
     apply_load_sections(&mut vm, &parsed, &bytes, &platform, &plan, vcpus)?;
 
@@ -682,8 +674,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             Arc::clone(&notifier) as Arc<dyn vm_pci::MsixNotifier>,
         );
         // No backend queue notifier on macOS; queue notifies kick directly.
-        let guest_mem =
-            hvf_devices::build_guest_memory(&vm.region_mappings()).map_err(RunError::MemfdSetup)?;
+        let guest_mem = vm.guest_memory()?;
         virtio_pci_dev.set_mem(guest_mem);
 
         let mut pci_root = PciRoot::new(MmioWindow {
@@ -708,8 +699,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             Box::new(dillo_virtio_console::VirtioConsole::new(Arc::new(
                 move |_vector| Some(virtio_mmio::VirtioMmio::interrupt(Arc::clone(&is), irq)),
             )));
-        let guest_mem =
-            hvf_devices::build_guest_memory(&vm.region_mappings()).map_err(RunError::MemfdSetup)?;
+        let guest_mem = vm.guest_memory()?;
         let transport = Arc::new(virtio_mmio::VirtioMmio::new(
             MmioWindow {
                 name: "virtio-mmio-console",
