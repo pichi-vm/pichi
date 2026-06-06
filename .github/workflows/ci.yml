@@ -14,24 +14,29 @@ env:
   # two-target tatu artifact deps need until it lands in nightly.
   CARGO_PR_SHA: 0294a8367512e4eecf69c70e8ba69ba6f1eb1514
 
-# Supported platforms (build + real guest boot, both required): Linux x86_64
-# (KVM) and Windows x86_64 (WHP). No other platform is enabled in CI: GitHub's
-# hosted runners offer nested virtualization only on Linux x86, so arm Linux,
-# macOS, and Windows-on-arm can't boot a guest here; macOS/x86 additionally has
-# no backend. See PLATFORMS.md for the full matrix and how to light the rest up
-# on bare-metal runners later.
+# Supported platforms (build + real guest boot, all required): Linux x86_64
+# (KVM), Windows x86_64 (WHP), and macOS arm64 (HVF on a bare-metal
+# organization runner). GitHub-hosted runners only cover the first two.
 jobs:
   ci:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04        # Linux x86_64 — full workspace + real KVM boot
+          - name: ubuntu-24.04      # Linux x86_64 — full workspace + real KVM boot
+            os: ubuntu-24.04
+            runs_on: '["ubuntu-24.04"]'
             guest_musl: x86_64-unknown-linux-musl
-          - os: windows-2025        # Windows x86_64 — build + real WHP boot
+          - name: windows-2025      # Windows x86_64 — build + real WHP boot
+            os: windows-2025
+            runs_on: '["windows-2025"]'
             guest_musl: x86_64-unknown-linux-musl
-    runs-on: ${{ matrix.os }}
+          - name: macos-arm64       # macOS arm64 — build + real HVF boot
+            os: macos-arm64
+            runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
+            guest_musl: aarch64-unknown-linux-musl
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,7 +56,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: cargo-bindeps
-          key: cargo-bindeps-${{ matrix.os }}-${{ env.CARGO_PR_SHA }}
+          key: cargo-bindeps-${{ matrix.name }}-${{ env.CARGO_PR_SHA }}
 
       - name: Build patched cargo
         if: steps.cargo-bin.outputs.cache-hit != 'true'
@@ -99,10 +104,11 @@ jobs:
       # per-step, never globally, so it can't reach the patched-cargo build above.
 
       # Both platforms run the full workspace unit tests. The only members
-      # Windows can't build are the genuinely Linux-only ones: vhost-backend
-      # (vhost = a Linux kernel interface) and snuffler (the Linux guest probe
-      # binary). Everything else — the whole dillo stack with its WHP backend —
-      # is built and tested on Windows too, for parity with Linux.
+      # Windows/macOS can't build are the genuinely Linux-only ones:
+      # vhost-backend (vhost = a Linux kernel interface) and snuffler (the Linux
+      # guest probe binary, cross-built as a dillo test artifact instead).
+      # Everything else — the whole dillo stack with its WHP/HVF backend — is
+      # built and tested for parity with Linux.
       - name: Test (Linux, full workspace)
         if: runner.os == 'Linux'
         shell: bash
@@ -119,17 +125,25 @@ jobs:
         run: |
           "$CARGO" test --workspace --exclude vhost-backend --exclude snuffler
 
+      - name: Test (macOS, workspace minus Linux-only crates)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+        run: |
+          "$CARGO" test --workspace --exclude vhost-backend --exclude snuffler
+
       - name: Reserve hugepages for guest RAM (Linux/KVM)
         if: runner.os == 'Linux'
         run: |
           sudo sysctl -w vm.nr_hugepages=1024
           grep -i huge /proc/meminfo
 
-      # Real guest boot on both platforms — required, no skip. dillo builds its
-      # per-OS backend (KVM on Linux, WHP on Windows) and boots an Alpine guest;
-      # the test asserts the guest's self-report. A runner that cannot boot fails
-      # loudly (see dillo/tests/boot.rs) — this is what must never break.
-      - name: Boot tests (KVM / WHP)
+      # Real guest boot on every platform — required, no skip. dillo builds its
+      # per-OS backend (KVM on Linux, WHP on Windows, HVF on macOS) and boots an
+      # Alpine same-arch guest; the test asserts the guest's self-report. A
+      # runner that cannot boot fails loudly (see dillo/tests/boot.rs).
+      - name: Boot tests (KVM / WHP / HVF)
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
