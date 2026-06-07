@@ -22,14 +22,33 @@ This design is derived from current code and primary specs.
 | Current `PciDevice`, `VirtioDevice`, `QueueNotifier`, and `MsixNotifier` are already separable traits, but some live in the wrong crates. | `dillo/deps/dillo-vm/src/pci.rs:23`, `dillo/deps/virtio/src/device.rs:27`, `dillo/deps/dillo-vm/deps/virtio-pci/src/transport.rs:63`, `dillo/deps/dillo-vm/deps/vm-pci/src/msix.rs:99` |
 | CI's supported platform matrix is Linux x86-64/KVM, Windows x86-64/WHP, and macOS arm64/HVF, with warnings denied and real boot tests. | `.github/workflows/ci.yml:13`, `.github/workflows/ci.yml:92`, `.github/workflows/ci.yml:100`, `.github/workflows/ci.yml:108` |
 
+## Name stability
+
+Names in the target graph are proposed logical crate names unless stated
+otherwise. They are not a promise that today's organic workspace crates survive
+with the same names or boundaries.
+
+Current crates are evidence and migration sources:
+
+- `dillo-vm` should disappear as a monolith.
+- `dillo-hypervisor` should split into backend `Machine` implementation crates.
+- `dillo-pmi` can become a `dillo` module unless reuse justifies a crate.
+- `dillo-platform` can become a `dillo` DTB-survey module or a renamed crate.
+- `dillo-device` is an older process/thread experiment, not the target boundary.
+- current `virtio`, `virtio-pci`, `vm-pci`, and `vhost-backend` may be renamed,
+  split, absorbed, or upstreamed depending on the final rust-vmm alignment.
+
 ## Target graph
 
 ```mermaid
 flowchart TD
+    dtb_survey["DTB survey layer"]
+    pci_types["PCI helper types"]
+
     dillo-machine --> dillo-mmio
 
     dillo-pci --> dillo-mmio
-    dillo-pci --> vm-pci
+    dillo-pci --> pci_types
 
     dillo-mmio-virtio --> dillo-mmio
     dillo-mmio-virtio --> dillo-virtio
@@ -64,7 +83,7 @@ flowchart TD
     dillo-machine-whp -.-> whp-api
 
     dillo --> pmi
-    dillo --> dillo-platform
+    dillo --> dtb_survey
     dillo --> dillo-machine
     dillo --> dillo-mmio
     dillo --> dillo-pci
@@ -91,7 +110,7 @@ depend on machine crates.
 `dillo` is the main user experience and the only composition point. It knows:
 
 - PMI and dillo's PMI-loading module;
-- the base DTB survey from `dillo-platform`;
+- the base DTB survey layer;
 - every concrete device crate dillo can instantiate;
 - every transport adapter crate dillo can use;
 - the `dillo-machine::Machine` trait;
@@ -131,7 +150,7 @@ registration shape. It does not own PCI, virtio, or machine construction.
 `dillo-pci` owns the concrete `PciRoot` and the `PciDevice` trait. `PciRoot`
 implements `MmioDevice`, owns the ECAM window plus BAR windows for one declared
 PCI host bridge, and can attach `PciDevice`s into DTB-declared slot capacity.
-It may use `vm-pci` for reusable PCI config/MSI-X structures.
+It may use a PCI helper layer for reusable PCI config/MSI-X structures.
 
 `dillo-pci-virtio` owns `VirtioPciDevice`, the concrete adapter from
 `dillo-virtio::VirtioDevice` to `dillo-pci::PciDevice`.
@@ -155,13 +174,14 @@ machine-owned architecture machinery such as IOAPIC, GIC, syscon, PSCI, and
 architecture-specific interrupt decoding. Backend crates may depend on these as
 appropriate. `dillo` should not directly manipulate their internals.
 
-`dillo-platform` remains the DTB survey and resource-planning crate. It consumes
-base DTB and overlay rules and returns typed platform facts with provenance. It
-does not know backend crates or concrete device implementations.
+The DTB survey layer consumes base DTB and overlay rules and returns typed
+platform facts with provenance. Today this logic lives in `dillo-platform`, but
+the target design does not require that crate name or that it remain a separate
+crate. It does not know backend crates or concrete device implementations.
 
-`pmi` is the upstream PMI spec/data crate. Dillo-specific PE parsing, resource
-caps, and defensive validation can remain a `dillo` module unless there is a
-clear reason to publish it as a separate crate.
+`pmi` is the upstream PMI spec/data crate. Today's `dillo-pmi` crate is
+dillo-specific PE parsing, resource caps, and defensive validation. That can
+become a `dillo` module unless reuse justifies a crate.
 
 ## DTB consumption
 
@@ -385,9 +405,9 @@ transports that need deassert must fail closed on that backend.
 
 ### `MsixNotifier`
 
-Owned by `vm-pci` unless upstreaming changes that placement. Backend crates
-implement it; `dillo-pci-virtio` consumes it when constructing
-`VirtioPciDevice`.
+Owned by the PCI helper layer unless upstreaming changes that placement. Today
+the implementation lives in `vm-pci`. Backend crates implement it;
+`dillo-pci-virtio` consumes it when constructing `VirtioPciDevice`.
 
 ## Process vs thread model
 
@@ -438,6 +458,9 @@ Current workspace evidence:
   `kvm-ioctls`, `kvm-bindings`, `vhost`, `vhost-user-backend`, and
   `virtio-queue`.
 
+These names are current-state evidence only. The target design should not
+preserve a local crate solely because it exists today.
+
 The split should keep rust-vmm-like reusable pieces small and dependency-light
 so upstreaming is possible later. Reusable protocol crates should not depend on
 dillo application policy, PMI, DTB, or machine backend crates.
@@ -462,7 +485,9 @@ This design is satisfied only when all of the following can be verified:
 9. Local verification passes:
    - `cargo fmt --all -- --check`
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Linux
-   - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler` on Windows and macOS
+   - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Windows
+     and macOS, with only genuinely platform-incompatible current crates
+     excluded until the split removes or relocates them
    - target checks for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, and `aarch64-apple-darwin`
 10. CI passes all three supported platform lanes, including real boot tests.
 
