@@ -192,6 +192,63 @@ crate. It does not know backend crates or concrete device implementations.
 dillo-specific PE parsing, resource caps, and defensive validation. That can
 become a `dillo` module unless reuse justifies a crate.
 
+## Runtime assembly flow
+
+`dillo` owns the only end-to-end assembly flow:
+
+1. Read PMI and validate the image contract.
+2. Decide load/fill placement and host resource placement from PMI, the base DTB,
+   and requested runtime resources.
+3. Generate the PMI overlay containing only host-provided CPUs, memory,
+   distance-map data, and `numa-node-id`.
+4. Merge base DTB plus overlay into one mutable `devtree::OwnedTree`.
+5. Construct the selected concrete `Machine` by draining machine-owned platform
+   facts from the merged devtree.
+6. Incrementally construct CPU, memory, MMIO, bus, transport, and device objects
+   from the same mutable tree and attach each one to the machine.
+7. Fail if any DTB node/property remains after assembly.
+8. Run the attached vCPUs through the machine's `Vcpu` objects and dillo's
+   `ExitHandler`.
+
+The merged devtree is therefore not drained up front into one large plan.
+Consumption is incremental: each constructed object drains only the nodes and
+properties it owns, then the next object sees the remaining tree. The final empty
+tree check proves that all guest-visible hardware came from the DTB and that no
+DTB fact was ignored.
+
+The shape of the `dillo` orchestration is:
+
+```rust
+let pmi = PmiImage::read(input)?;
+let base = pmi.base_dtb()?;
+let placement = Placement::from_pmi_and_base_dtb(&pmi, &base, request)?;
+let overlay = placement.overlay()?;
+let mut tree = devtree::OwnedTree::merge(base, overlay)?;
+
+let model = require(KvmTdxModel::from_devtree(&mut tree)?)?;
+let mut machine = KvmTdxMachine::new(model)?;
+
+for memory in KvmTdxMemory::all_from_devtree(&mut tree)? {
+    machine.attach(memory)?;
+}
+
+let mut vcpus = Vec::new();
+for cpu in KvmTdxCpu::all_from_devtree(&mut tree)? {
+    vcpus.push(machine.attach(cpu)?);
+}
+
+for device in dillo_mmio_devices_from_devtree(&mut tree)? {
+    machine.attach(device)?;
+}
+
+tree.require_empty()?;
+run(vcpus, exit_handler)?;
+```
+
+The concrete backend type above is selected by the target/backend alias. The
+pattern is the same for plain KVM, KVM+SEV, KVM+TDX, HVF, and WHP, but the
+machine model, CPU input type, and memory input type may differ.
+
 ## Devtree consumption
 
 Concrete devices have inherent constructors. Devtree consumption is not in
@@ -209,15 +266,15 @@ trait FromDevTree {
 }
 ```
 
-`dillo` implements this trait for concrete device and adapter types because
-only `dillo` knows all inputs at once: PMI, the mutable devtree, launch policy,
-selected transport, selected `Machine`, and every concrete device type it can
-instantiate. This is intentionally not an independent crate.
+`dillo` implements this trait for concrete machine inputs, device inputs, and
+adapter types because only `dillo` knows all inputs at once: PMI, the mutable
+devtree, selected transport, selected concrete `Machine`, and every concrete
+device type it can instantiate. This is intentionally not an independent crate.
 
-Construction uses the existing drain model. `dillo` attempts to construct the
-machine, buses, transports, and devices from one mutable `devtree::OwnedTree`.
-Each successful constructor removes every node and property it owns from that
-tree. After all constructors run, any remaining node or property is an error.
+Construction uses the existing drain model incrementally. `dillo` constructs one
+object at a time from one mutable `devtree::OwnedTree`. Each successful
+constructor removes every node and property it owns from that tree. After all
+constructors and attachments run, any remaining node or property is an error.
 `FromDevTree` always receives the whole tree; a consumer may drain as many nodes
 as it owns. The common MMIO-device case is one DTB node defining the device's
 constructor parameters: `reg` windows, interrupts, DMA/notification facts, and
@@ -247,11 +304,11 @@ backend marks or maps the corresponding pages as shared.
 
 The only way to access guest memory is through successful device registration.
 The target API exposes shared memory only through `SharedRegion` handles minted
-by `Machine::attach_mmio` for the registered `MmioDevice` and its declared
-resources. There is no whole-guest-memory accessor, no raw guest-to-host address
-translation API, and no API for devices to inspect private pages. A standard VM
-must fit this model by treating its otherwise-readable RAM as if only registered
-device attachments could access declared shared regions.
+by `Attach<Arc<dyn MmioDevice>>` for the registered `MmioDevice` and its
+declared resources. There is no whole-guest-memory accessor, no raw
+guest-to-host address translation API, and no API for devices to inspect private
+pages. A standard VM must fit this model by treating its otherwise-readable RAM
+as if only registered device attachments could access declared shared regions.
 
 For KVM, this maps to `guest_memfd` plus memory attributes: private pages live
 in guest memory that userspace cannot map, while userspace-visible shared pages
@@ -266,59 +323,82 @@ Owned by `dillo-machine`. Implemented by `dillo-machine-kvm`,
 `dillo-machine-hvf`, and `dillo-machine-whp`. Consumed by `dillo`.
 
 ```rust
-pub trait Machine: Sized + Send + Sync + 'static {
+pub trait Attach<T, E> {
+    type Output;
+
+    fn attach(&mut self, item: T) -> Result<Self::Output, E>;
+}
+
+pub trait Machine:
+    Sized
+    + Send
+    + Sync
+    + 'static
+    + Attach<Self::Memory, Self::Error, Output = ()>
+    + Attach<Self::Cpu, Self::Error, Output = Self::Vcpu>
+    + Attach<Arc<dyn MmioDevice>, Self::Error, Output = MmioAttachment>
+{
     type Error: std::error::Error + Send + Sync + 'static;
     type Vcpu: Vcpu<Error = Self::Error>;
-    type VcpuCreate: Send + 'static;
+    type Cpu: Send + 'static;
+    type Memory: Send + 'static;
 
     const DEVICE_MODEL: DeviceModel;
-
-    fn attach_mmio(&mut self, device: Arc<dyn MmioDevice>) -> Result<MmioAttachment, Self::Error>;
-    fn create_vcpu(&mut self, request: Self::VcpuCreate) -> Result<Self::Vcpu, Self::Error>;
 }
 ```
 
-`Machine` has no trait constructor. Each backend crate exposes an inherent
-constructor on its concrete machine type, for example:
+`Machine` has no trait constructor and no `launch()` API. Each backend crate
+exposes small inherent constructors on concrete machine and machine-input types.
+`dillo` owns local `FromDevTree` implementations that drain the merged devtree
+into those typed inputs, then calls the inherent constructors. For example:
 
 ```rust
-impl KvmMachine {
-    pub fn launch(plan: MachineLaunch) -> Result<MachineLaunchResult<Self>, KvmLaunchError>;
+impl KvmTdxMachine {
+    pub fn new(model: KvmTdxModel) -> Result<Self, KvmTdxError>;
 }
 
-pub struct MachineLaunchResult<M: Machine> {
-    pub machine: M,
-    pub vcpus: Vec<M::VcpuCreate>,
+impl KvmTdxCpu {
+    pub fn new(model: KvmTdxCpuModel) -> Result<Self, KvmTdxError>;
 }
 ```
 
-`MachineLaunch` is backend-neutral input derived by `dillo`: memory plan, vCPU
-count, CPU profile, launch sections, requested initial CPU state, measurement
-policy, and machine-owned substrate facts from the drained devtree. It must not
-contain KVM fds, HVF GIC handles, WHP partition handles, raw GSIs, raw SPIs,
-PCI devices, virtio devices, or transport-specific interrupt notifiers.
+The concrete machine is assembled by attaching typed objects:
 
-Backend launch is responsible for VM creation, memory ownership, confidential
-measurement/setup, and producing the backend-specific vCPU creation requests.
-The generic trait exposes the act of vCPU creation but not a universal vCPU
-configuration type. This keeps CC-specific ordering such as TDX
-VM-init-before-vCPU-init out of the shared trait shape while still allowing
-each machine to create its vCPUs.
+```rust
+impl Attach<KvmTdxMemory, KvmTdxError> for KvmTdxMachine {
+    type Output = ();
+}
+
+impl Attach<KvmTdxCpu, KvmTdxError> for KvmTdxMachine {
+    type Output = KvmTdxVcpu;
+}
+
+impl Attach<Arc<dyn MmioDevice>, KvmTdxError> for KvmTdxMachine {
+    type Output = MmioAttachment;
+}
+```
+
+`Machine::Cpu` and `Machine::Memory` are associated types because CPU and memory
+attachment material differs by machine family. Plain KVM may need explicit CPU
+initial register/state data. KVM+SEV and KVM+TDX may need confidential launch
+material, accepted initial state, memory acceptance/private-page setup, or
+opaque per-vCPU setup. `dillo` may request only PMI-defined CPU count, CPU
+profile, memory, load/fill, and initial state. Its `FromDevTree`
+implementations translate those facts into `Machine::Cpu` and `Machine::Memory`
+values for the selected machine or fail closed.
 
 `Machine` owns all guest memory, but exposes only attachment-scoped shared
 regions that a confidential VM can expose. Standard VMs may implement this with
 ordinary mapped memory internally, but the public API must not let callers read
-or write arbitrary guest-private memory. Without a successful `attach_mmio`
+or write arbitrary guest-private memory. Without a successful MMIO attachment
 call, no device receives any guest-memory capability.
 
-`VcpuCreate` is an associated type because CPU creation material differs by
-machine family. Plain KVM may need explicit initial register/state programming.
-KVM+SEV and KVM+TDX may need confidential launch material, accepted initial
-state, or opaque per-vCPU setup produced during machine launch. `dillo` may
-request only the PMI-defined vCPU count, CPU profile, and initial state carried
-by the image/DTB contract. The backend constructor must translate that request
-into its machine-specific `VcpuCreate` values or fail closed. The shared API
-must not imply that arbitrary registers can be configured for every machine.
+Attaching `Machine::Memory` grants memory ownership to the machine but does not
+grant devices access to guest memory. Attaching `Arc<dyn MmioDevice>` validates
+the device's DTB-derived windows, realizes interrupts, creates only the declared
+shared-memory handles for that device, and returns `MmioAttachment`. Attaching
+`Machine::Cpu` returns a runnable `Vcpu`; the CPU input type carries whatever
+non-CC or CC-specific construction material that machine family requires.
 
 `Machine` must stay device-model neutral. It must not expose PCI, MSI-X, UART,
 IOAPIC, GIC, KVM irqfd, WHP vector, or HVF-specific concepts in its public
@@ -327,7 +407,7 @@ crates, or protocol adapters below `dillo`.
 
 Interrupt needs are advertised by the `MmioDevice` being attached. `FromDevTree`
 implementations drain interrupt properties from the devtree into typed
-requirements stored on the constructed device. `Machine::attach_mmio` is
+requirements stored on the constructed device. `Attach<Arc<dyn MmioDevice>>` is
 obligated to resolve those requirements for the backend, fail if it cannot, and
 pass the resulting handles back through `MmioAttachment`.
 
@@ -424,12 +504,12 @@ pub trait MmioDevice: Send + Sync + std::fmt::Debug {
 ```
 
 `resources()` is DTB-derived device metadata, not a hardware-enablement
-decision. `Machine::attach_mmio` registers the declared windows, realizes the
-declared interrupt and shared-memory requirements, calls `MmioDevice::attach`
-with the resulting attachment handle, and fails closed if any requirement
-cannot be satisfied. PCI is therefore invisible to machine backends; a PCI host
-bridge is just one MMIO device with windows, shared pages, and interrupt
-requirements from their point of view.
+decision. `Attach<Arc<dyn MmioDevice>>` registers the declared windows, realizes
+the declared interrupt and shared-memory requirements, calls
+`MmioDevice::attach` with the resulting attachment handle, and fails closed if
+any requirement cannot be satisfied. PCI is therefore invisible to machine
+backends; a PCI host bridge is just one MMIO device with windows, shared pages,
+and interrupt requirements from their point of view.
 
 ### `PciDevice`
 
@@ -523,7 +603,7 @@ guest-private memory.
 
 ### `MmioAttachment`
 
-Owned by `dillo-mmio`. Returned by `Machine::attach_mmio`. Consumed by
+Owned by `dillo-mmio`. Returned by `Attach<Arc<dyn MmioDevice>>`. Consumed by
 transports that can use backend-neutral services for an already-attached MMIO
 device.
 
@@ -555,7 +635,7 @@ already have been drained from the DTB by the device constructor.
 ### `InterruptController`
 
 Owned by `dillo-mmio`. Implemented by backend crates and used by
-`Machine::attach_mmio` to realize `MmioInterruptRequirement`s.
+`Attach<Arc<dyn MmioDevice>>` to realize `MmioInterruptRequirement`s.
 
 ```rust
 pub trait InterruptController: Send + Sync {
@@ -688,9 +768,10 @@ This design is satisfied only when all of the following can be verified:
    HVF, raw host handles, or hypervisor API objects.
 5. `Machine` has no trait constructor; backend crates expose inherent
    constructors on concrete machine types.
-6. `Machine` has no universal `VcpuConfig`; `Machine::VcpuCreate` is associated
-   per machine family and produced by backend launch from `MachineLaunch`.
-   Unsupported PMI/DTB initial-state requests fail closed.
+6. `Machine` has no universal `VcpuConfig`; `Machine::Cpu` and
+   `Machine::Memory` are associated per machine family and are produced by
+   dillo-owned devtree consumption for the selected concrete backend.
+   Unsupported PMI/DTB CPU or memory requests fail closed.
 7. `Machine` exposes no whole-guest-memory accessor; guest memory is accessible
    only through attachment-scoped `SharedRegion` handles minted by successful
    device registration.
@@ -699,7 +780,7 @@ This design is satisfied only when all of the following can be verified:
 9. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
    to `PciDevice`.
 10. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
-11. `Machine::attach_mmio` realizes every interrupt and shared-memory
+11. `Attach<Arc<dyn MmioDevice>>` realizes every interrupt and shared-memory
    requirement advertised by `MmioDevice::resources()` or fails closed.
 12. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
    for all concrete devices and transports over `&mut devtree::OwnedTree`.
