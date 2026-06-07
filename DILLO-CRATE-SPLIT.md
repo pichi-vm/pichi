@@ -20,6 +20,7 @@ This design is derived from current code and primary specs.
 | Current `MmioDevice` already supports multiple windows, which is required for `PciRoot` ECAM plus BAR windows. | `dillo/deps/dillo-vm/src/mmio_bus.rs:23` |
 | Current `PciRoot` already owns ECAM plus BAR windows and implements `MmioDevice`. | `dillo/deps/dillo-vm/src/pci.rs:188`, `dillo/deps/dillo-vm/src/pci.rs:265` |
 | Current `PciDevice`, `VirtioDevice`, `QueueNotifier`, and `MsixNotifier` are already separable traits, but some live in the wrong crates. | `dillo/deps/dillo-vm/src/pci.rs:23`, `dillo/deps/virtio/src/device.rs:27`, `dillo/deps/dillo-vm/deps/virtio-pci/src/transport.rs:63`, `dillo/deps/dillo-vm/deps/vm-pci/src/msix.rs:99` |
+| Current `BackendVm` exposes PCI-specific MSI-X notifier construction; the target split must remove that transport leak from the machine boundary. | `dillo/deps/dillo-vm/src/backend.rs:64`, `dillo/deps/dillo-vm/src/backend.rs:74` |
 | CI's supported platform matrix is Linux x86-64/KVM, Windows x86-64/WHP, and macOS arm64/HVF, with warnings denied and real boot tests. | `.github/workflows/ci.yml:13`, `.github/workflows/ci.yml:92`, `.github/workflows/ci.yml:100`, `.github/workflows/ci.yml:108` |
 
 ## Name stability
@@ -143,9 +144,9 @@ PMI, DTB, KVM, HVF, or WHP.
 `Machine`, not `Vm`, to match the role: one realized virtual machine with vCPU
 lifecycle, guest memory, MMIO attachment, and backend-neutral run outcomes.
 
-`dillo-mmio` owns `MmioDevice`, MMIO windows, wired interrupt handles, MSI/event
-plumbing that MMIO devices or transports need, and the backend-neutral I/O event
-registration shape. It does not own PCI, virtio, or machine construction.
+`dillo-mmio` owns `MmioDevice`, MMIO windows, line/message interrupt
+abstractions, and the backend-neutral I/O event registration shape. It does not
+own PCI, virtio, or machine construction.
 
 `dillo-pci` owns the concrete `PciRoot` and the `PciDevice` trait. `PciRoot`
 implements `MmioDevice`, owns the ECAM window plus BAR windows for one declared
@@ -230,31 +231,32 @@ Owned by `dillo-machine`. Implemented by `dillo-machine-kvm`,
 pub trait Machine: Sized + Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
     type Vcpu: Vcpu<Error = Self::Error>;
-    type VcpuSeed: Send + 'static;
-    type IoEventRegistrar: IoEventRegistrar;
-    type MsiNotifier: vm_pci::MsixNotifier + 'static;
 
     const DEVICE_MODEL: DeviceModel;
 
     fn new(opts: MachineOptions) -> Result<Self, Self::Error>;
     fn guest_memory(&self) -> GuestMemory;
     fn attach_mmio(&mut self, device: Arc<dyn MmioDevice>) -> Result<(), Self::Error>;
-    fn io_event_registrar(&self) -> Self::IoEventRegistrar;
-    fn wired_irq(&self, source: InterruptSource) -> Result<Interrupt, Self::Error>;
-    fn msi_notifier(
-        &self,
-        source: MsiSource,
-        vectors: u16,
-    ) -> Result<Arc<Self::MsiNotifier>, Self::Error>;
-    fn vcpu_seeds(&self, boot: BootState) -> Result<Vec<Self::VcpuSeed>, Self::Error>;
-    fn create_vcpu(&self, seed: Self::VcpuSeed) -> Result<Self::Vcpu, Self::Error>;
+    fn io_events(&self) -> Arc<dyn IoEventRegistrar>;
+    fn interrupts(&self) -> Arc<dyn InterruptController>;
+    fn create_vcpu(&self, config: VcpuConfig) -> Result<Self::Vcpu, Self::Error>;
 }
 ```
 
 `MachineOptions` is backend-neutral input derived by `dillo`: memory plan,
 vCPU count, CPU profile, launch sections, and machine-owned substrate facts
 from the surveyed DTB. It must not contain KVM fds, HVF GIC handles, WHP
-partition handles, raw GSIs, raw SPIs, PCI devices, or virtio devices.
+partition handles, raw GSIs, raw SPIs, PCI devices, virtio devices, or
+transport-specific interrupt notifiers.
+
+`VcpuConfig` contains one vCPU's PMI-derived initial state plus devtree-derived
+CPU identity/topology facts. It is not a backend seed and must not contain host
+thread handles, file descriptors, VM handles, or hypervisor API objects.
+
+`Machine` must stay device-model neutral. It must not expose PCI, MSI-X, UART,
+IOAPIC, GIC, KVM irqfd, WHP vector, or HVF-specific concepts in its public
+trait. Those details belong either in backend internals, architecture substrate
+crates, or protocol adapters below `dillo`.
 
 `DEVICE_MODEL` records process vs thread device-host policy. The unresolved
 part is where the process/thread host wrapper lives; it must not make backend
@@ -345,13 +347,15 @@ pub struct PciRootOptions {
     pub ecam: MmioWindow,
     pub slots: u8,
     pub bar_window: AddressRange,
-    pub msi: MsiSource,
+    pub message_interrupts: MessageInterruptSource,
 }
 ```
 
 One `PciRoot` instance owns all guest MMIO windows for the declared PCI host:
 ECAM, BAR windows, and MSI-X table/PBA BARs that belong to attached devices.
-The backend receives only that single `MmioDevice`.
+The backend receives only that single `MmioDevice`. `PciRoot` or
+`dillo-pci-virtio` adapts PCI MSI/MSI-X table updates to the generic
+message-interrupt service; machine backends never see PCI transport types.
 
 ### `VirtioDevice`
 
@@ -380,18 +384,39 @@ Owned by `dillo-mmio`. Implemented by backend crates and vended through
 
 ```rust
 pub trait IoEventRegistrar: Send {
-    fn register(&mut self, event: IoEvent) -> Result<(), IoEventError>;
-    fn unregister_all(&mut self);
+    fn register(&self, event: IoEvent) -> Result<IoEventRegistration, IoEventError>;
 }
 ```
 
 KVM implements this with ioeventfd. HVF/WHP can use a no-op or direct-kick path.
 The trait is consumed by transport adapters, not by concrete devices.
 
+### `InterruptController`
+
+Owned by `dillo-mmio`. Implemented by backend crates and vended through
+`Machine`. Consumed by `dillo`, transports, and `dillo-pci`.
+
+```rust
+pub trait InterruptController: Send + Sync {
+    fn line(&self, source: InterruptSource) -> Result<Interrupt, InterruptError>;
+
+    fn message_domain(
+        &self,
+        source: MessageInterruptSource,
+        vectors: u16,
+    ) -> Result<Arc<dyn MessageInterruptDomain>, InterruptError>;
+}
+```
+
+`InterruptSource` and `MessageInterruptSource` are typed facts derived from the
+drained devtree. They are not raw x86 GSIs, raw ARM SPIs, KVM irqfds, WHP
+vectors, or HVF handles.
+
 ### `Interrupt`
 
-Owned by `dillo-mmio`. Constructed by machine backends from DTB-derived
-interrupt sources. Consumed by transports and simple MMIO devices such as UART.
+Owned by `dillo-mmio`. Constructed by machine backends through
+`InterruptController::line`. Consumed by transports and simple MMIO devices
+such as UART.
 
 ```rust
 pub trait InterruptLine: Send + Sync + std::fmt::Debug {
@@ -408,11 +433,30 @@ for self-leveling devices such as a 16550 on level-triggered backends. A backend
 that cannot represent deassert returns `UnsupportedDeassert`; devices or
 transports that need deassert must fail closed on that backend.
 
-### `MsixNotifier`
+### `MessageInterruptDomain`
 
-Owned by the PCI helper layer unless upstreaming changes that placement. Today
-the implementation lives in `vm-pci`. Backend crates implement it;
-`dillo-pci-virtio` consumes it when constructing `VirtioPciDevice`.
+Owned by `dillo-mmio`. Implemented by backend crates. Consumed by `dillo-pci`
+through a PCI-owned adapter.
+
+```rust
+pub struct MessageInterrupt {
+    pub address: u64,
+    pub data: u32,
+    pub masked: bool,
+}
+
+pub trait MessageInterruptDomain: Send + Sync {
+    fn update(&self, vector: u16, msg: MessageInterrupt) -> Result<(), InterruptError>;
+    fn enabled(&self, enabled: bool) -> Result<(), InterruptError>;
+    fn interrupt(&self, vector: u16) -> Option<Interrupt>;
+}
+```
+
+PCI MSI/MSI-X is one producer of message interrupts, not a machine trait
+concept. `dillo-pci` owns the adapter from PCI table/config writes to
+`MessageInterruptDomain`. Today the implementation shape is exposed through
+`vm-pci::MsixNotifier`; the target design confines that name to PCI helper code
+or upstreamed PCI code.
 
 ## Process vs thread model
 
@@ -479,22 +523,24 @@ This design is satisfied only when all of the following can be verified:
 2. Backend crates depend only on `dillo-machine`, `dillo-mmio`, optional
    architecture substrate crates, and host OS hypervisor APIs.
 3. Device crates do not depend on `dillo-machine`, backend crates, PMI, or DTB.
-4. `dillo-pci` owns `PciRoot` and `PciDevice`; `PciRoot` implements
+4. `Machine` exposes no PCI, MSI-X, UART, IOAPIC, GIC, KVM irqfd, WHP vector,
+   HVF, or backend seed types.
+5. `dillo-pci` owns `PciRoot` and `PciDevice`; `PciRoot` implements
    `MmioDevice`.
-5. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
+6. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
    to `PciDevice`.
-6. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
-7. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
+7. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
+8. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
    for all concrete devices and transports over `&mut devtree::OwnedTree`.
-8. Every DTB node/property is drained by exactly one owner, or launch fails.
-9. Local verification passes:
+9. Every DTB node/property is drained by exactly one owner, or launch fails.
+10. Local verification passes:
    - `cargo fmt --all -- --check`
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Linux
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Windows
      and macOS, with only genuinely platform-incompatible current crates
      excluded until the split removes or relocates them
    - target checks for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, and `aarch64-apple-darwin`
-10. CI passes all three supported platform lanes, including real boot tests.
+11. CI passes all three supported platform lanes, including real boot tests.
 
 ## Current-state gaps
 
