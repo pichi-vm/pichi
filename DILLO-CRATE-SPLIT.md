@@ -238,17 +238,25 @@ for cpu in KvmTdxCpu::all_from_devtree(&mut tree)? {
     vcpus.push(machine.attach(cpu)?);
 }
 
+let mut attached_mmio = Vec::new();
 for device in dillo_mmio_devices_from_devtree(&mut tree)? {
-    machine.attach(device)?;
+    let attachment = machine.attach(Arc::clone(&device))?;
+    attached_mmio.push((device, attachment));
 }
 
 tree.require_empty()?;
-run(vcpus, exit_handler)?;
+run(vcpus, attached_mmio)?;
 ```
 
 The concrete backend type above is selected by the target/backend alias. The
 pattern is the same for plain KVM, KVM+SEV, KVM+TDX, HVF, and WHP, but the
 machine model, CPU input type, and memory input type may differ.
+
+`attached_mmio` is handed to the selected device-host wrapper. In a thread model,
+the wrapper may keep direct references to the device and backend attachment. In a
+process model, the attachment may represent eventfds, irqfds, shared-memory
+capabilities, and channels used to host the device out of process. In both cases,
+the machine has already registered MMIO routing before vCPUs run.
 
 ## Devtree consumption
 
@@ -374,7 +382,7 @@ where
     M: Attach<
         Arc<dyn MmioDevice>,
         Error = <M as Machine>::Error,
-        Output = MmioAttachment,
+        Output = Arc<dyn MmioAttachment>,
     >,
 ```
 
@@ -408,7 +416,7 @@ impl Attach<KvmTdxCpu> for KvmTdxMachine {
 
 impl Attach<Arc<dyn MmioDevice>> for KvmTdxMachine {
     type Error = KvmTdxError;
-    type Output = MmioAttachment;
+    type Output = Arc<dyn MmioAttachment>;
 }
 ```
 
@@ -430,9 +438,10 @@ call, no device receives any guest-memory capability.
 Attaching `Machine::Memory` grants memory ownership to the machine but does not
 grant devices access to guest memory. Attaching `Arc<dyn MmioDevice>` validates
 the device's DTB-derived windows, realizes interrupts, creates only the declared
-shared-memory handles for that device, and returns `MmioAttachment`. Attaching
-`Machine::Cpu` returns a runnable `Vcpu`; the CPU input type carries whatever
-non-CC or CC-specific construction material that machine family requires.
+shared-memory capabilities for that device, and returns a backend-implemented
+`MmioAttachment`. Attaching `Machine::Cpu` returns a runnable `Vcpu`; the CPU
+input type carries whatever non-CC or CC-specific construction material that
+machine family requires.
 
 `Machine` must stay device-model neutral. It must not expose PCI, MSI-X, UART,
 IOAPIC, GIC, KVM irqfd, WHP vector, or HVF-specific concepts in its public
@@ -443,7 +452,8 @@ Interrupt needs are advertised by the `MmioDevice` being attached. `FromDevTree`
 implementations drain interrupt properties from the devtree into typed
 requirements stored on the constructed device. `Attach<Arc<dyn MmioDevice>>` is
 obligated to resolve those requirements for the backend, fail if it cannot, and
-pass the resulting handles back through `MmioAttachment`.
+return the resulting handles through its backend-specific `MmioAttachment`
+implementation.
 
 `DEVICE_MODEL` records process vs thread device-host policy. The unresolved
 part is where the process/thread host wrapper lives; it must not make backend
@@ -471,10 +481,10 @@ become dillo/device APIs.
 `Attach<Arc<dyn MmioDevice>>` registers the device's MMIO windows in
 machine-owned routing state, and vCPUs created by that machine carry whatever
 handle they need to route unresolved MMIO exits internally. On Linux/KVM,
-`MmioAttachment::register_notify` may also bind ioeventfd for MMIO writes so
-those notifications bypass the vCPU thread. Interrupt delivery likewise uses
-resolved `Interrupt` or `MessageInterruptDomain` handles from `MmioAttachment`;
-it is not sent through the vCPU run loop.
+the returned `MmioAttachment` may also bind ioeventfd for MMIO writes so those
+notifications bypass the vCPU thread. Interrupt delivery likewise uses resolved
+`Interrupt` or `MessageInterruptDomain` handles exposed by the returned
+attachment; it is not sent through the vCPU run loop.
 
 ### `MmioDevice`
 
@@ -520,7 +530,6 @@ pub enum SharedAccess {
 
 pub trait MmioDevice: Send + Sync + std::fmt::Debug {
     fn resources(&self) -> MmioResources;
-    fn attach(&self, attachment: MmioAttachment) -> Result<(), MmioAttachError>;
     fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError>;
     fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError>;
 }
@@ -529,11 +538,10 @@ pub trait MmioDevice: Send + Sync + std::fmt::Debug {
 `resources()` is DTB-derived device metadata, not a hardware-enablement
 decision. `Attach<Arc<dyn MmioDevice>>` registers the declared windows into
 machine-owned MMIO routing state, realizes the declared interrupt and
-shared-memory requirements, calls `MmioDevice::attach` with the resulting
-attachment handle, and fails closed if any requirement cannot be satisfied. PCI
-is therefore invisible to machine backends; a PCI host bridge is just one MMIO
-device with windows, shared-memory capabilities, and interrupt requirements from
-their point of view.
+shared-memory requirements, returns a backend-implemented `MmioAttachment`, and
+fails closed if any requirement cannot be satisfied. PCI is therefore invisible
+to machine backends; a PCI host bridge is just one MMIO device with windows,
+shared-memory capabilities, and interrupt requirements from their point of view.
 
 `resources()` must be stable for the lifetime of the device. It is the device's
 claim over DTB-derived resources, not a negotiation hook. The machine validates
@@ -546,10 +554,10 @@ that as a VM execution error rather than silently ignoring the access.
 Shared-memory requirements are capabilities, not static shared pages. The DTB
 may describe the device's DMA aperture or shared-memory eligibility, but virtio
 queue descriptors and buffers are runtime guest protocol state. A device gets a
-named shared-memory capability through `MmioAttachment`; each requested runtime
-range must be inside that capability and must currently be tracked as shared by
-the backend. MMIO windows, PCI ECAM, and BAR apertures are not automatically
-shared-memory capabilities.
+named shared-memory capability through the attachment returned by machine
+`Attach`; each requested runtime range must be inside that capability and must
+currently be tracked as shared by the backend. MMIO windows, PCI ECAM, and BAR
+apertures are not automatically shared-memory capabilities.
 
 ### `PciDevice`
 
@@ -658,29 +666,26 @@ guest-private memory.
 
 ### `MmioAttachment`
 
-Owned by `dillo-mmio`. Returned by `Attach<Arc<dyn MmioDevice>>`. Consumed by
-transports that can use backend-neutral services for an already-attached MMIO
+Trait owned by `dillo-mmio`. Implemented by `dillo-machine-*` backends. Returned
+by `Attach<Arc<dyn MmioDevice>>`. Consumed by device-host wrappers and
+transports that need backend-neutral services for an already-attached MMIO
 device.
 
 ```rust
-pub struct MmioAttachment {
-    // opaque
-}
+pub trait MmioAttachment: Send + Sync {
+    fn interrupt(&self, name: &str) -> Result<Interrupt, MmioAttachmentError>;
 
-impl MmioAttachment {
-    pub fn interrupt(&self, name: &str) -> Result<Interrupt, MmioAttachmentError>;
-
-    pub fn message_domain(
+    fn message_domain(
         &self,
         name: &str,
     ) -> Result<Arc<dyn MessageInterruptDomain>, MmioAttachmentError>;
 
-    pub fn shared_memory(
+    fn shared_memory(
         &self,
         name: &str,
     ) -> Result<Arc<dyn SharedMemory>, MmioAttachmentError>;
 
-    pub fn register_notify(
+    fn register_notify(
         &self,
         event: MmioNotifyEvent,
     ) -> Result<MmioNotifyRegistration, MmioNotifyError>;
@@ -697,7 +702,13 @@ device constructor.
 
 MMIO attachment is all-or-fail. The machine must not leave windows, interrupts,
 notify registrations, or shared-memory capabilities partially installed if any
-resource realization or `MmioDevice::attach` step fails.
+resource realization step fails.
+
+`MmioAttachment` is the only object in this layer whose implementation is
+backend-specific. A KVM implementation may contain eventfds, irqfds, and process
+device-host wiring. HVF/WHP implementations may contain in-process thread
+channels or direct interrupt handles. Those details are opaque behind the
+`dillo-mmio` trait; device crates and `dillo` can use only the trait methods.
 
 ### `InterruptController`
 
@@ -855,16 +866,18 @@ This design is satisfied only when all of the following can be verified:
 12. `Attach<Arc<dyn MmioDevice>>` realizes every interrupt and shared-memory
    capability requirement advertised by `MmioDevice::resources()` or fails
    closed without partial attachment.
-13. Routed MMIO and PCI endpoint accesses return typed errors; boolean
+13. `MmioDevice` has no attach/init callback; machine attachment returns an
+   `Arc<dyn MmioAttachment>` implemented by the selected backend.
+14. Routed MMIO and PCI endpoint accesses return typed errors; boolean
    "unhandled after routing" is not part of the target device API.
-14. Shared memory is exposed only as attachment-scoped capabilities whose
+15. Shared memory is exposed only as attachment-scoped capabilities whose
    runtime regions must be inside a DTB-derived aperture and currently tracked
    shared by the backend.
-15. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
+16. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
    for all concrete devices and transports over `&mut devtree::OwnedTree`.
    `Ok(None)` consumes nothing and means the relevant node is absent.
-16. Every DTB node/property is drained by exactly one owner, or launch fails.
-17. Local verification passes:
+17. Every DTB node/property is drained by exactly one owner, or launch fails.
+18. Local verification passes:
    - `cargo fmt --all -- --check`
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Linux
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Windows
