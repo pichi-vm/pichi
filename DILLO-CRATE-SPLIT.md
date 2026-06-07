@@ -167,8 +167,8 @@ concrete inherent constructors. They do not parse DTB and do not decide slot
 occupancy.
 
 `dillo-mmio-uart` owns a concrete MMIO 16550-compatible UART device. It exposes
-an inherent constructor that takes already-resolved MMIO window and interrupt
-inputs.
+an inherent constructor that takes DTB-derived MMIO window and interrupt
+requirements.
 
 `dillo-x86` and `dillo-arm` are optional architecture substrate crates for
 machine-owned architecture machinery such as IOAPIC, GIC, syscon, PSCI, and
@@ -210,6 +210,10 @@ Construction uses the existing drain model. `dillo` attempts to construct the
 machine, buses, transports, and devices from one mutable `devtree::OwnedTree`.
 Each successful constructor removes every node and property it owns from that
 tree. After all constructors run, any remaining node or property is an error.
+`FromDevTree` always receives the whole tree; a consumer may drain as many nodes
+as it owns. The common MMIO-device case is one DTB node defining the device's
+constructor parameters: `reg` windows, interrupts, DMA/notification facts, and
+device-specific properties.
 
 The rule is fail closed: if a DTB node/property is not consumed by exactly one
 owner, launch fails. If dillo wants to plug a device but the base DTB did not
@@ -236,7 +240,6 @@ pub trait Machine: Sized + Send + Sync + 'static {
 
     fn new(opts: MachineOptions) -> Result<Self, Self::Error>;
     fn guest_memory(&self) -> GuestMemory;
-    fn interrupts(&self) -> Arc<dyn InterruptController>;
     fn attach_mmio(&mut self, device: Arc<dyn MmioDevice>) -> Result<MmioAttachment, Self::Error>;
     fn create_vcpu(&self, config: VcpuConfig) -> Result<Self::Vcpu, Self::Error>;
 }
@@ -257,11 +260,11 @@ IOAPIC, GIC, KVM irqfd, WHP vector, or HVF-specific concepts in its public
 trait. Those details belong either in backend internals, architecture substrate
 crates, or protocol adapters below `dillo`.
 
-Interrupt needs are not advertised during `attach_mmio`. `FromDevTree`
-implementations drain interrupt properties from the devtree, `dillo` resolves
-those typed sources through `Machine::interrupts()`, and concrete constructors
-receive already-resolved `Interrupt` or `MessageInterruptDomain` handles.
-`attach_mmio` registers address decoding for an already-constructed device.
+Interrupt needs are advertised by the `MmioDevice` being attached. `FromDevTree`
+implementations drain interrupt properties from the devtree into typed
+requirements stored on the constructed device. `Machine::attach_mmio` is
+obligated to resolve those requirements for the backend, fail if it cannot, and
+pass the resulting handles back through `MmioAttachment`.
 
 `DEVICE_MODEL` records process vs thread device-host policy. The unresolved
 part is where the process/thread host wrapper lives; it must not make backend
@@ -315,17 +318,38 @@ pub struct MmioWindow {
     pub size: u64,
 }
 
+pub struct MmioResources {
+    pub windows: Vec<MmioWindow>,
+    pub interrupts: Vec<MmioInterruptRequirement>,
+}
+
+pub enum MmioInterruptRequirement {
+    Line {
+        name: &'static str,
+        source: InterruptSource,
+    },
+
+    MessageDomain {
+        name: &'static str,
+        source: MessageInterruptSource,
+        vectors: u16,
+    },
+}
+
 pub trait MmioDevice: Send + Sync + std::fmt::Debug {
-    fn windows(&self) -> Vec<MmioWindow>;
+    fn resources(&self) -> MmioResources;
+    fn attach(&self, attachment: MmioAttachment) -> Result<(), MmioAttachError>;
     fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> bool;
     fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> bool;
 }
 ```
 
-`Machine::attach_mmio` accepts only `MmioDevice` and returns an attachment
-handle for backend-neutral services scoped to that attached device. PCI is
-therefore invisible to machine backends; a PCI host bridge is just one MMIO
-device from their point of view.
+`resources()` is DTB-derived device metadata, not a hardware-enablement
+decision. `Machine::attach_mmio` registers the declared windows, realizes the
+declared interrupt requirements, calls `MmioDevice::attach` with the resulting
+attachment handle, and fails closed if any requirement cannot be satisfied. PCI
+is therefore invisible to machine backends; a PCI host bridge is just one MMIO
+device with windows and interrupt requirements from their point of view.
 
 ### `PciDevice`
 
@@ -395,6 +419,10 @@ pub struct MmioAttachment {
 }
 
 impl MmioAttachment {
+    pub fn interrupt(&self, name: &str) -> Option<Interrupt>;
+
+    pub fn message_domain(&self, name: &str) -> Option<Arc<dyn MessageInterruptDomain>>;
+
     pub fn register_notify(
         &self,
         event: MmioNotifyEvent,
@@ -404,12 +432,14 @@ impl MmioAttachment {
 
 KVM implements notify registration with ioeventfd. HVF/WHP can return
 `Unsupported`, and the transport falls back to ordinary MMIO write dispatch.
-This is an optional acceleration path, not an interrupt declaration mechanism.
+Notify registration is an optional acceleration path. Interrupt requirements
+come from `MmioDevice::resources()` and must already have been drained from the
+DTB by the device constructor.
 
 ### `InterruptController`
 
-Owned by `dillo-mmio`. Implemented by backend crates and vended through
-`Machine`. Consumed by `dillo`, transports, and `dillo-pci`.
+Owned by `dillo-mmio`. Implemented by backend crates and used by
+`Machine::attach_mmio` to realize `MmioInterruptRequirement`s.
 
 ```rust
 pub trait InterruptController: Send + Sync {
@@ -424,8 +454,8 @@ pub trait InterruptController: Send + Sync {
 ```
 
 `InterruptSource` and `MessageInterruptSource` are typed facts derived from the
-drained devtree. They are not raw x86 GSIs, raw ARM SPIs, KVM irqfds, WHP
-vectors, or HVF handles.
+drained devtree and carried by `MmioDevice::resources()`. They are not raw x86
+GSIs, raw ARM SPIs, KVM irqfds, WHP vectors, or HVF handles.
 
 ### `Interrupt`
 
@@ -545,17 +575,19 @@ This design is satisfied only when all of the following can be verified:
 6. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
    to `PciDevice`.
 7. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
-8. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
+8. `Machine::attach_mmio` realizes every interrupt requirement advertised by
+   `MmioDevice::resources()` or fails closed.
+9. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
    for all concrete devices and transports over `&mut devtree::OwnedTree`.
-9. Every DTB node/property is drained by exactly one owner, or launch fails.
-10. Local verification passes:
+10. Every DTB node/property is drained by exactly one owner, or launch fails.
+11. Local verification passes:
    - `cargo fmt --all -- --check`
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Linux
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Windows
      and macOS, with only genuinely platform-incompatible current crates
      excluded until the split removes or relocates them
    - target checks for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, and `aarch64-apple-darwin`
-11. CI passes all three supported platform lanes, including real boot tests.
+12. CI passes all three supported platform lanes, including real boot tests.
 
 ## Current-state gaps
 
