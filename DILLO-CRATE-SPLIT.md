@@ -318,10 +318,10 @@ KVM does not provide a memory-attribute get API, the backend must track
 shared/private state explicitly and fail closed on requests that do not match
 its tracked state.
 
-### `Machine`
+### `Attach`
 
-Owned by `dillo-machine`. Implemented by `dillo-machine-kvm`,
-`dillo-machine-hvf`, and `dillo-machine-whp`. Consumed by `dillo`.
+Owned by `dillo-mmio`. Implemented by concrete composition points such as
+machine backends and `dillo-pci::PciRoot`.
 
 ```rust
 pub trait Attach<T> {
@@ -330,7 +330,20 @@ pub trait Attach<T> {
 
     fn attach(&mut self, item: T) -> Result<Self::Output, Self::Error>;
 }
+```
 
+`Attach<T>` is not machine-specific. It is the generic operation for registering
+one constructed object with another constructed object while preserving the
+owner's error type and returning the registered object's runtime handle. Machine
+backends use it to attach memory, CPUs, and MMIO devices. `PciRoot` uses it to
+attach PCI endpoints into DTB-declared slot capacity.
+
+### `Machine`
+
+Owned by `dillo-machine`. Implemented by `dillo-machine-kvm`,
+`dillo-machine-hvf`, and `dillo-machine-whp`. Consumed by `dillo`.
+
+```rust
 pub trait Machine: Sized + Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
     type Vcpu: Vcpu<Error = Self::Error>;
@@ -551,13 +564,20 @@ pub struct PciRootOptions {
     pub bar_window: AddressRange,
     pub message_interrupts: MessageInterruptSource,
 }
+
+impl Attach<Box<dyn PciDevice>> for PciRoot {
+    type Error = PciAttachError;
+    type Output = PciFunction;
+}
 ```
 
 One `PciRoot` instance owns all guest MMIO windows for the declared PCI host:
 ECAM, BAR windows, and MSI-X table/PBA BARs that belong to attached devices.
-The backend receives only that single `MmioDevice`. `PciRoot` or
-`dillo-pci-virtio` adapts PCI MSI/MSI-X table updates to the generic
-message-interrupt service; machine backends never see PCI transport types.
+`Attach<Box<dyn PciDevice>>` assigns a DTB-declared PCI slot/function and folds
+the endpoint's BARs into the root's PCI MMIO routing. The backend receives only
+the single `PciRoot` as an `MmioDevice`. `PciRoot` or `dillo-pci-virtio` adapts
+PCI MSI/MSI-X table updates to the generic message-interrupt service; machine
+backends never see PCI transport types.
 
 ### `VirtioDevice`
 
@@ -781,29 +801,31 @@ This design is satisfied only when all of the following can be verified:
 2. Backend crates depend only on `dillo-machine`, `dillo-mmio`, optional
    architecture substrate crates, and host OS hypervisor APIs.
 3. Device crates do not depend on `dillo-machine`, backend crates, PMI, or DTB.
-4. `Machine` exposes no PCI, MSI-X, UART, IOAPIC, GIC, KVM irqfd, WHP vector,
+4. `Attach<T>` is owned by `dillo-mmio`, not `dillo-machine`, and is used by
+   both machine backends and `dillo-pci::PciRoot`.
+5. `Machine` exposes no PCI, MSI-X, UART, IOAPIC, GIC, KVM irqfd, WHP vector,
    HVF, raw host handles, or hypervisor API objects.
-5. `Machine` has no trait constructor; backend crates expose inherent
+6. `Machine` has no trait constructor; backend crates expose inherent
    constructors on concrete machine types.
-6. `Machine` has no universal `VcpuConfig`; `Machine::Cpu` and
+7. `Machine` has no universal `VcpuConfig`; `Machine::Cpu` and
    `Machine::Memory` are associated per machine family and are produced by
    dillo-owned devtree consumption for the selected concrete backend.
    Unsupported PMI/DTB CPU or memory requests fail closed.
-7. `Machine` exposes no whole-guest-memory accessor; guest memory is accessible
+8. `Machine` exposes no whole-guest-memory accessor; guest memory is accessible
    only through attachment-scoped `SharedRegion` handles minted by successful
    device registration.
-8. `dillo-pci` owns `PciRoot` and `PciDevice`; `PciRoot` implements
+9. `dillo-pci` owns `PciRoot` and `PciDevice`; `PciRoot` implements
    `MmioDevice`.
-9. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
+10. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
    to `PciDevice`.
-10. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
-11. `Attach<Arc<dyn MmioDevice>>` realizes every interrupt and shared-memory
+11. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
+12. `Attach<Arc<dyn MmioDevice>>` realizes every interrupt and shared-memory
    requirement advertised by `MmioDevice::resources()` or fails closed.
-12. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
+13. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
    for all concrete devices and transports over `&mut devtree::OwnedTree`.
    `Ok(None)` consumes nothing and means the relevant node is absent.
-13. Every DTB node/property is drained by exactly one owner, or launch fails.
-14. Local verification passes:
+14. Every DTB node/property is drained by exactly one owner, or launch fails.
+15. Local verification passes:
    - `cargo fmt --all -- --check`
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Linux
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Windows
