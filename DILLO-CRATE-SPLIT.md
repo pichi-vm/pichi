@@ -568,16 +568,22 @@ Owned by `dillo-pci`. Implemented by `dillo-pci-virtio::VirtioPciDevice` and
 future PCI endpoint devices.
 
 ```rust
-pub trait PciDevice: Send + std::fmt::Debug {
+pub trait PciDevice: Send + Sync + std::fmt::Debug {
     fn config_read(&self, reg_idx: usize) -> Result<u32, PciError>;
-    fn config_write(&mut self, reg_idx: usize, offset: u64, data: &[u8])
+    fn config_write(&self, reg_idx: usize, offset: u64, data: &[u8])
         -> Result<(), PciError>;
-    fn bar_regions(&self) -> Vec<BarRegion>;
+    fn bar_regions(&self) -> &[BarRegion];
     fn bar_read(&self, bar_idx: u8, offset: u64, data: &mut [u8])
         -> Result<(), PciError>;
-    fn bar_write(&mut self, bar_idx: u8, offset: u64, data: &[u8]) -> Result<(), PciError>;
+    fn bar_write(&self, bar_idx: u8, offset: u64, data: &[u8]) -> Result<(), PciError>;
 }
 ```
+
+`PciDevice` uses shared references because PCI endpoints sit behind `PciRoot`,
+and `PciRoot` is itself an `MmioDevice` whose MMIO callbacks take `&self`.
+Mutable endpoint state therefore lives behind endpoint-owned synchronization or
+interior mutability. BAR declarations are borrowed fixed constructor state, just
+like `MmioDevice` windows.
 
 ### `PciRoot`
 
@@ -592,7 +598,7 @@ pub struct PciRootOptions {
     pub message_interrupts: MessageInterruptSource,
 }
 
-impl Attach<Box<dyn PciDevice>> for PciRoot {
+impl Attach<Arc<dyn PciDevice>> for PciRoot {
     type Error = PciAttachError;
     type Output = PciFunction;
 }
@@ -600,11 +606,18 @@ impl Attach<Box<dyn PciDevice>> for PciRoot {
 
 One `PciRoot` instance owns all guest MMIO windows for the declared PCI host:
 ECAM, BAR windows, and MSI-X table/PBA BARs that belong to attached devices.
-`Attach<Box<dyn PciDevice>>` assigns a DTB-declared PCI slot/function and folds
+`Attach<Arc<dyn PciDevice>>` assigns a DTB-declared PCI slot/function and folds
 the endpoint's BARs into the root's PCI MMIO routing. The backend receives only
 the single `PciRoot` as an `MmioDevice`. `PciRoot` or `dillo-pci-virtio` adapts
 PCI MSI/MSI-X table updates to the generic message-interrupt service; machine
 backends never see PCI transport types.
+
+PCI endpoints do not attach directly to `Machine` and do not receive
+`MmioAttachment`. `PciRoot` is the machine-facing MMIO device. After
+`Machine::attach(PciRoot)` succeeds, the PCI-root host/wrapper uses the returned
+`MmioAttachment` to provide the root's message-interrupt domain, shared-memory
+capabilities, and notify registrations to the PCI transport adapters it owns.
+It also uses that same attachment to spawn the PCI-root device task.
 
 `PciRoot` handles absent bus/device/function routing itself, including standard
 all-ones config reads for non-existent functions. Once an access has been routed
@@ -680,9 +693,8 @@ pub enum MmioInterrupt {
     MessageDomain(Arc<dyn MessageInterruptDomain>),
 }
 
-pub trait MmioDeviceTask: Send + 'static {
-    fn run(self: Box<Self>) -> Result<(), MmioDeviceTaskError>;
-}
+pub type MmioDeviceTask =
+    Box<dyn FnOnce() -> Result<(), MmioDeviceTaskError> + Send + 'static>;
 
 pub struct MmioDeviceHandle {
     // opaque
@@ -708,7 +720,7 @@ pub trait MmioAttachment: Send + Sync {
 
     fn spawn(
         self: Arc<Self>,
-        task: Box<dyn MmioDeviceTask>,
+        task: MmioDeviceTask,
     ) -> Result<MmioDeviceHandle, MmioSpawnError>;
 }
 ```
@@ -738,11 +750,13 @@ channels or direct interrupt handles. Those details are opaque behind the
 
 `spawn` is on `MmioAttachment` because only the backend attachment knows whether
 the selected machine model runs a device task in a thread, out of process, or
-through a backend-specific service. The task object is backend-neutral and
-device-aware; it is created by the device-host wrapper after `Machine::attach`
-has returned the attachment. This keeps backend crates independent of concrete
-device crates while still making the backend responsible for its parallel
-execution model.
+through a backend-specific service. The `self: Arc<Self>` receiver consumes the
+attachment handle returned by `Machine::attach`; callers must extract or clone
+any resolved interrupt/shared-memory/notify services the task needs before
+calling `spawn`. The task is backend-neutral and device-aware; it is created by
+the device-host wrapper after `Machine::attach` has returned the attachment.
+This keeps backend crates independent of concrete device crates while still
+making the backend responsible for its parallel execution model.
 
 ### `InterruptController`
 
