@@ -16,6 +16,8 @@ This design is derived from current code and primary specs.
 | PMI `merged` base DTB is platform definition; overlay may contribute only CPUs, memory, distance-map, and `numa-node-id`. | `pichi-vm/pmi` `spec/merged.md:31`, `spec/merged.md:53`, `spec/merged.md:98` |
 | Arma defines platform as motherboard/slots; dillo plugs CPUs, memory, and runtime-discovered devices into those slots. | `arma/docs/device-model.md:21`, `arma/docs/device-model.md:51` |
 | Arma forbids hidden guest hardware; device addresses and interrupts come from DTB. | `arma/docs/device-model.md:91` |
+| KVM confidential-computing private memory uses `guest_memfd`; private pages cannot be mapped, read, or written by userspace. Shared/private state is selected per GFN with `KVM_MEMORY_ATTRIBUTE_PRIVATE`. | Linux KVM API `KVM_SET_USER_MEMORY_REGION2`, `KVM_SET_MEMORY_ATTRIBUTES`, `KVM_CREATE_GUEST_MEMFD` |
+| KVM userspace must explicitly track page private/shared state; the KVM memory attributes API has no get operation. | Linux KVM API `KVM_SET_MEMORY_ATTRIBUTES` |
 | Current `dillo-vm` has one `BackendVm` trait but it still exposes backend-shaped associated state and lives inside the monolith. | `dillo/deps/dillo-vm/src/backend.rs:58` |
 | Current `MmioDevice` already supports multiple windows, which is required for `PciRoot` ECAM plus BAR windows. | `dillo/deps/dillo-vm/src/mmio_bus.rs:23` |
 | Current `PciRoot` already owns ECAM plus BAR windows and implements `MmioDevice`. | `dillo/deps/dillo-vm/src/pci.rs:188`, `dillo/deps/dillo-vm/src/pci.rs:265` |
@@ -142,7 +144,8 @@ PMI, DTB, KVM, HVF, or WHP.
 
 `dillo-machine` owns the host-neutral VM contract. Its main trait is
 `Machine`, not `Vm`, to match the role: one realized virtual machine with vCPU
-lifecycle, guest memory, MMIO attachment, and backend-neutral run outcomes.
+lifecycle, private guest memory ownership, shared-page mediation, MMIO
+attachment, and backend-neutral run outcomes.
 
 `dillo-mmio` owns `MmioDevice`, MMIO windows, line/message interrupt
 abstractions, and the backend-neutral I/O event registration shape. It does not
@@ -226,6 +229,25 @@ does not substitute guessed guest-visible hardware.
 Every trait intended to cross a crate boundary is listed here. Traits not listed
 are implementation details until proven otherwise.
 
+## Confidential-computing memory model
+
+The execution model is confidential-computing first. Guest RAM is private unless
+the guest-visible platform declares a shared communication surface and the
+backend marks or maps the corresponding pages as shared.
+
+The target API exposes shared memory only through explicit shared-region
+handles. There is no whole-guest-memory accessor, no raw guest-to-host address
+translation API, and no API for devices to inspect private pages. A standard VM
+must fit this model by treating its otherwise-readable RAM as if only declared
+shared regions were accessible.
+
+For KVM, this maps to `guest_memfd` plus memory attributes: private pages live
+in guest memory that userspace cannot map, while userspace-visible shared pages
+are selected by clearing the private attribute for the relevant GFNs. Because
+KVM does not provide a memory-attribute get API, the backend must track
+shared/private state explicitly and fail closed on requests that do not match
+its tracked state.
+
 ### `Machine`
 
 Owned by `dillo-machine`. Implemented by `dillo-machine-kvm`,
@@ -239,7 +261,6 @@ pub trait Machine: Sized + Send + Sync + 'static {
     const DEVICE_MODEL: DeviceModel;
 
     fn new(opts: MachineOptions) -> Result<Self, Self::Error>;
-    fn guest_memory(&self) -> GuestMemory;
     fn attach_mmio(&mut self, device: Arc<dyn MmioDevice>) -> Result<MmioAttachment, Self::Error>;
     fn create_vcpu(&self, config: VcpuConfig) -> Result<Self::Vcpu, Self::Error>;
 }
@@ -250,6 +271,11 @@ vCPU count, CPU profile, launch sections, and machine-owned substrate facts
 from the surveyed DTB. It must not contain KVM fds, HVF GIC handles, WHP
 partition handles, raw GSIs, raw SPIs, PCI devices, virtio devices, or
 transport-specific interrupt notifiers.
+
+`Machine` owns all guest memory, but exposes only attachment-scoped shared
+regions that a confidential VM can expose. Standard VMs may implement this with
+ordinary mapped memory internally, but the public API must not let callers read
+or write arbitrary guest-private memory.
 
 `VcpuConfig` contains one vCPU's PMI-derived initial state plus devtree-derived
 CPU identity/topology facts. It is not a backend seed and must not contain host
@@ -321,6 +347,7 @@ pub struct MmioWindow {
 pub struct MmioResources {
     pub windows: Vec<MmioWindow>,
     pub interrupts: Vec<MmioInterruptRequirement>,
+    pub shared: Vec<SharedMemoryRequirement>,
 }
 
 pub enum MmioInterruptRequirement {
@@ -336,6 +363,19 @@ pub enum MmioInterruptRequirement {
     },
 }
 
+pub struct SharedMemoryRequirement {
+    pub name: &'static str,
+    pub gpa: u64,
+    pub size: u64,
+    pub access: SharedAccess,
+}
+
+pub enum SharedAccess {
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+}
+
 pub trait MmioDevice: Send + Sync + std::fmt::Debug {
     fn resources(&self) -> MmioResources;
     fn attach(&self, attachment: MmioAttachment) -> Result<(), MmioAttachError>;
@@ -346,10 +386,11 @@ pub trait MmioDevice: Send + Sync + std::fmt::Debug {
 
 `resources()` is DTB-derived device metadata, not a hardware-enablement
 decision. `Machine::attach_mmio` registers the declared windows, realizes the
-declared interrupt requirements, calls `MmioDevice::attach` with the resulting
-attachment handle, and fails closed if any requirement cannot be satisfied. PCI
-is therefore invisible to machine backends; a PCI host bridge is just one MMIO
-device with windows and interrupt requirements from their point of view.
+declared interrupt and shared-memory requirements, calls `MmioDevice::attach`
+with the resulting attachment handle, and fails closed if any requirement
+cannot be satisfied. PCI is therefore invisible to machine backends; a PCI host
+bridge is just one MMIO device with windows, shared pages, and interrupt
+requirements from their point of view.
 
 ### `PciDevice`
 
@@ -404,8 +445,41 @@ pub trait VirtioDevice: Send {
 }
 ```
 
-`VirtioActivate` contains guest memory, queues, kicks, and resolved interrupt
-handles. It contains no machine handle and no OS backend handle.
+`VirtioActivate` contains shared-memory handles, queues, kicks, and resolved
+interrupt handles. It contains no whole-guest-memory handle, machine handle, or
+OS backend handle.
+
+### `SharedMemory`
+
+Owned by `dillo-mmio`. Implemented by backend crates and exposed only through
+`MmioAttachment` as the maximum memory authority an attached device can use.
+
+```rust
+pub trait SharedMemory: Send + Sync {
+    fn region(&self, range: SharedRange) -> Result<SharedRegion, SharedMemoryError>;
+}
+
+pub struct SharedRange {
+    pub gpa: u64,
+    pub size: u64,
+    pub access: SharedAccess,
+}
+
+pub struct SharedRegion {
+    // opaque
+}
+
+impl SharedRegion {
+    pub fn read(&self, offset: u64, data: &mut [u8]) -> Result<(), SharedMemoryError>;
+    pub fn write(&self, offset: u64, data: &[u8]) -> Result<(), SharedMemoryError>;
+}
+```
+
+Shared-region construction succeeds only for ranges that the backend has
+tracked as shared. In a non-confidential VM, the backend may implement
+`SharedRegion` with ordinary mapped RAM, but only for declared shared ranges.
+Devices must never receive a handle that can inspect arbitrary guest-private
+memory.
 
 ### `MmioAttachment`
 
@@ -423,6 +497,8 @@ impl MmioAttachment {
 
     pub fn message_domain(&self, name: &str) -> Option<Arc<dyn MessageInterruptDomain>>;
 
+    pub fn shared_region(&self, name: &str) -> Option<SharedRegion>;
+
     pub fn register_notify(
         &self,
         event: MmioNotifyEvent,
@@ -433,8 +509,8 @@ impl MmioAttachment {
 KVM implements notify registration with ioeventfd. HVF/WHP can return
 `Unsupported`, and the transport falls back to ordinary MMIO write dispatch.
 Notify registration is an optional acceleration path. Interrupt requirements
-come from `MmioDevice::resources()` and must already have been drained from the
-DTB by the device constructor.
+and shared-memory requirements come from `MmioDevice::resources()` and must
+already have been drained from the DTB by the device constructor.
 
 ### `InterruptController`
 
@@ -570,24 +646,26 @@ This design is satisfied only when all of the following can be verified:
 3. Device crates do not depend on `dillo-machine`, backend crates, PMI, or DTB.
 4. `Machine` exposes no PCI, MSI-X, UART, IOAPIC, GIC, KVM irqfd, WHP vector,
    HVF, or backend seed types.
-5. `dillo-pci` owns `PciRoot` and `PciDevice`; `PciRoot` implements
+5. `Machine` exposes no whole-guest-memory accessor; devices receive only
+   attachment-scoped `SharedRegion` handles for declared shared ranges.
+6. `dillo-pci` owns `PciRoot` and `PciDevice`; `PciRoot` implements
    `MmioDevice`.
-6. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
+7. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
    to `PciDevice`.
-7. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
-8. `Machine::attach_mmio` realizes every interrupt requirement advertised by
-   `MmioDevice::resources()` or fails closed.
-9. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
+8. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
+9. `Machine::attach_mmio` realizes every interrupt and shared-memory
+   requirement advertised by `MmioDevice::resources()` or fails closed.
+10. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
    for all concrete devices and transports over `&mut devtree::OwnedTree`.
-10. Every DTB node/property is drained by exactly one owner, or launch fails.
-11. Local verification passes:
+11. Every DTB node/property is drained by exactly one owner, or launch fails.
+12. Local verification passes:
    - `cargo fmt --all -- --check`
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Linux
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Windows
      and macOS, with only genuinely platform-incompatible current crates
      excluded until the split removes or relocates them
    - target checks for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, and `aarch64-apple-darwin`
-12. CI passes all three supported platform lanes, including real boot tests.
+13. CI passes all three supported platform lanes, including real boot tests.
 
 ## Current-state gaps
 
@@ -605,6 +683,9 @@ The current tree does not yet meet this design:
   rust-vmm-style transport crate with a different boundary.
 - `virtio-pci::QueueNotifier` is transport-owned and virtio-shaped today; the
   final design needs backend-neutral I/O event registration in `dillo-mmio`.
+- `dillo-vm` and current virtio activation paths still pass whole guest-memory
+  handles; the target design must replace those with attachment-scoped
+  `SharedRegion` handles.
 - `dillo-device` contains an older process/thread abstraction that is not yet
   the active `VirtioDevice` activation contract.
 
