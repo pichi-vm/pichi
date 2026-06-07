@@ -18,6 +18,8 @@ This design is derived from current code and primary specs.
 | Arma forbids hidden guest hardware; device addresses and interrupts come from DTB. | `arma/docs/device-model.md:91` |
 | KVM confidential-computing private memory uses `guest_memfd`; private pages cannot be mapped, read, or written by userspace. Shared/private state is selected per GFN with `KVM_MEMORY_ATTRIBUTE_PRIVATE`. | Linux KVM API `KVM_SET_USER_MEMORY_REGION2`, `KVM_SET_MEMORY_ATTRIBUTES`, `KVM_CREATE_GUEST_MEMFD` |
 | KVM userspace must explicitly track page private/shared state; the KVM memory attributes API has no get operation. | Linux KVM API `KVM_SET_MEMORY_ATTRIBUTES` |
+| TDX VM initialization is a VM-specific operation that must occur before vCPU creation; TDX also has specific VM/vCPU/memory init commands and CPUID handling. | Linux KVM TDX API `KVM_TDX_INIT_VM`, `KVM_TDX_INIT_VCPU`, `KVM_TDX_INIT_MEM_REGION`, `KVM_TDX_GET_CPUID` |
+| SEV-ES/SNP initial CPU state is launch material with platform limits; unsupported initial-state fields must fail rather than be silently configured. | QEMU IGVM documentation, "Initial CPU state with VMSA" |
 | Current `dillo-vm` has one `BackendVm` trait but it still exposes backend-shaped associated state and lives inside the monolith. | `dillo/deps/dillo-vm/src/backend.rs:58` |
 | Current `MmioDevice` already supports multiple windows, which is required for `PciRoot` ECAM plus BAR windows. | `dillo/deps/dillo-vm/src/mmio_bus.rs:23` |
 | Current `PciRoot` already owns ECAM plus BAR windows and implements `MmioDevice`. | `dillo/deps/dillo-vm/src/pci.rs:188`, `dillo/deps/dillo-vm/src/pci.rs:265` |
@@ -132,8 +134,9 @@ Machine backend crates know:
 - optional architecture substrate crates such as `dillo-x86` or `dillo-arm`.
 
 Machine backend crates do not know PCI, virtio, UART, or concrete devices. A
-backend creates a VM, creates/runs vCPUs, attaches opaque `MmioDevice`s, and
-provides interrupt/event plumbing through `dillo-mmio` types.
+backend exposes an inherent constructor for its concrete `Machine`, creates and
+runs vCPUs, attaches opaque `MmioDevice`s, and provides interrupt/event plumbing
+through `dillo-mmio` types.
 
 Device crates know their own device protocol and the narrow traits they
 implement. Virtio devices know `dillo-virtio`. MMIO devices know `dillo-mmio`.
@@ -146,6 +149,8 @@ PMI, DTB, KVM, HVF, or WHP.
 `Machine`, not `Vm`, to match the role: one realized virtual machine with vCPU
 lifecycle, private guest memory ownership, shared-page mediation, MMIO
 attachment, and backend-neutral run outcomes.
+It does not own backend construction policy; concrete backend crates expose
+inherent constructors for launch.
 
 `dillo-mmio` owns `MmioDevice`, MMIO windows, line/message interrupt
 abstractions, and the backend-neutral I/O event registration shape. It does not
@@ -262,17 +267,30 @@ pub trait Machine: Sized + Send + Sync + 'static {
 
     const DEVICE_MODEL: DeviceModel;
 
-    fn new(opts: MachineOptions) -> Result<Self, Self::Error>;
     fn attach_mmio(&mut self, device: Arc<dyn MmioDevice>) -> Result<MmioAttachment, Self::Error>;
-    fn create_vcpu(&self, config: VcpuConfig) -> Result<Self::Vcpu, Self::Error>;
+    fn vcpus(&mut self) -> Result<Vec<Self::Vcpu>, Self::Error>;
 }
 ```
 
-`MachineOptions` is backend-neutral input derived by `dillo`: memory plan,
-vCPU count, CPU profile, launch sections, and machine-owned substrate facts
-from the surveyed DTB. It must not contain KVM fds, HVF GIC handles, WHP
-partition handles, raw GSIs, raw SPIs, PCI devices, virtio devices, or
-transport-specific interrupt notifiers.
+`Machine` has no trait constructor. Each backend crate exposes an inherent
+constructor on its concrete machine type, for example:
+
+```rust
+impl KvmMachine {
+    pub fn launch(plan: MachineLaunch) -> Result<Self, KvmLaunchError>;
+}
+```
+
+`MachineLaunch` is backend-neutral input derived by `dillo`: memory plan, vCPU
+count, CPU profile, launch sections, requested initial CPU state, measurement
+policy, and machine-owned substrate facts from the drained devtree. It must not
+contain KVM fds, HVF GIC handles, WHP partition handles, raw GSIs, raw SPIs,
+PCI devices, virtio devices, or transport-specific interrupt notifiers.
+
+Backend launch is responsible for VM creation, memory ownership, confidential
+measurement/setup, and vCPU creation. The generic trait exposes only the
+resulting machine and vCPUs. This keeps CC-specific ordering such as TDX
+VM-init-before-vCPU-init out of the shared trait shape.
 
 `Machine` owns all guest memory, but exposes only attachment-scoped shared
 regions that a confidential VM can expose. Standard VMs may implement this with
@@ -280,9 +298,12 @@ ordinary mapped memory internally, but the public API must not let callers read
 or write arbitrary guest-private memory. Without a successful `attach_mmio`
 call, no device receives any guest-memory capability.
 
-`VcpuConfig` contains one vCPU's PMI-derived initial state plus devtree-derived
-CPU identity/topology facts. It is not a backend seed and must not contain host
-thread handles, file descriptors, VM handles, or hypervisor API objects.
+Initial CPU state is launch input, not a per-vCPU generic configuration API.
+`dillo` may request only the PMI-defined vCPU count, CPU profile, and initial
+state carried by the image/DTB contract. The backend constructor must translate
+that request into the host confidential-computing launch mechanism or fail
+closed. The shared API must not imply that arbitrary registers can be configured
+after launch.
 
 `Machine` must stay device-model neutral. It must not expose PCI, MSI-X, UART,
 IOAPIC, GIC, KVM irqfd, WHP vector, or HVF-specific concepts in its public
@@ -650,27 +671,31 @@ This design is satisfied only when all of the following can be verified:
 3. Device crates do not depend on `dillo-machine`, backend crates, PMI, or DTB.
 4. `Machine` exposes no PCI, MSI-X, UART, IOAPIC, GIC, KVM irqfd, WHP vector,
    HVF, or backend seed types.
-5. `Machine` exposes no whole-guest-memory accessor; guest memory is accessible
+5. `Machine` has no trait constructor; backend crates expose inherent
+   constructors on concrete machine types.
+6. `Machine` has no generic per-vCPU configuration method; initial CPU state is
+   validated and applied during backend launch or fails closed.
+7. `Machine` exposes no whole-guest-memory accessor; guest memory is accessible
    only through attachment-scoped `SharedRegion` handles minted by successful
    device registration.
-6. `dillo-pci` owns `PciRoot` and `PciDevice`; `PciRoot` implements
+8. `dillo-pci` owns `PciRoot` and `PciDevice`; `PciRoot` implements
    `MmioDevice`.
-7. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
+9. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
    to `PciDevice`.
-8. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
-9. `Machine::attach_mmio` realizes every interrupt and shared-memory
+10. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
+11. `Machine::attach_mmio` realizes every interrupt and shared-memory
    requirement advertised by `MmioDevice::resources()` or fails closed.
-10. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
+12. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
    for all concrete devices and transports over `&mut devtree::OwnedTree`.
-11. Every DTB node/property is drained by exactly one owner, or launch fails.
-12. Local verification passes:
+13. Every DTB node/property is drained by exactly one owner, or launch fails.
+14. Local verification passes:
    - `cargo fmt --all -- --check`
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Linux
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Windows
      and macOS, with only genuinely platform-incompatible current crates
      excluded until the split removes or relocates them
    - target checks for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, and `aarch64-apple-darwin`
-13. CI passes all three supported platform lanes, including real boot tests.
+15. CI passes all three supported platform lanes, including real boot tests.
 
 ## Current-state gaps
 
