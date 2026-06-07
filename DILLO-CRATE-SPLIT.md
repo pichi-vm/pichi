@@ -236,9 +236,8 @@ pub trait Machine: Sized + Send + Sync + 'static {
 
     fn new(opts: MachineOptions) -> Result<Self, Self::Error>;
     fn guest_memory(&self) -> GuestMemory;
-    fn attach_mmio(&mut self, device: Arc<dyn MmioDevice>) -> Result<(), Self::Error>;
-    fn io_events(&self) -> Arc<dyn IoEventRegistrar>;
     fn interrupts(&self) -> Arc<dyn InterruptController>;
+    fn attach_mmio(&mut self, device: Arc<dyn MmioDevice>) -> Result<MmioAttachment, Self::Error>;
     fn create_vcpu(&self, config: VcpuConfig) -> Result<Self::Vcpu, Self::Error>;
 }
 ```
@@ -257,6 +256,12 @@ thread handles, file descriptors, VM handles, or hypervisor API objects.
 IOAPIC, GIC, KVM irqfd, WHP vector, or HVF-specific concepts in its public
 trait. Those details belong either in backend internals, architecture substrate
 crates, or protocol adapters below `dillo`.
+
+Interrupt needs are not advertised during `attach_mmio`. `FromDevTree`
+implementations drain interrupt properties from the devtree, `dillo` resolves
+those typed sources through `Machine::interrupts()`, and concrete constructors
+receive already-resolved `Interrupt` or `MessageInterruptDomain` handles.
+`attach_mmio` registers address decoding for an already-constructed device.
 
 `DEVICE_MODEL` records process vs thread device-host policy. The unresolved
 part is where the process/thread host wrapper lives; it must not make backend
@@ -317,9 +322,10 @@ pub trait MmioDevice: Send + Sync + std::fmt::Debug {
 }
 ```
 
-`Machine::attach_mmio` accepts only `MmioDevice`. PCI is therefore invisible to
-machine backends; a PCI host bridge is just one MMIO device from their point of
-view.
+`Machine::attach_mmio` accepts only `MmioDevice` and returns an attachment
+handle for backend-neutral services scoped to that attached device. PCI is
+therefore invisible to machine backends; a PCI host bridge is just one MMIO
+device from their point of view.
 
 ### `PciDevice`
 
@@ -377,19 +383,28 @@ pub trait VirtioDevice: Send {
 `VirtioActivate` contains guest memory, queues, kicks, and resolved interrupt
 handles. It contains no machine handle and no OS backend handle.
 
-### `IoEventRegistrar`
+### `MmioAttachment`
 
-Owned by `dillo-mmio`. Implemented by backend crates and vended through
-`Machine`.
+Owned by `dillo-mmio`. Returned by `Machine::attach_mmio`. Consumed by
+transports that can use backend-neutral services for an already-attached MMIO
+device.
 
 ```rust
-pub trait IoEventRegistrar: Send {
-    fn register(&self, event: IoEvent) -> Result<IoEventRegistration, IoEventError>;
+pub struct MmioAttachment {
+    // opaque
+}
+
+impl MmioAttachment {
+    pub fn register_notify(
+        &self,
+        event: MmioNotifyEvent,
+    ) -> Result<MmioNotifyRegistration, MmioNotifyError>;
 }
 ```
 
-KVM implements this with ioeventfd. HVF/WHP can use a no-op or direct-kick path.
-The trait is consumed by transport adapters, not by concrete devices.
+KVM implements notify registration with ioeventfd. HVF/WHP can return
+`Unsupported`, and the transport falls back to ordinary MMIO write dispatch.
+This is an optional acceleration path, not an interrupt declaration mechanism.
 
 ### `InterruptController`
 
