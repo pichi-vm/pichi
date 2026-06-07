@@ -235,11 +235,13 @@ The execution model is confidential-computing first. Guest RAM is private unless
 the guest-visible platform declares a shared communication surface and the
 backend marks or maps the corresponding pages as shared.
 
-The target API exposes shared memory only through explicit shared-region
-handles. There is no whole-guest-memory accessor, no raw guest-to-host address
+The only way to access guest memory is through successful device registration.
+The target API exposes shared memory only through `SharedRegion` handles minted
+by `Machine::attach_mmio` for the registered `MmioDevice` and its declared
+resources. There is no whole-guest-memory accessor, no raw guest-to-host address
 translation API, and no API for devices to inspect private pages. A standard VM
-must fit this model by treating its otherwise-readable RAM as if only declared
-shared regions were accessible.
+must fit this model by treating its otherwise-readable RAM as if only registered
+device attachments could access declared shared regions.
 
 For KVM, this maps to `guest_memfd` plus memory attributes: private pages live
 in guest memory that userspace cannot map, while userspace-visible shared pages
@@ -275,7 +277,8 @@ transport-specific interrupt notifiers.
 `Machine` owns all guest memory, but exposes only attachment-scoped shared
 regions that a confidential VM can expose. Standard VMs may implement this with
 ordinary mapped memory internally, but the public API must not let callers read
-or write arbitrary guest-private memory.
+or write arbitrary guest-private memory. Without a successful `attach_mmio`
+call, no device receives any guest-memory capability.
 
 `VcpuConfig` contains one vCPU's PMI-derived initial state plus devtree-derived
 CPU identity/topology facts. It is not a backend seed and must not contain host
@@ -476,10 +479,11 @@ impl SharedRegion {
 ```
 
 Shared-region construction succeeds only for ranges that the backend has
-tracked as shared. In a non-confidential VM, the backend may implement
-`SharedRegion` with ordinary mapped RAM, but only for declared shared ranges.
-Devices must never receive a handle that can inspect arbitrary guest-private
-memory.
+tracked as shared and that are in the registered device's resource scope. In a
+non-confidential VM, the backend may implement `SharedRegion` with ordinary
+mapped RAM, but only for ranges reachable through a successful device
+attachment. Devices must never receive a handle that can inspect arbitrary
+guest-private memory.
 
 ### `MmioAttachment`
 
@@ -646,8 +650,9 @@ This design is satisfied only when all of the following can be verified:
 3. Device crates do not depend on `dillo-machine`, backend crates, PMI, or DTB.
 4. `Machine` exposes no PCI, MSI-X, UART, IOAPIC, GIC, KVM irqfd, WHP vector,
    HVF, or backend seed types.
-5. `Machine` exposes no whole-guest-memory accessor; devices receive only
-   attachment-scoped `SharedRegion` handles for declared shared ranges.
+5. `Machine` exposes no whole-guest-memory accessor; guest memory is accessible
+   only through attachment-scoped `SharedRegion` handles minted by successful
+   device registration.
 6. `dillo-pci` owns `PciRoot` and `PciDevice`; `PciRoot` implements
    `MmioDevice`.
 7. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
