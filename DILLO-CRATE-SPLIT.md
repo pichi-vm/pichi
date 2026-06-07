@@ -496,12 +496,6 @@ pub struct MmioWindow {
     pub size: u64,
 }
 
-pub struct MmioResources<'a> {
-    pub windows: &'a [MmioWindow],
-    pub interrupts: &'a [MmioInterruptRequirement],
-    pub shared: &'a [SharedMemoryCapabilityRequirement],
-}
-
 pub enum MmioInterruptRequirement {
     Line { source: InterruptSource },
 
@@ -511,8 +505,8 @@ pub enum MmioInterruptRequirement {
     },
 }
 
-pub struct SharedMemoryCapabilityRequirement {
-    pub ranges: Vec<AddressRange>,
+pub struct SharedMemoryCapabilityRequirement<'a> {
+    pub ranges: &'a [AddressRange],
     pub access: SharedAccess,
 }
 
@@ -522,8 +516,19 @@ pub enum SharedAccess {
     ReadWrite,
 }
 
+pub trait MmioResources {
+    fn window_count(&self) -> usize;
+    fn window(&self, index: usize) -> Option<&MmioWindow>;
+
+    fn interrupt_count(&self) -> usize;
+    fn interrupt(&self, index: usize) -> Option<&MmioInterruptRequirement>;
+
+    fn shared_memory_count(&self) -> usize;
+    fn shared_memory(&self, index: usize) -> Option<SharedMemoryCapabilityRequirement<'_>>;
+}
+
 pub trait MmioDevice: Send + Sync + std::fmt::Debug {
-    fn resources(&self) -> MmioResources<'_>;
+    fn resources(&self) -> &dyn MmioResources;
     fn read(&self, window: &MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError>;
     fn write(&self, window: &MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError>;
 }
@@ -537,11 +542,14 @@ fails closed if any requirement cannot be satisfied. PCI is therefore invisible
 to machine backends; a PCI host bridge is just one MMIO device with windows,
 shared-memory capabilities, and interrupt requirements from their point of view.
 
-`resources()` returns borrowed slices because resources are fixed constructor
-state, not values to allocate or recompute during attachment. They must be stable
-for the lifetime of the device. This is the device's claim over DTB-derived
-resources, not a negotiation hook. Requirements do not carry public names.
-The machine realizes requirement slices in order, and the attachment exposes
+`resources()` returns a borrowed resource view because resources are fixed
+constructor state, not values to allocate or recompute during attachment. They
+must be stable for the lifetime of the device. This is the device's claim over
+DTB-derived resources, not a negotiation hook. The view is index-based rather
+than slice-based so each concrete device can store its resource facts however it
+wants, including nested shared-memory ranges, without allocating owned wrapper
+values just to answer `resources()`. Requirements do not carry public names. The
+machine realizes requirements in index order, and the attachment exposes
 resolved handles in the same order. A device that needs semantic labels for its
 own windows or interrupts keeps those labels in its own concrete type. The
 machine validates that all windows are nonzero, non-overlapping, outside guest
@@ -550,6 +558,11 @@ selected backend. MMIO read/write methods are called only after a successful
 attachment. If a routed access is malformed or unsupported, the device returns
 `Err`; the machine treats that as a VM execution error rather than silently
 ignoring the access.
+
+An `impl Trait` iterator-returning resource object would be convenient for
+concrete types, but `MmioDevice` is intentionally used behind
+`Arc<dyn MmioDevice>`. The target API therefore keeps resource discovery
+dyn-compatible and allocation-free at the machine boundary.
 
 Shared-memory requirements are capabilities, not static shared pages. The DTB
 may describe the device's DMA aperture or shared-memory eligibility, but virtio
@@ -690,9 +703,9 @@ pub trait MmioAttachment: Send + Sync {
 ```
 
 `interrupts()` returns one resolved interrupt object for each
-`MmioInterruptRequirement`, preserving the order of
-`MmioDevice::resources().interrupts`. `shared_memory()` likewise preserves the
-order of `MmioDevice::resources().shared`.
+`MmioInterruptRequirement`, preserving the order exposed by
+`MmioResources::interrupt`. `shared_memory()` likewise preserves the order
+exposed by `MmioResources::shared_memory`.
 
 KVM implements notify registration with ioeventfd so supported MMIO writes wake a
 device host without returning through the vCPU thread. HVF/WHP can return
