@@ -207,8 +207,8 @@ become a `dillo` module unless reuse justifies a crate.
 6. Incrementally construct CPU, memory, MMIO, bus, transport, and device objects
    from the same mutable tree and attach each one to the machine.
 7. Fail if any DTB node/property remains after assembly.
-8. Run the attached vCPUs through the machine's `Vcpu` objects and dillo's
-   `ExitHandler`.
+8. Run the attached vCPUs through the machine's `Vcpu` objects and dillo's MMIO
+   dispatcher.
 
 The merged devtree is therefore not drained up front into one large plan.
 Consumption is incremental: each constructed object drains only the nodes and
@@ -443,34 +443,35 @@ Owned by `dillo-machine`. Implemented by backend crates.
 pub trait Vcpu: Send + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn run(&mut self, exits: &dyn ExitHandler) -> Result<VcpuStop, Self::Error>;
+    fn run(&mut self, mmio: &dyn MmioDispatcher) -> Result<VcpuStop, Self::Error>;
 }
 ```
 
 `Vcpu::run` hides KVM `VcpuExit`, HVF syndrome decoding, and WHP emulator
-callbacks from dillo and devices. MMIO and PIO exits dispatch through
-`ExitHandler`.
+callbacks from dillo and devices. The only guest I/O exit exposed above the
+backend is MMIO. PIO, hypercalls, CPUID leaves, PSCI calls, and backend-specific
+emulation exits are backend or architecture-substrate internals and must not
+become dillo/device APIs.
 
-### `ExitHandler`
+### `MmioDispatcher`
 
-Owned by `dillo-machine` or `dillo-mmio`; final placement depends on whether
-PIO stays in the machine run-loop contract or moves into an I/O dispatcher.
-Implemented by `dillo`.
+Owned by `dillo-mmio`. Implemented by `dillo` or by a device-host wrapper that
+owns the MMIO routing table.
 
 ```rust
-pub trait ExitHandler: Send + Sync {
+pub trait MmioDispatcher: Send + Sync {
     fn mmio_read(&self, addr: u64, data: &mut [u8]) -> bool;
     fn mmio_write(&self, addr: u64, data: &[u8]) -> bool;
-    fn pio_read(&self, port: u16, data: &mut [u8]) -> bool;
-    fn pio_write(&self, port: u16, data: &[u8]) -> bool;
-    fn hypercall(&self, call: Hypercall) -> HypercallResult;
 }
 ```
 
-PIO is present because some host APIs expose PIO exits. PIO is not a guest
-device model feature. It is enabled only for an alias derived from declared
-platform hardware, such as an x86 PCI config-port alias for a declared PCI host
-bridge.
+`MmioDispatcher` is only the synchronous fallback path for MMIO exits that reach
+the vCPU loop. It is not the general device execution model. On Linux/KVM,
+`MmioAttachment::register_notify` may bind ioeventfd for MMIO writes so those
+notifications bypass the vCPU thread. Interrupt delivery likewise uses resolved
+`Interrupt` or `MessageInterruptDomain` handles from `MmioAttachment`; it is not
+sent through the vCPU run-loop dispatcher. HVF/WHP may return `Unsupported` for
+notify registration and use ordinary MMIO dispatch.
 
 ### `MmioDevice`
 
@@ -646,11 +647,12 @@ impl MmioAttachment {
 }
 ```
 
-KVM implements notify registration with ioeventfd. HVF/WHP can return
-`Unsupported`, and the transport falls back to ordinary MMIO write dispatch.
-Notify registration is an optional acceleration path. Interrupt requirements
-and shared-memory requirements come from `MmioDevice::resources()` and must
-already have been drained from the DTB by the device constructor.
+KVM implements notify registration with ioeventfd so supported MMIO writes wake a
+device host without returning through the vCPU MMIO dispatcher. HVF/WHP can
+return `Unsupported`, and the transport falls back to ordinary MMIO write
+dispatch. Notify registration is an optional acceleration path. Interrupt
+requirements and shared-memory requirements come from `MmioDevice::resources()`
+and must already have been drained from the DTB by the device constructor.
 
 ### `InterruptController`
 
@@ -728,7 +730,9 @@ This is intentionally unresolved. The design constraints are:
 - concrete devices must not branch on `target_os`;
 - `dillo` may select a host wrapper based on `Machine::DEVICE_MODEL`;
 - Linux/KVM should remain able to use a process/vhost-user model;
-- HVF/WHP should remain able to use an in-process thread model.
+- HVF/WHP should remain able to use an in-process thread model;
+- event/interrupt acceleration such as KVM ioeventfd/irqfd belongs to
+  attachment services and device-host wrappers, not to the vCPU MMIO dispatcher.
 
 The likely home is a future device-host crate or a `dillo` module, not
 `dillo-machine-kvm`.
