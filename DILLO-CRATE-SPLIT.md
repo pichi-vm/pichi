@@ -203,7 +203,7 @@ device crates.
 trait FromDevTree {
     type Error;
 
-    fn from_devtree(tree: &mut devtree::OwnedTree) -> Result<Self, Self::Error>
+    fn from_devtree(tree: &mut devtree::OwnedTree) -> Result<Option<Self>, Self::Error>
     where
         Self: Sized;
 }
@@ -222,6 +222,11 @@ tree. After all constructors run, any remaining node or property is an error.
 as it owns. The common MMIO-device case is one DTB node defining the device's
 constructor parameters: `reg` windows, interrupts, DMA/notification facts, and
 device-specific properties.
+
+`Ok(None)` means the relevant node is absent and the implementation consumed
+nothing. `Ok(Some(_))` means construction succeeded and all owned nodes and
+properties were drained. `Err(_)` means a relevant node was present but
+malformed, unsupported, or incomplete.
 
 The rule is fail closed: if a DTB node/property is not consumed by exactly one
 owner, launch fails. If dillo wants to plug a device but the base DTB did not
@@ -687,6 +692,7 @@ This design is satisfied only when all of the following can be verified:
    requirement advertised by `MmioDevice::resources()` or fails closed.
 12. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
    for all concrete devices and transports over `&mut devtree::OwnedTree`.
+   `Ok(None)` consumes nothing and means the relevant node is absent.
 13. Every DTB node/property is drained by exactly one owner, or launch fails.
 14. Local verification passes:
    - `cargo fmt --all -- --check`
