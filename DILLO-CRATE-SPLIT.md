@@ -709,6 +709,12 @@ pub struct MmioDeviceHandle {
     // opaque
 }
 
+impl MmioDeviceHandle {
+    pub fn shutdown(&self) -> Result<(), MmioShutdownError>;
+
+    pub fn join(self) -> Result<(), MmioJoinError>;
+}
+
 pub struct MmioThreadHost {
     // opaque
 }
@@ -721,14 +727,30 @@ pub struct MmioSpawnError {
     // opaque
 }
 
+pub struct MmioShutdownError {
+    // opaque
+}
+
+pub struct MmioJoinError {
+    // opaque
+}
+
 impl MmioDeviceHost {
     pub fn thread(
-        run: impl FnOnce() -> Result<(), MmioSpawnError> + Send + 'static,
+        run: impl FnOnce(MmioRunToken) -> Result<(), MmioJoinError> + Send + 'static,
     ) -> Self;
 
     pub fn process(spec: MmioProcessHost) -> Self;
 
     pub fn model(&self) -> DeviceModel;
+}
+
+pub struct MmioRunToken {
+    // opaque
+}
+
+impl MmioRunToken {
+    pub fn is_shutdown_requested(&self) -> bool;
 }
 
 pub trait MmioAttachment: Send + Sync {
@@ -780,11 +802,20 @@ host needs before calling `spawn`.
 
 `MmioDeviceHost` is not the MMIO device and not the backend attachment. It is the
 device-host wrapper's launch request for an already-attached device. A thread
-host can contain a Rust closure over the concrete device and attachment services.
-A process host cannot be a closure; it describes or connects to an external
-device host using backend-neutral process/channel material. The wrapper chooses
-the host variant from `Machine::DEVICE_MODEL`. The selected backend validates
-that the variant matches what it supports and fails closed otherwise.
+host contains a long-lived run loop over the concrete device and attachment
+services. A process host cannot be a closure; it describes or connects to an
+external long-lived device host using backend-neutral process/channel material.
+The wrapper chooses the host variant from `Machine::DEVICE_MODEL`. The selected
+backend validates that the variant matches what it supports and fails closed
+otherwise.
+
+`spawn` starts the host and returns immediately with an `MmioDeviceHandle`.
+Device hosts are expected to run until VM teardown, device removal, backend
+failure, or explicit shutdown. Normal operation is not modeled as a synchronous
+return from `spawn`. `MmioDeviceHandle::shutdown` requests termination through
+backend-owned mechanics; `join` waits for the host to finish and reports host
+failure. Dropping the handle must not silently detach registered MMIO routing or
+guest-visible device state.
 
 ### `InterruptController`
 
