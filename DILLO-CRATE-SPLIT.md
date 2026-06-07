@@ -569,7 +569,6 @@ pub trait PciDevice: Send + std::fmt::Debug {
     fn config_read(&self, reg_idx: usize) -> Result<u32, PciError>;
     fn config_write(&mut self, reg_idx: usize, offset: u64, data: &[u8])
         -> Result<(), PciError>;
-    fn name(&self) -> &str;
     fn bar_regions(&self) -> Vec<BarRegion>;
     fn bar_read(&self, bar_idx: u8, offset: u64, data: &mut [u8])
         -> Result<(), PciError>;
