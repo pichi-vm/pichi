@@ -490,7 +490,7 @@ pub struct MmioWindow {
 pub struct MmioResources {
     pub windows: Vec<MmioWindow>,
     pub interrupts: Vec<MmioInterruptRequirement>,
-    pub shared: Vec<SharedMemoryRequirement>,
+    pub shared: Vec<SharedMemoryCapabilityRequirement>,
 }
 
 pub enum MmioInterruptRequirement {
@@ -506,10 +506,9 @@ pub enum MmioInterruptRequirement {
     },
 }
 
-pub struct SharedMemoryRequirement {
+pub struct SharedMemoryCapabilityRequirement {
     pub name: &'static str,
-    pub gpa: u64,
-    pub size: u64,
+    pub ranges: Vec<AddressRange>,
     pub access: SharedAccess,
 }
 
@@ -522,8 +521,8 @@ pub enum SharedAccess {
 pub trait MmioDevice: Send + Sync + std::fmt::Debug {
     fn resources(&self) -> MmioResources;
     fn attach(&self, attachment: MmioAttachment) -> Result<(), MmioAttachError>;
-    fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> bool;
-    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> bool;
+    fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError>;
+    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError>;
 }
 ```
 
@@ -533,8 +532,24 @@ machine-owned MMIO routing state, realizes the declared interrupt and
 shared-memory requirements, calls `MmioDevice::attach` with the resulting
 attachment handle, and fails closed if any requirement cannot be satisfied. PCI
 is therefore invisible to machine backends; a PCI host bridge is just one MMIO
-device with windows, shared pages, and interrupt requirements from their point of
-view.
+device with windows, shared-memory capabilities, and interrupt requirements from
+their point of view.
+
+`resources()` must be stable for the lifetime of the device. It is the device's
+claim over DTB-derived resources, not a negotiation hook. The machine validates
+that all windows are nonzero, non-overlapping, outside guest RAM unless the DTB
+explicitly defines the aperture, and compatible with the selected backend. MMIO
+read/write methods are called only after a successful attachment. If a routed
+access is malformed or unsupported, the device returns `Err`; the machine treats
+that as a VM execution error rather than silently ignoring the access.
+
+Shared-memory requirements are capabilities, not static shared pages. The DTB
+may describe the device's DMA aperture or shared-memory eligibility, but virtio
+queue descriptors and buffers are runtime guest protocol state. A device gets a
+named shared-memory capability through `MmioAttachment`; each requested runtime
+range must be inside that capability and must currently be tracked as shared by
+the backend. MMIO windows, PCI ECAM, and BAR apertures are not automatically
+shared-memory capabilities.
 
 ### `PciDevice`
 
@@ -543,12 +558,14 @@ future PCI endpoint devices.
 
 ```rust
 pub trait PciDevice: Send + std::fmt::Debug {
-    fn config_read(&self, reg_idx: usize) -> u32;
-    fn config_write(&mut self, reg_idx: usize, offset: u64, data: &[u8]);
+    fn config_read(&self, reg_idx: usize) -> Result<u32, PciError>;
+    fn config_write(&mut self, reg_idx: usize, offset: u64, data: &[u8])
+        -> Result<(), PciError>;
     fn name(&self) -> &str;
     fn bar_regions(&self) -> Vec<BarRegion>;
-    fn bar_read(&self, bar_idx: u8, offset: u64, data: &mut [u8]) -> bool;
-    fn bar_write(&mut self, bar_idx: u8, offset: u64, data: &[u8]) -> bool;
+    fn bar_read(&self, bar_idx: u8, offset: u64, data: &mut [u8])
+        -> Result<(), PciError>;
+    fn bar_write(&mut self, bar_idx: u8, offset: u64, data: &[u8]) -> Result<(), PciError>;
 }
 ```
 
@@ -578,6 +595,11 @@ the endpoint's BARs into the root's PCI MMIO routing. The backend receives only
 the single `PciRoot` as an `MmioDevice`. `PciRoot` or `dillo-pci-virtio` adapts
 PCI MSI/MSI-X table updates to the generic message-interrupt service; machine
 backends never see PCI transport types.
+
+`PciRoot` handles absent bus/device/function routing itself, including standard
+all-ones config reads for non-existent functions. Once an access has been routed
+to an attached endpoint or BAR, endpoint errors are explicit `PciError`s and
+propagate through `PciRoot`'s `MmioDevice` implementation as `MmioError`s.
 
 ### `VirtioDevice`
 
@@ -626,8 +648,9 @@ impl SharedRegion {
 }
 ```
 
-Shared-region construction succeeds only for ranges that the backend has
-tracked as shared and that are in the registered device's resource scope. In a
+`SharedMemory` is an attachment-scoped capability, not a whole-guest-memory
+view. `region()` succeeds only for ranges that are inside the capability's
+DTB-derived aperture and that the backend currently tracks as shared. In a
 non-confidential VM, the backend may implement `SharedRegion` with ordinary
 mapped RAM, but only for ranges reachable through a successful device
 attachment. Devices must never receive a handle that can inspect arbitrary
@@ -645,11 +668,17 @@ pub struct MmioAttachment {
 }
 
 impl MmioAttachment {
-    pub fn interrupt(&self, name: &str) -> Option<Interrupt>;
+    pub fn interrupt(&self, name: &str) -> Result<Interrupt, MmioAttachmentError>;
 
-    pub fn message_domain(&self, name: &str) -> Option<Arc<dyn MessageInterruptDomain>>;
+    pub fn message_domain(
+        &self,
+        name: &str,
+    ) -> Result<Arc<dyn MessageInterruptDomain>, MmioAttachmentError>;
 
-    pub fn shared_region(&self, name: &str) -> Option<SharedRegion>;
+    pub fn shared_memory(
+        &self,
+        name: &str,
+    ) -> Result<Arc<dyn SharedMemory>, MmioAttachmentError>;
 
     pub fn register_notify(
         &self,
@@ -665,6 +694,10 @@ ordinary MMIO exits. Notify registration is an optional acceleration path.
 Interrupt requirements and shared-memory requirements come from
 `MmioDevice::resources()` and must already have been drained from the DTB by the
 device constructor.
+
+MMIO attachment is all-or-fail. The machine must not leave windows, interrupts,
+notify registrations, or shared-memory capabilities partially installed if any
+resource realization or `MmioDevice::attach` step fails.
 
 ### `InterruptController`
 
@@ -820,12 +853,18 @@ This design is satisfied only when all of the following can be verified:
    to `PciDevice`.
 11. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
 12. `Attach<Arc<dyn MmioDevice>>` realizes every interrupt and shared-memory
-   requirement advertised by `MmioDevice::resources()` or fails closed.
-13. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
+   capability requirement advertised by `MmioDevice::resources()` or fails
+   closed without partial attachment.
+13. Routed MMIO and PCI endpoint accesses return typed errors; boolean
+   "unhandled after routing" is not part of the target device API.
+14. Shared memory is exposed only as attachment-scoped capabilities whose
+   runtime regions must be inside a DTB-derived aperture and currently tracked
+   shared by the backend.
+15. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
    for all concrete devices and transports over `&mut devtree::OwnedTree`.
    `Ok(None)` consumes nothing and means the relevant node is absent.
-14. Every DTB node/property is drained by exactly one owner, or launch fails.
-15. Local verification passes:
+16. Every DTB node/property is drained by exactly one owner, or launch fails.
+17. Local verification passes:
    - `cargo fmt --all -- --check`
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Linux
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Windows
