@@ -553,6 +553,42 @@ backend-specific vCPU exit types.
 backend's VM-wide vCPU kick/exit mechanism. If a backend cannot make a blocked
 vCPU leave `run()`, it cannot implement reliable guest poweroff for this model.
 
+For Linux/KVM, `MachineRunControl` is implemented by making each vCPU thread's
+`KVM_RUN` ioctl return `-EINTR`. KVM documents two relevant facts:
+
+- `KVM_RUN` returns `EINTR` when an unblocked signal is pending for the vCPU
+  thread.
+- `struct kvm_run::immediate_exit` is the common signal-kick path; when set
+  nonzero before `KVM_RUN`, the next run exits immediately with `EINTR`, and a
+  signal handler can set it to keep a kicked vCPU from re-entering the guest.
+
+Therefore the KVM backend must keep per-vCPU run records in the shared machine
+run-control state. When a vCPU worker thread enters `Vcpu::run()`, the KVM
+`Vcpu` records the current Linux thread identity and the mmap'd `kvm_run`
+pointer in that state. `MachineRunControl::request_vcpu_exit` sets a VM-wide
+stop flag, marks each recorded vCPU's `immediate_exit`, and sends a
+thread-directed signal such as `pthread_kill` or `tgkill` to each recorded vCPU
+thread. The signal is sent to vCPU worker threads, not to an arbitrary process
+PID. When `KVM_RUN` returns `EINTR`, `Vcpu::run()` checks the stop flag and
+returns `VcpuStop::Stopped` instead of re-entering KVM.
+
+For macOS/HVF, the run-control state stores each vCPU's `hv_vcpus_exit` handle.
+The current local HVF wrapper already exposes this shape as
+`force_vcpus_exit(handles: &[VcpuHandle])`, and each vCPU exposes `handle()` as
+a sendable handle usable from another thread only to force it out of `run()`.
+`MachineRunControl::request_vcpu_exit` sets the VM-wide stop flag and calls the
+HVF exit helper with all recorded handles. When `hv_vcpu_run` returns,
+`Vcpu::run()` checks the stop flag and returns `VcpuStop::Stopped`.
+
+For Windows/WHP, the backend must store the partition handle and each virtual
+processor index in the run-control state. `MachineRunControl::request_vcpu_exit`
+sets the VM-wide stop flag and calls `WHvCancelRunVirtualProcessor(partition,
+vp_index, 0)` for each still-running virtual processor. `WHvRunVirtualProcessor`
+then returns with the documented canceled exit reason; the local WHP code
+already imports `WHvRunVpExitReasonCanceled`, but the target implementation
+must add the cancel binding and translate that exit to `VcpuStop::Stopped` when
+the stop flag is set.
+
 ### `MmioDevice`
 
 Owned by `dillo-mmio`. Implemented by MMIO devices and by `dillo-pci::PciRoot`.
