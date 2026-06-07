@@ -269,11 +269,12 @@ Owned by `dillo-machine`. Implemented by `dillo-machine-kvm`,
 pub trait Machine: Sized + Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
     type Vcpu: Vcpu<Error = Self::Error>;
+    type VcpuCreate: Send + 'static;
 
     const DEVICE_MODEL: DeviceModel;
 
     fn attach_mmio(&mut self, device: Arc<dyn MmioDevice>) -> Result<MmioAttachment, Self::Error>;
-    fn vcpus(&mut self) -> Result<Vec<Self::Vcpu>, Self::Error>;
+    fn create_vcpu(&mut self, request: Self::VcpuCreate) -> Result<Self::Vcpu, Self::Error>;
 }
 ```
 
@@ -282,7 +283,12 @@ constructor on its concrete machine type, for example:
 
 ```rust
 impl KvmMachine {
-    pub fn launch(plan: MachineLaunch) -> Result<Self, KvmLaunchError>;
+    pub fn launch(plan: MachineLaunch) -> Result<MachineLaunchResult<Self>, KvmLaunchError>;
+}
+
+pub struct MachineLaunchResult<M: Machine> {
+    pub machine: M,
+    pub vcpus: Vec<M::VcpuCreate>,
 }
 ```
 
@@ -293,9 +299,11 @@ contain KVM fds, HVF GIC handles, WHP partition handles, raw GSIs, raw SPIs,
 PCI devices, virtio devices, or transport-specific interrupt notifiers.
 
 Backend launch is responsible for VM creation, memory ownership, confidential
-measurement/setup, and vCPU creation. The generic trait exposes only the
-resulting machine and vCPUs. This keeps CC-specific ordering such as TDX
-VM-init-before-vCPU-init out of the shared trait shape.
+measurement/setup, and producing the backend-specific vCPU creation requests.
+The generic trait exposes the act of vCPU creation but not a universal vCPU
+configuration type. This keeps CC-specific ordering such as TDX
+VM-init-before-vCPU-init out of the shared trait shape while still allowing
+each machine to create its vCPUs.
 
 `Machine` owns all guest memory, but exposes only attachment-scoped shared
 regions that a confidential VM can expose. Standard VMs may implement this with
@@ -303,12 +311,14 @@ ordinary mapped memory internally, but the public API must not let callers read
 or write arbitrary guest-private memory. Without a successful `attach_mmio`
 call, no device receives any guest-memory capability.
 
-Initial CPU state is launch input, not a per-vCPU generic configuration API.
-`dillo` may request only the PMI-defined vCPU count, CPU profile, and initial
-state carried by the image/DTB contract. The backend constructor must translate
-that request into the host confidential-computing launch mechanism or fail
-closed. The shared API must not imply that arbitrary registers can be configured
-after launch.
+`VcpuCreate` is an associated type because CPU creation material differs by
+machine family. Plain KVM may need explicit initial register/state programming.
+KVM+SEV and KVM+TDX may need confidential launch material, accepted initial
+state, or opaque per-vCPU setup produced during machine launch. `dillo` may
+request only the PMI-defined vCPU count, CPU profile, and initial state carried
+by the image/DTB contract. The backend constructor must translate that request
+into its machine-specific `VcpuCreate` values or fail closed. The shared API
+must not imply that arbitrary registers can be configured for every machine.
 
 `Machine` must stay device-model neutral. It must not expose PCI, MSI-X, UART,
 IOAPIC, GIC, KVM irqfd, WHP vector, or HVF-specific concepts in its public
@@ -675,11 +685,12 @@ This design is satisfied only when all of the following can be verified:
    architecture substrate crates, and host OS hypervisor APIs.
 3. Device crates do not depend on `dillo-machine`, backend crates, PMI, or DTB.
 4. `Machine` exposes no PCI, MSI-X, UART, IOAPIC, GIC, KVM irqfd, WHP vector,
-   HVF, or backend seed types.
+   HVF, raw host handles, or hypervisor API objects.
 5. `Machine` has no trait constructor; backend crates expose inherent
    constructors on concrete machine types.
-6. `Machine` has no generic per-vCPU configuration method; initial CPU state is
-   validated and applied during backend launch or fails closed.
+6. `Machine` has no universal `VcpuConfig`; `Machine::VcpuCreate` is associated
+   per machine family and produced by backend launch from `MachineLaunch`.
+   Unsupported PMI/DTB initial-state requests fail closed.
 7. `Machine` exposes no whole-guest-memory accessor; guest memory is accessible
    only through attachment-scoped `SharedRegion` handles minted by successful
    device registration.
