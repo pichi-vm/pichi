@@ -323,27 +323,41 @@ Owned by `dillo-machine`. Implemented by `dillo-machine-kvm`,
 `dillo-machine-hvf`, and `dillo-machine-whp`. Consumed by `dillo`.
 
 ```rust
-pub trait Attach<T, E> {
+pub trait Attach<T> {
+    type Error: std::error::Error + Send + Sync + 'static;
     type Output;
 
-    fn attach(&mut self, item: T) -> Result<Self::Output, E>;
+    fn attach(&mut self, item: T) -> Result<Self::Output, Self::Error>;
 }
 
-pub trait Machine:
-    Sized
-    + Send
-    + Sync
-    + 'static
-    + Attach<Self::Memory, Self::Error, Output = ()>
-    + Attach<Self::Cpu, Self::Error, Output = Self::Vcpu>
-    + Attach<Arc<dyn MmioDevice>, Self::Error, Output = MmioAttachment>
-{
+pub trait Machine: Sized + Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
     type Vcpu: Vcpu<Error = Self::Error>;
     type Cpu: Send + 'static;
     type Memory: Send + 'static;
 
     const DEVICE_MODEL: DeviceModel;
+}
+```
+
+Concrete machine implementations must support the attachment set that `dillo`
+uses. Generic orchestration expresses the shared error contract with fully
+qualified associated types:
+
+```rust
+fn attach_memory<M>(
+    machine: &mut M,
+    memory: <M as Machine>::Memory,
+) -> Result<(), <M as Machine>::Error>
+where
+    M: Machine
+        + Attach<
+            <M as Machine>::Memory,
+            Error = <M as Machine>::Error,
+            Output = (),
+        >,
+{
+    machine.attach(memory)
 }
 ```
 
@@ -365,15 +379,18 @@ impl KvmTdxCpu {
 The concrete machine is assembled by attaching typed objects:
 
 ```rust
-impl Attach<KvmTdxMemory, KvmTdxError> for KvmTdxMachine {
+impl Attach<KvmTdxMemory> for KvmTdxMachine {
+    type Error = KvmTdxError;
     type Output = ();
 }
 
-impl Attach<KvmTdxCpu, KvmTdxError> for KvmTdxMachine {
+impl Attach<KvmTdxCpu> for KvmTdxMachine {
+    type Error = KvmTdxError;
     type Output = KvmTdxVcpu;
 }
 
-impl Attach<Arc<dyn MmioDevice>, KvmTdxError> for KvmTdxMachine {
+impl Attach<Arc<dyn MmioDevice>> for KvmTdxMachine {
+    type Error = KvmTdxError;
     type Output = MmioAttachment;
 }
 ```
