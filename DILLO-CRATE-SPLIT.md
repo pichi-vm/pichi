@@ -254,11 +254,10 @@ machine model, CPU input type, and memory input type may differ.
 
 `attached_mmio` is handed to the selected device-host wrapper. The wrapper knows
 the concrete device protocol; the backend attachment knows the parallel
-execution model. In a thread model, the attachment may launch an in-process
-device task. In a process model, the attachment may launch or connect to an
-out-of-process task using eventfds, irqfds, shared-memory capabilities, and
-channels. In both cases, the machine has already registered MMIO routing before
-vCPUs run.
+execution model. The wrapper creates a device-host launch request compatible
+with the selected `Machine::DEVICE_MODEL`; the attachment consumes that request
+to start or connect the host. In both cases, the machine has already registered
+MMIO routing before vCPUs run.
 
 ## Devtree consumption
 
@@ -354,6 +353,12 @@ Owned by `dillo-machine`. Implemented by `dillo-machine-kvm`,
 `dillo-machine-hvf`, and `dillo-machine-whp`. Consumed by `dillo`.
 
 ```rust
+pub enum DeviceModel {
+    Thread,
+
+    Process,
+}
+
 pub trait Machine: Sized + Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
     type Vcpu: Vcpu<Error = Self::Error>;
@@ -460,9 +465,10 @@ implementation.
 `DEVICE_MODEL` records process vs thread device-host policy. Backend crates own
 the mechanics of launching or connecting the device task for their model, but
 they must not depend on virtio, UART, PCI endpoint, or other concrete device
-crates. The device-host wrapper supplies a backend-neutral task closure/object;
-the backend-implemented `MmioAttachment` decides whether that task runs in a
-thread, process, or backend-specific service.
+crates. The device-host wrapper supplies a backend-neutral host launch request
+for the selected device model; the backend-implemented `MmioAttachment` consumes
+that request to run a thread, connect to a process, or use a backend-specific
+service.
 
 ### `Vcpu`
 
@@ -693,19 +699,36 @@ pub enum MmioInterrupt {
     MessageDomain(Arc<dyn MessageInterruptDomain>),
 }
 
-pub type MmioDeviceTask =
-    Box<dyn FnOnce() -> Result<(), MmioDeviceTaskError> + Send + 'static>;
+pub enum MmioDeviceHost {
+    Thread(MmioThreadHost),
+
+    Process(MmioProcessHost),
+}
 
 pub struct MmioDeviceHandle {
     // opaque
 }
 
-pub struct MmioDeviceTaskError {
+pub struct MmioThreadHost {
+    // opaque
+}
+
+pub struct MmioProcessHost {
     // opaque
 }
 
 pub struct MmioSpawnError {
     // opaque
+}
+
+impl MmioDeviceHost {
+    pub fn thread(
+        run: impl FnOnce() -> Result<(), MmioSpawnError> + Send + 'static,
+    ) -> Self;
+
+    pub fn process(spec: MmioProcessHost) -> Self;
+
+    pub fn model(&self) -> DeviceModel;
 }
 
 pub trait MmioAttachment: Send + Sync {
@@ -720,7 +743,7 @@ pub trait MmioAttachment: Send + Sync {
 
     fn spawn(
         self: Arc<Self>,
-        task: MmioDeviceTask,
+        host: MmioDeviceHost,
     ) -> Result<MmioDeviceHandle, MmioSpawnError>;
 }
 ```
@@ -749,14 +772,19 @@ channels or direct interrupt handles. Those details are opaque behind the
 `dillo-mmio` trait; device crates and `dillo` can use only the trait methods.
 
 `spawn` is on `MmioAttachment` because only the backend attachment knows whether
-the selected machine model runs a device task in a thread, out of process, or
-through a backend-specific service. The `self: Arc<Self>` receiver consumes the
-attachment handle returned by `Machine::attach`; callers must extract or clone
-any resolved interrupt/shared-memory/notify services the task needs before
-calling `spawn`. The task is backend-neutral and device-aware; it is created by
-the device-host wrapper after `Machine::attach` has returned the attachment.
-This keeps backend crates independent of concrete device crates while still
-making the backend responsible for its parallel execution model.
+the selected machine model runs an in-process thread, connects to an
+out-of-process host, or uses a backend-specific service. The `self: Arc<Self>`
+receiver consumes the attachment handle returned by `Machine::attach`; callers
+must extract or clone any resolved interrupt/shared-memory/notify services the
+host needs before calling `spawn`.
+
+`MmioDeviceHost` is not the MMIO device and not the backend attachment. It is the
+device-host wrapper's launch request for an already-attached device. A thread
+host can contain a Rust closure over the concrete device and attachment services.
+A process host cannot be a closure; it describes or connects to an external
+device host using backend-neutral process/channel material. The wrapper chooses
+the host variant from `Machine::DEVICE_MODEL`. The selected backend validates
+that the variant matches what it supports and fails closed otherwise.
 
 ### `InterruptController`
 
