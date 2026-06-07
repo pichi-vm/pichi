@@ -341,24 +341,27 @@ pub trait Machine: Sized + Send + Sync + 'static {
 ```
 
 Concrete machine implementations must support the attachment set that `dillo`
-uses. Generic orchestration expresses the shared error contract with fully
-qualified associated types:
+uses. When `dillo` is generic over a selected machine type, the required bounds
+express the shared error contract with fully qualified associated types:
 
 ```rust
-fn attach_memory<M>(
-    machine: &mut M,
-    memory: <M as Machine>::Memory,
-) -> Result<(), <M as Machine>::Error>
 where
-    M: Machine
-        + Attach<
-            <M as Machine>::Memory,
-            Error = <M as Machine>::Error,
-            Output = (),
-        >,
-{
-    machine.attach(memory)
-}
+    M: Machine,
+    M: Attach<
+        <M as Machine>::Memory,
+        Error = <M as Machine>::Error,
+        Output = (),
+    >,
+    M: Attach<
+        <M as Machine>::Cpu,
+        Error = <M as Machine>::Error,
+        Output = <M as Machine>::Vcpu,
+    >,
+    M: Attach<
+        Arc<dyn MmioDevice>,
+        Error = <M as Machine>::Error,
+        Output = MmioAttachment,
+    >,
 ```
 
 `Machine` has no trait constructor and no `launch()` API. Each backend crate
