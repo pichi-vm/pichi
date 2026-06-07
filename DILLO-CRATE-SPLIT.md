@@ -183,27 +183,32 @@ crate. It does not know backend crates or concrete device implementations.
 dillo-specific PE parsing, resource caps, and defensive validation. That can
 become a `dillo` module unless reuse justifies a crate.
 
-## DTB consumption
+## Devtree consumption
 
-Concrete devices have inherent constructors. DTB consumption is not in device
-crates.
+Concrete devices have inherent constructors. Devtree consumption is not in
+device crates.
 
 `dillo` owns a local trait such as:
 
 ```rust
-trait FromDtb<T> {
+trait FromDevTree {
     type Error;
 
-    fn from_dtb(input: T) -> Result<Self, Self::Error>
+    fn from_devtree(tree: &mut devtree::OwnedTree) -> Result<Self, Self::Error>
     where
         Self: Sized;
 }
 ```
 
 `dillo` implements this trait for concrete device and adapter types because
-only `dillo` knows all inputs at once: PMI, the surveyed DTB, launch policy,
+only `dillo` knows all inputs at once: PMI, the mutable devtree, launch policy,
 selected transport, selected `Machine`, and every concrete device type it can
 instantiate. This is intentionally not an independent crate.
+
+Construction uses the existing drain model. `dillo` attempts to construct the
+machine, buses, transports, and devices from one mutable `devtree::OwnedTree`.
+Each successful constructor removes every node and property it owns from that
+tree. After all constructors run, any remaining node or property is an error.
 
 The rule is fail closed: if a DTB node/property is not consumed by exactly one
 owner, launch fails. If dillo wants to plug a device but the base DTB did not
@@ -479,9 +484,9 @@ This design is satisfied only when all of the following can be verified:
 5. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
    to `PciDevice`.
 6. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
-7. `dillo` owns DTB consumption glue, including local `FromDtb` impls for all
-   concrete devices and transports.
-8. Every DTB node/property is consumed by exactly one owner, or launch fails.
+7. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
+   for all concrete devices and transports over `&mut devtree::OwnedTree`.
+8. Every DTB node/property is drained by exactly one owner, or launch fails.
 9. Local verification passes:
    - `cargo fmt --all -- --check`
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Linux
