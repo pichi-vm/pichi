@@ -245,7 +245,8 @@ for device in dillo_mmio_devices_from_devtree(&mut tree)? {
 }
 
 tree.require_empty()?;
-run(vcpus, attached_mmio)?;
+let device_hosts = spawn_device_hosts(attached_mmio)?;
+run_supervisor(vcpus, device_hosts)?;
 ```
 
 The concrete backend type above is selected by the target/backend alias. The
@@ -258,6 +259,14 @@ execution model. The wrapper creates a device-host launch request compatible
 with the selected `Machine::DEVICE_MODEL`; the attachment consumes that request
 to start or connect the host. In both cases, the machine has already registered
 MMIO routing before vCPUs run.
+
+`run_supervisor` owns VM lifecycle. vCPU workers report `VcpuStop` outcomes to
+the supervisor. A guest poweroff, guest reset, fatal vCPU error, or fatal device
+host error becomes a single supervisor decision. The supervisor then requests
+all remaining vCPUs to stop, requests every device host to shut down, joins the
+device hosts, joins the vCPU workers, and only then lets machine-owned routing
+and memory state drop. Device hosts must not independently tear down
+guest-visible state while vCPUs may still access it.
 
 ## Devtree consumption
 
@@ -463,7 +472,7 @@ return the resulting handles through its backend-specific `MmioAttachment`
 implementation.
 
 `DEVICE_MODEL` records process vs thread device-host policy. Backend crates own
-the mechanics of launching or connecting the device task for their model, but
+the mechanics of launching or connecting the device host for their model, but
 they must not depend on virtio, UART, PCI endpoint, or other concrete device
 crates. The device-host wrapper supplies a backend-neutral host launch request
 for the selected device model; the backend-implemented `MmioAttachment` consumes
@@ -478,7 +487,32 @@ Owned by `dillo-machine`. Implemented by backend crates.
 pub trait Vcpu: Send + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
+    fn control(&self) -> VcpuControl;
+
     fn run(&mut self) -> Result<VcpuStop, Self::Error>;
+}
+
+#[derive(Clone)]
+pub struct VcpuControl {
+    // opaque
+}
+
+impl VcpuControl {
+    pub fn request_stop(&self) -> Result<(), VcpuStopRequestError>;
+}
+
+pub enum VcpuStop {
+    GuestPoweroff,
+
+    GuestReset,
+
+    Stopped,
+
+    Fatal,
+}
+
+pub struct VcpuStopRequestError {
+    // opaque
 }
 ```
 
@@ -496,6 +530,15 @@ the returned `MmioAttachment` may also bind ioeventfd for MMIO writes so those
 notifications bypass the vCPU thread. Interrupt delivery likewise uses resolved
 `Interrupt` or `MessageInterruptDomain` handles exposed by the returned
 attachment; it is not sent through the vCPU run loop.
+
+`VcpuStop` is a report to the supervisor, not a complete shutdown sequence.
+Architecture-specific shutdown triggers such as PSCI system-off, syscon
+poweroff, ACPI power button, or backend fatal exits are decoded inside backend
+or architecture-substrate code and surfaced as `VcpuStop`. The supervisor owns
+the fan-out: it uses `VcpuControl::request_stop` for other vCPUs and
+`MmioDeviceHandle::shutdown` for device hosts, then joins all workers. This
+keeps shutdown policy out of devices and out of backend-specific vCPU exit
+types.
 
 ### `MmioDevice`
 
@@ -623,7 +666,7 @@ PCI endpoints do not attach directly to `Machine` and do not receive
 `Machine::attach(PciRoot)` succeeds, the PCI-root host/wrapper uses the returned
 `MmioAttachment` to provide the root's message-interrupt domain, shared-memory
 capabilities, and notify registrations to the PCI transport adapters it owns.
-It also uses that same attachment to spawn the PCI-root device task.
+It also uses that same attachment to spawn the PCI-root device host.
 
 `PciRoot` handles absent bus/device/function routing itself, including standard
 all-ones config reads for non-existent functions. Once an access has been routed
