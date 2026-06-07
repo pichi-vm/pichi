@@ -505,8 +505,8 @@ pub enum MmioInterruptRequirement {
     },
 }
 
-pub struct SharedMemoryCapabilityRequirement<'a> {
-    pub ranges: &'a [AddressRange],
+pub struct SharedMemoryRequirement {
+    pub range: AddressRange,
     pub access: SharedAccess,
 }
 
@@ -516,61 +516,46 @@ pub enum SharedAccess {
     ReadWrite,
 }
 
-pub trait MmioResources {
-    fn window_count(&self) -> usize;
-    fn window(&self, index: usize) -> Option<&MmioWindow>;
-
-    fn interrupt_count(&self) -> usize;
-    fn interrupt(&self, index: usize) -> Option<&MmioInterruptRequirement>;
-
-    fn shared_memory_count(&self) -> usize;
-    fn shared_memory(&self, index: usize) -> Option<SharedMemoryCapabilityRequirement<'_>>;
-}
-
 pub trait MmioDevice: Send + Sync + std::fmt::Debug {
-    fn resources(&self) -> &dyn MmioResources;
+    fn windows(&self) -> &[MmioWindow];
+    fn interrupts(&self) -> &[MmioInterruptRequirement];
+    fn shared_memory(&self) -> &[SharedMemoryRequirement];
     fn read(&self, window: &MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError>;
     fn write(&self, window: &MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError>;
 }
 ```
 
-`resources()` is DTB-derived device metadata, not a hardware-enablement
-decision. `Attach<Arc<dyn MmioDevice>>` registers the declared windows into
+The resource methods are DTB-derived device metadata, not hardware-enablement
+decisions. `Attach<Arc<dyn MmioDevice>>` registers the declared windows into
 machine-owned MMIO routing state, realizes the declared interrupt and
 shared-memory requirements, returns a backend-implemented `MmioAttachment`, and
 fails closed if any requirement cannot be satisfied. PCI is therefore invisible
 to machine backends; a PCI host bridge is just one MMIO device with windows,
-shared-memory capabilities, and interrupt requirements from their point of view.
+shared-memory requirements, and interrupt requirements from their point of view.
 
-`resources()` returns a borrowed resource view because resources are fixed
-constructor state, not values to allocate or recompute during attachment. They
-must be stable for the lifetime of the device. This is the device's claim over
-DTB-derived resources, not a negotiation hook. The view is index-based rather
-than slice-based so each concrete device can store its resource facts however it
-wants, including nested shared-memory ranges, without allocating owned wrapper
-values just to answer `resources()`. Requirements do not carry public names. The
-machine realizes requirements in index order, and the attachment exposes
-resolved handles in the same order. A device that needs semantic labels for its
-own windows or interrupts keeps those labels in its own concrete type. The
-machine validates that all windows are nonzero, non-overlapping, outside guest
-RAM unless the DTB explicitly defines the aperture, and compatible with the
-selected backend. MMIO read/write methods are called only after a successful
-attachment. If a routed access is malformed or unsupported, the device returns
-`Err`; the machine treats that as a VM execution error rather than silently
-ignoring the access.
-
-An `impl Trait` iterator-returning resource object would be convenient for
-concrete types, but `MmioDevice` is intentionally used behind
-`Arc<dyn MmioDevice>`. The target API therefore keeps resource discovery
-dyn-compatible and allocation-free at the machine boundary.
+The resource slices are borrowed fixed constructor state, not values to allocate
+or recompute during attachment. They must be stable for the lifetime of the
+device. This is the device's claim over DTB-derived resources, not a negotiation
+hook. Requirements do not carry public names. The machine realizes requirements
+in slice order, and the attachment exposes resolved handles in the same order. A
+device that needs semantic labels for its own windows or interrupts keeps those
+labels in its own concrete type. The machine validates that all windows are
+nonzero, non-overlapping, outside guest RAM unless the DTB explicitly defines
+the aperture, and compatible with the selected backend. MMIO read/write methods
+are called only after a successful attachment. If a routed access is malformed
+or unsupported, the device returns `Err`; the machine treats that as a VM
+execution error rather than silently ignoring the access.
 
 Shared-memory requirements are capabilities, not static shared pages. The DTB
 may describe the device's DMA aperture or shared-memory eligibility, but virtio
-queue descriptors and buffers are runtime guest protocol state. A device gets a
-shared-memory capability through the attachment returned by machine `Attach`;
-each requested runtime range must be inside that capability and must currently
-be tracked as shared by the backend. MMIO windows, PCI ECAM, and BAR apertures
-are not automatically shared-memory capabilities.
+queue descriptors and buffers are runtime guest protocol state. The target model
+flattens shared-memory requirements: one `SharedMemoryRequirement` describes one
+range and access mode. A device that has multiple apertures returns multiple
+entries. A device gets one shared-memory capability per entry through the
+attachment returned by machine `Attach`; each requested runtime range must be
+inside that capability and must currently be tracked as shared by the backend.
+MMIO windows, PCI ECAM, and BAR apertures are not automatically shared-memory
+capabilities.
 
 ### `PciDevice`
 
@@ -704,16 +689,16 @@ pub trait MmioAttachment: Send + Sync {
 
 `interrupts()` returns one resolved interrupt object for each
 `MmioInterruptRequirement`, preserving the order exposed by
-`MmioResources::interrupt`. `shared_memory()` likewise preserves the order
-exposed by `MmioResources::shared_memory`.
+`MmioDevice::interrupts`. `shared_memory()` likewise preserves the order exposed
+by `MmioDevice::shared_memory`.
 
 KVM implements notify registration with ioeventfd so supported MMIO writes wake a
 device host without returning through the vCPU thread. HVF/WHP can return
 `Unsupported`, and the machine falls back to its internal MMIO routing state for
 ordinary MMIO exits. Notify registration is an optional acceleration path.
 Interrupt requirements and shared-memory requirements come from
-`MmioDevice::resources()` and must already have been drained from the DTB by the
-device constructor.
+`MmioDevice::interrupts` and `MmioDevice::shared_memory` and must already have
+been drained from the DTB by the device constructor.
 
 MMIO attachment is all-or-fail. The machine must not leave windows, interrupts,
 notify registrations, or shared-memory capabilities partially installed if any
@@ -743,7 +728,7 @@ pub trait InterruptController: Send + Sync {
 ```
 
 `InterruptSource` and `MessageInterruptSource` are typed facts derived from the
-drained devtree and carried by `MmioDevice::resources()`. They are not raw x86
+drained devtree and carried by `MmioDevice::interrupts`. They are not raw x86
 GSIs, raw ARM SPIs, KVM irqfds, WHP vectors, or HVF handles.
 
 ### `Interrupt`
@@ -879,7 +864,8 @@ This design is satisfied only when all of the following can be verified:
    to `PciDevice`.
 11. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
 12. `Attach<Arc<dyn MmioDevice>>` realizes every interrupt and shared-memory
-   capability requirement advertised by `MmioDevice::resources()` or fails
+   capability requirement advertised by `MmioDevice::interrupts` and
+   `MmioDevice::shared_memory` or fails
    closed without partial attachment.
 13. `MmioDevice` has no attach/init callback; machine attachment returns an
    `Arc<dyn MmioAttachment>` implemented by the selected backend.
