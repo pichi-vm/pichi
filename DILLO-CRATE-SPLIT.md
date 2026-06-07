@@ -252,11 +252,13 @@ The concrete backend type above is selected by the target/backend alias. The
 pattern is the same for plain KVM, KVM+SEV, KVM+TDX, HVF, and WHP, but the
 machine model, CPU input type, and memory input type may differ.
 
-`attached_mmio` is handed to the selected device-host wrapper. In a thread model,
-the wrapper may keep direct references to the device and backend attachment. In a
-process model, the attachment may represent eventfds, irqfds, shared-memory
-capabilities, and channels used to host the device out of process. In both cases,
-the machine has already registered MMIO routing before vCPUs run.
+`attached_mmio` is handed to the selected device-host wrapper. The wrapper knows
+the concrete device protocol; the backend attachment knows the parallel
+execution model. In a thread model, the attachment may launch an in-process
+device task. In a process model, the attachment may launch or connect to an
+out-of-process task using eventfds, irqfds, shared-memory capabilities, and
+channels. In both cases, the machine has already registered MMIO routing before
+vCPUs run.
 
 ## Devtree consumption
 
@@ -455,9 +457,12 @@ obligated to resolve those requirements for the backend, fail if it cannot, and
 return the resulting handles through its backend-specific `MmioAttachment`
 implementation.
 
-`DEVICE_MODEL` records process vs thread device-host policy. The unresolved
-part is where the process/thread host wrapper lives; it must not make backend
-crates depend on device crates.
+`DEVICE_MODEL` records process vs thread device-host policy. Backend crates own
+the mechanics of launching or connecting the device task for their model, but
+they must not depend on virtio, UART, PCI endpoint, or other concrete device
+crates. The device-host wrapper supplies a backend-neutral task closure/object;
+the backend-implemented `MmioAttachment` decides whether that task runs in a
+thread, process, or backend-specific service.
 
 ### `Vcpu`
 
@@ -675,6 +680,22 @@ pub enum MmioInterrupt {
     MessageDomain(Arc<dyn MessageInterruptDomain>),
 }
 
+pub trait MmioDeviceTask: Send + 'static {
+    fn run(self: Box<Self>) -> Result<(), MmioDeviceTaskError>;
+}
+
+pub struct MmioDeviceHandle {
+    // opaque
+}
+
+pub struct MmioDeviceTaskError {
+    // opaque
+}
+
+pub struct MmioSpawnError {
+    // opaque
+}
+
 pub trait MmioAttachment: Send + Sync {
     fn interrupts(&self) -> &[MmioInterrupt];
 
@@ -684,6 +705,11 @@ pub trait MmioAttachment: Send + Sync {
         &self,
         event: MmioNotifyEvent,
     ) -> Result<MmioNotifyRegistration, MmioNotifyError>;
+
+    fn spawn(
+        self: Arc<Self>,
+        task: Box<dyn MmioDeviceTask>,
+    ) -> Result<MmioDeviceHandle, MmioSpawnError>;
 }
 ```
 
@@ -709,6 +735,14 @@ backend-specific. A KVM implementation may contain eventfds, irqfds, and process
 device-host wiring. HVF/WHP implementations may contain in-process thread
 channels or direct interrupt handles. Those details are opaque behind the
 `dillo-mmio` trait; device crates and `dillo` can use only the trait methods.
+
+`spawn` is on `MmioAttachment` because only the backend attachment knows whether
+the selected machine model runs a device task in a thread, out of process, or
+through a backend-specific service. The task object is backend-neutral and
+device-aware; it is created by the device-host wrapper after `Machine::attach`
+has returned the attachment. This keeps backend crates independent of concrete
+device crates while still making the backend responsible for its parallel
+execution model.
 
 ### `InterruptController`
 
@@ -779,7 +813,7 @@ or upstreamed PCI code.
 
 ## Process vs thread model
 
-This is intentionally unresolved. The design constraints are:
+The design constraints are:
 
 - process/thread hosting must not make backend crates depend on virtio or
   concrete devices;
@@ -791,8 +825,9 @@ This is intentionally unresolved. The design constraints are:
   attachment services and device-host wrappers, not to a public vCPU dispatch
   callback.
 
-The likely home is a future device-host crate or a `dillo` module, not
-`dillo-machine-kvm`.
+The device-aware wrapper lives in a future device-host crate or a `dillo` module.
+The process/thread launch primitive lives in `MmioAttachment`, implemented by
+the selected `dillo-machine-*` crate.
 
 ## Source cfg policy
 
