@@ -497,10 +497,10 @@ pub struct MmioWindow {
     pub size: u64,
 }
 
-pub struct MmioResources {
-    pub windows: Vec<MmioWindow>,
-    pub interrupts: Vec<MmioInterruptRequirement>,
-    pub shared: Vec<SharedMemoryCapabilityRequirement>,
+pub struct MmioResources<'a> {
+    pub windows: &'a [MmioWindow],
+    pub interrupts: &'a [MmioInterruptRequirement],
+    pub shared: &'a [SharedMemoryCapabilityRequirement],
 }
 
 pub enum MmioInterruptRequirement {
@@ -529,7 +529,7 @@ pub enum SharedAccess {
 }
 
 pub trait MmioDevice: Send + Sync + std::fmt::Debug {
-    fn resources(&self) -> MmioResources;
+    fn resources(&self) -> MmioResources<'_>;
     fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError>;
     fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError>;
 }
@@ -543,13 +543,15 @@ fails closed if any requirement cannot be satisfied. PCI is therefore invisible
 to machine backends; a PCI host bridge is just one MMIO device with windows,
 shared-memory capabilities, and interrupt requirements from their point of view.
 
-`resources()` must be stable for the lifetime of the device. It is the device's
-claim over DTB-derived resources, not a negotiation hook. The machine validates
-that all windows are nonzero, non-overlapping, outside guest RAM unless the DTB
-explicitly defines the aperture, and compatible with the selected backend. MMIO
-read/write methods are called only after a successful attachment. If a routed
-access is malformed or unsupported, the device returns `Err`; the machine treats
-that as a VM execution error rather than silently ignoring the access.
+`resources()` returns borrowed slices because resources are fixed constructor
+state, not values to allocate or recompute during attachment. They must be stable
+for the lifetime of the device. This is the device's claim over DTB-derived
+resources, not a negotiation hook. The machine validates that all windows are
+nonzero, non-overlapping, outside guest RAM unless the DTB explicitly defines the
+aperture, and compatible with the selected backend. MMIO read/write methods are
+called only after a successful attachment. If a routed access is malformed or
+unsupported, the device returns `Err`; the machine treats that as a VM execution
+error rather than silently ignoring the access.
 
 Shared-memory requirements are capabilities, not static shared pages. The DTB
 may describe the device's DMA aperture or shared-memory eligibility, but virtio
