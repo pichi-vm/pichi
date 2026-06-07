@@ -492,7 +492,6 @@ Owned by `dillo-mmio`. Implemented by MMIO devices and by `dillo-pci::PciRoot`.
 
 ```rust
 pub struct MmioWindow {
-    pub name: &'static str,
     pub base: u64,
     pub size: u64,
 }
@@ -504,20 +503,15 @@ pub struct MmioResources<'a> {
 }
 
 pub enum MmioInterruptRequirement {
-    Line {
-        name: &'static str,
-        source: InterruptSource,
-    },
+    Line { source: InterruptSource },
 
     MessageDomain {
-        name: &'static str,
         source: MessageInterruptSource,
         vectors: u16,
     },
 }
 
 pub struct SharedMemoryCapabilityRequirement {
-    pub name: &'static str,
     pub ranges: Vec<AddressRange>,
     pub access: SharedAccess,
 }
@@ -530,8 +524,8 @@ pub enum SharedAccess {
 
 pub trait MmioDevice: Send + Sync + std::fmt::Debug {
     fn resources(&self) -> MmioResources<'_>;
-    fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError>;
-    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError>;
+    fn read(&self, window: &MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError>;
+    fn write(&self, window: &MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError>;
 }
 ```
 
@@ -546,20 +540,24 @@ shared-memory capabilities, and interrupt requirements from their point of view.
 `resources()` returns borrowed slices because resources are fixed constructor
 state, not values to allocate or recompute during attachment. They must be stable
 for the lifetime of the device. This is the device's claim over DTB-derived
-resources, not a negotiation hook. The machine validates that all windows are
-nonzero, non-overlapping, outside guest RAM unless the DTB explicitly defines the
-aperture, and compatible with the selected backend. MMIO read/write methods are
-called only after a successful attachment. If a routed access is malformed or
-unsupported, the device returns `Err`; the machine treats that as a VM execution
-error rather than silently ignoring the access.
+resources, not a negotiation hook. Requirements do not carry public names.
+The machine realizes requirement slices in order, and the attachment exposes
+resolved handles in the same order. A device that needs semantic labels for its
+own windows or interrupts keeps those labels in its own concrete type. The
+machine validates that all windows are nonzero, non-overlapping, outside guest
+RAM unless the DTB explicitly defines the aperture, and compatible with the
+selected backend. MMIO read/write methods are called only after a successful
+attachment. If a routed access is malformed or unsupported, the device returns
+`Err`; the machine treats that as a VM execution error rather than silently
+ignoring the access.
 
 Shared-memory requirements are capabilities, not static shared pages. The DTB
 may describe the device's DMA aperture or shared-memory eligibility, but virtio
 queue descriptors and buffers are runtime guest protocol state. A device gets a
-named shared-memory capability through the attachment returned by machine
-`Attach`; each requested runtime range must be inside that capability and must
-currently be tracked as shared by the backend. MMIO windows, PCI ECAM, and BAR
-apertures are not automatically shared-memory capabilities.
+shared-memory capability through the attachment returned by machine `Attach`;
+each requested runtime range must be inside that capability and must currently
+be tracked as shared by the backend. MMIO windows, PCI ECAM, and BAR apertures
+are not automatically shared-memory capabilities.
 
 ### `PciDevice`
 
@@ -674,18 +672,16 @@ transports that need backend-neutral services for an already-attached MMIO
 device.
 
 ```rust
+pub enum MmioInterrupt {
+    Line(Interrupt),
+
+    MessageDomain(Arc<dyn MessageInterruptDomain>),
+}
+
 pub trait MmioAttachment: Send + Sync {
-    fn interrupt(&self, name: &str) -> Result<Interrupt, MmioAttachmentError>;
+    fn interrupts(&self) -> &[MmioInterrupt];
 
-    fn message_domain(
-        &self,
-        name: &str,
-    ) -> Result<Arc<dyn MessageInterruptDomain>, MmioAttachmentError>;
-
-    fn shared_memory(
-        &self,
-        name: &str,
-    ) -> Result<Arc<dyn SharedMemory>, MmioAttachmentError>;
+    fn shared_memory(&self) -> &[Arc<dyn SharedMemory>];
 
     fn register_notify(
         &self,
@@ -693,6 +689,11 @@ pub trait MmioAttachment: Send + Sync {
     ) -> Result<MmioNotifyRegistration, MmioNotifyError>;
 }
 ```
+
+`interrupts()` returns one resolved interrupt object for each
+`MmioInterruptRequirement`, preserving the order of
+`MmioDevice::resources().interrupts`. `shared_memory()` likewise preserves the
+order of `MmioDevice::resources().shared`.
 
 KVM implements notify registration with ioeventfd so supported MMIO writes wake a
 device host without returning through the vCPU thread. HVF/WHP can return
