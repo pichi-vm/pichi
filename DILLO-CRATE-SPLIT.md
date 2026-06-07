@@ -18,6 +18,8 @@ This design is derived from current code and primary specs.
 | Arma forbids hidden guest hardware; device addresses and interrupts come from DTB. | `arma/docs/device-model.md:91` |
 | KVM confidential-computing private memory uses `guest_memfd`; private pages cannot be mapped, read, or written by userspace. Shared/private state is selected per GFN with `KVM_MEMORY_ATTRIBUTE_PRIVATE`. | Linux KVM API `KVM_SET_USER_MEMORY_REGION2`, `KVM_SET_MEMORY_ATTRIBUTES`, `KVM_CREATE_GUEST_MEMFD` |
 | KVM userspace must explicitly track page private/shared state; the KVM memory attributes API has no get operation. | Linux KVM API `KVM_SET_MEMORY_ATTRIBUTES` |
+| KVM returns `KVM_EXIT_MMIO` only for MMIO that could not be satisfied by KVM; `KVM_IOEVENTFD` lets a registered MMIO write signal an eventfd instead of exiting. | Linux KVM API `KVM_EXIT_MMIO`, `KVM_IOEVENTFD` |
+| KVM interrupt acceleration is also registration based: `KVM_IRQFD` lets an eventfd directly trigger a guest interrupt. | Linux KVM API `KVM_IRQFD` |
 | TDX VM initialization is a VM-specific operation that must occur before vCPU creation; TDX also has specific VM/vCPU/memory init commands and CPUID handling. | Linux KVM TDX API `KVM_TDX_INIT_VM`, `KVM_TDX_INIT_VCPU`, `KVM_TDX_INIT_MEM_REGION`, `KVM_TDX_GET_CPUID` |
 | SEV-ES/SNP initial CPU state is launch material with platform limits; unsupported initial-state fields must fail rather than be silently configured. | QEMU IGVM documentation, "Initial CPU state with VMSA" |
 | Current `dillo-vm` has one `BackendVm` trait but it still exposes backend-shaped associated state and lives inside the monolith. | `dillo/deps/dillo-vm/src/backend.rs:58` |
@@ -207,8 +209,7 @@ become a `dillo` module unless reuse justifies a crate.
 6. Incrementally construct CPU, memory, MMIO, bus, transport, and device objects
    from the same mutable tree and attach each one to the machine.
 7. Fail if any DTB node/property remains after assembly.
-8. Run the attached vCPUs through the machine's `Vcpu` objects and dillo's MMIO
-   dispatcher.
+8. Run the attached vCPUs through the machine's `Vcpu` objects.
 
 The merged devtree is therefore not drained up front into one large plan.
 Consumption is incremental: each constructed object drains only the nodes and
@@ -443,7 +444,7 @@ Owned by `dillo-machine`. Implemented by backend crates.
 pub trait Vcpu: Send + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn run(&mut self, mmio: &dyn MmioDispatcher) -> Result<VcpuStop, Self::Error>;
+    fn run(&mut self) -> Result<VcpuStop, Self::Error>;
 }
 ```
 
@@ -453,25 +454,14 @@ backend is MMIO. PIO, hypercalls, CPUID leaves, PSCI calls, and backend-specific
 emulation exits are backend or architecture-substrate internals and must not
 become dillo/device APIs.
 
-### `MmioDispatcher`
-
-Owned by `dillo-mmio`. Implemented by `dillo` or by a device-host wrapper that
-owns the MMIO routing table.
-
-```rust
-pub trait MmioDispatcher: Send + Sync {
-    fn mmio_read(&self, addr: u64, data: &mut [u8]) -> bool;
-    fn mmio_write(&self, addr: u64, data: &[u8]) -> bool;
-}
-```
-
-`MmioDispatcher` is only the synchronous fallback path for MMIO exits that reach
-the vCPU loop. It is not the general device execution model. On Linux/KVM,
-`MmioAttachment::register_notify` may bind ioeventfd for MMIO writes so those
-notifications bypass the vCPU thread. Interrupt delivery likewise uses resolved
-`Interrupt` or `MessageInterruptDomain` handles from `MmioAttachment`; it is not
-sent through the vCPU run-loop dispatcher. HVF/WHP may return `Unsupported` for
-notify registration and use ordinary MMIO dispatch.
+`Vcpu::run` has no external MMIO callback argument.
+`Attach<Arc<dyn MmioDevice>>` registers the device's MMIO windows in
+machine-owned routing state, and vCPUs created by that machine carry whatever
+handle they need to route unresolved MMIO exits internally. On Linux/KVM,
+`MmioAttachment::register_notify` may also bind ioeventfd for MMIO writes so
+those notifications bypass the vCPU thread. Interrupt delivery likewise uses
+resolved `Interrupt` or `MessageInterruptDomain` handles from `MmioAttachment`;
+it is not sent through the vCPU run loop.
 
 ### `MmioDevice`
 
@@ -525,12 +515,13 @@ pub trait MmioDevice: Send + Sync + std::fmt::Debug {
 ```
 
 `resources()` is DTB-derived device metadata, not a hardware-enablement
-decision. `Attach<Arc<dyn MmioDevice>>` registers the declared windows, realizes
-the declared interrupt and shared-memory requirements, calls
-`MmioDevice::attach` with the resulting attachment handle, and fails closed if
-any requirement cannot be satisfied. PCI is therefore invisible to machine
-backends; a PCI host bridge is just one MMIO device with windows, shared pages,
-and interrupt requirements from their point of view.
+decision. `Attach<Arc<dyn MmioDevice>>` registers the declared windows into
+machine-owned MMIO routing state, realizes the declared interrupt and
+shared-memory requirements, calls `MmioDevice::attach` with the resulting
+attachment handle, and fails closed if any requirement cannot be satisfied. PCI
+is therefore invisible to machine backends; a PCI host bridge is just one MMIO
+device with windows, shared pages, and interrupt requirements from their point of
+view.
 
 ### `PciDevice`
 
@@ -648,11 +639,12 @@ impl MmioAttachment {
 ```
 
 KVM implements notify registration with ioeventfd so supported MMIO writes wake a
-device host without returning through the vCPU MMIO dispatcher. HVF/WHP can
-return `Unsupported`, and the transport falls back to ordinary MMIO write
-dispatch. Notify registration is an optional acceleration path. Interrupt
-requirements and shared-memory requirements come from `MmioDevice::resources()`
-and must already have been drained from the DTB by the device constructor.
+device host without returning through the vCPU thread. HVF/WHP can return
+`Unsupported`, and the machine falls back to its internal MMIO routing state for
+ordinary MMIO exits. Notify registration is an optional acceleration path.
+Interrupt requirements and shared-memory requirements come from
+`MmioDevice::resources()` and must already have been drained from the DTB by the
+device constructor.
 
 ### `InterruptController`
 
@@ -732,7 +724,8 @@ This is intentionally unresolved. The design constraints are:
 - Linux/KVM should remain able to use a process/vhost-user model;
 - HVF/WHP should remain able to use an in-process thread model;
 - event/interrupt acceleration such as KVM ioeventfd/irqfd belongs to
-  attachment services and device-host wrappers, not to the vCPU MMIO dispatcher.
+  attachment services and device-host wrappers, not to a public vCPU dispatch
+  callback.
 
 The likely home is a future device-host crate or a `dillo` module, not
 `dillo-machine-kvm`.
