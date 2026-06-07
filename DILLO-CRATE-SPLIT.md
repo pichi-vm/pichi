@@ -1,13 +1,13 @@
 # dillo crate split design
 
 Status: design target. This is not an implementation plan. It defines the crate
-boundaries and trait contracts needed for the `dillo` binary and device crates
-to have no knowledge of KVM, HVF, or WHP APIs.
+boundaries and trait contracts needed for the `dillo` binary to compose PMI,
+DTB-derived slots, devices, transports, and one host `Machine` implementation
+without exposing KVM, HVF, or WHP APIs above backend crates.
 
 ## Empirical inputs
 
-This design is derived from current code and primary specs, not from desired
-shape alone.
+This design is derived from current code and primary specs.
 
 | Fact | Evidence |
 | --- | --- |
@@ -22,140 +22,222 @@ shape alone.
 | Current `PciDevice`, `VirtioDevice`, `QueueNotifier`, and `MsixNotifier` are already separable traits, but some live in the wrong crates. | `dillo/deps/dillo-vm/src/pci.rs:23`, `dillo/deps/virtio/src/device.rs:27`, `dillo/deps/dillo-vm/deps/virtio-pci/src/transport.rs:63`, `dillo/deps/dillo-vm/deps/vm-pci/src/msix.rs:99` |
 | CI's supported platform matrix is Linux x86-64/KVM, Windows x86-64/WHP, and macOS arm64/HVF, with warnings denied and real boot tests. | `.github/workflows/ci.yml:13`, `.github/workflows/ci.yml:92`, `.github/workflows/ci.yml:100`, `.github/workflows/ci.yml:108` |
 
-## Target dependency graph
+## Target graph
 
-The final graph is acyclic and keeps backend APIs behind backend crates.
+```mermaid
+flowchart TD
+    dillo-machine --> dillo-mmio
 
-```text
-dillo
-  -> dillo-runtime
-  -> dillo-backend     (Cargo alias; package is dillo-kvm, dillo-hvf, or dillo-whp)
-  -> dillo-virtio-console / blk / net / vsock ...
+    dillo-pci --> dillo-mmio
+    dillo-pci --> vm-pci
 
-dillo-runtime
-  -> pmi, dillo-platform, dillo-core, dillo-pci, dillo-virtio, device crates
+    dillo-mmio-virtio --> dillo-mmio
+    dillo-mmio-virtio --> dillo-virtio
 
-dillo-core
-  -> pmi, dillo-platform, vm-memory, vm-pci
+    dillo-pci-virtio --> dillo-pci
+    dillo-pci-virtio --> dillo-virtio
 
-dillo-pci
-  -> dillo-core, vm-pci
+    dillo-mmio-uart --> dillo-mmio
 
-dillo-virtio
-  -> virtio, dillo-core
-  -> dillo-pci           (only with feature = "pci")
+    dillo-virtio-blk --> dillo-virtio
+    dillo-virtio-console --> dillo-virtio
+    dillo-virtio-net --> dillo-virtio
+    dillo-virtio-vsock --> dillo-virtio
 
-dillo-kvm
-  -> dillo-core, dillo-pci, dillo-virtio, kvm-ioctls, kvm-bindings, vhost backend support
+    dillo-x86 --> dillo-mmio
+    dillo-arm --> dillo-mmio
 
-dillo-hvf
-  -> dillo-core, dillo-pci, dillo-virtio, applevisor/HVF bindings
+    dillo-machine-kvm --> dillo-machine
+    dillo-machine-kvm --> dillo-mmio
+    dillo-machine-kvm -.-> dillo-x86
+    dillo-machine-kvm -.-> kvm-ioctls
+    dillo-machine-kvm -.-> kvm-bindings
 
-dillo-whp
-  -> dillo-core, dillo-pci, dillo-virtio, WHP bindings
+    dillo-machine-hvf --> dillo-machine
+    dillo-machine-hvf --> dillo-mmio
+    dillo-machine-hvf -.-> dillo-arm
+    dillo-machine-hvf -.-> applevisor
+
+    dillo-machine-whp --> dillo-machine
+    dillo-machine-whp --> dillo-mmio
+    dillo-machine-whp -.-> dillo-x86
+    dillo-machine-whp -.-> whp-api
+
+    dillo --> pmi
+    dillo --> dillo-platform
+    dillo --> dillo-machine
+    dillo --> dillo-mmio
+    dillo --> dillo-pci
+    dillo --> dillo-mmio-virtio
+    dillo --> dillo-pci-virtio
+    dillo --> dillo-mmio-uart
+    dillo --> dillo-virtio-blk
+    dillo --> dillo-virtio-console
+    dillo --> dillo-virtio-net
+    dillo --> dillo-virtio-vsock
+
+    dillo -.-> dillo-machine-kvm
+    dillo -.-> dillo-machine-hvf
+    dillo -.-> dillo-machine-whp
 ```
 
-Cargo, not source cfg, selects the backend:
+Dashed edges are target-selected or architecture-selected dependencies. The
+important dependency rule is stronger than the picture: backend crates never
+depend on PCI, virtio transports, UART, or concrete devices; device crates never
+depend on machine crates.
 
-```toml
-[target.'cfg(target_os = "linux")'.dependencies]
-dillo-backend = { package = "dillo-kvm", path = "deps/dillo-kvm" }
+## Knowledge boundaries
 
-[target.'cfg(target_os = "macos")'.dependencies]
-dillo-backend = { package = "dillo-hvf", path = "deps/dillo-hvf" }
+`dillo` is the main user experience and the only composition point. It knows:
 
-[target.'cfg(target_os = "windows")'.dependencies]
-dillo-backend = { package = "dillo-whp", path = "deps/dillo-whp" }
-```
+- PMI and dillo's PMI-loading module;
+- the base DTB survey from `dillo-platform`;
+- every concrete device crate dillo can instantiate;
+- every transport adapter crate dillo can use;
+- the `dillo-machine::Machine` trait;
+- exactly one selected backend package through a Cargo target dependency alias.
 
-`dillo` source imports only `dillo_backend::Backend`. It never imports
-`dillo_kvm`, `dillo_hvf`, `dillo_whp`, `kvm_ioctls`, `applevisor`, or WHP
-bindings.
+`dillo` must not know KVM, HVF, WHP, or raw architecture substrate details. It
+may use target dependencies to bind a generic crate name, for example
+`dillo_machine_backend`, to `dillo-machine-kvm`, `dillo-machine-hvf`, or
+`dillo-machine-whp`.
+
+Machine backend crates know:
+
+- `dillo-machine`;
+- `dillo-mmio`;
+- their host OS hypervisor API;
+- optional architecture substrate crates such as `dillo-x86` or `dillo-arm`.
+
+Machine backend crates do not know PCI, virtio, UART, or concrete devices. A
+backend creates a VM, creates/runs vCPUs, attaches opaque `MmioDevice`s, and
+provides interrupt/event plumbing through `dillo-mmio` types.
+
+Device crates know their own device protocol and the narrow traits they
+implement. Virtio devices know `dillo-virtio`. MMIO devices know `dillo-mmio`.
+PCI transport devices know `dillo-pci`. Devices do not know `dillo-machine`,
+PMI, DTB, KVM, HVF, or WHP.
 
 ## Crate roles
 
-`dillo` is the binary crate. It parses CLI, initializes logging, chooses device
-occupancy policy, and calls `dillo_runtime::run::<dillo_backend::Backend>(...)`.
-It contains no OS cfg except non-backend CLI affordances that are inherently
-host-specific, and no hypervisor API imports.
+`dillo-machine` owns the host-neutral VM contract. Its main trait is
+`Machine`, not `Vm`, to match the role: one realized virtual machine with vCPU
+lifecycle, guest memory, MMIO attachment, and backend-neutral run outcomes.
 
-`dillo-runtime` is the generic launcher. It parses PMI, surveys the DTB,
-validates ownership coverage, builds memory/overlay plans, plugs devices into
-DTB-declared slots, and runs the supervisor against a generic `Vm`. It may know
-PMI, DTB, dillo traits, and device crates. It must not know KVM, HVF, WHP, or
-their handle types.
+`dillo-mmio` owns `MmioDevice`, MMIO windows, wired interrupt handles, MSI/event
+plumbing that MMIO devices or transports need, and the backend-neutral I/O event
+registration shape. It does not own PCI, virtio, or machine construction.
 
-`dillo-core` owns the cross-crate contracts: `Vm`, `Vcpu`, `IoDevice`,
-interrupt handles, memory plans, I/O windows, run outcomes, and errors. It
-contains no backend implementation.
+`dillo-pci` owns the concrete `PciRoot` and the `PciDevice` trait. `PciRoot`
+implements `MmioDevice`, owns the ECAM window plus BAR windows for one declared
+PCI host bridge, and can attach `PciDevice`s into DTB-declared slot capacity.
+It may use `vm-pci` for reusable PCI config/MSI-X structures.
+
+`dillo-pci-virtio` owns `VirtioPciDevice`, the concrete adapter from
+`dillo-virtio::VirtioDevice` to `dillo-pci::PciDevice`.
+
+`dillo-mmio-virtio` owns the concrete adapter from
+`dillo-virtio::VirtioDevice` to `dillo-mmio::MmioDevice`.
+
+`dillo-virtio` owns the transport-neutral virtio device trait and queue,
+feature, kick, and activation types shared by all virtio transports and devices.
+
+`dillo-virtio-*` crates own concrete virtio device implementations. They expose
+concrete inherent constructors. They do not parse DTB and do not decide slot
+occupancy.
+
+`dillo-mmio-uart` owns a concrete MMIO 16550-compatible UART device. It exposes
+an inherent constructor that takes already-resolved MMIO window and interrupt
+inputs.
+
+`dillo-x86` and `dillo-arm` are optional architecture substrate crates for
+machine-owned architecture machinery such as IOAPIC, GIC, syscon, PSCI, and
+architecture-specific interrupt decoding. Backend crates may depend on these as
+appropriate. `dillo` should not directly manipulate their internals.
 
 `dillo-platform` remains the DTB survey and resource-planning crate. It consumes
 base DTB and overlay rules and returns typed platform facts with provenance. It
-does not know backend crates or device implementations.
+does not know backend crates or concrete device implementations.
 
-`dillo-pci` owns `PciRoot`, `PciDevice`, PCI config/BAR routing, and PCI slot
-attachment. It is independent of backend crates. `PciRoot` is the single object
-that owns every guest address range related to a declared PCI host bridge:
-ECAM, BAR windows, MSI-X table/PBA BARs, and any x86 legacy config-port decoder
-needed to access the same config space.
+`pmi` is the upstream PMI spec/data crate. Dillo-specific PE parsing, resource
+caps, and defensive validation can remain a `dillo` module unless there is a
+clear reason to publish it as a separate crate.
 
-`dillo-virtio` owns transport adapters. Base feature exposes `VirtioMmio`;
-feature `pci` adds `dillo-pci` and exposes `VirtioPci`. Virtio device logic is
-in device crates and implements `virtio::VirtioDevice` once.
+## DTB consumption
 
-`dillo-kvm`, `dillo-hvf`, and `dillo-whp` implement `dillo_core::Vm` and
-backend-owned support traits. They are the only crates allowed to depend on
-OS hypervisor APIs.
+Concrete devices have inherent constructors. DTB consumption is not in device
+crates.
+
+`dillo` owns a local trait such as:
+
+```rust
+trait FromDtb<T> {
+    type Error;
+
+    fn from_dtb(input: T) -> Result<Self, Self::Error>
+    where
+        Self: Sized;
+}
+```
+
+`dillo` implements this trait for concrete device and adapter types because
+only `dillo` knows all inputs at once: PMI, the surveyed DTB, launch policy,
+selected transport, selected `Machine`, and every concrete device type it can
+instantiate. This is intentionally not an independent crate.
+
+The rule is fail closed: if a DTB node/property is not consumed by exactly one
+owner, launch fails. If dillo wants to plug a device but the base DTB did not
+declare a compatible slot, launch fails. If required setup data could have been
+in the DTB but is absent, dillo fails or the arma device model is extended; it
+does not substitute guessed guest-visible hardware.
 
 ## Trait inventory
 
-Every trait that crosses a crate boundary is listed here. Traits not listed are
-private implementation detail.
+Every trait intended to cross a crate boundary is listed here. Traits not listed
+are implementation details until proven otherwise.
 
-### `Vm`
+### `Machine`
 
-Owned by `dillo-core`. Implemented by `dillo-kvm`, `dillo-hvf`, and `dillo-whp`.
-Consumed by `dillo-runtime`.
+Owned by `dillo-machine`. Implemented by `dillo-machine-kvm`,
+`dillo-machine-hvf`, and `dillo-machine-whp`. Consumed by `dillo`.
 
 ```rust
-pub enum DeviceModel {
-    Process,
-    Thread,
-}
-
-pub trait Vm: Sized + Send + Sync + 'static {
-    const DEVICE_MODEL: DeviceModel;
-
+pub trait Machine: Sized + Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
     type Vcpu: Vcpu<Error = Self::Error>;
     type VcpuSeed: Send + 'static;
-    type QueueNotifier: QueueNotifier;
+    type IoEventRegistrar: IoEventRegistrar;
     type MsiNotifier: vm_pci::MsixNotifier + 'static;
 
-    fn new(opts: VmOptions) -> Result<Self, Self::Error>;
+    const DEVICE_MODEL: DeviceModel;
+
+    fn new(opts: MachineOptions) -> Result<Self, Self::Error>;
     fn guest_memory(&self) -> GuestMemory;
-    fn attach_io(&mut self, dev: Arc<dyn IoDevice>) -> Result<(), Self::Error>;
-    fn queue_notifier(&self) -> Self::QueueNotifier;
+    fn attach_mmio(&mut self, device: Arc<dyn MmioDevice>) -> Result<(), Self::Error>;
+    fn io_event_registrar(&self) -> Self::IoEventRegistrar;
     fn wired_irq(&self, source: InterruptSource) -> Result<Interrupt, Self::Error>;
-    fn msi_notifier(&self, source: MsiSource, vectors: u16)
-        -> Result<Arc<Self::MsiNotifier>, Self::Error>;
+    fn msi_notifier(
+        &self,
+        source: MsiSource,
+        vectors: u16,
+    ) -> Result<Arc<Self::MsiNotifier>, Self::Error>;
     fn vcpu_seeds(&self, boot: BootState) -> Result<Vec<Self::VcpuSeed>, Self::Error>;
     fn create_vcpu(&self, seed: Self::VcpuSeed) -> Result<Self::Vcpu, Self::Error>;
 }
 ```
 
-`VmOptions` is backend-neutral input: PMI action plan, DTB-derived `Machine`,
-memory plan, vCPU count, CPU profile, and launch sections. It does not contain
-KVM fd, HVF GIC handles, WHP partition handles, raw GSIs, or raw SPIs.
+`MachineOptions` is backend-neutral input derived by `dillo`: memory plan,
+vCPU count, CPU profile, launch sections, and machine-owned substrate facts
+from the surveyed DTB. It must not contain KVM fds, HVF GIC handles, WHP
+partition handles, raw GSIs, raw SPIs, PCI devices, or virtio devices.
 
-`DEVICE_MODEL` is the stable process/thread policy. Linux/KVM returns
-`Process`; HVF/WHP return `Thread`. Runtime may use the const for logging and
-policy checks, but concrete spawning behavior is provided by a backend-selected
-`DeviceHost` type so non-Linux builds do not depend on vhost crates.
+`DEVICE_MODEL` records process vs thread device-host policy. The unresolved
+part is where the process/thread host wrapper lives; it must not make backend
+crates depend on device crates.
 
 ### `Vcpu`
 
-Owned by `dillo-core`. Implemented by backend crates.
+Owned by `dillo-machine`. Implemented by backend crates.
 
 ```rust
 pub trait Vcpu: Send + 'static {
@@ -165,15 +247,15 @@ pub trait Vcpu: Send + 'static {
 }
 ```
 
-`Vcpu::run` returns backend-neutral stops: exit code, reboot, halted secondary,
-or fatal unknown exit. MMIO and PIO exits are dispatched through `ExitHandler`
-inside `run` when the host API requires in-call emulation, and after `run`
-otherwise. This hides KVM `VcpuExit`, HVF syndrome decoding, and WHP emulator
-callbacks from runtime and device crates.
+`Vcpu::run` hides KVM `VcpuExit`, HVF syndrome decoding, and WHP emulator
+callbacks from dillo and devices. MMIO and PIO exits dispatch through
+`ExitHandler`.
 
 ### `ExitHandler`
 
-Owned by `dillo-core`. Implemented by `dillo-runtime`.
+Owned by `dillo-machine` or `dillo-mmio`; final placement depends on whether
+PIO stays in the machine run-loop contract or moves into an I/O dispatcher.
+Implemented by `dillo`.
 
 ```rust
 pub trait ExitHandler: Send + Sync {
@@ -185,45 +267,37 @@ pub trait ExitHandler: Send + Sync {
 }
 ```
 
-PIO is present here because some host APIs expose PIO exits. It is not a device
-model feature. A PIO handler is installed only when a DTB-declared device
-exposes an architectural PIO alias, currently the x86 PCI config-port alias for
-the declared PCI host bridge.
+PIO is present because some host APIs expose PIO exits. PIO is not a guest
+device model feature. It is enabled only for an alias derived from declared
+platform hardware, such as an x86 PCI config-port alias for a declared PCI host
+bridge.
 
-### `IoDevice`
+### `MmioDevice`
 
-Owned by `dillo-core`. This replaces the current narrow name `MmioDevice`
-because a single registered object may own multiple address spaces.
+Owned by `dillo-mmio`. Implemented by MMIO devices and by `dillo-pci::PciRoot`.
 
 ```rust
-pub enum AddressSpace {
-    Mmio,
-    Pio,
-}
-
-pub struct IoWindow {
-    pub space: AddressSpace,
+pub struct MmioWindow {
     pub name: &'static str,
     pub base: u64,
     pub size: u64,
 }
 
-pub trait IoDevice: Send + Sync + std::fmt::Debug {
-    fn windows(&self) -> Vec<IoWindow>;
-    fn read(&self, window: IoWindow, offset: u64, data: &mut [u8]) -> bool;
-    fn write(&self, window: IoWindow, offset: u64, data: &[u8]) -> bool;
+pub trait MmioDevice: Send + Sync + std::fmt::Debug {
+    fn windows(&self) -> Vec<MmioWindow>;
+    fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> bool;
+    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> bool;
 }
 ```
 
-All guest-visible address registration goes through `Vm::attach_io`. Ordinary
-MMIO devices return only `AddressSpace::Mmio` windows. `PciRoot` returns ECAM
-and BAR MMIO windows, and on x86 may also return CF8/CFC PIO windows as aliases
-onto the same config accessor. Those PIO windows are enabled only because the
-DTB declared the PCI host bridge; they are not a separate hardware decision.
+`Machine::attach_mmio` accepts only `MmioDevice`. PCI is therefore invisible to
+machine backends; a PCI host bridge is just one MMIO device from their point of
+view.
 
 ### `PciDevice`
 
-Owned by `dillo-pci`. Implemented by PCI transports and future PCI devices.
+Owned by `dillo-pci`. Implemented by `dillo-pci-virtio::VirtioPciDevice` and
+future PCI endpoint devices.
 
 ```rust
 pub trait PciDevice: Send + std::fmt::Debug {
@@ -238,31 +312,26 @@ pub trait PciDevice: Send + std::fmt::Debug {
 
 ### `PciRoot`
 
-`PciRoot` is a type, not a trait. It is owned by `dillo-pci` and implements
-`IoDevice`. Construction consumes DTB-derived PCI facts:
+`PciRoot` is a concrete type owned by `dillo-pci`, not a trait. It implements
+`MmioDevice` and attaches `PciDevice`s.
 
 ```rust
 pub struct PciRootOptions {
-    pub ecam: IoWindow,
+    pub ecam: MmioWindow,
     pub slots: u8,
     pub bar_window: AddressRange,
     pub msi: MsiSource,
-    pub legacy_config_io: Option<LegacyConfigIo>,
 }
 ```
 
-Runtime asks for one `PciRoot`, registers devices into slots, then attaches that
-single object to the VM. The VM receives no separate BAR registrations.
+One `PciRoot` instance owns all guest MMIO windows for the declared PCI host:
+ECAM, BAR windows, and MSI-X table/PBA BARs that belong to attached devices.
+The backend receives only that single `MmioDevice`.
 
 ### `VirtioDevice`
 
-Owned by `virtio`. Implemented by device crates (`dillo-virtio-console`,
-`dillo-virtio-blk`, `dillo-virtio-net`, `dillo-virtio-vsock`, etc.).
-
-The existing trait shape is mostly right: device type, queue count, queue sizes,
-features, config read/write, and `activate`. The required change is that
-`activate` receives resolved queue interrupts instead of making devices know
-how to look up backend interrupt state.
+Owned by `dillo-virtio`. Implemented by concrete `dillo-virtio-*` device
+crates.
 
 ```rust
 pub trait VirtioDevice: Send {
@@ -276,29 +345,28 @@ pub trait VirtioDevice: Send {
 }
 ```
 
-`VirtioActivate` contains `GuestMemory`, queues, kicks, and resolved interrupt
-handles. It contains no KVM fd, WHP interrupt controller, or HVF GIC handle.
+`VirtioActivate` contains guest memory, queues, kicks, and resolved interrupt
+handles. It contains no machine handle and no OS backend handle.
 
-### `QueueNotifier`
+### `IoEventRegistrar`
 
-Owned by `dillo-core` or `dillo-virtio` and implemented by backend crates.
+Owned by `dillo-mmio`. Implemented by backend crates and vended through
+`Machine`.
 
 ```rust
-pub trait QueueNotifier: Send {
-    fn register(&mut self, queue_index: usize, addr: u64, kick: &virtio::Kick)
-        -> Result<(), QueueNotifyError>;
+pub trait IoEventRegistrar: Send {
+    fn register(&mut self, event: IoEvent) -> Result<(), IoEventError>;
     fn unregister_all(&mut self);
 }
 ```
 
-KVM implements this with ioeventfd. HVF/WHP use a no-op or direct-kick
-implementation. The trait is consumed by `dillo-virtio` transports, not by
-device crates.
+KVM implements this with ioeventfd. HVF/WHP can use a no-op or direct-kick path.
+The trait is consumed by transport adapters, not by concrete devices.
 
 ### `Interrupt`
 
-Owned by `dillo-core`. Constructed by backend crates through `Vm::wired_irq`.
-Consumed by transports and simple devices such as serial.
+Owned by `dillo-mmio`. Constructed by machine backends from DTB-derived
+interrupt sources. Consumed by transports and simple MMIO devices such as UART.
 
 ```rust
 pub trait InterruptLine: Send + Sync + std::fmt::Debug {
@@ -312,113 +380,108 @@ pub struct Interrupt(Arc<dyn InterruptLine>);
 
 `signal` covers edge backends and pulse-style users. `set_level` is required
 for self-leveling devices such as a 16550 on level-triggered backends. A backend
-that cannot represent deassert returns `UnsupportedDeassert`; transports that
-need deassert must fail closed on that backend.
+that cannot represent deassert returns `UnsupportedDeassert`; devices or
+transports that need deassert must fail closed on that backend.
 
 ### `MsixNotifier`
 
-Owned by `vm-pci`. Kept as the PCI MSI-X callback trait. Backend crates
-implement it. `dillo-pci` and `dillo-virtio` consume it through
-`Arc<dyn MsixNotifier>` or an associated concrete notifier from `Vm`.
+Owned by `vm-pci` unless upstreaming changes that placement. Backend crates
+implement it; `dillo-pci-virtio` consumes it when constructing
+`VirtioPciDevice`.
 
-### `DeviceHost`
+## Process vs thread model
 
-Owned by `dillo-core` or `dillo-device`. Selected by backend associated type.
-It makes process vs thread execution explicit without source cfg in runtime.
+This is intentionally unresolved. The design constraints are:
 
-```rust
-pub trait DeviceHost: Send + Sync + 'static {
-    const MODEL: DeviceModel;
+- process/thread hosting must not make backend crates depend on virtio or
+  concrete devices;
+- concrete devices must not branch on `target_os`;
+- `dillo` may select a host wrapper based on `Machine::DEVICE_MODEL`;
+- Linux/KVM should remain able to use a process/vhost-user model;
+- HVF/WHP should remain able to use an in-process thread model.
 
-    fn spawn_virtio(
-        device: Arc<Mutex<Box<dyn virtio::VirtioDevice>>>,
-        ctx: DeviceSpawn,
-    ) -> Result<DeviceHandle, DeviceError>;
-}
-```
-
-KVM selects a process host backed by vhost-user. HVF/WHP select an in-process
-thread host. Device crates implement `VirtioDevice`; they do not choose the host
-model.
-
-## DTB ownership and slot filling
-
-`dillo-runtime` performs a total DTB survey before creating a backend VM. Each
-node/property has exactly one owner:
-
-- `dillo-platform` parses and reports the base platform and overlay constraints.
-- The selected `Vm` claims platform substrate: interrupt controllers, timer,
-  CPU bringup, and power/reset semantics.
-- `dillo-pci` claims a DTB-declared PCI host bridge and its slot capacity.
-- `dillo-virtio` claims DTB-declared virtio-mmio transport slots.
-- Device crates claim no DTB nodes. They occupy slots selected by runtime policy.
-
-If a node/property is unclaimed, launch fails. If runtime wants to enable a
-device but no declared slot exists, launch fails. If a property needed for
-backend setup is absent from the DTB, launch fails or the arma device model is
-extended; dillo must not substitute a guessed value.
+The likely home is a future device-host crate or a `dillo` module, not
+`dillo-machine-kvm`.
 
 ## Source cfg policy
 
 Allowed cfg locations:
 
-- Cargo target dependencies selecting `dillo-backend`.
-- Backend crates internally, for architecture details inside one backend.
-- Tests that require a specific host API.
+- Cargo target dependencies selecting the backend package behind a generic
+  dependency name;
+- backend crates internally, for host OS and architecture details;
+- architecture substrate crates internally;
+- tests that require a specific host API.
 
 Forbidden cfg locations:
 
-- `dillo` choosing KVM/HVF/WHP names in source.
-- device crates changing behavior by `target_os`.
-- `dillo-runtime` importing OS hypervisor APIs.
-- `dillo-pci` or `dillo-virtio` importing OS hypervisor APIs.
+- `dillo` choosing KVM/HVF/WHP APIs in source;
+- concrete device crates changing behavior by `target_os`;
+- backend crates depending on `dillo-pci`, `dillo-pci-virtio`,
+  `dillo-mmio-virtio`, `dillo-mmio-uart`, `dillo-virtio`, or concrete device
+  crates;
+- transport/device crates importing OS hypervisor APIs.
 
-Architecture variation is expressed through DTB facts and backend internals.
-Runtime may branch on parsed PMI machine kind or DTB-compatible strings, but it
-must not use architecture cfg to decide what guest hardware exists.
+Architecture variation is expressed through DTB facts and backend or substrate
+internals. `dillo` may branch on parsed PMI machine kind or surveyed DTB facts,
+but it must not use architecture cfg to decide what guest hardware exists.
 
-## Acceptance criteria for the split
+## Rust-vmm and upstreaming
+
+Current workspace evidence:
+
+- `vm-pci` contains Firecracker-derived code and may be a candidate for cleanup
+  or upstream discussion.
+- `virtio`, `virtio-pci`, `vm-pci`, and `vhost-backend` were migrated from an
+  earlier local dillo tree.
+- the workspace uses rust-vmm crates such as `vm-memory`, `vmm-sys-util`,
+  `kvm-ioctls`, `kvm-bindings`, `vhost`, `vhost-user-backend`, and
+  `virtio-queue`.
+
+The split should keep rust-vmm-like reusable pieces small and dependency-light
+so upstreaming is possible later. Reusable protocol crates should not depend on
+dillo application policy, PMI, DTB, or machine backend crates.
+
+## Acceptance criteria
 
 This design is satisfied only when all of the following can be verified:
 
 1. `dillo/src` contains no imports or references to KVM, HVF, WHP, or backend
-   crate package names other than `dillo_backend`.
-2. `dillo-runtime`, `dillo-pci`, `dillo-virtio`, and virtio device crates do not
-   depend on `kvm-*`, `applevisor`/HVF bindings, WHP bindings, or
-   `dillo-hypervisor`.
-3. `dillo-kvm`, `dillo-hvf`, and `dillo-whp` are the only crates with direct
-   OS hypervisor API dependencies.
-4. All cross-crate traits in this document are public from their owning crates;
-   previous `pub(crate)` attach traits have moved out of the monolith.
-5. `PciRoot` is registered with the VM as one `IoDevice` and owns ECAM, BAR
-   windows, MSI-X BARs, and any legacy config alias for that declared host
-   bridge.
-6. Device crates compile and test without any backend crate dependency.
-7. Runtime can build the same device graph using only DTB-derived slot facts and
-   the selected backend's `Vm` implementation.
-8. Local verification passes:
+   crate package names other than the generic target-selected backend alias.
+2. Backend crates depend only on `dillo-machine`, `dillo-mmio`, optional
+   architecture substrate crates, and host OS hypervisor APIs.
+3. Device crates do not depend on `dillo-machine`, backend crates, PMI, or DTB.
+4. `dillo-pci` owns `PciRoot` and `PciDevice`; `PciRoot` implements
+   `MmioDevice`.
+5. `dillo-pci-virtio` owns `VirtioPciDevice`, the adapter from `VirtioDevice`
+   to `PciDevice`.
+6. `dillo-mmio-virtio` owns the adapter from `VirtioDevice` to `MmioDevice`.
+7. `dillo` owns DTB consumption glue, including local `FromDtb` impls for all
+   concrete devices and transports.
+8. Every DTB node/property is consumed by exactly one owner, or launch fails.
+9. Local verification passes:
    - `cargo fmt --all -- --check`
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace` on Linux
    - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler` on Windows and macOS
    - target checks for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, and `aarch64-apple-darwin`
-9. CI passes all three supported platform lanes, including real boot tests.
+10. CI passes all three supported platform lanes, including real boot tests.
 
 ## Current-state gaps
 
 The current tree does not yet meet this design:
 
-- `dillo-vm` is still a monolith containing runtime, backend adapters, PCI,
-  MMIO bus, UART, syscon, IOAPIC, and backend device glue.
-- `MmioDevice` and `PciDevice` are `pub(crate)`, so external device and backend
-  crates cannot implement the final boundary.
-- `BackendVm` is one trait shape now, but it is still too wide and contains
-  optional methods that should become capability traits or backend-owned helper
-  types.
-- `dillo-vm` still imports `dillo_hypervisor::Vm` and `Vcpu` directly in the
-  launcher.
-- `virtio-pci::QueueNotifier` is transport-owned today; the final design needs
-  it at the core/transport boundary so backend crates implement it without
-  leaking KVM fd details.
+- `dillo-vm` is still a monolith containing launch orchestration, backend
+  adapters, MMIO bus, PCI root, UART, syscon, IOAPIC, PSCI, and backend device
+  glue.
+- `dillo-hypervisor` is one cfg-selected crate rather than separate
+  `dillo-machine-kvm`, `dillo-machine-hvf`, and `dillo-machine-whp` crates.
+- `MmioDevice` and `PciDevice` are `pub(crate)` inside `dillo-vm`.
+- `PciDevice` is not yet in a standalone `dillo-pci` crate.
+- `VirtioPciDevice` still lives in `virtio-pci`; final naming and upstreaming
+  need to decide whether that crate becomes `dillo-pci-virtio` or remains a
+  rust-vmm-style transport crate with a different boundary.
+- `virtio-pci::QueueNotifier` is transport-owned and virtio-shaped today; the
+  final design needs backend-neutral I/O event registration in `dillo-mmio`.
 - `dillo-device` contains an older process/thread abstraction that is not yet
   the active `VirtioDevice` activation contract.
 
