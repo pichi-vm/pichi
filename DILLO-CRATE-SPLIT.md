@@ -260,13 +260,22 @@ with the selected `Machine::DEVICE_MODEL`; the attachment consumes that request
 to start or connect the host. In both cases, the machine has already registered
 MMIO routing before vCPUs run.
 
-`run_supervisor` owns VM lifecycle. vCPU workers report `VcpuStop` outcomes to
-the supervisor. A guest poweroff, guest reset, fatal vCPU error, or fatal device
-host error becomes a single supervisor decision. The supervisor then requests
-all remaining vCPUs to stop, requests every device host to shut down, joins the
-device hosts, joins the vCPU workers, and only then lets machine-owned routing
-and memory state drop. Device hosts must not independently tear down
-guest-visible state while vCPUs may still access it.
+`run_supervisor` owns VM lifecycle. vCPU worker threads run synchronous
+`Vcpu::run()` calls and report `VcpuStop` outcomes to the supervisor over normal
+Rust channels. A guest poweroff is handled in this order:
+
+1. One vCPU worker reports `VcpuStop::GuestPoweroff`.
+2. The supervisor asks the machine run control to make every still-running vCPU
+   leave `Vcpu::run()`.
+3. The supervisor joins all vCPU workers. At this point no guest CPU can issue
+   new MMIO.
+4. The supervisor requests device-host shutdown through each `MmioDeviceHandle`.
+5. The supervisor joins all device hosts.
+6. Machine-owned MMIO routing, interrupt routing, and memory state may drop.
+
+Device hosts must not independently tear down guest-visible state while any vCPU
+may still access it. Device-host shutdown is therefore after vCPU quiescence in
+the normal poweroff path.
 
 ## Devtree consumption
 
@@ -375,6 +384,21 @@ pub trait Machine: Sized + Send + Sync + 'static {
     type Memory: Send + 'static;
 
     const DEVICE_MODEL: DeviceModel;
+
+    fn run_control(&self) -> MachineRunControl;
+}
+
+#[derive(Clone)]
+pub struct MachineRunControl {
+    // opaque
+}
+
+impl MachineRunControl {
+    pub fn request_vcpu_exit(&self) -> Result<(), MachineRunControlError>;
+}
+
+pub struct MachineRunControlError {
+    // opaque
 }
 ```
 
@@ -487,18 +511,7 @@ Owned by `dillo-machine`. Implemented by backend crates.
 pub trait Vcpu: Send + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn control(&self) -> VcpuControl;
-
     fn run(&mut self) -> Result<VcpuStop, Self::Error>;
-}
-
-#[derive(Clone)]
-pub struct VcpuControl {
-    // opaque
-}
-
-impl VcpuControl {
-    pub fn request_stop(&self) -> Result<(), VcpuStopRequestError>;
 }
 
 pub enum VcpuStop {
@@ -509,10 +522,6 @@ pub enum VcpuStop {
     Stopped,
 
     Fatal,
-}
-
-pub struct VcpuStopRequestError {
-    // opaque
 }
 ```
 
@@ -535,10 +544,14 @@ attachment; it is not sent through the vCPU run loop.
 Architecture-specific shutdown triggers such as PSCI system-off, syscon
 poweroff, ACPI power button, or backend fatal exits are decoded inside backend
 or architecture-substrate code and surfaced as `VcpuStop`. The supervisor owns
-the fan-out: it uses `VcpuControl::request_stop` for other vCPUs and
-`MmioDeviceHandle::shutdown` for device hosts, then joins all workers. This
-keeps shutdown policy out of devices and out of backend-specific vCPU exit
-types.
+the fan-out. It uses `MachineRunControl::request_vcpu_exit` to make outstanding
+synchronous `Vcpu::run()` calls return, then joins every vCPU worker before
+shutting down device hosts. This keeps shutdown policy out of devices and out of
+backend-specific vCPU exit types.
+
+`MachineRunControl` is not cancellation of arbitrary Rust work. It is the
+backend's VM-wide vCPU kick/exit mechanism. If a backend cannot make a blocked
+vCPU leave `run()`, it cannot implement reliable guest poweroff for this model.
 
 ### `MmioDevice`
 
