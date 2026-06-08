@@ -573,7 +573,7 @@ CI verification:
 
 ## Stage 10 - Implement vCPU stop control
 
-Status: deferred; divergence recorded.
+Status: partially complete; remaining backend refinements recorded.
 
 Goal: make guest poweroff reliably stop all vCPU worker threads on KVM, WHP, and
 HVF.
@@ -624,7 +624,8 @@ Remaining divergence:
 
 ## Stage 11 - Implement process/thread device host attachment
 
-Status: deferred; divergence recorded.
+Status: partially complete; remaining host-input/process-order divergence
+recorded.
 
 Goal: make `MmioAttachment::spawn` the single backend-owned launch/connect point
 for long-lived device hosts.
@@ -694,22 +695,25 @@ capabilities.
 Process:
 - Add backend-owned shared/private page tracking.
 - Implement `SharedMemory::region()` as the dynamic runtime claim API used by
-  virtio queues and device DMA.
-- Ensure region claims succeed only inside machine-granted guest-RAM/DMA limits
-  and only for pages the backend currently tracks as shared.
+  virtio queues and descriptor payloads after the guest supplies GPAs through
+  the virtio channel.
+- Ensure region claims succeed only inside machine-granted guest RAM, filtered
+  by any DTB-declared DMA constraints that dillo explicitly supports, and only
+  for pages the backend currently tracks as shared.
 - Treat DTB `dma-ranges`, IOMMU, or restricted-DMA properties as constraints
   only when present; do not require a DTB-defined virtio buffer aperture.
-- Route guest shared/private conversion exits or hypercalls inside the backend.
+- Route guest shared/private conversion exits or hypercalls inside the backend
+  so existing shared-memory capabilities observe the updated page state.
 - On KVM, add guest-private memory support with the appropriate memory APIs.
-- For standard VMs, implement the same API over ordinary mapped memory without
-  exposing a whole-guest-memory accessor.
+- For standard VMs, implement the same runtime-claim API over ordinary mapped
+  memory without exposing a whole-guest-memory accessor to portable devices.
 
 Success criteria:
 - `VirtioActivate` no longer gives devices `GuestMemoryMmap`.
 - Virtio descriptor, avail, used, and buffer access goes through
   `SharedMemory::region()`.
-- A descriptor pointing outside the machine-granted DMA/shared-memory limits
-  fails.
+- A descriptor pointing outside machine-granted RAM, or outside an explicitly
+  supported DTB-declared DMA constraint, fails.
 - A descriptor pointing to private memory fails in CC mode.
 - Default local verification and Linux target checks pass.
 
@@ -754,13 +758,16 @@ Completed changes:
 - Removed the Linux vhost-user memory export from portable `VirtioActivate`;
   the Linux `dillo-vm` vhost-user frontend now owns the `SET_MEM_TABLE` memory
   export directly.
+- Added a cloneable `SharedMemoryState` so machine backends can update
+  shared/private ranges while existing attachment-scoped capabilities enforce
+  the current state at runtime.
 
 Remaining divergence:
 - vhost-user devices still use their backend-specific whole-memory protocol
   path.
 - KVM, HVF, and WHP standard-VM attachments treat all mapped guest RAM as
   currently shared. Confidential backends still need backend-owned
-  shared/private page tracking.
+  conversion-exit handling and guest-private memory setup.
 
 ## Stage 13 - Resolve explicit DMA constraints in DTB/device model
 

@@ -7,6 +7,7 @@
 use std::process::Child;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
@@ -46,6 +47,37 @@ impl AddressRange {
             return false;
         };
         base >= self.base && end <= container_end
+    }
+
+    fn end(&self) -> Option<u64> {
+        self.base.checked_add(self.size)
+    }
+
+    fn subtract(&self, removed: AddressRange) -> Vec<AddressRange> {
+        let Some(end) = self.end() else {
+            return vec![*self];
+        };
+        let Some(removed_end) = removed.end() else {
+            return vec![*self];
+        };
+        if removed_end <= self.base || removed.base >= end {
+            return vec![*self];
+        }
+
+        let mut remaining = Vec::with_capacity(2);
+        if removed.base > self.base {
+            remaining.push(AddressRange {
+                base: self.base,
+                size: removed.base - self.base,
+            });
+        }
+        if removed_end < end {
+            remaining.push(AddressRange {
+                base: removed_end,
+                size: end - removed_end,
+            });
+        }
+        remaining
     }
 }
 
@@ -228,6 +260,47 @@ pub trait SharedMemory: Send + Sync {
     fn region(&self, range: SharedRange) -> Result<SharedRegion, SharedMemoryError>;
 }
 
+/// Backend-owned shared/private page state for one memory capability.
+#[derive(Debug, Clone, Default)]
+pub struct SharedMemoryState {
+    shared: Arc<RwLock<Vec<AddressRange>>>,
+}
+
+impl SharedMemoryState {
+    pub fn new(shared: Vec<AddressRange>) -> Self {
+        Self {
+            shared: Arc::new(RwLock::new(shared)),
+        }
+    }
+
+    pub fn set_shared_ranges(&self, shared: Vec<AddressRange>) {
+        *self.shared.write().expect("shared-memory state poisoned") = shared;
+    }
+
+    pub fn mark_shared(&self, range: AddressRange) {
+        self.shared
+            .write()
+            .expect("shared-memory state poisoned")
+            .push(range);
+    }
+
+    pub fn mark_private(&self, range: AddressRange) {
+        let mut shared = self.shared.write().expect("shared-memory state poisoned");
+        *shared = shared
+            .iter()
+            .flat_map(|existing| existing.subtract(range))
+            .collect();
+    }
+
+    fn contains(&self, base: u64, size: u64) -> bool {
+        self.shared
+            .read()
+            .expect("shared-memory state poisoned")
+            .iter()
+            .any(|shared| shared.contains(base, size))
+    }
+}
+
 /// Standard-VM shared-memory capability over mapped guest RAM.
 ///
 /// Confidential backends may use a different implementation that updates
@@ -237,7 +310,7 @@ pub struct MappedSharedMemory {
     memory: GuestMemoryMmap,
     limits: Vec<AddressRange>,
     access: SharedAccess,
-    shared: Vec<AddressRange>,
+    shared: SharedMemoryState,
 }
 
 impl MappedSharedMemory {
@@ -246,7 +319,7 @@ impl MappedSharedMemory {
             memory,
             limits: vec![requirement.range],
             access: requirement.access,
-            shared: vec![requirement.range],
+            shared: SharedMemoryState::new(vec![requirement.range]),
         }
     }
 
@@ -255,7 +328,7 @@ impl MappedSharedMemory {
         Self {
             memory,
             access,
-            shared: limits.clone(),
+            shared: SharedMemoryState::new(limits.clone()),
             limits,
         }
     }
@@ -264,6 +337,19 @@ impl MappedSharedMemory {
         memory: GuestMemoryMmap,
         requirement: SharedMemoryRequirement,
         shared: Vec<AddressRange>,
+    ) -> Self {
+        Self {
+            memory,
+            limits: vec![requirement.range],
+            access: requirement.access,
+            shared: SharedMemoryState::new(shared),
+        }
+    }
+
+    pub fn with_shared_state(
+        memory: GuestMemoryMmap,
+        requirement: SharedMemoryRequirement,
+        shared: SharedMemoryState,
     ) -> Self {
         Self {
             memory,
@@ -299,11 +385,7 @@ impl SharedMemory for MappedSharedMemory {
         {
             return Err(SharedMemoryError::OutOfLimits);
         }
-        if !self
-            .shared
-            .iter()
-            .any(|shared| shared.contains(range.gpa, range.size))
-        {
+        if !self.shared.contains(range.gpa, range.size) {
             return Err(SharedMemoryError::NotShared);
         }
         Ok(SharedRegion {
@@ -896,6 +978,59 @@ mod tests {
             })
             .expect_err("range is not currently shared");
         assert!(matches!(err, SharedMemoryError::NotShared));
+    }
+
+    #[test]
+    fn mapped_shared_memory_observes_runtime_private_shared_updates() {
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x4000)]).unwrap();
+        let state = SharedMemoryState::new(vec![AddressRange {
+            base: 0x1000,
+            size: 0x1000,
+        }]);
+        let shared = MappedSharedMemory::with_shared_state(
+            memory,
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x1000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+            state.clone(),
+        );
+
+        shared
+            .region(SharedRange {
+                gpa: 0x1200,
+                size: 0x10,
+                access: SharedAccess::ReadOnly,
+            })
+            .expect("range starts shared");
+
+        state.mark_private(AddressRange {
+            base: 0x1100,
+            size: 0x200,
+        });
+        let err = shared
+            .region(SharedRange {
+                gpa: 0x1200,
+                size: 0x10,
+                access: SharedAccess::ReadOnly,
+            })
+            .expect_err("range became private");
+        assert!(matches!(err, SharedMemoryError::NotShared));
+
+        state.mark_shared(AddressRange {
+            base: 0x1200,
+            size: 0x10,
+        });
+        shared
+            .region(SharedRange {
+                gpa: 0x1200,
+                size: 0x10,
+                access: SharedAccess::ReadOnly,
+            })
+            .expect("range became shared again");
     }
 
     #[test]
