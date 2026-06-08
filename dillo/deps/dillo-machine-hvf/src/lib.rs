@@ -140,6 +140,11 @@ mod imp {
                                 &data[..size],
                             );
                         }
+                        return Ok(VmExit::MmioWrite {
+                            addr,
+                            data,
+                            size: size as u8,
+                        });
                     }
                     other => return Ok(other),
                 }

@@ -448,6 +448,9 @@ Completed changes:
   registered through the machine.
 - Made the facade-level KVM, WHP, and HVF vCPU `run()` methods callback-free;
   backend vCPUs now route MMIO through machine-owned bus state internally.
+- Returned to the supervisor after dispatched MMIO writes so existing shutdown
+  checks still observe syscon poweroff until Stage 10 installs backend-owned
+  vCPU stop control.
 - Updated `dillo-vm` to attach UART, syscon, PCI root, and virtio-mmio devices
   to the machine instead of to supervisor-owned MMIO buses.
 - Kept x86 PIO reads as constructor-time vCPU input until Stage 9 moves
@@ -469,6 +472,9 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
+  was attempted locally but this machine lacks the required HVF entitlement, so
+  platform boot validation is delegated to CI.
 
 Pushed commit:
 - `refactor: route mmio inside machine backends`; final pushed hash and CI run
