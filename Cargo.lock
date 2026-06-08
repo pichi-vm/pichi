@@ -590,6 +590,7 @@ dependencies = [
  "dillo-pmi",
  "dillo-virtio",
  "dillo-virtio-console",
+ "dillo-x86",
  "gdbstub",
  "gdbstub_arch",
  "kvm-bindings",
@@ -602,6 +603,14 @@ dependencies = [
  "vhost",
  "vm-memory",
  "vmm-sys-util",
+]
+
+[[package]]
+name = "dillo-x86"
+version = "0.1.0"
+dependencies = [
+ "dillo-mmio",
+ "log",
 ]
 
 [[package]]

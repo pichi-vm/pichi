@@ -44,6 +44,19 @@ After each push:
 gh run list --branch main --limit 12
 ```
 
+## Target invariants
+
+- `dillo` is the only composition point that knows PMI/devtree, concrete
+  devices, transports, and the selected machine backend.
+- All OS, target, and architecture differences are constrained to
+  `dillo-machine-*`, `dillo-x86`, and `dillo-arm`; reusable architecture
+  substrate must not know concrete devices.
+- Each guest-visible device is implemented exactly once as an `MmioDevice`,
+  `PciDevice`, or `VirtioDevice`, then adapted through portable transport
+  crates.
+- Portable devices never access whole guest memory; they request runtime
+  shared-memory regions from their backend-owned attachment.
+
 ## Stage 0 - Temporarily quarantine macOS CI
 
 Status: complete.
@@ -633,6 +646,8 @@ for long-lived device hosts.
 Process:
 - Define the minimal `MmioDeviceHost` thread closure and process spec.
 - Return `MmioDeviceHandle` with `shutdown` and `join`.
+- Keep `MmioAttachment` and the concrete host execution model backend-owned;
+  portable devices only receive the launch/connect capability.
 - Ensure dropping the handle does not silently detach guest-visible state.
 - Migrate in-tree thread devices to the new launch path.
 - Keep process-host support narrow and only as needed by existing vhost-user
@@ -697,6 +712,8 @@ Process:
 - Implement `SharedMemory::region()` as the dynamic runtime claim API used by
   virtio queues and descriptor payloads after the guest supplies GPAs through
   the virtio channel.
+- Keep guest-supplied buffer lookup a runtime machine/backend operation, not a
+  DTB-defined virtio buffer aperture.
 - Ensure region claims succeed only inside machine-granted guest RAM, filtered
   by any DTB-declared DMA constraints that dillo explicitly supports, and only
   for pages the backend currently tracks as shared.
@@ -871,6 +888,9 @@ Completed changes:
 - Moved the KVM ioeventfd `QueueNotifier` implementation out of `dillo-vm` and
   into `dillo-machine-kvm`, so Linux-specific MMIO notification registration is
   owned by the KVM backend crate.
+- Added `dillo-x86` and moved the x86 IOAPIC MMIO register model out of
+  `dillo-vm`; the remaining WHP-specific trigger glue now injects decoded
+  IOAPIC routes instead of owning the register model.
 
 ## Stage 15 - Restore macOS CI
 

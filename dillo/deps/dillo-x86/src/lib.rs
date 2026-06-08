@@ -1,29 +1,35 @@
-//! Minimal x86 IOAPIC register model for the WHP path.
-//!
-//! The x86 base DTB declares an IOAPIC at 0xFEC00000. WHP does not provide a
-//! full PC chipset, so Windows has to expose at least the register interface
-//! Linux probes and programs during early boot.
+//! x86 architecture substrate for dillo.
 
 use std::sync::Mutex;
 
-use dillo_machine_backend::InterruptController;
-
 use dillo_mmio::{MmioDevice, MmioWindow};
 
+/// Minimal x86 IOAPIC register model.
+///
+/// The x86 base DTB declares an IOAPIC at 0xFEC00000. Host backends that do not
+/// provide a full PC chipset can expose this register interface so Linux can
+/// probe and program interrupt routes during early boot.
 #[derive(Debug)]
-pub(crate) struct IoApic {
+pub struct IoApic {
     window: MmioWindow,
     select: Mutex<u32>,
     redirection: Mutex<[u64; 24]>,
 }
 
 impl IoApic {
-    pub(crate) fn new(window: MmioWindow) -> Self {
+    pub fn new(window: MmioWindow) -> Self {
         Self {
             window,
             select: Mutex::new(0),
             redirection: Mutex::new([1 << 16; 24]),
         }
+    }
+
+    pub fn route(&self, gsi: u32) -> Option<IoApicRoute> {
+        let idx = usize::try_from(gsi).ok()?;
+        let redirection = self.redirection.lock().expect("ioapic redir poisoned");
+        let entry = *redirection.get(idx)?;
+        decode_route(entry)
     }
 
     fn read_register(&self, offset: u64, data: &mut [u8]) -> bool {
@@ -54,24 +60,6 @@ impl IoApic {
             _ => {}
         }
         true
-    }
-
-    pub(crate) fn inject_gsi(
-        &self,
-        interrupt_controller: &InterruptController,
-        gsi: u32,
-    ) -> Result<(), dillo_machine_backend::Error> {
-        let Some(route) = self.route(gsi) else {
-            return Ok(());
-        };
-        interrupt_controller.request_fixed_interrupt(route.destination, route.vector)
-    }
-
-    fn route(&self, gsi: u32) -> Option<Route> {
-        let idx = usize::try_from(gsi).ok()?;
-        let redirection = self.redirection.lock().expect("ioapic redir poisoned");
-        let entry = *redirection.get(idx)?;
-        decode_route(entry)
     }
 
     fn read_selected(&self) -> u32 {
@@ -131,12 +119,12 @@ impl MmioDevice for IoApic {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Route {
-    destination: u32,
-    vector: u8,
+pub struct IoApicRoute {
+    pub destination: u32,
+    pub vector: u8,
 }
 
-fn decode_route(entry: u64) -> Option<Route> {
+fn decode_route(entry: u64) -> Option<IoApicRoute> {
     const VECTOR_MASK: u64 = 0xFF;
     const DELIVERY_MODE_MASK: u64 = 0x700;
     const DESTINATION_MODE_LOGICAL: u64 = 1 << 11;
@@ -148,15 +136,15 @@ fn decode_route(entry: u64) -> Option<Route> {
         return None;
     }
     if entry & DELIVERY_MODE_MASK != 0 {
-        log::warn!("WHP IOAPIC route uses unsupported delivery mode entry={entry:#x}");
+        log::warn!("x86 IOAPIC route uses unsupported delivery mode entry={entry:#x}");
         return None;
     }
     if entry & DESTINATION_MODE_LOGICAL != 0 {
-        log::warn!("WHP IOAPIC route uses unsupported logical destination entry={entry:#x}");
+        log::warn!("x86 IOAPIC route uses unsupported logical destination entry={entry:#x}");
         return None;
     }
 
-    Some(Route {
+    Some(IoApicRoute {
         destination: ((entry >> DESTINATION_SHIFT) & DESTINATION_MASK) as u32,
         vector: (entry & VECTOR_MASK) as u8,
     })
@@ -164,7 +152,7 @@ fn decode_route(entry: u64) -> Option<Route> {
 
 #[cfg(test)]
 mod tests {
-    use super::{IoApic, Route, decode_route};
+    use super::{IoApic, IoApicRoute, decode_route};
     use dillo_mmio::{MmioDevice, MmioWindow};
 
     fn ioapic() -> IoApic {
@@ -207,7 +195,7 @@ mod tests {
     fn decodes_unmasked_fixed_physical_route() {
         assert_eq!(
             decode_route((2u64 << 56) | 0x31),
-            Some(Route {
+            Some(IoApicRoute {
                 destination: 2,
                 vector: 0x31
             })

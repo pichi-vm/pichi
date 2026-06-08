@@ -17,10 +17,12 @@ pub(crate) type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 
 #[cfg(target_os = "macos")]
 use crate::{RunError, hvf_devices, syscon};
-#[cfg(target_os = "windows")]
-use crate::{RunError, ioapic::IoApic, syscon, uart, whp_devices::WhpMsixNotifier};
 #[cfg(target_os = "linux")]
 use crate::{RunError, irq::IrqManager, pci_irq::IrqfdNotifier, syscon};
+#[cfg(target_os = "windows")]
+use crate::{RunError, syscon, uart, whp_devices::WhpMsixNotifier};
+#[cfg(target_os = "windows")]
+use dillo_x86::IoApic;
 
 #[cfg(target_os = "linux")]
 pub(crate) struct Memslot {

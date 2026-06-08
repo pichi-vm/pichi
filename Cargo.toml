@@ -29,6 +29,7 @@ members = [
     "dillo/deps/dillo-pci",
     "dillo/deps/dillo-pci-virtio",
     "dillo/deps/dillo-virtio-console",
+    "dillo/deps/dillo-x86",
     "dillo/deps/dillo-virtio-console/deps/vhost-backend",
     "dillo/deps/virtio",
     "dillo/deps/snuffler",
@@ -91,6 +92,7 @@ dillo-pci = { path = "dillo/deps/dillo-pci" }
 dillo-pci-virtio = { path = "dillo/deps/dillo-pci-virtio" }
 dillo-virtio = { path = "dillo/deps/virtio" }
 dillo-virtio-console = { path = "dillo/deps/dillo-virtio-console" }
+dillo-x86 = { path = "dillo/deps/dillo-x86" }
 dillo-vm = { path = "dillo/deps/dillo-vm" }
 vm-pci = { path = "dillo/deps/dillo-vm/deps/vm-pci" }
 vhost-backend = { path = "dillo/deps/dillo-virtio-console/deps/vhost-backend" }

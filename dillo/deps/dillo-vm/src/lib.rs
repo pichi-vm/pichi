@@ -27,8 +27,6 @@ mod hvf_devices;
 // KVM/Linux-only submodules (memfd, irqfd, vhost-user, gdb stub).
 #[cfg(target_os = "linux")]
 mod gdb;
-#[cfg(target_os = "windows")]
-mod ioapic;
 #[cfg(target_os = "linux")]
 mod irq;
 #[cfg(target_os = "linux")]
@@ -261,7 +259,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let ioapic_region = machine
         .ioapic
         .ok_or(RunError::MissingRequiredDevice("/intc reg[1] ioapic"))?;
-    let ioapic = Arc::new(ioapic::IoApic::new(MmioWindow {
+    let ioapic = Arc::new(dillo_x86::IoApic::new(MmioWindow {
         name: "ioapic",
         base: ioapic_region.base,
         size: ioapic_region.size,

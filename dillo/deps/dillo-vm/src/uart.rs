@@ -3,8 +3,7 @@ use std::sync::Arc;
 
 use dillo_machine_backend::InterruptController;
 use dillo_mmio_uart::UartTrigger;
-
-use crate::ioapic::IoApic;
+use dillo_x86::IoApic;
 
 #[derive(Debug)]
 pub(crate) struct WhpTrigger {
@@ -31,8 +30,11 @@ impl UartTrigger for WhpTrigger {
     type E = io::Error;
 
     fn trigger(&self) -> Result<(), Self::E> {
-        self.ioapic
-            .inject_gsi(&self.interrupt_controller, self.gsi)
+        let Some(route) = self.ioapic.route(self.gsi) else {
+            return Ok(());
+        };
+        self.interrupt_controller
+            .request_fixed_interrupt(route.destination, route.vector)
             .map_err(|e| io::Error::other(e.to_string()))
     }
 }
