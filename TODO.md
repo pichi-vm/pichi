@@ -949,6 +949,16 @@ Completed changes:
   remaining legacy `dillo-vm::run` handoff, so PMI parse, DTB survey,
   load-region cross-validation, and memory placement are now exercised from the
   top-level launcher while the monolithic runner is dismantled.
+- Moved the compatibility runner handoff to `dillo_vm::Preflight`: `dillo`
+  now passes already-derived PMI bytes, parsed PMI, surveyed platform, memory
+  memslots, and `/memory@*` nodes into the remaining runner. `dillo-vm` no
+  longer reads/parses PMI, selects host architecture, surveys the DTB, validates
+  `cpu:profile`, cross-validates load regions, or computes memory placement.
+- Removed the obsolete memory-placement algorithm from `dillo-vm`; placement
+  is now computed only by `dillo::launch`.
+- Moved the supervisor shutdown flag out of `dillo-vm` and into the top-level
+  `dillo` process; backend-specific signal hooks now receive the process-owned
+  shutdown state.
 
 CI verification:
 - `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
@@ -957,6 +967,8 @@ CI verification:
   `351c9d1 refactor: move launch support into dillo`.
 - `27171784477` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `9ef45a5 refactor: add dillo launch preflight`.
+- `27172191122` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `860a900 refactor: preflight launch from selected machine`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

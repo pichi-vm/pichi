@@ -1,7 +1,7 @@
 //! VM-side integration crate for dillo.
 //!
-//! Orchestrates the VM child's work: PMI loader → Machine survey →
-//! DTBO synthesis → memfd setup → KVM wiring → vCPU thread launch →
+//! Orchestrates the remaining compatibility VM runner:
+//! launch plan → memfd setup → backend wiring → vCPU thread launch →
 //! MMIO/PIO dispatch.
 //!
 //! See `dillo/ARCHITECTURE.md` §7, §8, §10.1, §11, §12.
@@ -37,9 +37,6 @@ mod whp_devices;
 #[cfg(target_os = "linux")]
 pub use vhost_frontend::spawn_backend;
 
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -48,7 +45,7 @@ use std::sync::atomic::Ordering;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::thread;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 #[cfg(target_os = "macos")]
 use backend::BackendVm;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -62,17 +59,85 @@ use dillo_machine::VcpuStop;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::MsixNotifier;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use dillo_pmi::{Action as PmiAction, FillKind, HostArch, ParseOptions, VcpuState};
+use dillo_pmi::{Action as PmiAction, FillKind, VcpuState};
 #[cfg(target_os = "windows")]
-use dillo_pmi::{Action as PmiAction, FillKind, HostArch, ParseOptions, VcpuState};
+use dillo_pmi::{Action as PmiAction, FillKind, VcpuState};
 
 pub use error::RunError;
 
-/// Process-wide "supervisor wants us to shut down" flag — set by the
-/// supervisor's signal watcher on 1st SIGINT/SIGTERM, polled by every
-/// vCPU loop iteration. Implements ARCH §13.3: the supervisor asks,
-/// dillo-vm exits 0 cleanly within the §13.2 grace period.
-pub static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+/// One launch-derived RAM region passed in by the top-level `dillo` launcher.
+#[derive(Debug, Clone, Copy)]
+pub struct RunRegion {
+    pub gpa: u64,
+    pub size: u64,
+}
+
+/// Target-neutral launch facts already derived by `dillo`.
+///
+/// This is a compatibility handoff while the old runner is removed. It keeps
+/// PMI parsing, DTB coverage, load cross-validation, and memory placement owned
+/// by the top-level launcher instead of duplicating those decisions here.
+#[derive(Debug)]
+pub struct Preflight {
+    bytes: Vec<u8>,
+    parsed: dillo_pmi::ParsedPmi,
+    platform: dillo_platform::Machine,
+    memslots: Vec<RunRegion>,
+    memory_nodes: Vec<RunRegion>,
+}
+
+impl Preflight {
+    pub fn new(
+        bytes: Vec<u8>,
+        parsed: dillo_pmi::ParsedPmi,
+        platform: dillo_platform::Machine,
+        memslots: impl IntoIterator<Item = RunRegion>,
+        memory_nodes: impl IntoIterator<Item = RunRegion>,
+    ) -> Self {
+        Self {
+            bytes,
+            parsed,
+            platform,
+            memslots: memslots.into_iter().collect(),
+            memory_nodes: memory_nodes.into_iter().collect(),
+        }
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        Vec<u8>,
+        dillo_pmi::ParsedPmi,
+        dillo_platform::Machine,
+        placement::MemoryPlan,
+    ) {
+        let memslots = self
+            .memslots
+            .into_iter()
+            .map(|r| placement::Region {
+                gpa: r.gpa,
+                size: r.size,
+            })
+            .collect();
+        let memory_nodes = self
+            .memory_nodes
+            .into_iter()
+            .map(|r| placement::Region {
+                gpa: r.gpa,
+                size: r.size,
+            })
+            .collect();
+        (
+            self.bytes,
+            self.parsed,
+            self.platform,
+            placement::MemoryPlan {
+                memslots,
+                memory_nodes,
+            },
+        )
+    }
+}
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[cfg(all(test, target_os = "macos"))]
@@ -90,41 +155,12 @@ use vm_memory::{GuestAddress, GuestMemoryMmap};
 /// This keeps the binary and workspace build linked through the normal
 /// `dillo-vm` boundary while the WHP memory/vCPU run path is filled in.
 #[cfg(target_os = "windows")]
-pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError> {
-    let mut bytes = Vec::new();
-    let mut f = File::open(pmi_path).map_err(|source| RunError::ReadPmi {
-        path: pmi_path.display().to_string(),
-        source,
-    })?;
-    f.read_to_end(&mut bytes)
-        .map_err(|source| RunError::ReadPmi {
-            path: pmi_path.display().to_string(),
-            source,
-        })?;
-
-    let arch = host_arch();
-    let parsed = dillo_pmi::parse(
-        &bytes,
-        &ParseOptions {
-            host_arch: arch,
-            memory_mib,
-        },
-    )?;
-    validate_cpu_profile(parsed.cpu_profile.as_str(), arch)?;
-
-    let dtb_info = parsed
-        .sections
-        .get(&parsed.merged_dtb_section)
-        .ok_or_else(|| {
-            RunError::DtboSynth(anyhow!("merged_dtb section missing from parsed.sections"))
-        })?;
-    let dtb_bytes = read_section(&bytes, dtb_info.file_offset, dtb_info.file_size);
-    let platform_arch = match arch {
-        HostArch::X86_64 => dillo_platform::Arch::X86_64,
-        HostArch::Aarch64 => dillo_platform::Arch::Aarch64,
-    };
-    let machine =
-        dillo_platform::Machine::survey(dtb_bytes, platform_arch).map_err(RunError::Coverage)?;
+pub fn run(
+    preflight: Preflight,
+    vcpus: u32,
+    supervisor_shutdown: &'static AtomicBool,
+) -> Result<i32, RunError> {
+    let (bytes, parsed, machine, plan) = preflight.into_parts();
     log::info!(
         "WHP coverage: base DTB fully claimed — {} declared region(s), pcie={}",
         machine.plan.regions().len(),
@@ -149,25 +185,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         poweroff.mask,
     );
 
-    let load_ranges: Vec<(String, u64, u64)> = parsed
-        .sections
-        .iter()
-        .map(|(n, s)| (n.clone(), s.gpa, s.virtual_size))
-        .collect();
-    machine
-        .plan
-        .cross_validate_loads(&load_ranges)
-        .map_err(RunError::Coverage)?;
-
-    let must_cover: Vec<(u64, u64)> = parsed
-        .sections
-        .values()
-        .map(|s| (s.gpa, s.virtual_size))
-        .collect();
-    let plan = placement::plan_around_regions(&must_cover, memory_mib, machine.placement_regions())
-        .map_err(|source| RunError::Placement {
-            source: source.into(),
-        })?;
     log::info!("WHP memory placement: {} memslot(s)", plan.memslots.len());
     for r in &plan.memslots {
         log::info!(
@@ -196,7 +213,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         .map(|r| (GuestAddress(r.gpa), r.size as usize))
         .collect();
     let guest_mem: GuestMemoryMmap = GuestMemoryMmap::from_ranges(&ranges)
-        .map_err(|e| RunError::MemfdSetup(anyhow!("GuestMemoryMmap: {e}")))?;
+        .map_err(|e| RunError::MemfdSetup(anyhow::anyhow!("GuestMemoryMmap: {e}")))?;
 
     let mut vm = <backend_machine::Vm as BackendVm>::new(backend::VmOptions {
         vcpus,
@@ -334,7 +351,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let syscon_c = Arc::clone(&syscon_state);
         let exit_requester = vm.exit_requester();
         joins.push(thread::spawn(move || -> Result<RunOutcome> {
-            let result = run_windows_vcpu_loop(&mut vcpu, &shutdown_c, &syscon_c);
+            let result =
+                run_windows_vcpu_loop(&mut vcpu, &shutdown_c, &syscon_c, supervisor_shutdown);
             shutdown_c.store(true, Ordering::Release);
             if let Err(e) = exit_requester.request_vcpu_exit() {
                 log::warn!("failed to cancel WHP vCPU run: {e}");
@@ -395,6 +413,7 @@ fn run_windows_vcpu_loop(
     vcpu: &mut backend_machine::Vcpu,
     shutdown: &Arc<AtomicBool>,
     syscon_state: &Arc<syscon::SysconState>,
+    supervisor_shutdown: &AtomicBool,
 ) -> Result<RunOutcome> {
     let index = vcpu.index();
     let stop = vcpu.run_until_stop(|| {
@@ -404,7 +423,7 @@ fn run_windows_vcpu_loop(
         if let Some(action) = syscon_state.action() {
             return Some(action.vcpu_stop());
         }
-        if SUPERVISOR_SHUTDOWN.load(Ordering::Acquire) {
+        if supervisor_shutdown.load(Ordering::Acquire) {
             log::info!("vCPU {index}: supervisor shutdown observed");
             shutdown.store(true, Ordering::Release);
             return Some(VcpuStop::Stopped);
@@ -421,58 +440,18 @@ fn run_windows_vcpu_loop(
 /// (ns16550a serial + PCIe ECAM + virtio-console BARs), and runs all vCPUs (thread-per-vCPU
 /// with userspace PSCI). A guest reboot warm-restarts in place; SYSTEM_OFF exits.
 #[cfg(target_os = "macos")]
-pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError> {
-    // 1. read PMI bytes.
-    let mut bytes = Vec::new();
-    let mut f = File::open(pmi_path).map_err(|source| RunError::ReadPmi {
-        path: pmi_path.display().to_string(),
-        source,
-    })?;
-    f.read_to_end(&mut bytes)
-        .map_err(|source| RunError::ReadPmi {
-            path: pmi_path.display().to_string(),
-            source,
-        })?;
-
-    // 2. parse PMI with defensive caps.
-    let arch = host_arch();
-    let parsed = dillo_pmi::parse(
-        &bytes,
-        &ParseOptions {
-            host_arch: arch,
-            memory_mib,
-        },
-    )?;
+pub fn run(
+    preflight: Preflight,
+    vcpus: u32,
+    _supervisor_shutdown: &'static AtomicBool,
+) -> Result<i32, RunError> {
+    let (bytes, parsed, machine, plan) = preflight.into_parts();
     log::info!(
         "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
         parsed.arch,
         parsed.actions.len(),
         parsed.merged_dtb_section
     );
-
-    // 2b. Validate the cpu:profile shape against the machine architecture.
-    //     Per spec/cpu.md a VMM MUST refuse a profile it does not recognize or
-    //     that doesn't match the machine. (The per-mandatory-feature host floor
-    //     check is tracked separately — see §J.)
-    validate_cpu_profile(parsed.cpu_profile.as_str(), arch)?;
-
-    // 3. survey Machine from base DTB + cross-validate loads vs MMIO.
-    let dtb_info = parsed
-        .sections
-        .get(&parsed.merged_dtb_section)
-        .ok_or_else(|| {
-            RunError::DtboSynth(anyhow!("merged_dtb section missing from parsed.sections"))
-        })?;
-    let dtb_bytes = read_section(&bytes, dtb_info.file_offset, dtb_info.file_size);
-    let platform_arch = match arch {
-        HostArch::X86_64 => dillo_platform::Arch::X86_64,
-        HostArch::Aarch64 => dillo_platform::Arch::Aarch64,
-    };
-    // Coverage gate (no undeclared hardware): the survey must claim EVERY node
-    // and property in the base DTB, failing closed on any leftover — proving
-    // the image declares nothing the VMM silently ignores, before realization.
-    let machine =
-        dillo_platform::Machine::survey(dtb_bytes, platform_arch).map_err(RunError::Coverage)?;
     log::info!(
         "coverage: base DTB fully claimed — {} declared region(s), pcie={}",
         machine.plan.regions().len(),
@@ -488,26 +467,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     } else {
         log::info!("machine: no PCIe (microVM), gic={}", machine.gic.is_some());
     }
-    let load_ranges: Vec<(String, u64, u64)> = parsed
-        .sections
-        .iter()
-        .map(|(n, s)| (n.clone(), s.gpa, s.virtual_size))
-        .collect();
-    machine
-        .plan
-        .cross_validate_loads(&load_ranges)
-        .map_err(RunError::Coverage)?;
-
-    // 4. compute memory placement.
-    let must_cover: Vec<(u64, u64)> = parsed
-        .sections
-        .values()
-        .map(|s| (s.gpa, s.virtual_size))
-        .collect();
-    let plan = placement::plan_around_regions(&must_cover, memory_mib, machine.placement_regions())
-        .map_err(|source| RunError::Placement {
-            source: source.into(),
-        })?;
     let total_backed: u64 = plan.memslots.iter().map(|r| r.size).sum();
     log::info!(
         "memslots: {} region(s), {} bytes",
@@ -782,40 +741,6 @@ fn vcpu_stop_outcome(stop: VcpuStop, shutdown: &AtomicBool) -> RunOutcome {
     }
 }
 
-/// Validate the `cpu:profile` *name* against the machine architecture
-/// (spec/cpu.md): aarch64 profiles are `armvN.M-a`, x86-64 profiles are
-/// the psABI levels `x86-64-v1` through `x86-64-v4`.
-/// This enforces two of the spec's three MUST-refuse clauses — machine
-/// mismatch and unrecognized profile. The third (each mandatory feature is
-/// individually present on the host, per the Arm ARM / psABI) is a deeper
-/// host-capability check tracked in §J: it requires the authoritative feature
-/// tables, and the spec explicitly warns that a host's self-claimed revision
-/// is not authoritative (e.g. Apple M4 claims Armv9 but omits SVE2).
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn validate_cpu_profile(profile: &str, arch: HostArch) -> Result<(), RunError> {
-    let recognized = match arch {
-        HostArch::Aarch64 => parse_armv_profile(profile).is_some(),
-        HostArch::X86_64 => matches!(
-            profile,
-            "x86-64-v1" | "x86-64-v2" | "x86-64-v3" | "x86-64-v4"
-        ),
-    };
-    if recognized {
-        log::info!("cpu:profile {profile:?} recognized for {arch:?}");
-        Ok(())
-    } else {
-        Err(RunError::UnknownCpuProfile(profile.to_string()))
-    }
-}
-
-/// Parse an aarch64 `armvN.M-a` profile name into `(major, minor)`.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn parse_armv_profile(s: &str) -> Option<(u32, u32)> {
-    let body = s.strip_prefix("armv")?.strip_suffix("-a")?;
-    let (major, minor) = body.split_once('.')?;
-    Some((major.parse().ok()?, minor.parse().ok()?))
-}
-
 #[cfg(all(test, target_os = "macos"))]
 mod macos_tests {
     use super::*;
@@ -881,26 +806,6 @@ mod macos_tests {
             "PSCI SYSTEM_OFF -> GuestPoweroff"
         );
     }
-
-    #[test]
-    fn cpu_profile_name_validation() {
-        use dillo_pmi::HostArch;
-        // Recognized aarch64 / x86 profile names.
-        assert!(validate_cpu_profile("armv8.2-a", HostArch::Aarch64).is_ok());
-        assert!(validate_cpu_profile("armv9.0-a", HostArch::Aarch64).is_ok());
-        assert!(validate_cpu_profile("x86-64-v3", HostArch::X86_64).is_ok());
-        assert!(validate_cpu_profile("x86-64-v4", HostArch::X86_64).is_ok());
-        // Machine mismatch (x86 name on aarch64 machine, and vice versa).
-        assert!(validate_cpu_profile("x86-64-v3", HostArch::Aarch64).is_err());
-        assert!(validate_cpu_profile("armv8.2-a", HostArch::X86_64).is_err());
-        // Unrecognized forms.
-        assert!(validate_cpu_profile("armv8-a", HostArch::Aarch64).is_err());
-        assert!(validate_cpu_profile("x86-64-v5", HostArch::X86_64).is_err());
-        assert!(validate_cpu_profile("nonsense", HostArch::Aarch64).is_err());
-        assert_eq!(parse_armv_profile("armv8.2-a"), Some((8, 2)));
-        assert_eq!(parse_armv_profile("armv9.4-a"), Some((9, 4)));
-        assert_eq!(parse_armv_profile("armv8-a"), None);
-    }
 }
 
 /// Top-level VM-child entry point (Linux / KVM).
@@ -909,49 +814,18 @@ mod macos_tests {
 /// load sections, synthesizes + writes the DTBO, spawns `vcpus`
 /// vCPU threads, and runs until guest shutdown.
 #[cfg(target_os = "linux")]
-pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError> {
-    // ── 1. read PMI bytes ──────────────────────────────────────────
-    let mut bytes = Vec::new();
-    let mut f = File::open(pmi_path).map_err(|source| RunError::ReadPmi {
-        path: pmi_path.display().to_string(),
-        source,
-    })?;
-    f.read_to_end(&mut bytes)
-        .map_err(|source| RunError::ReadPmi {
-            path: pmi_path.display().to_string(),
-            source,
-        })?;
-
-    // ── 2. parse PMI with defensive caps ───────────────────────────
-    let arch = host_arch();
-    let parsed = dillo_pmi::parse(
-        &bytes,
-        &ParseOptions {
-            host_arch: arch,
-            memory_mib,
-        },
-    )?;
+pub fn run(
+    preflight: Preflight,
+    vcpus: u32,
+    supervisor_shutdown: &'static AtomicBool,
+) -> Result<i32, RunError> {
+    let (bytes, parsed, machine, plan) = preflight.into_parts();
     log::info!(
         "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
         parsed.arch,
         parsed.actions.len(),
         parsed.merged_dtb_section
     );
-
-    // ── 3. survey Machine from base DTB ───────────────────────────
-    let dtb_info = parsed
-        .sections
-        .get(&parsed.merged_dtb_section)
-        .ok_or_else(|| {
-            RunError::DtboSynth(anyhow!("merged_dtb section missing from parsed.sections"))
-        })?;
-    let dtb_bytes = read_section(&bytes, dtb_info.file_offset, dtb_info.file_size);
-    let platform_arch = match arch {
-        HostArch::X86_64 => dillo_platform::Arch::X86_64,
-        HostArch::Aarch64 => dillo_platform::Arch::Aarch64,
-    };
-    let machine =
-        dillo_platform::Machine::survey(dtb_bytes, platform_arch).map_err(RunError::Coverage)?;
     log::info!(
         "coverage: base DTB fully claimed — {} declared region(s), pcie={}",
         machine.plan.regions().len(),
@@ -974,27 +848,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         poweroff.mask,
     );
 
-    // Cross-validate load GPAs vs MMIO declared by DTB.
-    let load_ranges: Vec<(String, u64, u64)> = parsed
-        .sections
-        .iter()
-        .map(|(n, s)| (n.clone(), s.gpa, s.virtual_size))
-        .collect();
-    machine
-        .plan
-        .cross_validate_loads(&load_ranges)
-        .map_err(RunError::Coverage)?;
-
-    // ── 4. compute memory placement ────────────────────────────────
-    let must_cover: Vec<(u64, u64)> = parsed
-        .sections
-        .values()
-        .map(|s| (s.gpa, s.virtual_size))
-        .collect();
-    let plan = placement::plan_around_regions(&must_cover, memory_mib, machine.placement_regions())
-        .map_err(|source| RunError::Placement {
-            source: source.into(),
-        })?;
     log::info!("memslots: {} region(s)", plan.memslots.len());
     for r in &plan.memslots {
         log::info!("  [{:#x}..{:#x}) ({} bytes)", r.gpa, r.gpa + r.size, r.size);
@@ -1075,7 +928,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             .ok_or_else(|| RunError::SectionWrite {
                 section: format!("memslot[{slot_idx}]"),
                 gpa: r.gpa,
-                source: anyhow!("no host mapping for GPA {:#x}", r.gpa),
+                source: anyhow::anyhow!("no host mapping for GPA {:#x}", r.gpa),
             })?;
         memslots.push(backend::Memslot {
             index: slot_idx as u32,
@@ -1286,7 +1139,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let syscon_c = Arc::clone(&syscon_state);
         let exit_requester = vm.exit_requester();
         let join = thread::spawn(move || -> Result<RunOutcome> {
-            let result = run_vcpu_loop(&mut vcpu, &shutdown_c, &syscon_c);
+            let result = run_vcpu_loop(&mut vcpu, &shutdown_c, &syscon_c, supervisor_shutdown);
             shutdown_c.store(true, Ordering::Release);
             exit_requester.request_vcpu_exit();
             result
@@ -1339,6 +1192,7 @@ fn run_vcpu_loop(
     vcpu: &mut backend_machine::Vcpu,
     shutdown: &Arc<AtomicBool>,
     syscon_state: &Arc<syscon::SysconState>,
+    supervisor_shutdown: &AtomicBool,
 ) -> Result<RunOutcome> {
     let index = vcpu.index();
     let stop = vcpu.run_until_stop(|| {
@@ -1349,7 +1203,7 @@ fn run_vcpu_loop(
             return Some(action.vcpu_stop());
         }
         // §13.3: supervisor requested orderly shutdown.
-        if SUPERVISOR_SHUTDOWN.load(Ordering::Acquire) {
+        if supervisor_shutdown.load(Ordering::Acquire) {
             log::info!("vCPU {index}: supervisor shutdown observed");
             shutdown.store(true, Ordering::Release);
             return Some(VcpuStop::Stopped);
@@ -1363,21 +1217,6 @@ fn read_section<'a>(bytes: &'a [u8], offset: u64, size: u64) -> &'a [u8] {
     let s = offset as usize;
     let e = s + size as usize;
     &bytes[s..e]
-}
-
-fn host_arch() -> HostArch {
-    #[cfg(target_arch = "x86_64")]
-    {
-        HostArch::X86_64
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        HostArch::Aarch64
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        compile_error!("dillo only supports x86_64 and aarch64 hosts");
-    }
 }
 
 #[cfg(target_os = "linux")]

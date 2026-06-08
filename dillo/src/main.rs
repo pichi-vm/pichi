@@ -16,8 +16,12 @@
 
 mod machine_select;
 
+use std::sync::atomic::AtomicBool;
+
 use argh::FromArgs;
 use machine_select::machine;
+
+static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 /// VMM that boots PMI files (Linux/KVM today).
 #[derive(FromArgs, Debug)]
@@ -96,10 +100,35 @@ fn main() {
     let memory = args.memory;
     let cpus = args.cpus;
 
-    if let Err(e) = dillo::launch::LaunchPlan::read(&pmi, machine::HOST_ARCH, memory) {
-        eprintln!("dillo: {e}");
-        std::process::exit(e.exit_code());
-    }
+    let launch = match dillo::launch::LaunchPlan::read(&pmi, machine::HOST_ARCH, memory) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("dillo: {e}");
+            std::process::exit(e.exit_code());
+        }
+    };
+    let dillo::launch::LaunchPlan {
+        bytes,
+        parsed,
+        platform,
+        memory: memory_plan,
+    } = launch;
+    let preflight = dillo_vm::Preflight::new(
+        bytes,
+        parsed,
+        platform,
+        memory_plan.memslots.iter().map(|r| dillo_vm::RunRegion {
+            gpa: r.gpa,
+            size: r.size,
+        }),
+        memory_plan
+            .memory_nodes
+            .iter()
+            .map(|r| dillo_vm::RunRegion {
+                gpa: r.gpa,
+                size: r.size,
+            }),
+    );
 
     // Per ARCH §13.5: if stdin is a TTY, enter raw mode for the
     // session. A Drop guard restores cooked mode at exit; a custom
@@ -114,7 +143,7 @@ fn main() {
     // signals aren't silently dropped during boot. SIGWINCH is also
     // blocked so the watcher can forward terminal-resize events to
     // the (future Phase 3) console child.
-    machine::install_signal_watchers(&dillo_vm::SUPERVISOR_SHUTDOWN);
+    machine::install_signal_watchers(&SUPERVISOR_SHUTDOWN);
 
     log::info!(
         "dillo starting: pmi={} memory={}MiB cpus={} console={}",
@@ -124,7 +153,7 @@ fn main() {
         args.console,
     );
 
-    match dillo_vm::run(&pmi, memory, cpus) {
+    match dillo_vm::run(preflight, cpus, &SUPERVISOR_SHUTDOWN) {
         Ok(code) => std::process::exit(code),
         Err(e) => {
             eprintln!("dillo: {e}");
