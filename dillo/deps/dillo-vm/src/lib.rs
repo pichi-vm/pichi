@@ -1146,58 +1146,42 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let msix_vectors: u16 = 3;
     let irqfd_notifier = vm.msix_notifier(Arc::clone(&irq_mgr), msix_vectors);
 
-    let call_lookup_notifier = Arc::clone(&irqfd_notifier);
-
     // Process-isolation: fork+exec the console backend as a separate
     // child and use the vhost-user proxy as the PCI device. The proxy
     // runs the full vhost-user handshake (set_owner/get_features) in
     // its constructor; the data plane (descriptor walking, stdout
     // writes) lives in the child after `activate()` shares memory and
-    // queue events. Falls back to the in-process device if the spawn
-    // fails so a missing/unreadable /proc/self/exe doesn't crash boot.
+    // queue events. Process-isolation must fail closed if the child
+    // cannot be started or negotiated; substituting an in-process
+    // console would change the configured device model.
     #[cfg(feature = "process-isolation-spawn")]
     let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = {
         let notifier_for_frontend = Arc::clone(&irqfd_notifier);
-        match spawn_backend("console") {
-            Ok((stream, child)) => {
-                match VhostUserFrontend::new(stream, child, notifier_for_frontend) {
-                    Ok(frontend) => {
-                        log::info!("process-isolation: vhost-user console backend wired");
-                        Arc::new(std::sync::Mutex::new(Box::new(frontend)))
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "process-isolation: vhost-user handshake failed ({e}); \
-                         falling back to in-process console"
-                        );
-                        Arc::new(std::sync::Mutex::new(Box::new(
-                            dillo_virtio_console::VirtioConsole::new(Arc::new(move |vector| {
-                                call_lookup_notifier.get_irqfd_for_vector(vector)
-                            })),
-                        )))
-                    }
+        let (stream, child) =
+            spawn_backend("console").map_err(|source| RunError::DeviceBackend {
+                kind: "console",
+                source: source.into(),
+            })?;
+        let frontend =
+            VhostUserFrontend::new(stream, child, notifier_for_frontend).map_err(|source| {
+                RunError::DeviceBackend {
+                    kind: "console",
+                    source,
                 }
-            }
-            Err(e) => {
-                log::warn!(
-                    "process-isolation: spawn_backend failed ({e}); \
-                     falling back to in-process console"
-                );
-                Arc::new(std::sync::Mutex::new(Box::new(
-                    dillo_virtio_console::VirtioConsole::new(Arc::new(move |vector| {
-                        call_lookup_notifier.get_irqfd_for_vector(vector)
-                    })),
-                )))
-            }
-        }
+            })?;
+        log::info!("process-isolation: vhost-user console backend wired");
+        Arc::new(std::sync::Mutex::new(Box::new(frontend)))
     };
 
     #[cfg(not(feature = "process-isolation-spawn"))]
-    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
-        std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
-            Arc::new(move |vector| call_lookup_notifier.get_irqfd_for_vector(vector)),
-        ))),
-    );
+    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = {
+        let call_lookup_notifier = Arc::clone(&irqfd_notifier);
+        Arc::new(std::sync::Mutex::new(Box::new(
+            dillo_virtio_console::VirtioConsole::new(Arc::new(move |vector| {
+                call_lookup_notifier.get_irqfd_for_vector(vector)
+            })),
+        )))
+    };
 
     // Pick a BAR layout inside the DTB-declared MMIO window. Two 4 KiB
     // BARs per device (BAR0 + BAR2); slot 1 is the first endpoint.

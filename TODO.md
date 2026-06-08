@@ -675,6 +675,9 @@ Completed changes:
 - Removed the detached virtio-console stdin reader; host-to-guest input now
   requires a future portable host-input capability instead of direct OS polling
   in the device.
+- Wired top-level `dillo` `process-isolation` to the VM crate's process-spawn
+  feature, and made that path fail closed instead of falling back to an
+  in-process console when the vhost-user child cannot be started or negotiated.
 
 Remaining divergence:
 - The vhost-user process still starts before activation because config-space
