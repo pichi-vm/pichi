@@ -13,9 +13,12 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dillo_mmio::{MmioDevice, MmioWindow};
+use dillo_mmio::{MmioAttachment, MmioDevice, MmioDeviceHost, MmioJoinError, MmioWindow};
 use dillo_virtio::queue::Queue;
-use dillo_virtio::{Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle};
+use dillo_virtio::{
+    ActivateError, DeviceJoinError, Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle,
+    VirtioDeviceHost, VirtioRunToken,
+};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 // Register offsets (virtio-mmio v2; see the virtio spec §4.2.2).
@@ -99,6 +102,7 @@ struct Inner {
     status: u32,
     activated: bool,
     activation: Option<VirtioDeviceHandle>,
+    host: Option<Arc<dyn VirtioDeviceHost>>,
     mem: GuestMemoryMmap,
     /// One per queue after activation; `QueueNotify` writes kick these.
     kicks: Vec<Kick>,
@@ -157,12 +161,21 @@ impl VirtioMmio {
                 status: 0,
                 activated: false,
                 activation: None,
+                host: None,
                 mem,
                 kicks: Vec::new(),
             }),
             int_status,
             irq,
         }
+    }
+
+    pub fn set_attachment(&self, attachment: Arc<dyn MmioAttachment>) {
+        self.inner
+            .lock()
+            .expect("virtio-mmio poisoned")
+            .host
+            .replace(Arc::new(MmioVirtioHost { attachment }));
     }
 
     pub fn read(&self, offset: u64, data: &mut [u8]) -> bool {
@@ -316,6 +329,10 @@ fn maybe_activate(g: &mut Inner) {
         return;
     }
     let mem = g.mem.clone();
+    let Some(host) = g.host.as_ref().map(Arc::clone) else {
+        log::error!("virtio-mmio: activate failed: no MMIO attachment host");
+        return;
+    };
     let queues: Vec<Queue> = g
         .queues
         .iter()
@@ -340,7 +357,10 @@ fn maybe_activate(g: &mut Inner) {
         }
     };
     g.kicks = kicks.iter().filter_map(|k| k.try_clone().ok()).collect();
-    let handle = match g.device.activate(VirtioActivate::new(mem, queues, kicks)) {
+    let handle = match g
+        .device
+        .activate(VirtioActivate::with_host(mem, queues, kicks, host))
+    {
         Ok(handle) => handle,
         Err(e) => {
             log::error!("virtio-mmio: activate failed: {e}");
@@ -350,4 +370,47 @@ fn maybe_activate(g: &mut Inner) {
     g.activation = Some(handle);
     g.activated = true;
     log::info!("virtio-mmio: device-id {} activated", g.device_id);
+}
+
+#[derive(Debug)]
+struct MmioVirtioHost {
+    attachment: Arc<dyn MmioAttachment>,
+}
+
+impl VirtioDeviceHost for MmioVirtioHost {
+    fn spawn(
+        &self,
+        run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,
+    ) -> Result<VirtioDeviceHandle, ActivateError> {
+        let handle = Arc::clone(&self.attachment)
+            .spawn(MmioDeviceHost::thread(move |token| {
+                run(VirtioRunToken::from_fn(move || {
+                    token.is_shutdown_requested()
+                }))
+                .map_err(|e| MmioJoinError::Host(e.to_string()))
+            }))
+            .map_err(|e| ActivateError::InvalidConfig(format!("spawn virtio worker: {e}")))?;
+        let handle = Arc::new(Mutex::new(Some(handle)));
+        let shutdown_handle = Arc::clone(&handle);
+        let join_handle = Arc::clone(&handle);
+        Ok(VirtioDeviceHandle::new(
+            move || {
+                if let Some(handle) = shutdown_handle
+                    .lock()
+                    .expect("virtio handle poisoned")
+                    .as_ref()
+                {
+                    let _ = handle.shutdown();
+                }
+            },
+            move || {
+                if let Some(handle) = join_handle.lock().expect("virtio handle poisoned").take() {
+                    handle
+                        .join()
+                        .map_err(|e| DeviceJoinError::Worker(e.to_string()))?;
+                }
+                Ok(())
+            },
+        ))
+    }
 }

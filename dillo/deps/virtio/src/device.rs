@@ -7,12 +7,17 @@ use vm_memory::GuestMemoryMmap;
 use crate::kick::Kick;
 use crate::queue::Queue;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+
 /// Transport-resolved activation inputs for one virtio device.
 #[derive(Debug)]
 pub struct VirtioActivate {
     pub mem: GuestMemoryMmap,
     pub queues: Vec<Queue>,
     pub queue_evts: Vec<Kick>,
+    pub host: Arc<dyn VirtioDeviceHost>,
 }
 
 impl VirtioActivate {
@@ -21,6 +26,21 @@ impl VirtioActivate {
             mem,
             queues,
             queue_evts,
+            host: Arc::new(ThreadDeviceHost),
+        }
+    }
+
+    pub fn with_host(
+        mem: GuestMemoryMmap,
+        queues: Vec<Queue>,
+        queue_evts: Vec<Kick>,
+        host: Arc<dyn VirtioDeviceHost>,
+    ) -> Self {
+        Self {
+            mem,
+            queues,
+            queue_evts,
+            host,
         }
     }
 }
@@ -47,6 +67,61 @@ pub enum DeviceJoinError {
     /// Device-specific worker failure.
     #[error("virtio device worker failed: {0}")]
     Worker(String),
+}
+
+/// Token passed to a virtio device worker started by the transport host.
+#[derive(Clone)]
+pub struct VirtioRunToken {
+    is_shutdown_requested: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl std::fmt::Debug for VirtioRunToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VirtioRunToken").finish_non_exhaustive()
+    }
+}
+
+impl VirtioRunToken {
+    pub fn from_fn(is_shutdown_requested: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            is_shutdown_requested: Arc::new(is_shutdown_requested),
+        }
+    }
+
+    pub fn is_shutdown_requested(&self) -> bool {
+        (self.is_shutdown_requested)()
+    }
+}
+
+/// Host-side execution service for virtio device workers.
+pub trait VirtioDeviceHost: Send + Sync + std::fmt::Debug {
+    fn spawn(
+        &self,
+        run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,
+    ) -> Result<VirtioDeviceHandle, ActivateError>;
+}
+
+/// Compatibility host that runs virtio device workers as local threads.
+#[derive(Debug)]
+pub struct ThreadDeviceHost;
+
+impl VirtioDeviceHost for ThreadDeviceHost {
+    fn spawn(
+        &self,
+        run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,
+    ) -> Result<VirtioDeviceHandle, ActivateError> {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let token_shutdown = Arc::clone(&shutdown);
+        let token = VirtioRunToken::from_fn(move || token_shutdown.load(Ordering::Acquire));
+        let join = thread::spawn(move || run(token));
+        Ok(VirtioDeviceHandle::new(
+            move || shutdown.store(true, Ordering::Release),
+            move || match join.join() {
+                Ok(result) => result,
+                Err(_) => Err(DeviceJoinError::Panicked),
+            },
+        ))
+    }
 }
 
 /// Runtime handle for workers started by one virtio device activation.
@@ -175,5 +250,21 @@ mod tests {
     #[test]
     fn noop_handle_joins() {
         VirtioDeviceHandle::noop().join().expect("noop join");
+    }
+
+    #[test]
+    fn thread_host_reports_shutdown_to_worker() {
+        let host = ThreadDeviceHost;
+        let handle = host
+            .spawn(Box::new(|token| {
+                while !token.is_shutdown_requested() {
+                    std::thread::yield_now();
+                }
+                Ok(())
+            }))
+            .expect("spawned");
+        let mut handle = handle;
+        handle.shutdown();
+        handle.join().expect("joined");
     }
 }

@@ -655,7 +655,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             irq.clone(),
             guest_mem,
         ));
-        vm.attach_mmio(transport)?;
+        let attachment = vm.attach_mmio(Arc::clone(&transport))?;
+        transport.set_attachment(attachment);
         log::info!(
             "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
             slot.base,

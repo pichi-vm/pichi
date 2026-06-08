@@ -156,6 +156,7 @@ impl VirtioDevice for VhostUserFrontend {
             mem,
             queues,
             queue_evts,
+            host: _,
         } = activation;
         // Re-intersect with backend_features as a safety net (the value
         // passed in is the driver-negotiated subset of what we advertised).

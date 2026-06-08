@@ -563,6 +563,7 @@ CI verification:
 - `27149322531` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27149884240` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27150535316` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27150863901` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
@@ -654,10 +655,16 @@ Completed changes:
   tests.
 - Moved current vhost-user child-process ownership into the retained virtio
   activation handle, with a frontend drop fallback when activation never occurs.
+- Added a `dillo-virtio` host abstraction to `VirtioActivate`.
+- Wired direct virtio-mmio activation to the backend-owned `MmioAttachment`
+  returned by `attach_mmio`.
+- Updated virtio-console TX/RX workers to spawn through the activation host
+  instead of calling `std::thread::spawn` directly.
 
 Remaining divergence:
-- Existing devices are still activated by the compatibility path; no device
-  wrapper calls `MmioAttachment::spawn` yet.
+- PCI virtio activation still uses the compatibility host path; `PciRoot` needs
+  a root-mediated host path before PCI devices can use `MmioAttachment::spawn`.
+- The virtio-console stdin reader is still a detached local thread.
 - Process-host support is represented in the API but not wired to current
   vhost-user behavior yet.
 

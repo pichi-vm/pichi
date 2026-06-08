@@ -23,17 +23,15 @@
 use std::collections::VecDeque;
 use std::io::{self, BufWriter, Read, Write};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use dillo_virtio::queue::{Queue, VIRTQ_DESC_F_WRITE};
 use dillo_virtio::{
-    ActivateError, DeviceJoinError, Interrupt, Kick, VirtioActivate, VirtioDevice,
-    VirtioDeviceHandle,
+    ActivateError, Interrupt, Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle,
+    VirtioDeviceHost, VirtioRunToken,
 };
 use vm_memory::{Bytes, GuestMemoryMmap};
 
@@ -152,6 +150,7 @@ impl VirtioDevice for VirtioConsole {
             mem,
             mut queues,
             mut queue_evts,
+            host,
         } = activation;
         if self.activated {
             return Err(ActivateError::InvalidConfig(
@@ -171,29 +170,66 @@ impl VirtioDevice for VirtioConsole {
         let tx_evt = queue_evts.remove(1);
         let tx_wake = tx_evt.try_clone()?;
         let tx_call_fd = (self.call_fd_lookup)(tx_queue.msix_vector);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let tx_shutdown = Arc::clone(&shutdown);
-        let tx_join = spawn_tx_worker(mem.clone(), tx_queue, tx_evt, tx_call_fd, tx_shutdown);
+        let tx_handle = Arc::new(Mutex::new(Some(spawn_tx_worker(
+            Arc::clone(&host),
+            mem.clone(),
+            tx_queue,
+            tx_evt,
+            tx_call_fd,
+        )?)));
 
         // Queue 0 is RX. Feed host stdin into guest-provided writable buffers.
         let rx_queue = queues.remove(0);
         let rx_evt = queue_evts.remove(0);
         let rx_wake = rx_evt.try_clone()?;
         let rx_call_fd = (self.call_fd_lookup)(rx_queue.msix_vector);
-        let rx_shutdown = Arc::clone(&shutdown);
-        let rx_join = spawn_rx_worker(mem.clone(), rx_queue, rx_evt, rx_call_fd, rx_shutdown);
+        let rx_handle = Arc::new(Mutex::new(Some(spawn_rx_worker(
+            host,
+            mem.clone(),
+            rx_queue,
+            rx_evt,
+            rx_call_fd,
+        )?)));
+        let shutdown_tx_handle = Arc::clone(&tx_handle);
+        let shutdown_rx_handle = Arc::clone(&rx_handle);
 
         self.activated = true;
         log::info!("virtio-console: activated (TX/RX workers spawned)");
         Ok(VirtioDeviceHandle::new(
             move || {
-                shutdown.store(true, Ordering::Release);
+                if let Some(handle) = shutdown_tx_handle
+                    .lock()
+                    .expect("virtio-console TX handle poisoned")
+                    .as_mut()
+                {
+                    handle.shutdown();
+                }
+                if let Some(handle) = shutdown_rx_handle
+                    .lock()
+                    .expect("virtio-console RX handle poisoned")
+                    .as_mut()
+                {
+                    handle.shutdown();
+                }
                 let _ = tx_wake.write(1);
                 let _ = rx_wake.write(1);
             },
             move || {
-                join_worker("virtio-console-tx", tx_join)?;
-                join_worker("virtio-console-rx", rx_join)
+                if let Some(handle) = tx_handle
+                    .lock()
+                    .expect("virtio-console TX handle poisoned")
+                    .take()
+                {
+                    handle.join()?;
+                }
+                if let Some(handle) = rx_handle
+                    .lock()
+                    .expect("virtio-console RX handle poisoned")
+                    .take()
+                {
+                    handle.join()?;
+                }
+                Ok(())
             },
         ))
     }
@@ -213,39 +249,34 @@ impl VirtioDevice for VirtioConsole {
 }
 
 fn spawn_tx_worker(
+    host: Arc<dyn VirtioDeviceHost>,
     mem: GuestMemoryMmap,
     queue: Queue,
     kick: Kick,
     call_fd: Option<Interrupt>,
-    shutdown: Arc<AtomicBool>,
-) -> JoinHandle<()> {
-    thread::Builder::new()
-        .name("virtio-console-tx".into())
-        .spawn(move || tx_worker(mem, queue, kick, call_fd, shutdown))
-        .expect("spawn virtio-console TX worker")
+) -> Result<VirtioDeviceHandle, ActivateError> {
+    host.spawn(Box::new(move |token| {
+        tx_worker(mem, queue, kick, call_fd, token);
+        Ok(())
+    }))
 }
 
 fn spawn_rx_worker(
+    host: Arc<dyn VirtioDeviceHost>,
     mem: GuestMemoryMmap,
     queue: Queue,
     kick: Kick,
     call_fd: Option<Interrupt>,
-    shutdown: Arc<AtomicBool>,
-) -> JoinHandle<()> {
+) -> Result<VirtioDeviceHandle, ActivateError> {
     let (input_tx, input_rx) = mpsc::channel();
     thread::Builder::new()
         .name("virtio-console-stdin".into())
         .spawn(move || stdin_worker(input_tx))
         .expect("spawn virtio-console stdin worker");
-    thread::Builder::new()
-        .name("virtio-console-rx".into())
-        .spawn(move || rx_worker(mem, queue, kick, call_fd, input_rx, shutdown))
-        .expect("spawn virtio-console RX worker")
-}
-
-fn join_worker(name: &'static str, join: JoinHandle<()>) -> Result<(), DeviceJoinError> {
-    join.join()
-        .map_err(|_| DeviceJoinError::Worker(format!("{name} panicked")))
+    host.spawn(Box::new(move |token| {
+        rx_worker(mem, queue, kick, call_fd, input_rx, token);
+        Ok(())
+    }))
 }
 
 fn stdin_worker(tx: mpsc::Sender<Vec<u8>>) {
@@ -274,7 +305,7 @@ fn tx_worker(
     queue: Queue,
     kick: Kick,
     call_fd: Option<Interrupt>,
-    shutdown: Arc<AtomicBool>,
+    token: VirtioRunToken,
 ) {
     // Linux: virtio-pci's queue eventfds are created `EFD_NONBLOCK` (so the
     // ioeventfd-side write never blocks). For the worker we want blocking
@@ -302,7 +333,7 @@ fn tx_worker(
             log::error!("virtio-console TX: kick eventfd read error: {e}");
             return;
         }
-        if shutdown.load(Ordering::Acquire) {
+        if token.is_shutdown_requested() {
             return;
         }
         drain_tx(&mem, &queue, call_fd.as_ref());
@@ -315,7 +346,7 @@ fn rx_worker(
     kick: Kick,
     call_fd: Option<Interrupt>,
     input_rx: mpsc::Receiver<Vec<u8>>,
-    shutdown: Arc<AtomicBool>,
+    token: VirtioRunToken,
 ) {
     #[cfg(target_os = "linux")]
     clear_kick_nonblock(&kick);
@@ -323,7 +354,7 @@ fn rx_worker(
     let queue = Arc::new(Mutex::new(queue));
     let mut pending = VecDeque::new();
     loop {
-        if shutdown.load(Ordering::Acquire) {
+        if token.is_shutdown_requested() {
             return;
         }
         if pending.is_empty() {
@@ -335,7 +366,7 @@ fn rx_worker(
         }
 
         while !pending.is_empty() {
-            if shutdown.load(Ordering::Acquire) {
+            if token.is_shutdown_requested() {
                 return;
             }
             if drain_rx(&mem, &queue, &mut pending, call_fd.as_ref()) {
