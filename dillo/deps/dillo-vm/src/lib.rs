@@ -494,7 +494,6 @@ fn run_windows_vcpu_loop(
                 shutdown.store(true, Ordering::Release);
                 return Ok(RunOutcome::Exit(0));
             }
-            VcpuExit::Debug => {}
             VcpuExit::Unknown(reason) => {
                 log::warn!("unknown WHP exit: {reason}");
                 return Err(anyhow!("unknown WHP exit: {reason}"));
@@ -1737,11 +1736,6 @@ fn run_vcpu_loop(
             log::debug!("vCPU exit #{}: {:?}", exit_count, exit);
         }
         match exit {
-            VcpuExit::Debug => {
-                // Single-step / breakpoint exit. The non-gdb run loop
-                // never enables guest_debug, so reaching this branch
-                // means stale state; ignore.
-            }
             VcpuExit::MmioWrite { .. } => {}
             VcpuExit::Shutdown => {
                 log::warn!(

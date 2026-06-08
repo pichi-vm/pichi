@@ -112,8 +112,6 @@ mod imp {
 
         Shutdown,
 
-        Debug,
-
         Unknown(String),
     }
 
@@ -184,7 +182,7 @@ mod imp {
                     VmExit::Interrupted => return Ok(VcpuExit::Interrupted),
                     VmExit::Halted => continue,
                     VmExit::Shutdown => return Ok(VcpuExit::Shutdown),
-                    VmExit::Debug => return Ok(VcpuExit::Debug),
+                    VmExit::Debug => continue,
                     VmExit::Hvc { args } => {
                         log::warn!("unexpected WHP HVC exit: args={args:?}");
                     }

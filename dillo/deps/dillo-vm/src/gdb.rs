@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
-use dillo_machine_backend::{Vcpu, VcpuExit, debug_flags};
+use dillo_machine_backend::{DebugExit, Vcpu, debug_flags};
 use gdbstub::common::Signal;
 use gdbstub::conn::{Connection, ConnectionExt};
 use gdbstub::stub::run_blocking::{BlockingEventLoop, Event, WaitForStopReasonError};
@@ -95,14 +95,14 @@ impl GdbTarget {
     /// `Some` when execution should stop and gdb should be notified.
     fn run_one(&mut self) -> Result<Option<SingleThreadStopReason<u64>>, &'static str> {
         self.configure_debug()?;
-        let exit = self.vcpu.run().map_err(|_| "vcpu.run failed")?;
+        let exit = self.vcpu.run_debug().map_err(|_| "vcpu.run_debug failed")?;
         Ok(self.classify_exit(exit))
     }
 
-    fn classify_exit(&mut self, exit: VcpuExit) -> Option<SingleThreadStopReason<u64>> {
+    fn classify_exit(&mut self, exit: DebugExit) -> Option<SingleThreadStopReason<u64>> {
         match exit {
             // INT3 breakpoint or KVM_GUESTDBG_SINGLESTEP completion.
-            VcpuExit::Debug => {
+            DebugExit::Debug => {
                 // If we were stepping, report DoneStep; otherwise a SW break.
                 if self.resume_step {
                     self.resume_step = false;
@@ -111,11 +111,20 @@ impl GdbTarget {
                     Some(SingleThreadStopReason::SwBreak(()))
                 }
             }
-            VcpuExit::Shutdown => {
+            DebugExit::Halted => {
+                // The guest issued HLT. With gdb attached we keep going
+                // on next "continue" - KVM resumes on the next interrupt.
+                if self.resume_continue {
+                    None
+                } else {
+                    Some(SingleThreadStopReason::Signal(Signal::SIGTRAP))
+                }
+            }
+            DebugExit::Shutdown => {
                 self.shutdown.store(true, Ordering::Release);
                 Some(SingleThreadStopReason::Exited(0))
             }
-            VcpuExit::MmioWrite { addr, data, size } => {
+            DebugExit::MmioWrite { addr, data, size } => {
                 if crate::syscon::SysconDevice::matches_poweroff(
                     self.poweroff,
                     addr,
@@ -126,8 +135,8 @@ impl GdbTarget {
                 }
                 None
             }
-            VcpuExit::Interrupted => None,
-            VcpuExit::Unknown(reason) => {
+            DebugExit::Interrupted => None,
+            DebugExit::Unknown(reason) => {
                 log::warn!("gdb: unknown KVM exit: {reason}");
                 Some(SingleThreadStopReason::Signal(Signal::SIGSEGV))
             }

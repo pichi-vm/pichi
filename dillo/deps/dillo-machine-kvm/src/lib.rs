@@ -103,7 +103,20 @@ mod imp {
 
         Shutdown,
 
+        Unknown(String),
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum DebugExit {
         Debug,
+
+        Halted,
+
+        MmioWrite { addr: u64, data: [u8; 8], size: u8 },
+
+        Shutdown,
+
+        Interrupted,
 
         Unknown(String),
     }
@@ -191,7 +204,7 @@ mod imp {
                     VmExit::Interrupted => return Ok(VcpuExit::Interrupted),
                     VmExit::Halted => continue,
                     VmExit::Shutdown => return Ok(VcpuExit::Shutdown),
-                    VmExit::Debug => return Ok(VcpuExit::Debug),
+                    VmExit::Debug => continue,
                     VmExit::Hvc { args } => {
                         log::warn!("unexpected KVM HVC exit: args={args:?}");
                     }
@@ -199,6 +212,60 @@ mod imp {
                         log::warn!("unexpected KVM SMC exit: args={args:?}");
                     }
                     VmExit::Unknown(reason) => return Ok(VcpuExit::Unknown(reason)),
+                }
+            }
+        }
+
+        pub fn run_debug(&mut self) -> Result<DebugExit, Error> {
+            loop {
+                let bus = Arc::clone(&self.mmio_bus);
+                let pio_read = Arc::clone(&self.pio_read);
+                let exit = self.inner.run(
+                    move |port, size| pio_read(port, size),
+                    move |addr, data| {
+                        let handled = bus.lock().expect("MMIO bus lock poisoned").read(addr, data);
+                        if !handled {
+                            log::debug!(
+                                "MMIO read from unmapped {:#x} (size {}); returning zeros",
+                                addr,
+                                data.len(),
+                            );
+                        }
+                        handled
+                    },
+                )?;
+                match exit {
+                    VmExit::MmioRead { .. } | VmExit::PioRead { .. } => continue,
+                    VmExit::PioWrite { port, data, size } => {
+                        (self.pio_write)(port, &data[..size as usize]);
+                    }
+                    VmExit::MmioWrite { addr, data, size } => {
+                        if !self
+                            .mmio_bus
+                            .lock()
+                            .expect("MMIO bus lock poisoned")
+                            .write(addr, &data[..size as usize])
+                        {
+                            log::warn!(
+                                "MMIO write to unmapped {:#x} (size {}, data {:02x?})",
+                                addr,
+                                size,
+                                &data[..size as usize],
+                            );
+                        }
+                        return Ok(DebugExit::MmioWrite { addr, data, size });
+                    }
+                    VmExit::Interrupted => return Ok(DebugExit::Interrupted),
+                    VmExit::Halted => return Ok(DebugExit::Halted),
+                    VmExit::Shutdown => return Ok(DebugExit::Shutdown),
+                    VmExit::Debug => return Ok(DebugExit::Debug),
+                    VmExit::Hvc { args } => {
+                        log::warn!("unexpected KVM HVC exit while debugging: args={args:?}");
+                    }
+                    VmExit::Smc { args } => {
+                        log::warn!("unexpected KVM SMC exit while debugging: args={args:?}");
+                    }
+                    VmExit::Unknown(reason) => return Ok(DebugExit::Unknown(reason)),
                 }
             }
         }
