@@ -683,7 +683,7 @@ Remaining divergence:
 
 ## Stage 12 - Implement CC-first shared-memory capabilities
 
-Status: in progress.
+Status: deferred; divergence recorded.
 
 Goal: replace whole-guest-memory exposure with attachment-scoped shared-memory
 capabilities.
@@ -753,10 +753,15 @@ Completed changes:
   base DTB describes virtio-mmio slots, PCI ECAM/BAR windows, and PCI
   `dma-coherent`, but no `dma-ranges`, `memory-region`, `restricted-dma-pool`,
   virtio-iommu, or equivalent restricted DMA/shared-memory aperture.
+- Made the platform survey fail closed if a PCI host bridge declares
+  `dma-ranges` before dillo models that property into a provenance-carrying DMA
+  aperture.
 
 Remaining divergence:
 - No agreed DTB binding currently exists for the virtio DMA/shared-memory
   aperture needed by Stage 12.
+- If `dma-ranges` becomes the chosen binding, dillo must parse it into modeled
+  shared-memory apertures instead of rejecting it.
 
 ## Stage 14 - Remove compatibility adapters
 

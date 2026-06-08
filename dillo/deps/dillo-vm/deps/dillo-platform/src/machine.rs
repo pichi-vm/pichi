@@ -871,7 +871,7 @@ impl Pcie {
         pci.ack("#address-cells");
         pci.ack("#size-cells");
         pci.ack("dma-coherent");
-        pci.ack("dma-ranges");
+        pci.reject("dma-ranges", "/pcie")?;
         if let Some(parentage) =
             topology.claim_msi_parent(&mut pci, "/pcie", ControllerKind::GicV2mFrame)?
         {
@@ -1160,6 +1160,8 @@ trait NodeExt {
     fn require_u32(&mut self, prop: &'static str, node: &'static str) -> Result<u32, SurveyError>;
     /// Remove a property that is acknowledged but carries no modeled value.
     fn ack(&mut self, prop: &'static str);
+    /// Fail closed on a recognized property whose semantics are not modeled.
+    fn reject(&self, prop: &'static str, node: &'static str) -> Result<(), SurveyError>;
     /// Error unless the node has no remaining properties or children.
     fn ensure_drained(&self) -> Result<(), SurveyError>;
 }
@@ -1189,6 +1191,18 @@ impl NodeExt for OwnedNode {
 
     fn ack(&mut self, prop: &'static str) {
         let _ = self.remove_property(prop);
+    }
+
+    fn reject(&self, prop: &'static str, node: &'static str) -> Result<(), SurveyError> {
+        if self.properties().any(|p| p.name() == prop) {
+            Err(SurveyError::Unsupported {
+                node,
+                prop,
+                value: "present".to_string(),
+            })
+        } else {
+            Ok(())
+        }
     }
 
     fn ensure_drained(&self) -> Result<(), SurveyError> {
@@ -1543,6 +1557,35 @@ mod tests {
                     ref node,
                     prop: "msi-parent"
                 } if node == "/pcie"
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn pci_dma_ranges_is_rejected_until_modeled() {
+        let mut root = base_root();
+        root.child_mut("pcie@c000000").unwrap().set_property(
+            OwnedProperty::new("dma-ranges").with_u32s(&[
+                0x0300_0000,
+                0,
+                PCI_MMIO_BASE as u32,
+                0,
+                PCI_MMIO_BASE as u32,
+                0,
+                0x03F0_0000,
+            ]),
+        );
+
+        let err = Machine::survey(&dtb(root), Arch::Aarch64).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SurveyError::Unsupported {
+                    node: "/pcie",
+                    prop: "dma-ranges",
+                    ..
+                }
             ),
             "got {err:?}"
         );
