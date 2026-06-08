@@ -515,10 +515,10 @@ Completed changes:
   constructor-time PIO write function alongside the existing PIO read function.
 - Kept PCI CF8/CFC decoding in `dillo-vm` for now, but `Vcpu::run()` no longer
   returns those PIO writes to the supervisor loop on KVM/WHP.
+- Added KVM/WHP `VcpuExit` facade enums so normal `dillo-vm` and Linux gdb
+  callers no longer see raw PIO read/write exits from `dillo-hypervisor`.
 
 Remaining divergence:
-- `dillo-vm` still matches compatibility PIO exits defensively, though the
-  KVM/WHP facades should no longer return them during normal execution.
 - HVC/SMC/PSCI, debug, halt, interrupt, shutdown, and unknown exits still cross
   into `dillo-vm`. These must move below the machine boundary before Stage 9 is
   complete.
@@ -530,6 +530,12 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+Pushed commit:
+- `189e9c9 refactor: handle x86 pio writes in backends`
+
+CI verification:
+- `27143278195` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 

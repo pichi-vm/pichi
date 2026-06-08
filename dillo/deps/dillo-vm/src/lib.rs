@@ -66,9 +66,11 @@ use std::thread;
 use anyhow::{Result, anyhow};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use backend::{BackendVm, VcpuSeed};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use dillo_machine_backend::VcpuExit;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_machine_backend::Vm;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 use dillo_machine_backend::VmExit;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::MsixNotifier;
@@ -485,22 +487,19 @@ fn run_windows_vcpu_loop(
         }
 
         match exit {
-            VmExit::PioWrite { .. } => {}
-            VmExit::PioRead { .. } => {}
-            VmExit::MmioWrite { .. } => {}
-            VmExit::MmioRead { .. } => {}
-            VmExit::Interrupted => {}
-            VmExit::Halted => {}
-            VmExit::Shutdown => {
+            VcpuExit::MmioWrite { .. } => {}
+            VcpuExit::Interrupted => {}
+            VcpuExit::Halted => {}
+            VcpuExit::Shutdown => {
                 log::warn!("guest shutdown via WHP shutdown exit");
                 shutdown.store(true, Ordering::Release);
                 return Ok(RunOutcome::Exit(0));
             }
-            VmExit::Debug => {}
-            VmExit::Hvc { args } | VmExit::Smc { args } => {
+            VcpuExit::Debug => {}
+            VcpuExit::Hvc { args } | VcpuExit::Smc { args } => {
                 log::warn!("unexpected HVC/SMC on WHP: args={args:?}");
             }
-            VmExit::Unknown(reason) => {
+            VcpuExit::Unknown(reason) => {
                 log::warn!("unknown WHP exit: {reason}");
                 return Err(anyhow!("unknown WHP exit: {reason}"));
             }
@@ -1742,21 +1741,14 @@ fn run_vcpu_loop(
             log::debug!("vCPU exit #{}: {:?}", exit_count, exit);
         }
         match exit {
-            VmExit::Debug => {
+            VcpuExit::Debug => {
                 // Single-step / breakpoint exit. The non-gdb run loop
                 // never enables guest_debug, so reaching this branch
                 // means stale state; ignore.
             }
-            VmExit::PioWrite { .. } => {}
-            VmExit::PioRead { .. } => {
-                // Handled inline in vcpu.run via pio_read callback above.
-            }
-            VmExit::MmioWrite { .. } => {}
-            VmExit::MmioRead { .. } => {
-                // Handled inline in vcpu.run via mmio_read callback above.
-            }
-            VmExit::Halted => {}
-            VmExit::Shutdown => {
+            VcpuExit::MmioWrite { .. } => {}
+            VcpuExit::Halted => {}
+            VcpuExit::Shutdown => {
                 log::warn!(
                     "guest shutdown via KVM_EXIT_SHUTDOWN (triple fault on x86, PSCI SYSTEM_OFF on aarch64) — \
                      not a syscon-poweroff write. Attach gdb (DILLO_GDB=<port>) to inspect."
@@ -1764,11 +1756,11 @@ fn run_vcpu_loop(
                 shutdown.store(true, Ordering::Release);
                 return Ok(RunOutcome::Exit(0));
             }
-            VmExit::Interrupted => {}
-            VmExit::Hvc { args } | VmExit::Smc { args } => {
+            VcpuExit::Interrupted => {}
+            VcpuExit::Hvc { args } | VcpuExit::Smc { args } => {
                 log::warn!("unhandled HVC/SMC: args={args:?}");
             }
-            VmExit::Unknown(reason) => {
+            VcpuExit::Unknown(reason) => {
                 log::warn!("unknown KVM exit: {reason}");
                 return Err(anyhow!("unknown KVM exit: {reason}"));
             }

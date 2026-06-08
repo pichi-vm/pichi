@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
-use dillo_machine_backend::{Vcpu, VmExit, debug_flags};
+use dillo_machine_backend::{Vcpu, VcpuExit, debug_flags};
 use gdbstub::common::Signal;
 use gdbstub::conn::{Connection, ConnectionExt};
 use gdbstub::stub::run_blocking::{BlockingEventLoop, Event, WaitForStopReasonError};
@@ -99,10 +99,10 @@ impl GdbTarget {
         Ok(self.classify_exit(exit))
     }
 
-    fn classify_exit(&mut self, exit: VmExit) -> Option<SingleThreadStopReason<u64>> {
+    fn classify_exit(&mut self, exit: VcpuExit) -> Option<SingleThreadStopReason<u64>> {
         match exit {
             // INT3 breakpoint or KVM_GUESTDBG_SINGLESTEP completion.
-            VmExit::Debug => {
+            VcpuExit::Debug => {
                 // If we were stepping, report DoneStep; otherwise a SW break.
                 if self.resume_step {
                     self.resume_step = false;
@@ -111,7 +111,7 @@ impl GdbTarget {
                     Some(SingleThreadStopReason::SwBreak(()))
                 }
             }
-            VmExit::Halted => {
+            VcpuExit::Halted => {
                 // The guest issued HLT. With gdb attached we keep going
                 // on next "continue" — KVM resumes on the next interrupt.
                 if self.resume_continue {
@@ -120,11 +120,11 @@ impl GdbTarget {
                     Some(SingleThreadStopReason::Signal(Signal::SIGTRAP))
                 }
             }
-            VmExit::Shutdown => {
+            VcpuExit::Shutdown => {
                 self.shutdown.store(true, Ordering::Release);
                 Some(SingleThreadStopReason::Exited(0))
             }
-            VmExit::MmioWrite { addr, data, size } => {
+            VcpuExit::MmioWrite { addr, data, size } => {
                 if crate::syscon::SysconDevice::matches_poweroff(
                     self.poweroff,
                     addr,
@@ -135,13 +135,8 @@ impl GdbTarget {
                 }
                 None
             }
-            VmExit::PioWrite { .. } => None,
-            VmExit::MmioRead { .. }
-            | VmExit::PioRead { .. }
-            | VmExit::Hvc { .. }
-            | VmExit::Smc { .. }
-            | VmExit::Interrupted => None,
-            VmExit::Unknown(reason) => {
+            VcpuExit::Hvc { .. } | VcpuExit::Smc { .. } | VcpuExit::Interrupted => None,
+            VcpuExit::Unknown(reason) => {
                 log::warn!("gdb: unknown KVM exit: {reason}");
                 Some(SingleThreadStopReason::Signal(Signal::SIGSEGV))
             }

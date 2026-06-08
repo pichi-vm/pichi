@@ -5,7 +5,8 @@ mod imp {
 
     use dillo_mmio::{Attach, MmioAttachment, MmioBus, MmioDevice, MmioInterrupt, SharedMemory};
 
-    pub use dillo_hypervisor::{Error, VmExit, debug_flags, kvm_regs, kvm_sregs};
+    use dillo_hypervisor::VmExit;
+    pub use dillo_hypervisor::{Error, debug_flags, kvm_regs, kvm_sregs};
 
     type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
     type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
@@ -94,6 +95,25 @@ mod imp {
         pio_write: PioWrite,
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum VcpuExit {
+        MmioWrite { addr: u64, data: [u8; 8], size: u8 },
+
+        Interrupted,
+
+        Halted,
+
+        Shutdown,
+
+        Debug,
+
+        Hvc { args: [u64; 8] },
+
+        Smc { args: [u64; 8] },
+
+        Unknown(String),
+    }
+
     impl std::fmt::Debug for Vcpu {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("Vcpu")
@@ -135,7 +155,7 @@ mod imp {
             self.inner.set_sregs(sregs)
         }
 
-        pub fn run(&mut self) -> Result<VmExit, Error> {
+        pub fn run(&mut self) -> Result<VcpuExit, Error> {
             loop {
                 let bus = Arc::clone(&self.mmio_bus);
                 let pio_read = Arc::clone(&self.pio_read);
@@ -172,9 +192,15 @@ mod imp {
                                 &data[..size as usize],
                             );
                         }
-                        return Ok(VmExit::MmioWrite { addr, data, size });
+                        return Ok(VcpuExit::MmioWrite { addr, data, size });
                     }
-                    other => return Ok(other),
+                    VmExit::Interrupted => return Ok(VcpuExit::Interrupted),
+                    VmExit::Halted => return Ok(VcpuExit::Halted),
+                    VmExit::Shutdown => return Ok(VcpuExit::Shutdown),
+                    VmExit::Debug => return Ok(VcpuExit::Debug),
+                    VmExit::Hvc { args } => return Ok(VcpuExit::Hvc { args }),
+                    VmExit::Smc { args } => return Ok(VcpuExit::Smc { args }),
+                    VmExit::Unknown(reason) => return Ok(VcpuExit::Unknown(reason)),
                 }
             }
         }
