@@ -13,6 +13,8 @@ use dillo_mmio::{Attach, MmioAttachment, MmioDevice, MmioWindow};
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 
 #[cfg(target_os = "macos")]
 use crate::{RunError, hvf_devices, syscon};
@@ -78,6 +80,7 @@ pub(crate) trait BackendVm {
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
         #[cfg(any(target_os = "linux", target_os = "windows"))] pio_read: PioRead,
+        #[cfg(any(target_os = "linux", target_os = "windows"))] pio_write: PioWrite,
     ) -> Result<Self::Vcpu, RunError>;
 
     fn current_thread_vcpu(
@@ -181,10 +184,16 @@ impl BackendVm for dillo_machine_backend::Vm {
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
         pio_read: PioRead,
+        pio_write: PioWrite,
     ) -> Result<Self::Vcpu, RunError> {
-        let mut vcpu =
-            dillo_machine_backend::Vm::create_vcpu_with_pio(self, idx, cpu_profile, pio_read)
-                .map_err(RunError::Kvm)?;
+        let mut vcpu = dillo_machine_backend::Vm::create_vcpu_with_pio(
+            self,
+            idx,
+            cpu_profile,
+            pio_read,
+            pio_write,
+        )
+        .map_err(RunError::Kvm)?;
         match seed {
             VcpuSeed::X86_64Boot(state) => {
                 #[cfg(target_arch = "x86_64")]
@@ -457,10 +466,16 @@ impl BackendVm for dillo_machine_backend::Vm {
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
         pio_read: PioRead,
+        pio_write: PioWrite,
     ) -> Result<Self::Vcpu, RunError> {
-        let mut vcpu =
-            dillo_machine_backend::Vm::create_vcpu_with_pio(self, idx, cpu_profile, pio_read)
-                .map_err(RunError::Kvm)?;
+        let mut vcpu = dillo_machine_backend::Vm::create_vcpu_with_pio(
+            self,
+            idx,
+            cpu_profile,
+            pio_read,
+            pio_write,
+        )
+        .map_err(RunError::Kvm)?;
         match seed {
             VcpuSeed::X86_64Boot(state) => vcpu.set_x86_64_state(state)?,
             VcpuSeed::X86_64Secondary => {}

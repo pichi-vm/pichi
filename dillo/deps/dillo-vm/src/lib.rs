@@ -370,12 +370,22 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 0
             }
         });
+        let legacy_for_write = Arc::clone(&legacy_pci);
+        let pci_for_write = Arc::clone(&pci_root);
+        let pio_write = Arc::new(move |port, data: &[u8]| {
+            if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
+                || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
+            {
+                pio_pci::pio_write(&legacy_for_write, &pci_for_write, port, data);
+            }
+        });
         vcpu_handles.push(BackendVm::create_vcpu(
             &vm,
             idx,
             cpu_profile,
             seed,
             pio_read,
+            pio_write,
         )?);
     }
     log::info!(
@@ -388,11 +398,9 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     for mut vcpu in vcpu_handles {
         vcpu_cancels.push(vcpu.cancel_handle());
         let shutdown_c = Arc::clone(&shutdown);
-        let legacy_c = Arc::clone(&legacy_pci);
-        let pci_c = Arc::clone(&pci_root);
         let syscon_c = Arc::clone(&syscon_state);
         joins.push(thread::spawn(move || -> Result<RunOutcome> {
-            run_windows_vcpu_loop(&mut vcpu, &shutdown_c, &legacy_c, &pci_c, &syscon_c)
+            run_windows_vcpu_loop(&mut vcpu, &shutdown_c, &syscon_c)
         }));
     }
 
@@ -453,8 +461,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 fn run_windows_vcpu_loop(
     vcpu: &mut dillo_machine_backend::Vcpu,
     shutdown: &Arc<AtomicBool>,
-    legacy_pci: &Arc<pio_pci::LegacyPciState>,
-    pci_bus: &Arc<PciRoot>,
     syscon_state: &Arc<syscon::SysconState>,
 ) -> Result<RunOutcome> {
     let mut exit_count = 0u64;
@@ -479,21 +485,7 @@ fn run_windows_vcpu_loop(
         }
 
         match exit {
-            VmExit::PioWrite { port, data, size } => {
-                // x86 serial is MMIO (ns16550a); only PCI config ports are PIO.
-                if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
-                    || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
-                {
-                    pio_pci::pio_write(legacy_pci, pci_bus, port, &data[..size as usize]);
-                } else {
-                    log::debug!(
-                        "WHP PIO write to unmapped {:#x} (size {}, data {:02x?})",
-                        port,
-                        size,
-                        &data[..size as usize],
-                    );
-                }
-            }
+            VmExit::PioWrite { .. } => {}
             VmExit::PioRead { .. } => {}
             VmExit::MmioWrite { .. } => {}
             VmExit::MmioRead { .. } => {}
@@ -1631,7 +1623,16 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 0
             }
         });
-        let vcpu = BackendVm::create_vcpu(&vm, idx, cpu_profile, seed, pio_read)?;
+        let legacy_for_write = Arc::clone(&legacy_pci);
+        let pci_for_write = Arc::clone(&pci_root);
+        let pio_write = Arc::new(move |port, data: &[u8]| {
+            if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
+                || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
+            {
+                pio_pci::pio_write(&legacy_for_write, &pci_for_write, port, data);
+            }
+        });
+        let vcpu = BackendVm::create_vcpu(&vm, idx, cpu_profile, seed, pio_read, pio_write)?;
         vcpu_handles.push(vcpu);
     }
 
@@ -1667,11 +1668,9 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let mut vcpu_kicker = VcpuKicker::with_capacity(vcpus as usize);
     for mut vcpu in vcpu_handles {
         let shutdown_c = Arc::clone(&shutdown);
-        let legacy_c = Arc::clone(&legacy_pci);
-        let pci_c = Arc::clone(&pci_root);
         let syscon_c = Arc::clone(&syscon_state);
         let join = thread::spawn(move || -> Result<RunOutcome> {
-            run_vcpu_loop(&mut vcpu, &shutdown_c, &legacy_c, &pci_c, &syscon_c)
+            run_vcpu_loop(&mut vcpu, &shutdown_c, &syscon_c)
         });
         vcpu_kicker.push(join.as_pthread_t());
         joins.push(join);
@@ -1721,8 +1720,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 fn run_vcpu_loop(
     vcpu: &mut dillo_machine_backend::Vcpu,
     shutdown: &Arc<AtomicBool>,
-    legacy_pci: &Arc<pio_pci::LegacyPciState>,
-    pci_bus: &Arc<PciRoot>,
     syscon_state: &Arc<syscon::SysconState>,
 ) -> Result<RunOutcome> {
     let mut exit_count = 0u64;
@@ -1750,14 +1747,7 @@ fn run_vcpu_loop(
                 // never enables guest_debug, so reaching this branch
                 // means stale state; ignore.
             }
-            VmExit::PioWrite { port, data, size } => {
-                // x86 serial is MMIO (ns16550a); only PCI config ports are PIO.
-                if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
-                    || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
-                {
-                    pio_pci::pio_write(legacy_pci, pci_bus, port, &data[..size as usize]);
-                }
-            }
+            VmExit::PioWrite { .. } => {}
             VmExit::PioRead { .. } => {
                 // Handled inline in vcpu.run via pio_read callback above.
             }

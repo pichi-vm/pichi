@@ -8,6 +8,7 @@ mod imp {
     pub use dillo_hypervisor::{Error, VmExit, debug_flags, kvm_regs, kvm_sregs};
 
     type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
+    type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 
     #[derive(Clone, Debug)]
     pub struct Vm {
@@ -38,7 +39,7 @@ mod imp {
         }
 
         pub fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<Vcpu, Error> {
-            self.create_vcpu_with_pio(idx, cpu_profile, Arc::new(|_, _| 0))
+            self.create_vcpu_with_pio(idx, cpu_profile, Arc::new(|_, _| 0), Arc::new(|_, _| {}))
         }
 
         pub fn create_vcpu_with_pio(
@@ -46,11 +47,13 @@ mod imp {
             idx: u32,
             cpu_profile: &str,
             pio_read: PioRead,
+            pio_write: PioWrite,
         ) -> Result<Vcpu, Error> {
             Ok(Vcpu {
                 inner: self.inner.create_vcpu(idx, cpu_profile)?,
                 mmio_bus: Arc::clone(&self.mmio_bus),
                 pio_read,
+                pio_write,
             })
         }
     }
@@ -88,6 +91,7 @@ mod imp {
         inner: dillo_hypervisor::Vcpu,
         mmio_bus: Arc<Mutex<MmioBus>>,
         pio_read: PioRead,
+        pio_write: PioWrite,
     }
 
     impl std::fmt::Debug for Vcpu {
@@ -151,6 +155,9 @@ mod imp {
                 )?;
                 match exit {
                     VmExit::MmioRead { .. } | VmExit::PioRead { .. } => continue,
+                    VmExit::PioWrite { port, data, size } => {
+                        (self.pio_write)(port, &data[..size as usize]);
+                    }
                     VmExit::MmioWrite { addr, data, size } => {
                         if !self
                             .mmio_bus

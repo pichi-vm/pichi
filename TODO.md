@@ -479,12 +479,16 @@ Local verification:
   platform boot validation is delegated to CI.
 
 Pushed commit:
-- `refactor: route mmio inside machine backends`; final pushed hash and CI run
-  to be recorded with the next implementation commit.
+- `23f892f refactor: route mmio inside machine backends`
+- `0982ec1 fix: return after backend mmio writes`
+- `0b2abc9 fix: attach linux pci root to machine`
+
+CI verification:
+- `27142608685` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 9 - Move non-MMIO exits below `Machine`
 
-Status: pending.
+Status: in progress.
 
 Goal: hide PIO, HVC, SMC, CPUID leaves, WFI/HLT, debug exits, and
 backend-specific exits below `dillo-machine`.
@@ -505,6 +509,27 @@ Success criteria:
 - Existing debug behavior is either preserved through an explicit API or
   intentionally removed with tests/docs updated.
 - Default local verification and all target checks pass.
+
+Completed changes:
+- Moved x86 PIO write handling behind the KVM/WHP backend facades by passing a
+  constructor-time PIO write function alongside the existing PIO read function.
+- Kept PCI CF8/CFC decoding in `dillo-vm` for now, but `Vcpu::run()` no longer
+  returns those PIO writes to the supervisor loop on KVM/WHP.
+
+Remaining divergence:
+- `dillo-vm` still matches compatibility PIO exits defensively, though the
+  KVM/WHP facades should no longer return them during normal execution.
+- HVC/SMC/PSCI, debug, halt, interrupt, shutdown, and unknown exits still cross
+  into `dillo-vm`. These must move below the machine boundary before Stage 9 is
+  complete.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 
 ## Stage 10 - Implement vCPU stop control
 
