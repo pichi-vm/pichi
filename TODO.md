@@ -86,7 +86,7 @@ Pushed commit:
 
 ## Stage 1 - Reconcile design docs and plan
 
-Status: pending.
+Status: complete.
 
 Goal: make `TODO.md`, `DILLO-CRATE-SPLIT.md`, and CI policy agree on the target
 architecture and execution flow before code moves resume.
@@ -111,6 +111,23 @@ Success criteria:
   not the target API.
 - The root workspace keeps `pmi = { git = "https://github.com/pichi-vm/pmi" }`.
 - Default local verification passes.
+
+Completed changes:
+- Added the CI-before-next-stage gate to the plan-wide rules.
+- Recorded the upstream PMI git dependency invariant in the plan and design.
+- Updated Stage 0's record with the follow-up CI-fix commits that made the
+  quarantine stage green.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+CI verification:
+- `27135940650` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+
+Pushed commit:
+- `714ab6e docs: reconcile plan with design target`
 
 ## Stage 2 - Extract `dillo-mmio`
 
