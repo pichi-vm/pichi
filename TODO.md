@@ -683,7 +683,7 @@ Remaining divergence:
 
 ## Stage 12 - Implement CC-first shared-memory capabilities
 
-Status: deferred; divergence recorded.
+Status: in progress.
 
 Goal: replace whole-guest-memory exposure with attachment-scoped shared-memory
 capabilities.
@@ -719,17 +719,22 @@ Completed changes:
 - Made KVM, HVF, and WHP MMIO attachment fail closed if a device advertises a
   shared-memory requirement before the backend can realize DTB-derived
   shared-memory apertures.
+- Added a virtqueue metadata memory interface and a shared-memory-backed
+  implementation so descriptor, avail, and used ring accesses can dynamically
+  claim attachment-scoped shared-memory regions.
 
 Remaining divergence:
 - `VirtioActivate` still carries `GuestMemoryMmap`; current queue and vhost-user
   paths still use whole guest memory.
+- Virtio transports/devices still instantiate queues over `GuestMemoryMmap`
+  instead of `SharedQueueMemory`.
 - Machine attachments still return no shared-memory capabilities because no
   DTB-derived virtio DMA aperture is currently consumed; they now reject
   non-empty shared-memory requirements instead of silently ignoring them.
 
 ## Stage 13 - Resolve restricted DMA aperture in DTB/device model
 
-Status: in progress.
+Status: deferred; divergence recorded.
 
 Goal: ensure every shared-memory aperture used by dillo is derived from DTB
 data.

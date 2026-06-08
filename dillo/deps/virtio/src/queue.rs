@@ -6,7 +6,9 @@
 //! consumption, and used ring production against guest memory.
 
 use std::num::Wrapping;
+use std::sync::Arc;
 
+use dillo_mmio::{SharedAccess, SharedMemory, SharedMemoryError, SharedRange};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
 
 /// Descriptor flag: buffer continues via `next` field.
@@ -34,16 +36,16 @@ pub struct DescriptorChain {
 
 impl DescriptorChain {
     /// Follow the chain to the next descriptor, if `VIRTQ_DESC_F_NEXT` is set.
-    pub fn next_desc(&self, mem: &GuestMemoryMmap) -> Option<DescriptorChain> {
+    pub fn next_desc<M: QueueMemory>(&self, mem: &M) -> Option<DescriptorChain> {
         if self.flags & VIRTQ_DESC_F_NEXT == 0 {
             return None;
         }
         let desc_offset = (self.next as u64) * 16;
         let desc_addr = self.desc_table.unchecked_add(desc_offset);
-        let addr: u64 = mem.read_obj(desc_addr).ok()?;
-        let len: u32 = mem.read_obj(desc_addr.unchecked_add(8)).ok()?;
-        let flags: u16 = mem.read_obj(desc_addr.unchecked_add(12)).ok()?;
-        let next: u16 = mem.read_obj(desc_addr.unchecked_add(14)).ok()?;
+        let addr = mem.read_u64(desc_addr)?;
+        let len = mem.read_u32(desc_addr.unchecked_add(8))?;
+        let flags = mem.read_u16(desc_addr.unchecked_add(12))?;
+        let next = mem.read_u16(desc_addr.unchecked_add(14))?;
         Some(DescriptorChain {
             index: self.next,
             addr: GuestAddress(addr),
@@ -52,6 +54,117 @@ impl DescriptorChain {
             next,
             desc_table: self.desc_table,
         })
+    }
+}
+
+/// Memory access needed by split virtqueue metadata.
+pub trait QueueMemory {
+    fn read_u16(&self, addr: GuestAddress) -> Option<u16>;
+
+    fn read_u32(&self, addr: GuestAddress) -> Option<u32>;
+
+    fn read_u64(&self, addr: GuestAddress) -> Option<u64>;
+
+    fn write_u16(&self, addr: GuestAddress, value: u16) -> Option<()>;
+
+    fn write_u32(&self, addr: GuestAddress, value: u32) -> Option<()>;
+}
+
+impl QueueMemory for GuestMemoryMmap {
+    fn read_u16(&self, addr: GuestAddress) -> Option<u16> {
+        self.read_obj(addr).ok()
+    }
+
+    fn read_u32(&self, addr: GuestAddress) -> Option<u32> {
+        self.read_obj(addr).ok()
+    }
+
+    fn read_u64(&self, addr: GuestAddress) -> Option<u64> {
+        self.read_obj(addr).ok()
+    }
+
+    fn write_u16(&self, addr: GuestAddress, value: u16) -> Option<()> {
+        self.write_obj(value, addr).ok()
+    }
+
+    fn write_u32(&self, addr: GuestAddress, value: u32) -> Option<()> {
+        self.write_obj(value, addr).ok()
+    }
+}
+
+/// Virtqueue metadata access backed by attachment-scoped shared memory.
+#[derive(Clone)]
+pub struct SharedQueueMemory {
+    capabilities: Vec<Arc<dyn SharedMemory>>,
+}
+
+impl std::fmt::Debug for SharedQueueMemory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedQueueMemory")
+            .field("capability_count", &self.capabilities.len())
+            .finish()
+    }
+}
+
+impl SharedQueueMemory {
+    pub fn new(capabilities: Vec<Arc<dyn SharedMemory>>) -> Self {
+        Self { capabilities }
+    }
+
+    fn read<const N: usize>(&self, addr: GuestAddress) -> Result<[u8; N], SharedMemoryError> {
+        let mut last = SharedMemoryError::Unsupported;
+        for capability in &self.capabilities {
+            match capability.region(SharedRange {
+                gpa: addr.raw_value(),
+                size: N as u64,
+                access: SharedAccess::ReadOnly,
+            }) {
+                Ok(region) => {
+                    let mut data = [0u8; N];
+                    region.read(0, &mut data)?;
+                    return Ok(data);
+                }
+                Err(err) => last = err,
+            }
+        }
+        Err(last)
+    }
+
+    fn write(&self, addr: GuestAddress, data: &[u8]) -> Result<(), SharedMemoryError> {
+        let mut last = SharedMemoryError::Unsupported;
+        for capability in &self.capabilities {
+            match capability.region(SharedRange {
+                gpa: addr.raw_value(),
+                size: data.len() as u64,
+                access: SharedAccess::WriteOnly,
+            }) {
+                Ok(region) => return region.write(0, data),
+                Err(err) => last = err,
+            }
+        }
+        Err(last)
+    }
+}
+
+impl QueueMemory for SharedQueueMemory {
+    fn read_u16(&self, addr: GuestAddress) -> Option<u16> {
+        self.read(addr).ok().map(u16::from_le_bytes)
+    }
+
+    fn read_u32(&self, addr: GuestAddress) -> Option<u32> {
+        self.read(addr).ok().map(u32::from_le_bytes)
+    }
+
+    fn read_u64(&self, addr: GuestAddress) -> Option<u64> {
+        self.read(addr).ok().map(u64::from_le_bytes)
+    }
+
+    fn write_u16(&self, addr: GuestAddress, value: u16) -> Option<()> {
+        self.write(addr, &value.to_le_bytes()).ok()
+    }
+
+    fn write_u32(&self, addr: GuestAddress, value: u32) -> Option<()> {
+        self.write(addr, &value.to_le_bytes()).ok()
     }
 }
 
@@ -145,9 +258,9 @@ impl Queue {
     /// Pop the next available descriptor chain, if any.
     ///
     /// Returns `None` if the available ring is empty (next_avail == avail_idx).
-    pub fn pop(&mut self, mem: &GuestMemoryMmap) -> Option<DescriptorChain> {
+    pub fn pop<M: QueueMemory>(&mut self, mem: &M) -> Option<DescriptorChain> {
         // Read avail_idx from avail ring (offset 2).
-        let avail_idx: u16 = mem.read_obj(self.avail_ring.unchecked_add(2)).ok()?;
+        let avail_idx = mem.read_u16(self.avail_ring.unchecked_add(2))?;
 
         // Nothing available.
         if self.next_avail == Wrapping(avail_idx) {
@@ -157,19 +270,17 @@ impl Queue {
         // Read descriptor index from the available ring.
         // ring[] starts at offset 4, each entry is u16.
         let ring_offset = 4 + 2 * (self.next_avail.0 % self.size) as u64;
-        let desc_idx: u16 = mem
-            .read_obj(self.avail_ring.unchecked_add(ring_offset))
-            .ok()?;
+        let desc_idx = mem.read_u16(self.avail_ring.unchecked_add(ring_offset))?;
 
         // Read the descriptor from the descriptor table.
         // Each descriptor is 16 bytes: addr(8) + len(4) + flags(2) + next(2).
         let desc_offset = (desc_idx as u64) * 16;
         let desc_addr = self.desc_table.unchecked_add(desc_offset);
 
-        let addr: u64 = mem.read_obj(desc_addr).ok()?;
-        let len: u32 = mem.read_obj(desc_addr.unchecked_add(8)).ok()?;
-        let flags: u16 = mem.read_obj(desc_addr.unchecked_add(12)).ok()?;
-        let next: u16 = mem.read_obj(desc_addr.unchecked_add(14)).ok()?;
+        let addr = mem.read_u64(desc_addr)?;
+        let len = mem.read_u32(desc_addr.unchecked_add(8))?;
+        let flags = mem.read_u16(desc_addr.unchecked_add(12))?;
+        let next = mem.read_u16(desc_addr.unchecked_add(14))?;
 
         self.next_avail += Wrapping(1);
 
@@ -184,28 +295,28 @@ impl Queue {
     }
 
     /// Write a completed descriptor back to the used ring.
-    pub fn add_used(&mut self, mem: &GuestMemoryMmap, desc_index: u16, len: u32) {
+    pub fn add_used<M: QueueMemory>(&mut self, mem: &M, desc_index: u16, len: u32) {
         // Used ring layout: flags(2) + idx(2) + ring[size](id(4)+len(4)) + avail_event(2).
         // Each used element is 8 bytes: id (u32) + len (u32).
         let ring_offset = 4 + 8 * (self.next_used.0 % self.size) as u64;
         let elem_addr = self.used_ring.unchecked_add(ring_offset);
 
         // Write used element: id then len.
-        let _ = mem.write_obj(desc_index as u32, elem_addr);
-        let _ = mem.write_obj(len, elem_addr.unchecked_add(4));
+        let _ = mem.write_u32(elem_addr, desc_index as u32);
+        let _ = mem.write_u32(elem_addr.unchecked_add(4), len);
 
         self.next_used += Wrapping(1);
 
         // Write updated used_idx at offset 2.
-        let _ = mem.write_obj(self.next_used.0, self.used_ring.unchecked_add(2));
+        let _ = mem.write_u16(self.used_ring.unchecked_add(2), self.next_used.0);
 
         // Update avail_event: tell the driver to notify us when it adds more
         // descriptors past what we've already seen. Without this, drivers using
         // VIRTIO_F_RING_EVENT_IDX suppress kicks after the first descriptor.
         let avail_event_offset = 4 + 8 * self.size as u64;
-        let _ = mem.write_obj(
-            self.next_avail.0,
+        let _ = mem.write_u16(
             self.used_ring.unchecked_add(avail_event_offset),
+            self.next_avail.0,
         );
     }
 }
@@ -213,6 +324,7 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dillo_mmio::{AddressRange, MappedSharedMemory, SharedAccess, SharedMemoryRequirement};
     use vm_memory::{Address, Bytes, GuestMemoryMmap};
 
     const QUEUE_SIZE: u16 = 16;
@@ -369,6 +481,64 @@ mod tests {
         assert_eq!(q.next_avail, Wrapping(1));
     }
 
+    #[test]
+    fn test_pop_returns_descriptor_through_shared_memory() {
+        let (mem, desc, avail, used) = setup_queue_memory(QUEUE_SIZE);
+        let shared = SharedQueueMemory::new(vec![Arc::new(MappedSharedMemory::new(
+            mem.clone(),
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0,
+                    size: 0x4000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        ))]);
+        let mut q = make_valid_queue(QUEUE_SIZE);
+        q.desc_table = desc;
+        q.avail_ring = avail;
+        q.used_ring = used;
+
+        mem.write_obj::<u64>(0x5000, desc).unwrap();
+        mem.write_obj::<u32>(128, desc.unchecked_add(8)).unwrap();
+        mem.write_obj::<u16>(VIRTQ_DESC_F_WRITE, desc.unchecked_add(12))
+            .unwrap();
+        mem.write_obj::<u16>(0, desc.unchecked_add(14)).unwrap();
+        mem.write_obj::<u16>(0, avail.unchecked_add(4)).unwrap();
+        mem.write_obj::<u16>(1, avail.unchecked_add(2)).unwrap();
+
+        let chain = q.pop(&shared).expect("shared queue memory should pop");
+        assert_eq!(chain.addr, GuestAddress(0x5000));
+        assert_eq!(chain.len, 128);
+        assert_eq!(chain.flags, VIRTQ_DESC_F_WRITE);
+        assert_eq!(q.next_avail, Wrapping(1));
+    }
+
+    #[test]
+    fn test_pop_rejects_metadata_outside_shared_memory() {
+        let (mem, desc, avail, used) = setup_queue_memory(QUEUE_SIZE);
+        let shared = SharedQueueMemory::new(vec![Arc::new(MappedSharedMemory::new(
+            mem.clone(),
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x1000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        ))]);
+        let mut q = make_valid_queue(QUEUE_SIZE);
+        q.desc_table = desc;
+        q.avail_ring = avail;
+        q.used_ring = used;
+
+        mem.write_obj::<u16>(0, avail.unchecked_add(4)).unwrap();
+        mem.write_obj::<u16>(1, avail.unchecked_add(2)).unwrap();
+
+        assert!(q.pop(&shared).is_none());
+        assert_eq!(q.next_avail, Wrapping(0));
+    }
+
     // --- Queue::add_used tests ---
 
     #[test]
@@ -392,6 +562,35 @@ mod tests {
         assert_eq!(ring_id, 0);
         assert_eq!(ring_len, 64);
 
+        assert_eq!(q.next_used, Wrapping(1));
+    }
+
+    #[test]
+    fn test_add_used_writes_through_shared_memory() {
+        let (mem, desc, avail, used) = setup_queue_memory(QUEUE_SIZE);
+        let shared = SharedQueueMemory::new(vec![Arc::new(MappedSharedMemory::new(
+            mem.clone(),
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x2000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        ))]);
+        let mut q = make_valid_queue(QUEUE_SIZE);
+        q.desc_table = desc;
+        q.avail_ring = avail;
+        q.used_ring = used;
+
+        q.add_used(&shared, 0, 64);
+
+        let used_idx: u16 = mem.read_obj(used.unchecked_add(2)).unwrap();
+        let ring_id: u32 = mem.read_obj(used.unchecked_add(4)).unwrap();
+        let ring_len: u32 = mem.read_obj(used.unchecked_add(8)).unwrap();
+        assert_eq!(used_idx, 1);
+        assert_eq!(ring_id, 0);
+        assert_eq!(ring_len, 64);
         assert_eq!(q.next_used, Wrapping(1));
     }
 
