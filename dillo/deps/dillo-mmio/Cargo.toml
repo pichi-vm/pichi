@@ -8,6 +8,7 @@ description = "MMIO device traits, windows, attachment helpers, and compatibilit
 
 [dependencies]
 thiserror.workspace = true
+vm-memory.workspace = true
 
 [lints]
 workspace = true

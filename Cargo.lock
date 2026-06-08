@@ -490,6 +490,7 @@ name = "dillo-mmio"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+ "vm-memory",
 ]
 
 [[package]]

@@ -568,6 +568,7 @@ CI verification:
 - `27152061240` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27152820089` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27153405345` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27153919137` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
@@ -711,11 +712,15 @@ Completed changes:
   exposed by the backend-owned MMIO attachment.
 - Updated the design crate graph to show the implied `dillo-virtio` dependency
   on `dillo-mmio` for `SharedMemory`.
+- Added a portable mapped-memory `SharedMemory` implementation for standard VMs
+  that enforces capability aperture, currently shared ranges, access mode, and
+  per-region bounds.
 
 Remaining divergence:
 - `VirtioActivate` still carries `GuestMemoryMmap`; current queue and vhost-user
   paths still use whole guest memory.
-- Machine attachments still return no shared-memory capabilities.
+- Machine attachments still return no shared-memory capabilities because no
+  DTB-derived virtio DMA aperture is currently consumed.
 
 ## Stage 13 - Resolve restricted DMA aperture in DTB/device model
 

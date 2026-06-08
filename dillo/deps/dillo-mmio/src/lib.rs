@@ -10,6 +10,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
+use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
+
 /// Device host execution model selected by one machine backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceModel {
@@ -35,6 +37,18 @@ pub struct AddressRange {
     pub size: u64,
 }
 
+impl AddressRange {
+    pub fn contains(&self, base: u64, size: u64) -> bool {
+        let Some(container_end) = self.base.checked_add(self.size) else {
+            return false;
+        };
+        let Some(end) = base.checked_add(size) else {
+            return false;
+        };
+        base >= self.base && end <= container_end
+    }
+}
+
 /// Access allowed through a shared-memory capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SharedAccess {
@@ -43,6 +57,24 @@ pub enum SharedAccess {
     WriteOnly,
 
     ReadWrite,
+}
+
+impl SharedAccess {
+    fn permits_read(self) -> bool {
+        matches!(self, Self::ReadOnly | Self::ReadWrite)
+    }
+
+    fn permits_write(self) -> bool {
+        matches!(self, Self::WriteOnly | Self::ReadWrite)
+    }
+
+    fn includes(self, requested: Self) -> bool {
+        match requested {
+            Self::ReadOnly => self.permits_read(),
+            Self::WriteOnly => self.permits_write(),
+            Self::ReadWrite => self.permits_read() && self.permits_write(),
+        }
+    }
 }
 
 /// One DTB-derived shared-memory aperture requirement.
@@ -128,6 +160,15 @@ pub enum SharedMemoryError {
     #[error("shared-memory range is not currently shared")]
     NotShared,
 
+    #[error("shared-memory access is not permitted by the capability")]
+    AccessDenied,
+
+    #[error("shared-memory region access is outside the claimed range")]
+    OutOfRange,
+
+    #[error("shared-memory backing access failed: {0}")]
+    Backing(String),
+
     #[error("shared-memory access is unsupported")]
     Unsupported,
 }
@@ -135,22 +176,112 @@ pub enum SharedMemoryError {
 /// Opaque shared-memory region handle.
 #[derive(Debug)]
 pub struct SharedRegion {
-    _priv: (),
+    memory: GuestMemoryMmap,
+    gpa: u64,
+    size: u64,
+    access: SharedAccess,
 }
 
 impl SharedRegion {
-    pub fn read(&self, _offset: u64, _data: &mut [u8]) -> Result<(), SharedMemoryError> {
-        Err(SharedMemoryError::Unsupported)
+    pub fn read(&self, offset: u64, data: &mut [u8]) -> Result<(), SharedMemoryError> {
+        if !self.access.permits_read() {
+            return Err(SharedMemoryError::AccessDenied);
+        }
+        let addr = self.checked_access(offset, data.len())?;
+        self.memory
+            .read(data, GuestAddress(addr))
+            .map_err(|e| SharedMemoryError::Backing(e.to_string()))
+            .map(|_| ())
     }
 
-    pub fn write(&self, _offset: u64, _data: &[u8]) -> Result<(), SharedMemoryError> {
-        Err(SharedMemoryError::Unsupported)
+    pub fn write(&self, offset: u64, data: &[u8]) -> Result<(), SharedMemoryError> {
+        if !self.access.permits_write() {
+            return Err(SharedMemoryError::AccessDenied);
+        }
+        let addr = self.checked_access(offset, data.len())?;
+        self.memory
+            .write(data, GuestAddress(addr))
+            .map_err(|e| SharedMemoryError::Backing(e.to_string()))
+            .map(|_| ())
+    }
+
+    fn checked_access(&self, offset: u64, len: usize) -> Result<u64, SharedMemoryError> {
+        let len = u64::try_from(len).map_err(|_| SharedMemoryError::OutOfRange)?;
+        let end = offset
+            .checked_add(len)
+            .ok_or(SharedMemoryError::OutOfRange)?;
+        if end > self.size {
+            return Err(SharedMemoryError::OutOfRange);
+        }
+        self.gpa
+            .checked_add(offset)
+            .ok_or(SharedMemoryError::OutOfRange)
     }
 }
 
 /// Attachment-scoped shared-memory capability.
 pub trait SharedMemory: Send + Sync {
     fn region(&self, range: SharedRange) -> Result<SharedRegion, SharedMemoryError>;
+}
+
+/// Standard-VM shared-memory capability over mapped guest RAM.
+///
+/// Confidential backends may use a different implementation that updates
+/// `shared` when guest shared/private conversion exits are handled internally.
+#[derive(Debug, Clone)]
+pub struct MappedSharedMemory {
+    memory: GuestMemoryMmap,
+    aperture: AddressRange,
+    access: SharedAccess,
+    shared: Vec<AddressRange>,
+}
+
+impl MappedSharedMemory {
+    pub fn new(memory: GuestMemoryMmap, requirement: SharedMemoryRequirement) -> Self {
+        Self {
+            memory,
+            aperture: requirement.range,
+            access: requirement.access,
+            shared: vec![requirement.range],
+        }
+    }
+
+    pub fn with_shared_ranges(
+        memory: GuestMemoryMmap,
+        requirement: SharedMemoryRequirement,
+        shared: Vec<AddressRange>,
+    ) -> Self {
+        Self {
+            memory,
+            aperture: requirement.range,
+            access: requirement.access,
+            shared,
+        }
+    }
+}
+
+impl SharedMemory for MappedSharedMemory {
+    fn region(&self, range: SharedRange) -> Result<SharedRegion, SharedMemoryError> {
+        if !self.access.includes(range.access) {
+            return Err(SharedMemoryError::AccessDenied);
+        }
+        if !self.aperture.contains(range.gpa, range.size) {
+            return Err(SharedMemoryError::OutOfAperture);
+        }
+        if !self
+            .shared
+            .iter()
+            .any(|shared| shared.contains(range.gpa, range.size))
+        {
+            return Err(SharedMemoryError::NotShared);
+        }
+        Ok(SharedRegion {
+            memory: self.memory.clone(),
+            gpa: range.gpa,
+            size: range.size,
+            access: range.access,
+        })
+    }
 }
 
 /// Resolved interrupt handle.
@@ -361,7 +492,7 @@ impl MmioDeviceHandle {
             }
             MmioDeviceHandleInner::Process { child } => {
                 if let Some(mut child) = child.lock().expect("MMIO process child poisoned").take() {
-                    terminate_process(&mut child)?;
+                    Self::terminate_process(&mut child)?;
                 }
             }
         }
@@ -381,24 +512,24 @@ impl MmioDeviceHandle {
                     .expect("MMIO process child poisoned")
                     .take()
                 {
-                    terminate_process(&mut child)
+                    Self::terminate_process(&mut child)
                         .map_err(|e| MmioJoinError::Host(e.to_string()))?;
                 }
                 Ok(())
             }
         }
     }
-}
 
-fn terminate_process(child: &mut Child) -> Result<(), MmioShutdownError> {
-    match child.try_wait() {
-        Ok(Some(_)) => return Ok(()),
-        Ok(None) => {}
-        Err(e) => return Err(MmioShutdownError::Io(e)),
+    fn terminate_process(child: &mut Child) -> Result<(), MmioShutdownError> {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(e) => return Err(MmioShutdownError::Io(e)),
+        }
+        child.kill().map_err(MmioShutdownError::Io)?;
+        child.wait().map_err(MmioShutdownError::Io)?;
+        Ok(())
     }
-    child.kill().map_err(MmioShutdownError::Io)?;
-    child.wait().map_err(MmioShutdownError::Io)?;
-    Ok(())
 }
 
 /// Error from spawning an MMIO device host.
@@ -530,6 +661,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
+    use vm_memory::{Bytes, GuestAddress};
 
     struct TestDevice {
         window: [MmioWindow; 1],
@@ -619,6 +751,148 @@ mod tests {
         let mut bus = MmioBus::new();
         bus.register_device(Arc::new(TestDevice::new("a", 0x1000, 0x100)));
         bus.register_device(Arc::new(TestDevice::new("b", 0x1080, 0x100)));
+    }
+
+    #[test]
+    fn mapped_shared_memory_reads_and_writes_claimed_region() {
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x4000)]).unwrap();
+        memory.write(&[1, 2, 3, 4], GuestAddress(0x1200)).unwrap();
+        let shared = MappedSharedMemory::new(
+            memory,
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x1000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        );
+
+        let region = shared
+            .region(SharedRange {
+                gpa: 0x1200,
+                size: 4,
+                access: SharedAccess::ReadWrite,
+            })
+            .unwrap();
+        let mut buf = [0; 4];
+        region.read(0, &mut buf).unwrap();
+        assert_eq!(buf, [1, 2, 3, 4]);
+
+        region.write(1, &[9, 8]).unwrap();
+        region.read(0, &mut buf).unwrap();
+        assert_eq!(buf, [1, 9, 8, 4]);
+    }
+
+    #[test]
+    fn mapped_shared_memory_rejects_outside_aperture() {
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x4000)]).unwrap();
+        let shared = MappedSharedMemory::new(
+            memory,
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x1000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        );
+
+        let err = shared
+            .region(SharedRange {
+                gpa: 0x1ff0,
+                size: 0x20,
+                access: SharedAccess::ReadOnly,
+            })
+            .expect_err("range crosses aperture");
+        assert!(matches!(err, SharedMemoryError::OutOfAperture));
+    }
+
+    #[test]
+    fn mapped_shared_memory_rejects_private_range() {
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x4000)]).unwrap();
+        let shared = MappedSharedMemory::with_shared_ranges(
+            memory,
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x1000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+            vec![AddressRange {
+                base: 0x1000,
+                size: 0x100,
+            }],
+        );
+
+        let err = shared
+            .region(SharedRange {
+                gpa: 0x1200,
+                size: 0x10,
+                access: SharedAccess::ReadOnly,
+            })
+            .expect_err("range is not currently shared");
+        assert!(matches!(err, SharedMemoryError::NotShared));
+    }
+
+    #[test]
+    fn mapped_shared_memory_enforces_access_mode() {
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x4000)]).unwrap();
+        let shared = MappedSharedMemory::new(
+            memory,
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x1000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadOnly,
+            },
+        );
+
+        let err = shared
+            .region(SharedRange {
+                gpa: 0x1100,
+                size: 0x10,
+                access: SharedAccess::ReadWrite,
+            })
+            .expect_err("capability is read-only");
+        assert!(matches!(err, SharedMemoryError::AccessDenied));
+
+        let region = shared
+            .region(SharedRange {
+                gpa: 0x1100,
+                size: 0x10,
+                access: SharedAccess::ReadOnly,
+            })
+            .unwrap();
+        let err = region.write(0, &[1]).expect_err("region is read-only");
+        assert!(matches!(err, SharedMemoryError::AccessDenied));
+    }
+
+    #[test]
+    fn mapped_shared_memory_region_bounds_are_enforced() {
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x4000)]).unwrap();
+        let shared = MappedSharedMemory::new(
+            memory,
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x1000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        );
+        let region = shared
+            .region(SharedRange {
+                gpa: 0x1100,
+                size: 4,
+                access: SharedAccess::ReadWrite,
+            })
+            .unwrap();
+
+        let err = region.write(3, &[1, 2]).expect_err("write crosses region");
+        assert!(matches!(err, SharedMemoryError::OutOfRange));
     }
 
     #[test]
