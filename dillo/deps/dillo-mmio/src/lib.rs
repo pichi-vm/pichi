@@ -171,6 +171,32 @@ pub trait MmioDevice: Send + Sync {
     fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> bool;
 }
 
+/// Event source for accelerated MMIO notification registration.
+///
+/// Transport crates expose device-specific kick objects by implementing this
+/// trait. Machine backends can use the platform-specific view they understand
+/// without depending on the transport crate that produced the event.
+pub trait MmioNotifyEvent: Send + Sync {
+    #[cfg(target_os = "linux")]
+    fn as_eventfd(&self) -> &vmm_sys_util::eventfd::EventFd;
+}
+
+/// Backend-owned queue notification hook.
+///
+/// Linux/KVM implements this with ioeventfd registration. Backends without an
+/// accelerated notify path can leave transports without a notifier so notify
+/// writes kick the queue directly in the MMIO dispatch path.
+pub trait QueueNotifier: Send {
+    fn register(
+        &mut self,
+        queue_index: usize,
+        addr: u64,
+        event: &dyn MmioNotifyEvent,
+    ) -> Result<(), String>;
+
+    fn unregister_all(&mut self);
+}
+
 /// Generic registration into a constructed owner.
 pub trait Attach<T> {
     type Error: std::error::Error + Send + Sync + 'static;

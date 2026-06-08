@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use dillo_pci_virtio::QueueNotifier;
-use dillo_virtio::Kick;
+use dillo_mmio::{MmioNotifyEvent, QueueNotifier};
 use kvm_ioctls::{IoEventAddress, NoDatamatch, VmFd};
 use vmm_sys_util::eventfd::EventFd;
 
@@ -20,10 +19,15 @@ impl KvmQueueNotifier {
 }
 
 impl QueueNotifier for KvmQueueNotifier {
-    fn register(&mut self, queue_index: usize, addr: u64, kick: &Kick) -> Result<(), String> {
-        let eventfd = kick.as_eventfd().try_clone().map_err(|e| e.to_string())?;
+    fn register(
+        &mut self,
+        queue_index: usize,
+        addr: u64,
+        event: &dyn MmioNotifyEvent,
+    ) -> Result<(), String> {
+        let eventfd = event.as_eventfd().try_clone().map_err(|e| e.to_string())?;
         self.vm_fd
-            .register_ioevent(kick.as_eventfd(), &IoEventAddress::Mmio(addr), NoDatamatch)
+            .register_ioevent(event.as_eventfd(), &IoEventAddress::Mmio(addr), NoDatamatch)
             .map_err(|e| e.to_string())?;
         self.registered.push((queue_index, addr, eventfd));
         Ok(())

@@ -704,7 +704,10 @@ Process:
   only when present; do not require a DTB-defined virtio buffer aperture.
 - Route guest shared/private conversion exits or hypercalls inside the backend
   so existing shared-memory capabilities observe the updated page state.
-- On KVM, add guest-private memory support with the appropriate memory APIs.
+- On KVM confidential backends, add guest-private memory with
+  `KVM_CREATE_GUEST_MEMFD`, `KVM_SET_USER_MEMORY_REGION2`, and
+  `KVM_SET_MEMORY_ATTRIBUTES`, keeping the shared/private state mirrored in
+  backend-owned `SharedMemoryState`.
 - For standard VMs, implement the same runtime-claim API over ordinary mapped
   memory without exposing a whole-guest-memory accessor to portable devices.
 
@@ -776,7 +779,9 @@ Completed changes:
 
 Remaining divergence:
 - vhost-user devices still use their backend-specific whole-memory protocol
-  path.
+  path. This must either become a Linux/backend-local exception with explicit
+  conformance text, or be replaced by a portable process-device memory contract
+  before final acceptance.
 - KVM, HVF, and WHP standard-VM attachments treat all mapped guest RAM as
   currently shared. Confidential backends still need backend-owned
   conversion-exit handling and guest-private memory setup.
@@ -821,22 +826,48 @@ Remaining divergence:
 
 ## Stage 14 - Remove compatibility adapters
 
-Status: pending.
+Status: in progress.
 
 Goal: delete bridge code that allowed old and new APIs to coexist.
 
 Process:
-- Remove old monolithic `dillo-vm` APIs once crates have split.
-- Remove closure MMIO dispatch paths.
-- Remove whole-guest-memory virtio activation paths.
+- Remove the old monolithic `dillo-vm` composition surface. The final
+  composition point is the `dillo` crate/binary; `dillo-vm` may only survive if
+  it has a renamed, non-monolithic role that matches the target graph.
+- Remove `dillo-machine-backend` once `dillo` can bind the selected
+  `dillo-machine-*` crate directly through target dependencies without exposing
+  KVM/HVF/WHP names above backend crates.
+- Remove closure MMIO dispatch paths and any supervisor-side backend exit
+  matching outside the explicit debug runner.
+- Remove whole-guest-memory virtio activation paths, including test-only public
+  adapters that could be copied into device code.
 - Remove backend handle accessors above backend crates.
 - Remove temporary module re-exports that hide the final crate graph.
+- Move architecture-specific machinery out of `dillo-vm` into `dillo-x86` and
+  `dillo-arm`, or into the owning `dillo-machine-*` crate when the machinery is
+  backend-specific rather than reusable architecture substrate.
+- Split concrete virtio devices into `dillo-virtio-blk`,
+  `dillo-virtio-console`, `dillo-virtio-net`, and `dillo-virtio-vsock` as those
+  devices exist, with inherent constructors and no DTB/PMI/backend knowledge.
+- Move backend-neutral notify and attachment traits out of transport crates so
+  machine-facing code does not need to name PCI, virtio, or concrete devices.
 
 Success criteria:
 - The implemented crate graph matches `DILLO-CRATE-SPLIT.md`.
 - Source search finds no KVM/HVF/WHP imports in `dillo` or device crates.
 - Source search finds no whole-guest-memory device activation.
+- Source search finds no backend imports of PCI, virtio transport, UART, or
+  concrete device crates.
+- `dillo-vm` and `dillo-machine-backend` are removed or explicitly recorded in
+  Stage 19 with a human-approved reason.
 - Default local verification and all target checks pass.
+
+Completed changes:
+- Moved `QueueNotifier` out of `dillo-pci-virtio` and into `dillo-mmio`, with
+  `dillo-virtio::Kick` implementing the backend-neutral notify-event trait.
+  PCI virtio still accepts a notifier, but machine-facing code no longer has to
+  import a PCI transport trait just to expose backend MMIO notification
+  acceleration.
 
 ## Stage 15 - Restore macOS CI
 

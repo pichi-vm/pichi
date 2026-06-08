@@ -4,12 +4,11 @@ use std::sync::Mutex;
 
 use dillo_mmio_uart::Ns16550;
 use dillo_pci::MsixNotifier;
-use dillo_pci_virtio::QueueNotifier;
 use vm_memory::GuestMemoryMmap;
 
 #[cfg(target_os = "macos")]
 use dillo_mmio::MmioBus;
-use dillo_mmio::{Attach, MmioAttachment, MmioDevice, MmioWindow, SharedMemory};
+use dillo_mmio::{Attach, MmioAttachment, MmioDevice, MmioWindow, QueueNotifier, SharedMemory};
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
@@ -125,7 +124,7 @@ impl QueueNotifier for NoopQueueNotifier {
         &mut self,
         _queue_index: usize,
         _addr: u64,
-        _kick: &dillo_virtio::Kick,
+        _event: &dyn dillo_mmio::MmioNotifyEvent,
     ) -> Result<(), String> {
         Ok(())
     }

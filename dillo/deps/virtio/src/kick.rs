@@ -15,6 +15,13 @@
 
 pub use imp::Kick;
 
+impl dillo_mmio::MmioNotifyEvent for Kick {
+    #[cfg(target_os = "linux")]
+    fn as_eventfd(&self) -> &vmm_sys_util::eventfd::EventFd {
+        Kick::as_eventfd(self)
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use vmm_sys_util::eventfd::EventFd;

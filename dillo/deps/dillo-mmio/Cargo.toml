@@ -10,5 +10,8 @@ description = "MMIO device traits, windows, attachment helpers, and compatibilit
 thiserror.workspace = true
 vm-memory.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+vmm-sys-util.workspace = true
+
 [lints]
 workspace = true

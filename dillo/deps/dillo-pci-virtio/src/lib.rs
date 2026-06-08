@@ -37,7 +37,8 @@ pub(crate) mod capabilities;
 /// PCI transport implementation: device status FSM, feature negotiation, BAR I/O.
 pub mod transport;
 
-pub use transport::{QueueNotifier, VirtioPciDevice};
+pub use dillo_mmio::QueueNotifier;
+pub use transport::VirtioPciDevice;
 
 use std::sync::Mutex;
 

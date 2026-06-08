@@ -10,7 +10,7 @@ use std::process::Child;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dillo_mmio::SharedMemory;
+use dillo_mmio::{QueueNotifier, SharedMemory};
 use dillo_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, PciConfiguration};
 use dillo_pci::{MmioDeviceHost, MmioJoinError, MmioProcessHost, PciDeviceHost};
 use dillo_virtio::Kick;
@@ -60,16 +60,6 @@ const CC_QUEUE_USED_HI: u64 = 0x34;
 // Device status bits.
 const STATUS_FEATURES_OK: u8 = 8;
 const STATUS_DRIVER_OK: u8 = 4;
-
-/// Backend-owned queue notification hook.
-///
-/// Linux/KVM implements this with ioeventfd registration. Backends without an
-/// accelerated notify path leave it unset and use direct kick signaling from the
-/// BAR notify write path.
-pub trait QueueNotifier: Send {
-    fn register(&mut self, queue_index: usize, addr: u64, kick: &Kick) -> Result<(), String>;
-    fn unregister_all(&mut self);
-}
 
 /// Per-queue state tracked by the transport layer.
 #[derive(Debug)]
