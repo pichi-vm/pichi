@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use dillo_mmio::{SharedAccess, SharedMemory, SharedMemoryError, SharedRange};
-use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+use vm_memory::{Address, GuestAddress};
 
 /// Error returned by virtio descriptor-buffer memory access.
 #[derive(Debug, thiserror::Error)]
@@ -35,16 +35,6 @@ impl VirtioMemory for NullVirtioMemory {
 
     fn write(&self, _addr: GuestAddress, _data: &[u8]) -> Result<usize, VirtioMemoryError> {
         Err(VirtioMemoryError::Shared(SharedMemoryError::Unsupported))
-    }
-}
-
-impl VirtioMemory for GuestMemoryMmap {
-    fn read(&self, addr: GuestAddress, data: &mut [u8]) -> Result<usize, VirtioMemoryError> {
-        Bytes::read(self, data, addr).map_err(|e| VirtioMemoryError::Guest(e.to_string()))
-    }
-
-    fn write(&self, addr: GuestAddress, data: &[u8]) -> Result<usize, VirtioMemoryError> {
-        Bytes::write(self, data, addr).map_err(|e| VirtioMemoryError::Guest(e.to_string()))
     }
 }
 
@@ -116,6 +106,7 @@ impl VirtioMemory for SharedVirtioMemory {
 mod tests {
     use super::*;
     use dillo_mmio::{AddressRange, MappedSharedMemory, SharedMemoryRequirement};
+    use vm_memory::{Bytes, GuestMemoryMmap};
 
     #[test]
     fn shared_virtio_memory_reads_inside_capability_limits() {

@@ -519,8 +519,30 @@ mod tests {
         mem.write_obj::<u16>(1, queue.avail_ring.unchecked_add(2))
             .unwrap();
 
-        let queue_memory: Arc<dyn QueueMemory> = Arc::new(mem.clone());
-        let buffer_memory: Arc<dyn VirtioMemory> = Arc::new(mem.clone());
+        let queue_shared = Arc::new(MappedSharedMemory::new(
+            mem.clone(),
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x100,
+                    size: 0x3000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        ));
+        let buffer_shared = Arc::new(MappedSharedMemory::new(
+            mem.clone(),
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x5000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        ));
+        let queue_memory: Arc<dyn QueueMemory> =
+            Arc::new(SharedQueueMemory::new(vec![queue_shared]));
+        let buffer_memory: Arc<dyn VirtioMemory> =
+            Arc::new(SharedVirtioMemory::new(vec![buffer_shared]));
         let queue = Arc::new(Mutex::new(queue));
         let mut pending: VecDeque<u8> = b"abc".iter().copied().collect();
         assert!(drain_rx(

@@ -9,7 +9,7 @@ use std::num::Wrapping;
 use std::sync::Arc;
 
 use dillo_mmio::{SharedAccess, SharedMemory, SharedMemoryError, SharedRange};
-use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+use vm_memory::{Address, GuestAddress};
 
 /// Descriptor flag: buffer continues via `next` field.
 pub const VIRTQ_DESC_F_NEXT: u16 = 1;
@@ -93,28 +93,6 @@ impl QueueMemory for NullQueueMemory {
 
     fn write_u32(&self, _addr: GuestAddress, _value: u32) -> Option<()> {
         None
-    }
-}
-
-impl QueueMemory for GuestMemoryMmap {
-    fn read_u16(&self, addr: GuestAddress) -> Option<u16> {
-        self.read_obj(addr).ok()
-    }
-
-    fn read_u32(&self, addr: GuestAddress) -> Option<u32> {
-        self.read_obj(addr).ok()
-    }
-
-    fn read_u64(&self, addr: GuestAddress) -> Option<u64> {
-        self.read_obj(addr).ok()
-    }
-
-    fn write_u16(&self, addr: GuestAddress, value: u16) -> Option<()> {
-        self.write_obj(value, addr).ok()
-    }
-
-    fn write_u32(&self, addr: GuestAddress, value: u32) -> Option<()> {
-        self.write_obj(value, addr).ok()
     }
 }
 
@@ -401,6 +379,16 @@ mod tests {
         q
     }
 
+    fn shared_queue_memory(mem: &GuestMemoryMmap, base: u64, size: u64) -> SharedQueueMemory {
+        SharedQueueMemory::new(vec![Arc::new(MappedSharedMemory::new(
+            mem.clone(),
+            SharedMemoryRequirement {
+                range: AddressRange { base, size },
+                access: SharedAccess::ReadWrite,
+            },
+        ))])
+    }
+
     // --- Queue::new tests ---
 
     #[test]
@@ -496,7 +484,8 @@ mod tests {
         // Write avail_idx = 0 at avail_ring + 2
         mem.write_obj::<u16>(0, avail.unchecked_add(2)).unwrap();
 
-        assert!(q.pop(&mem).is_none());
+        let shared = shared_queue_memory(&mem, 0, 0x4000);
+        assert!(q.pop(&shared).is_none());
     }
 
     #[test]
@@ -522,7 +511,8 @@ mod tests {
         mem.write_obj::<u16>(0, avail.unchecked_add(4)).unwrap(); // ring[0] = desc idx 0
         mem.write_obj::<u16>(1, avail.unchecked_add(2)).unwrap(); // avail_idx = 1
 
-        let chain = q.pop(&mem).expect("should return a descriptor");
+        let shared = shared_queue_memory(&mem, 0, 0x4000);
+        let chain = q.pop(&shared).expect("should return a descriptor");
         assert_eq!(chain.addr, GuestAddress(0x5000));
         assert_eq!(chain.len, 128);
         assert_eq!(chain.flags, VIRTQ_DESC_F_WRITE);
@@ -597,7 +587,8 @@ mod tests {
         q.avail_ring = avail;
         q.used_ring = used;
 
-        q.add_used(&mem, 0, 64);
+        let shared = shared_queue_memory(&mem, 0x2000, 0x1000);
+        q.add_used(&shared, 0, 64);
 
         // used ring layout: flags(2) + idx(2) + ring[](id(4)+len(4))
         // After add_used: used_idx should be 1

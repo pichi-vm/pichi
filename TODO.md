@@ -765,6 +765,9 @@ Completed changes:
   constructors. Missing shared-memory capabilities now fail closed through null
   queue and descriptor-buffer memory instead of falling back to whole guest
   memory.
+- Removed the public `GuestMemoryMmap` implementations of `QueueMemory` and
+  `VirtioMemory`; virtio device code now reaches guest queue metadata and
+  descriptor payloads through explicit shared-memory adapters.
 
 Remaining divergence:
 - vhost-user devices still use their backend-specific whole-memory protocol
