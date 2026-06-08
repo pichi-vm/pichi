@@ -10,6 +10,8 @@
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod backend;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod backend_select;
 mod cpu_id;
 mod error;
 mod fdt_writer;
@@ -52,11 +54,11 @@ use backend::BackendVm;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use backend::{BackendVm, VcpuSeed};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use backend_machine::Vm;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use backend_select::machine as backend_machine;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_machine::VcpuStop;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use dillo_machine_backend::Vm;
-#[cfg(target_os = "macos")]
-use dillo_machine_backend::Vm;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::MsixNotifier;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -196,7 +198,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let guest_mem: GuestMemoryMmap = GuestMemoryMmap::from_ranges(&ranges)
         .map_err(|e| RunError::MemfdSetup(anyhow!("GuestMemoryMmap: {e}")))?;
 
-    let mut vm = <dillo_machine_backend::Vm as BackendVm>::new(backend::VmOptions {
+    let mut vm = <backend_machine::Vm as BackendVm>::new(backend::VmOptions {
         vcpus,
         guest_memory: guest_mem.clone(),
     })?;
@@ -390,7 +392,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
 #[cfg(target_os = "windows")]
 fn run_windows_vcpu_loop(
-    vcpu: &mut dillo_machine_backend::Vcpu,
+    vcpu: &mut backend_machine::Vcpu,
     shutdown: &Arc<AtomicBool>,
     syscon_state: &Arc<syscon::SysconState>,
 ) -> Result<RunOutcome> {
@@ -532,7 +534,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         .gic
         .as_ref()
         .ok_or_else(|| RunError::DtbExtract(dillo_platform::Error::MissingNode("GIC config")))?;
-    let gic_params = dillo_machine_backend::GicParams {
+    let gic_params = backend_machine::GicParams {
         dist_base: gic.dist_base,
         redist_base: gic.redist_base,
         msi_base: gic.msi_frame_base,
@@ -686,7 +688,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             vcpus,
         );
         match vcpu_stop_outcome(
-            dillo_machine_backend::run_smp(vcpus, boot_state.clone(), Arc::clone(&mmio_bus))?,
+            backend_machine::run_smp(vcpus, boot_state.clone(), Arc::clone(&mmio_bus))?,
             &AtomicBool::new(false),
         ) {
             RunOutcome::Exit(code) => {
@@ -826,7 +828,7 @@ mod macos_tests {
     #[test]
     #[ignore = "requires a codesigned binary with com.apple.security.hypervisor; run via the codesigned harness with --ignored"]
     fn run_loop_ns16550_write_then_psci_off() {
-        let gic = dillo_machine_backend::GicParams {
+        let gic = backend_machine::GicParams {
             dist_base: 0x8000000,
             redist_base: 0x8100000,
             msi_base: 0xa100000,
@@ -871,9 +873,8 @@ mod macos_tests {
 
         // Run via the production single-/multi-vCPU launcher (vcpus = 1). It
         // creates the vCPU on its own thread, so `vm` must outlive the call.
-        let outcome =
-            dillo_machine_backend::run_smp(1, state, Arc::new(std::sync::Mutex::new(mmio_bus)))
-                .expect("run loop");
+        let outcome = backend_machine::run_smp(1, state, Arc::new(std::sync::Mutex::new(mmio_bus)))
+            .expect("run loop");
         drop(vm);
         assert!(
             matches!(outcome, VcpuStop::GuestPoweroff),
@@ -1335,7 +1336,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
 #[cfg(target_os = "linux")]
 fn run_vcpu_loop(
-    vcpu: &mut dillo_machine_backend::Vcpu,
+    vcpu: &mut backend_machine::Vcpu,
     shutdown: &Arc<AtomicBool>,
     syscon_state: &Arc<syscon::SysconState>,
 ) -> Result<RunOutcome> {

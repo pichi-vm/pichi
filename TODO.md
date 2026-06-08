@@ -906,6 +906,10 @@ Completed changes:
 - Split the temporary PCI MSI-X adapter back out of `dillo-machine-kvm`; the
   KVM backend now exposes generic MSI vector routing, while `dillo-vm` holds the
   compatibility `MsixNotifier` wrapper until monolithic composition is removed.
+- Removed the `dillo-machine-backend` facade crate; `dillo-vm` now selects
+  `dillo-machine-kvm`, `dillo-machine-hvf`, or `dillo-machine-whp` directly
+  through target dependencies while the remaining monolithic composition layer
+  is dismantled.
 
 ## Stage 15 - Restore macOS CI
 

@@ -428,15 +428,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dillo-machine-backend"
-version = "0.1.0"
-dependencies = [
- "dillo-machine-hvf",
- "dillo-machine-kvm",
- "dillo-machine-whp",
-]
-
-[[package]]
 name = "dillo-machine-hvf"
 version = "0.1.0"
 dependencies = [
@@ -579,7 +570,9 @@ dependencies = [
  "anyhow",
  "devtree",
  "dillo-machine",
- "dillo-machine-backend",
+ "dillo-machine-hvf",
+ "dillo-machine-kvm",
+ "dillo-machine-whp",
  "dillo-mmio",
  "dillo-mmio-uart",
  "dillo-mmio-virtio",

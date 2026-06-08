@@ -10,7 +10,6 @@ description = "VM-side integration crate for dillo: DTBO synthesis, memfd setup,
 dillo-pmi.workspace = true
 dillo-platform.workspace = true
 dillo-machine.workspace = true
-dillo-machine-backend.workspace = true
 dillo-mmio.workspace = true
 dillo-mmio-uart.workspace = true
 dillo-mmio-virtio.workspace = true
@@ -28,11 +27,18 @@ log.workspace = true
 anyhow.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+dillo-machine-kvm.workspace = true
 nix.workspace = true
 libc = "0.2"
 vhost.workspace = true
 gdbstub.workspace = true
 gdbstub_arch.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dillo-machine-hvf.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+dillo-machine-whp.workspace = true
 
 [features]
 # Spawn the console as a separate vhost-user backend process inside

@@ -18,7 +18,6 @@ members = [
     "dillo/deps/dillo-vm/deps/dillo-platform",
     "dillo/deps/dillo-vm/deps/dillo-pmi",
     "dillo/deps/dillo-vm/deps/vm-pci",
-    "dillo/deps/dillo-machine-backend",
     "dillo/deps/dillo-machine",
     "dillo/deps/dillo-machine-hvf",
     "dillo/deps/dillo-machine-kvm",
@@ -80,7 +79,6 @@ devtree = { path = "deps/devtree" }
 dillo-pmi = { path = "dillo/deps/dillo-vm/deps/dillo-pmi" }
 dillo-platform = { path = "dillo/deps/dillo-vm/deps/dillo-platform" }
 dillo-hypervisor = { path = "dillo/deps/dillo-vm/deps/dillo-hypervisor" }
-dillo-machine-backend = { path = "dillo/deps/dillo-machine-backend" }
 dillo-machine = { path = "dillo/deps/dillo-machine" }
 dillo-machine-hvf = { path = "dillo/deps/dillo-machine-hvf" }
 dillo-machine-kvm = { path = "dillo/deps/dillo-machine-kvm" }

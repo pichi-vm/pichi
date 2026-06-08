@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use dillo_machine_backend::InterruptController;
 use dillo_mmio::Interrupt;
 use dillo_pci::{MsixNotifier, MsixTableEntry};
+
+use crate::backend_select::machine::InterruptController;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Vector {

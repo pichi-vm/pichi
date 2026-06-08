@@ -18,6 +18,8 @@ use dillo_pci::{MsixNotifier, MsixTableEntry};
 use vm_memory::mmap::MmapRegionBuilder;
 use vm_memory::{GuestAddress, GuestMemoryMmap, GuestRegionMmap};
 
+use crate::backend_select::machine as backend_machine;
+
 /// One MSI-X table vector as last programmed by the guest.
 #[derive(Clone, Copy, Default)]
 struct Vector {
@@ -53,7 +55,7 @@ impl HvfMsixNotifier {
         let me = Arc::clone(self);
         Some(Interrupt::from_fn(move || {
             if let Some((addr, intid)) = me.msi_for(vector) {
-                if let Err(e) = dillo_machine_backend::send_msi(addr, intid) {
+                if let Err(e) = backend_machine::send_msi(addr, intid) {
                     log::warn!("hvf MSI-X inject (vector {vector}) failed: {e}");
                 }
             }

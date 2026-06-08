@@ -28,8 +28,8 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::backend_select::machine::{DebugExit, Vcpu, debug_flags};
 use anyhow::{Context, Result};
-use dillo_machine_backend::{DebugExit, Vcpu, debug_flags};
 use gdbstub::common::Signal;
 use gdbstub::conn::{Connection, ConnectionExt};
 use gdbstub::stub::run_blocking::{BlockingEventLoop, Event, WaitForStopReasonError};

@@ -6,6 +6,9 @@
 
 use thiserror::Error;
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use crate::backend_select::machine as backend_machine;
+
 /// Exit-code-bearing error for the VM-side run loop. Each variant
 /// corresponds to one of ARCH §13.4's documented categories.
 #[derive(Debug, Error)]
@@ -53,7 +56,7 @@ pub enum RunError {
     Mmap(#[source] anyhow::Error),
 
     #[error("KVM: {0}")]
-    Kvm(#[from] dillo_machine_backend::Error),
+    Kvm(#[from] backend_machine::Error),
 
     #[error("write load section `{section}` to GPA {gpa:#x}: {source}")]
     SectionWrite {
