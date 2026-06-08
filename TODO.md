@@ -900,6 +900,9 @@ Completed changes:
 - Moved ordinary virtio call interrupts from `dillo-virtio` to backend-neutral
   `dillo-mmio::Interrupt`; Linux vhost-user now obtains raw KVM eventfds
   directly from the KVM notifier because that protocol is explicitly fd-based.
+- Moved KVM GSI routing, irqfd allocation, and MSI-X irqfd notification from
+  `dillo-vm` into `dillo-machine-kvm`; `dillo-vm` no longer depends directly on
+  `kvm-bindings`, `kvm-ioctls`, or `vmm-sys-util`.
 
 ## Stage 15 - Restore macOS CI
 

@@ -20,9 +20,11 @@ pub(crate) type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 #[cfg(target_os = "macos")]
 use crate::{RunError, hvf_devices, syscon};
 #[cfg(target_os = "linux")]
-use crate::{RunError, irq::IrqManager, pci_irq::IrqfdNotifier, syscon};
+use crate::{RunError, syscon};
 #[cfg(target_os = "windows")]
 use crate::{RunError, syscon, whp_devices::WhpMsixNotifier};
+#[cfg(target_os = "linux")]
+use dillo_machine_backend::{IrqManager, IrqfdNotifier};
 #[cfg(target_os = "windows")]
 use dillo_x86::IoApic;
 

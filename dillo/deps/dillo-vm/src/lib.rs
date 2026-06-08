@@ -20,15 +20,11 @@ mod syscon;
 // HVF MSI-X notifier + guest-memory builder (KVM uses memfd + irqfd instead).
 #[cfg(target_os = "macos")]
 mod hvf_devices;
-// KVM/Linux-only submodules (memfd, irqfd, vhost-user, gdb stub).
+// KVM/Linux-only submodules (memfd, vhost-user, gdb stub).
 #[cfg(target_os = "linux")]
 mod gdb;
 #[cfg(target_os = "linux")]
-mod irq;
-#[cfg(target_os = "linux")]
 mod memory;
-#[cfg(target_os = "linux")]
-mod pci_irq;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod pio_pci;
 #[cfg(target_os = "linux")]

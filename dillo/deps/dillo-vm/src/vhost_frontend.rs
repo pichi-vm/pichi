@@ -19,7 +19,7 @@ use vhost::vhost_user::{Frontend, VhostUserFrontend as _};
 use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
 use vm_memory::{Address, GuestMemory, GuestMemoryMmap};
 
-use crate::pci_irq::IrqfdNotifier;
+use dillo_machine_backend::IrqfdNotifier;
 
 const VIRTIO_ID_CONSOLE: u32 = 3;
 const QUEUE_MAX: u16 = 64;

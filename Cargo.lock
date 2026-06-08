@@ -454,11 +454,14 @@ dependencies = [
  "dillo-hypervisor",
  "dillo-machine",
  "dillo-mmio",
+ "dillo-pci",
+ "kvm-bindings",
  "kvm-ioctls",
  "libc",
  "log",
  "nix",
  "pmi",
+ "thiserror",
  "vmm-sys-util",
 ]
 
@@ -590,8 +593,6 @@ dependencies = [
  "dillo-x86",
  "gdbstub",
  "gdbstub_arch",
- "kvm-bindings",
- "kvm-ioctls",
  "libc",
  "log",
  "nix",
@@ -599,7 +600,6 @@ dependencies = [
  "thiserror",
  "vhost",
  "vm-memory",
- "vmm-sys-util",
 ]
 
 [[package]]
