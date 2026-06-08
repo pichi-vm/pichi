@@ -453,6 +453,8 @@ Completed changes:
   vCPU stop control.
 - Updated `dillo-vm` to attach UART, syscon, PCI root, and virtio-mmio devices
   to the machine instead of to supervisor-owned MMIO buses.
+- Restored the Linux PCI root machine attachment so DTB-declared ECAM/BAR
+  windows route before vCPUs run.
 - Kept x86 PIO reads as constructor-time vCPU input until Stage 9 moves
   non-MMIO exits fully below the machine boundary.
 

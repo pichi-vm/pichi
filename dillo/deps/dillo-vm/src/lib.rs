@@ -1602,6 +1602,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     });
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
+    vm.attach_mmio(Arc::clone(&pci_root))?;
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
     // ── 9. create vCPUs + set boot vCPU state ──────────────────────
