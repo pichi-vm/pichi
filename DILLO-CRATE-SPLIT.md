@@ -27,6 +27,14 @@ This design is derived from current code and primary specs.
 | Current `PciRoot` already owns ECAM plus BAR windows and implements `MmioDevice`. | `dillo/deps/dillo-vm/src/pci.rs:188`, `dillo/deps/dillo-vm/src/pci.rs:265` |
 | Current `PciDevice`, `VirtioDevice`, `QueueNotifier`, and `MsixNotifier` are already separable traits, but some live in the wrong crates. | `dillo/deps/dillo-vm/src/pci.rs:23`, `dillo/deps/virtio/src/device.rs:27`, `dillo/deps/dillo-vm/deps/virtio-pci/src/transport.rs:63`, `dillo/deps/dillo-vm/deps/vm-pci/src/msix.rs:99` |
 | Current `BackendVm` exposes PCI-specific MSI-X notifier construction; the target split must remove that transport leak from the machine boundary. | `dillo/deps/dillo-vm/src/backend.rs:64`, `dillo/deps/dillo-vm/src/backend.rs:74` |
+| Current `dillo-platform::machine` already proves the drain-to-empty DTB survey pattern: materialize an `OwnedTree`, run self-routing `from_tree` constructors, and fail on residual nodes/properties. | `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:1`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:477`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:521` |
+| Current `dillo-platform::machine` already tracks region provenance and distinguishes required properties from acknowledged pass-through properties. | `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:121`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:157`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:1167`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:1190` |
+| Current `dillo-pmi` already decodes `vm:vcpu` into an arch-erased parsed value; target `dillo-machine` must not invent a universal CPU-state struct. | `dillo/deps/dillo-vm/deps/dillo-pmi/src/parse.rs:47`, `dillo/deps/dillo-vm/deps/dillo-pmi/src/parse.rs:83` |
+| Current vCPU execution still routes MMIO through callbacks owned by `dillo-vm`; the target no-callback `Vcpu::run()` moves MMIO routing below the `Machine` boundary. | `dillo/deps/dillo-vm/src/lib.rs:1701`, `dillo/deps/dillo-vm/src/lib.rs:1713`, `dillo/deps/dillo-vm/src/mmio_bus.rs:49` |
+| Current vCPU exits expose PIO, HVC, SMC, debug, halt, and shutdown above the hypervisor crate; the target `VcpuStop` API requires those exits to move into backend or architecture-substrate internals. | `dillo/deps/dillo-vm/deps/dillo-hypervisor/src/lib.rs:53`, `dillo/deps/dillo-vm/src/psci.rs:63` |
+| Current memory and virtio activation still expose whole guest memory; the confidential-computing shared-region model is new implementation work. | `dillo/deps/dillo-vm/src/memory.rs:39`, `dillo/deps/dillo-vm/deps/dillo-hypervisor/src/kvm.rs:138`, `dillo/deps/virtio/src/device.rs:49`, `dillo/deps/dillo-vm/deps/virtio-pci/src/transport.rs:328` |
+| Current virtio PCI writes use `&mut self`; target shared-reference `PciDevice` implies an interior-mutability migration for config space, MSI-X state, and device state. | `dillo/deps/dillo-vm/deps/virtio-pci/src/transport.rs:376`, `dillo/deps/dillo-vm/deps/virtio-pci/src/transport.rs:408` |
+| Current UART interrupting is trigger-only; a level/deassert-capable interrupt line is new backend/device work. | `dillo/deps/dillo-vm/src/uart.rs:81`, `dillo/deps/dillo-vm/src/uart.rs:270` |
 | CI's supported platform matrix is Linux x86-64/KVM, Windows x86-64/WHP, and macOS arm64/HVF, with warnings denied and real boot tests. | `.github/workflows/ci.yml:13`, `.github/workflows/ci.yml:92`, `.github/workflows/ci.yml:100`, `.github/workflows/ci.yml:108` |
 
 ## Name stability
@@ -40,7 +48,10 @@ Current crates are evidence and migration sources:
 - `dillo-vm` should disappear as a monolith.
 - `dillo-hypervisor` should split into backend `Machine` implementation crates.
 - `dillo-pmi` can become a `dillo` module unless reuse justifies a crate.
-- `dillo-platform` can become a `dillo` DTB-survey module or a renamed crate.
+- `dillo-platform::machine::Machine` is today's DTB survey result, not the
+  target `dillo-machine::Machine` trait. That name collision must be resolved
+  before both concepts become public in the same API surface. The existing
+  survey code can become a `dillo` DTB-survey module or a renamed crate.
 - `dillo-device` is an older process/thread experiment, not the target boundary.
 - current `virtio`, `virtio-pci`, `vm-pci`, and `vhost-backend` may be renamed,
   split, absorbed, or upstreamed depending on the final rust-vmm alignment.
@@ -204,8 +215,8 @@ become a `dillo` module unless reuse justifies a crate.
 3. Generate the PMI overlay containing only host-provided CPUs, memory,
    distance-map data, and `numa-node-id`.
 4. Merge base DTB plus overlay into one mutable `devtree::OwnedTree`.
-5. Construct the selected concrete `Machine` by draining machine-owned platform
-   facts from the merged devtree.
+5. Construct the selected concrete `Machine` from backend-owned input types
+   derived from PMI plus the merged devtree.
 6. Incrementally construct CPU, memory, MMIO, bus, transport, and device objects
    from the same mutable tree and attach each one to the machine.
 7. Fail if any DTB node/property remains after assembly.
@@ -225,21 +236,22 @@ let base = pmi.base_dtb()?;
 let placement = Placement::from_pmi_and_base_dtb(&pmi, &base, request)?;
 let overlay = placement.overlay()?;
 let mut tree = devtree::OwnedTree::merge(base, overlay)?;
+let mut ctx = DevTreeContext::new(&pmi, request, &placement)?;
 
-let model = require(KvmTdxModel::from_devtree(&mut tree)?)?;
+let model = require(KvmTdxModel::from_devtree(&mut tree, &mut ctx)?)?;
 let mut machine = KvmTdxMachine::new(model)?;
 
-for memory in KvmTdxMemory::all_from_devtree(&mut tree)? {
+for memory in KvmTdxMemory::all_from_devtree(&mut tree, &mut ctx)? {
     machine.attach(memory)?;
 }
 
 let mut vcpus = Vec::new();
-for cpu in KvmTdxCpu::all_from_devtree(&mut tree)? {
+for cpu in KvmTdxCpu::all_from_devtree(&mut tree, &mut ctx)? {
     vcpus.push(machine.attach(cpu)?);
 }
 
 let mut attached_mmio = Vec::new();
-for device in dillo_mmio_devices_from_devtree(&mut tree)? {
+for device in DilloDevices::from_devtree(&mut tree, &mut ctx)? {
     let attachment = machine.attach(Arc::clone(&device))?;
     attached_mmio.push((device, attachment));
 }
@@ -265,8 +277,8 @@ MMIO routing before vCPUs run.
 Rust channels. A guest poweroff is handled in this order:
 
 1. One vCPU worker reports `VcpuStop::GuestPoweroff`.
-2. The supervisor asks the machine run control to make every still-running vCPU
-   leave `Vcpu::run()`.
+2. The supervisor calls `Machine::request_vcpu_exit` to make every
+   still-running vCPU leave `Vcpu::run()`.
 3. The supervisor joins all vCPU workers. At this point no guest CPU can issue
    new MMIO.
 4. The supervisor requests device-host shutdown through each `MmioDeviceHandle`.
@@ -287,8 +299,12 @@ device crates.
 ```rust
 trait FromDevTree {
     type Error;
+    type Context;
 
-    fn from_devtree(tree: &mut devtree::OwnedTree) -> Result<Option<Self>, Self::Error>
+    fn from_devtree(
+        tree: &mut devtree::OwnedTree,
+        ctx: &mut Self::Context,
+    ) -> Result<Option<Self>, Self::Error>
     where
         Self: Sized;
 }
@@ -298,15 +314,26 @@ trait FromDevTree {
 adapter types because only `dillo` knows all inputs at once: PMI, the mutable
 devtree, selected transport, selected concrete `Machine`, and every concrete
 device type it can instantiate. This is intentionally not an independent crate.
+The context is the place for cross-cutting launch facts that are not owned by a
+single DTB node, such as parsed PMI state, placement decisions, and resource
+plans.
 
 Construction uses the existing drain model incrementally. `dillo` constructs one
 object at a time from one mutable `devtree::OwnedTree`. Each successful
 constructor removes every node and property it owns from that tree. After all
 constructors and attachments run, any remaining node or property is an error.
-`FromDevTree` always receives the whole tree; a consumer may drain as many nodes
-as it owns. The common MMIO-device case is one DTB node defining the device's
-constructor parameters: `reg` windows, interrupts, DMA/notification facts, and
-device-specific properties.
+`FromDevTree` always receives the whole tree and a mutable context; a consumer
+may drain as many nodes as it owns and may update context such as topology or
+resource planning. The common MMIO-device case is one DTB node defining the
+device's constructor parameters: `reg` windows, interrupts, DMA/notification
+facts, and device-specific properties.
+
+This is a publicized/generalized form of today's
+`dillo-platform::machine::*::from_tree(&mut OwnedTree, &mut ResourcePlan, ...)`
+pattern. That code already proves the important mechanics: self-routing
+constructors, `require` for properties that drive host setup, `ack` for claimed
+properties whose values do not drive host setup, `ensure_drained` for per-node
+coverage, origin-tracked region declaration, and a final residual-tree failure.
 
 `Ok(None)` means the relevant node is absent and the implementation consumed
 nothing. `Ok(Some(_))` means construction succeeded and all owned nodes and
@@ -323,6 +350,15 @@ does not substitute guessed guest-visible hardware.
 
 Every trait intended to cross a crate boundary is listed here. Traits not listed
 are implementation details until proven otherwise.
+
+- `Attach<T>`: generic registration into a constructed owner.
+- `Machine`: host-neutral VM contract implemented by backend crates.
+- `Vcpu`: synchronous vCPU execution contract.
+- `MmioDevice`: device-advertised MMIO, interrupt, and shared-memory needs.
+- `PciDevice`: PCI endpoint contract consumed only by `PciRoot`.
+- `SharedMemory`: attachment-scoped shared-memory capability.
+- `MmioAttachment`: backend-produced runtime authority for one MMIO device.
+- `InterruptLine` and `MessageInterruptDomain`: interrupt delivery contracts.
 
 ## Confidential-computing memory model
 
@@ -415,8 +451,10 @@ where
 
 `Machine` has no trait constructor and no `launch()` API. Each backend crate
 exposes small inherent constructors on concrete machine and machine-input types.
-`dillo` owns local `FromDevTree` implementations that drain the merged devtree
-into those typed inputs, then calls the inherent constructors. For example:
+`dillo` owns local `FromDevTree` glue for the selected backend associated input
+types because `dillo` is the composition point with PMI, devtree, placement, and
+device policy. The backend crate owns the concrete input type and its inherent
+validation/constructor policy. For example:
 
 ```rust
 impl KvmTdxMachine {
@@ -451,10 +489,13 @@ impl Attach<Arc<dyn MmioDevice>> for KvmTdxMachine {
 attachment material differs by machine family. Plain KVM may need explicit CPU
 initial register/state data. KVM+SEV and KVM+TDX may need confidential launch
 material, accepted initial state, memory acceptance/private-page setup, or
-opaque per-vCPU setup. `dillo` may request only PMI-defined CPU count, CPU
-profile, memory, load/fill, and initial state. Its `FromDevTree`
-implementations translate those facts into `Machine::Cpu` and `Machine::Memory`
-values for the selected machine or fail closed.
+opaque per-vCPU setup. `dillo-machine` must not define a universal CPU-state
+type. `dillo-pmi` already parses the PMI `vm:vcpu` map into an arch-erased
+parsed value, and the selected backend associated CPU input decides which PMI
+arm it accepts. `dillo` may request only PMI-defined CPU count, CPU profile,
+memory, load/fill, and initial state; constructing `Machine::Cpu` and
+`Machine::Memory` from those facts succeeds for the selected backend or fails
+closed.
 
 `Machine` owns all guest memory, but exposes only attachment-scoped shared
 regions that a confidential VM can expose. Standard VMs may implement this with
@@ -507,16 +548,16 @@ pub enum VcpuStop {
     GuestReset,
 
     Stopped,
-
-    Fatal,
 }
 ```
 
 `Vcpu::run` hides KVM `VcpuExit`, HVF syndrome decoding, and WHP emulator
-callbacks from dillo and devices. The only guest I/O exit exposed above the
-backend is MMIO. PIO, hypercalls, CPUID leaves, PSCI calls, and backend-specific
-emulation exits are backend or architecture-substrate internals and must not
-become dillo/device APIs.
+callbacks from dillo and devices. The only guest I/O exit that participates in
+the shared machine/device boundary is MMIO, and even that is routed inside the
+machine after `Attach<Arc<dyn MmioDevice>>`. PIO, hypercalls, CPUID leaves,
+PSCI calls, WFI/HLT, debug exits, and backend-specific emulation exits are
+backend or architecture-substrate internals and must not become dillo/device
+APIs.
 
 `Vcpu::run` has no external MMIO callback argument.
 `Attach<Arc<dyn MmioDevice>>` registers the device's MMIO windows in
@@ -529,12 +570,26 @@ attachment; it is not sent through the vCPU run loop.
 
 `VcpuStop` is a report to the supervisor, not a complete shutdown sequence.
 Architecture-specific shutdown triggers such as PSCI system-off, syscon
-poweroff, ACPI power button, or backend fatal exits are decoded inside backend
-or architecture-substrate code and surfaced as `VcpuStop`. The supervisor owns
-the fan-out. It calls `Machine::request_vcpu_exit` to make outstanding
+poweroff, ACPI power button, or guest reset are decoded inside backend or
+architecture-substrate code and surfaced as `VcpuStop`. Backend failures are
+returned as `Err(Self::Error)`. The supervisor owns the fan-out. It calls
+`Machine::request_vcpu_exit` to make outstanding
 synchronous `Vcpu::run()` calls return, then joins every vCPU worker before
 shutting down device hosts. This keeps shutdown policy out of devices and out of
 backend-specific vCPU exit types.
+
+Fatal execution failures use `Err(Self::Error)`, not a second `VcpuStop`
+variant. `VcpuStop` is reserved for guest or supervisor lifecycle outcomes where
+the supervisor may make a policy decision after a successful `run()` return.
+
+This is a real inversion from the current code. Today `dillo-vm` sees PIO, HVC,
+SMC, debug, halt, shutdown, and MMIO exits above the hypervisor wrapper. In the
+target design, PSCI handling, including secondary CPU bring-up from `CPU_ON`,
+lives in the backend or architecture substrate and coordinates with
+machine-owned vCPU parking/wakeup state. WFI/HLT stays backend-internal. The
+existing `DILLO_GDB` debug path cannot be smuggled through `VcpuStop::Debug`; it
+must either be dropped from the target or reintroduced as an explicit
+debug-capable machine runner.
 
 `Machine::request_vcpu_exit` is not cancellation of arbitrary Rust work, reset
 control, or device shutdown. It is the backend's VM-wide vCPU run-exit
@@ -673,7 +728,10 @@ pub trait PciDevice: Send + Sync + std::fmt::Debug {
 and `PciRoot` is itself an `MmioDevice` whose MMIO callbacks take `&self`.
 Mutable endpoint state therefore lives behind endpoint-owned synchronization or
 interior mutability. BAR declarations are borrowed fixed constructor state, just
-like `MmioDevice` windows.
+like `MmioDevice` windows. This is a real migration from today's
+`virtio-pci::VirtioPciDevice`, where config and BAR writes take `&mut self`;
+config space, MSI-X state, transport state, and device access must be made
+internally synchronized before this trait can be implemented safely.
 
 ### `PciRoot`
 
@@ -768,6 +826,21 @@ non-confidential VM, the backend may implement `SharedRegion` with ordinary
 mapped RAM, but only for ranges reachable through a successful device
 attachment. Devices must never receive a handle that can inspect arbitrary
 guest-private memory.
+
+This is net-new relative to the current Linux implementation. Today guest RAM is
+a hugetlb memfd mapped into userspace and registered with
+`set_user_memory_region`, and virtio activation receives a full
+`GuestMemoryMmap`. The target CC-first model requires new backend state and new
+device activation plumbing:
+
+- shared/private page state is backend-owned machine state;
+- guest-driven conversion exits or hypercalls are handled below `Vcpu::run()`,
+  update the backend's tracked shared set, and call the host API such as KVM
+  memory attributes where required;
+- a `SharedMemoryRequirement` aperture must come from DTB-consumed device
+  resources. If the existing arma device model cannot describe a restricted DMA
+  aperture or bounce-buffer pool, dillo must fail closed until the model is
+  extended.
 
 ### `MmioAttachment`
 
@@ -941,7 +1014,9 @@ pub struct Interrupt(Arc<dyn InterruptLine>);
 `signal` covers edge backends and pulse-style users. `set_level` is required
 for self-leveling devices such as a 16550 on level-triggered backends. A backend
 that cannot represent deassert returns `UnsupportedDeassert`; devices or
-transports that need deassert must fail closed on that backend.
+transports that need deassert must fail closed on that backend. This is net-new
+relative to today's UART integration, which can trigger an eventfd, inject a
+line, or no-op, but has no deassert path.
 
 ### `MessageInterruptDomain`
 
@@ -1043,10 +1118,10 @@ This design is satisfied only when all of the following can be verified:
    HVF, raw host handles, or hypervisor API objects.
 6. `Machine` has no trait constructor; backend crates expose inherent
    constructors on concrete machine types.
-7. `Machine` has no universal `VcpuConfig`; `Machine::Cpu` and
+7. `Machine` has no universal `VcpuConfig` or CPU-state type; `Machine::Cpu` and
    `Machine::Memory` are associated per machine family and are produced by
-   dillo-owned devtree consumption for the selected concrete backend.
-   Unsupported PMI/DTB CPU or memory requests fail closed.
+   dillo-owned devtree consumption/context glue for the selected concrete
+   backend. Unsupported PMI/DTB CPU or memory requests fail closed.
 8. `Machine` exposes no whole-guest-memory accessor; guest memory is accessible
    only through attachment-scoped `SharedRegion` handles minted by successful
    device registration.
@@ -1067,8 +1142,9 @@ This design is satisfied only when all of the following can be verified:
    runtime regions must be inside a DTB-derived aperture and currently tracked
    shared by the backend.
 16. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
-   for all concrete devices and transports over `&mut devtree::OwnedTree`.
-   `Ok(None)` consumes nothing and means the relevant node is absent.
+   for all concrete devices and transports over `&mut devtree::OwnedTree` plus
+   launch context. `Ok(None)` consumes nothing and means the relevant node is
+   absent.
 17. Every DTB node/property is drained by exactly one owner, or launch fails.
 18. Local verification passes:
    - `cargo fmt --all -- --check`
@@ -1077,9 +1153,29 @@ This design is satisfied only when all of the following can be verified:
      and macOS, with only genuinely platform-incompatible current crates
      excluded until the split removes or relocates them
    - target checks for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, and `aarch64-apple-darwin`
-15. CI passes all three supported platform lanes, including real boot tests.
+19. CI passes all three supported platform lanes, including real boot tests.
 
-## Current-state gaps
+## Existing foundation
+
+The target design should build on code that already exists:
+
+- `dillo-platform::machine` already demonstrates the drain-to-empty survey,
+  self-routing `from_tree` constructors, `require` vs `ack`, per-node
+  `ensure_drained`, origin-tracked region declarations, and residual-tree
+  failure.
+- `devtree::OwnedTree` already provides the mutation primitives needed for the
+  drain model. Missing polish is public merge/empty convenience, not a new tree
+  representation.
+- `dillo-pmi` already parses PMI `vm:vcpu` into arch-specific parsed state
+  behind an arch-erased value. Target backend associated CPU input types should
+  consume the matching arm; `dillo-machine` should not add another generic CPU
+  state model.
+- Current `PciRoot`, `QueueNotifier`, `MsixNotifier`, and closure-backed
+  interrupt helpers are close to the target interrupt/notify abstractions, but
+  live in the wrong crates and expose transport/backend names at the wrong
+  layer.
+
+## Migration work
 
 The current tree does not yet meet this design:
 
@@ -1098,9 +1194,24 @@ The current tree does not yet meet this design:
 - `dillo-vm` and current virtio activation paths still pass whole guest-memory
   handles; the target design must replace those with attachment-scoped
   `SharedRegion` handles.
+- `MmioBus` is owned and dispatched above the backend today. The target
+  callback-free `Vcpu::run()` requires machine backends to own MMIO routing and
+  for `Attach<Arc<dyn MmioDevice>>` to populate it.
+- Non-MMIO exits currently cross the hypervisor boundary. PSCI/HVC, including
+  `CPU_ON` secondary bring-up, must move into backend or architecture-substrate
+  code. WFI/HLT should remain backend-internal. The existing gdb/debug path
+  needs an explicit target design or must be declared out of scope.
+- Confidential-computing memory is greenfield: guest-private memory, shared page
+  conversion, shared aperture tracking, and restricted device DMA must be added
+  rather than moved.
+- `PciDevice` shared-reference methods require interior mutability for current
+  virtio PCI config/MSI-X/device state.
+- `InterruptLine::set_level(false)` requires backend decisions and device work;
+  the current UART path can trigger but not deassert.
 - `dillo-device` contains an older process/thread abstraction that is not yet
   the active `VirtioDevice` activation contract.
 
 These gaps are evidence that the target design is not merely a crate move. The
-split requires the trait surfaces above before crates can be separated without
-preserving backend knowledge in the wrong layer.
+split requires the trait surfaces above and the run-loop/memory inversions
+before crates can be separated without preserving backend knowledge in the wrong
+layer.
