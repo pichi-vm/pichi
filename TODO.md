@@ -770,6 +770,9 @@ Completed changes:
   descriptor payloads through explicit shared-memory adapters.
 - Removed the orphaned `dillo-device` compatibility crate, which still exposed
   an old `DeviceBackend::activate(..., GuestMemoryMmap, ...)` API.
+- Removed the dead virtio-pci `set_mem(GuestMemoryMmap)` compatibility hook;
+  PCI virtio activation now relies on the root attachment host for shared-memory
+  access just like virtio-mmio.
 
 Remaining divergence:
 - vhost-user devices still use their backend-specific whole-memory protocol

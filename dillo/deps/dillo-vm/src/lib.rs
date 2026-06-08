@@ -245,15 +245,13 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     let bar0_gpa = machine.pcie.mmio_base;
     let bar2_gpa = machine.pcie.mmio_base + 0x1000;
-    let mut virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
+    let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
         console,
         msix_vectors,
         bar0_gpa,
         bar2_gpa,
         Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
     );
-    virtio_pci_dev.set_mem(guest_mem.clone());
-
     let mut pci_root = PciRoot::new(MmioWindow {
         name: "pcie-ecam",
         base: machine.pcie.ecam_base,
@@ -615,16 +613,13 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
         let bar0_gpa = machine.pcie.mmio_base;
         let bar2_gpa = machine.pcie.mmio_base + 0x1000;
-        let mut virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
+        let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
             console,
             msix_vectors,
             bar0_gpa,
             bar2_gpa,
             Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
         );
-        // No backend queue notifier on macOS; queue notifies kick directly.
-        virtio_pci_dev.set_mem(guest_mem.clone());
-
         let mut pci_root = PciRoot::new(MmioWindow {
             name: "pcie-ecam",
             base: machine.pcie.ecam_base,
@@ -1215,9 +1210,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         irqfd_notifier as Arc<dyn MsixNotifier>,
     );
     virtio_pci_dev.set_queue_notifier(vm.queue_notifier());
-    // Retain the compatibility vm-memory view for virtio-pci activation while
-    // queue and payload access move to attachment-scoped shared memory.
-    virtio_pci_dev.set_mem(guest_mem.clone());
 
     let mut pci_root = PciRoot::new(MmioWindow {
         name: "pcie-ecam",

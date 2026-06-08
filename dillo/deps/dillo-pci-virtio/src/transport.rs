@@ -19,7 +19,7 @@ use dillo_virtio::{
     ActivateError, DeviceJoinError, ThreadDeviceHost, VIRTIO_F_VERSION_1, VirtioActivate,
     VirtioDevice, VirtioDeviceHandle, VirtioDeviceHost, VirtioRunToken,
 };
-use vm_memory::{GuestAddress, GuestMemoryMmap};
+use vm_memory::GuestAddress;
 
 use crate::capabilities::{add_virtio_cap, add_virtio_notify_cap};
 
@@ -152,9 +152,6 @@ pub struct VirtioPciDevice {
     activation: Option<VirtioDeviceHandle>,
     host: Arc<dyn VirtioDeviceHost>,
 
-    // Guest memory for Queue operations during activation.
-    mem: Option<GuestMemoryMmap>,
-
     // MSI-X notifier (VMM provides real implementation, tests use NoopNotifier).
     notifier: Arc<dyn MsixNotifier>,
 
@@ -190,7 +187,6 @@ impl std::fmt::Debug for VirtioPciDevice {
             .field("bar0_gpa", &self.bar0_gpa)
             .field("bar2_gpa", &self.bar2_gpa)
             .field("activated", &self.activated)
-            .field("mem", &self.mem.as_ref().map(|_| "GuestMemoryMmap"))
             .field("device_features", &self.device_features)
             .field("num_queues", &self.num_queues)
             .finish_non_exhaustive()
@@ -315,7 +311,6 @@ impl VirtioPciDevice {
             activated: false,
             activation: None,
             host: Arc::new(ThreadDeviceHost),
-            mem: None,
             notifier,
             queue_notifier: None,
             #[cfg(not(target_os = "linux"))]
@@ -328,15 +323,6 @@ impl VirtioPciDevice {
     /// Set the backend queue-notification registrar used at activation.
     pub fn set_queue_notifier(&mut self, notifier: Box<dyn QueueNotifier>) {
         self.queue_notifier = Some(notifier);
-    }
-
-    /// Set the guest memory used for Queue operations during device activation.
-    ///
-    /// Must be called before the guest writes DRIVER_OK. The VMM integration
-    /// layer provides the real guest memory; without it, activation falls back
-    /// to a minimal placeholder.
-    pub fn set_mem(&mut self, mem: GuestMemoryMmap) {
-        self.mem = Some(mem);
     }
 
     /// Set the host service inherited from the attached PCI root.
