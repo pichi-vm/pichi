@@ -17,6 +17,8 @@ mod imp {
     use dillo_hypervisor::VmExit;
     pub use dillo_hypervisor::{Error, GicParams, VcpuHandle, force_vcpus_exit, send_msi, set_spi};
 
+    pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::Aarch64;
+
     pub fn install_signal_watchers(_supervisor_shutdown: &'static AtomicBool) {}
 
     static ORIGINAL_TERMIOS: OnceLock<libc::termios> = OnceLock::new();

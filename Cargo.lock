@@ -392,6 +392,7 @@ dependencies = [
  "arma",
  "burrow",
  "devtree",
+ "dillo-machine",
  "dillo-machine-hvf",
  "dillo-machine-kvm",
  "dillo-machine-whp",

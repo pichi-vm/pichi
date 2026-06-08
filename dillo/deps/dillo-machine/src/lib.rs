@@ -6,6 +6,14 @@
 
 pub use dillo_mmio::DeviceModel;
 
+/// Host architecture exposed by the selected machine backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostArchitecture {
+    X86_64,
+
+    Aarch64,
+}
+
 /// A constructed VM capable of accepting DTB-derived resources and vCPUs.
 pub trait Machine: Sized + Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;

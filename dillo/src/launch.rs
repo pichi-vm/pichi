@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+use dillo_machine::HostArchitecture;
 use dillo_pmi::{HostArch, ParseOptions};
 use thiserror::Error;
 
@@ -23,7 +24,7 @@ impl LaunchPlan {
     /// placement from the DTB-declared platform.
     pub fn read(
         pmi_path: &Path,
-        host_arch: HostArch,
+        host_arch: HostArchitecture,
         memory_mib: u32,
     ) -> Result<Self, LaunchError> {
         let mut bytes = Vec::new();
@@ -38,22 +39,19 @@ impl LaunchPlan {
                 source,
             })?;
 
+        let pmi_arch = pmi_arch(host_arch);
         let parsed = dillo_pmi::parse(
             &bytes,
             &ParseOptions {
-                host_arch,
+                host_arch: pmi_arch,
                 memory_mib,
             },
         )?;
-        validate_cpu_profile(parsed.cpu_profile.as_str(), host_arch)?;
+        validate_cpu_profile(parsed.cpu_profile.as_str(), pmi_arch)?;
 
         let dtb = merged_dtb(&bytes, &parsed)?;
-        let platform_arch = match host_arch {
-            HostArch::X86_64 => dillo_platform::Arch::X86_64,
-            HostArch::Aarch64 => dillo_platform::Arch::Aarch64,
-        };
-        let platform =
-            dillo_platform::Machine::survey(dtb, platform_arch).map_err(LaunchError::Coverage)?;
+        let platform = dillo_platform::Machine::survey(dtb, platform_arch(host_arch))
+            .map_err(LaunchError::Coverage)?;
 
         let load_ranges: Vec<(String, u64, u64)> = parsed
             .sections
@@ -79,6 +77,20 @@ impl LaunchPlan {
             platform,
             memory,
         })
+    }
+}
+
+fn pmi_arch(host_arch: HostArchitecture) -> HostArch {
+    match host_arch {
+        HostArchitecture::X86_64 => HostArch::X86_64,
+        HostArchitecture::Aarch64 => HostArch::Aarch64,
+    }
+}
+
+fn platform_arch(host_arch: HostArchitecture) -> dillo_platform::Arch {
+    match host_arch {
+        HostArchitecture::X86_64 => dillo_platform::Arch::X86_64,
+        HostArchitecture::Aarch64 => dillo_platform::Arch::Aarch64,
     }
 }
 

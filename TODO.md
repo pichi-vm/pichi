@@ -937,24 +937,40 @@ Completed changes:
   synthesis, and memory placement. These are now available to the future direct
   `dillo` runner without introducing target cfg outside machine selection.
 - Added `dillo::launch::LaunchPlan::read`, a target-neutral PMI preflight that
-  reads and parses PMI, validates `cpu:profile` against an explicit PMI
-  `HostArch`, surveys the merged DTB, cross-checks loads against DTB-declared
-  regions, and computes memory placement. The selected machine will provide the
-  host architecture later; `dillo::launch` contains no OS/arch cfg.
+  reads and parses PMI, validates `cpu:profile`, surveys the merged DTB,
+  cross-checks loads against DTB-declared regions, and computes memory
+  placement from the selected machine's declared host architecture.
+  `dillo::launch` contains no OS/arch cfg.
+- Added `dillo-machine::HostArchitecture` plus backend-owned `HOST_ARCH`
+  constants in `dillo-machine-kvm`, `dillo-machine-hvf`, and
+  `dillo-machine-whp`; `dillo` passes this selected-machine fact into launch
+  preflight without matching on OS/arch in `main.rs`.
+- Wired `dillo/src/main.rs` to run `dillo::launch::LaunchPlan::read` before the
+  remaining legacy `dillo-vm::run` handoff, so PMI parse, DTB survey,
+  load-region cross-validation, and memory placement are now exercised from the
+  top-level launcher while the monolithic runner is dismantled.
 
 CI verification:
 - `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `3bcafcc test: confine target cfg in dillo`.
+- `27171526306` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `351c9d1 refactor: move launch support into dillo`.
+- `27171784477` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `9ef45a5 refactor: add dillo launch preflight`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `git diff --check`
+- `grep -R "cfg(.*target\|cfg_attr(.*target" -n dillo/src || true`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --lib`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --no-run`
+- local codesign of `target/debug/dillo`, `target/debug/deps/dillo-*`, and
+  `target/debug/deps/boot-*` with `com.apple.security.hypervisor`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
 
 ## Stage 15 - Restore macOS CI

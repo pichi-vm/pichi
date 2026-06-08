@@ -14,6 +14,8 @@ mod imp {
     pub use dillo_hypervisor::{Error, VcpuCancel};
     use dillo_hypervisor::{InterruptController, VmExit};
 
+    pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::X86_64;
+
     type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
     type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 

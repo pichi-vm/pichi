@@ -96,6 +96,11 @@ fn main() {
     let memory = args.memory;
     let cpus = args.cpus;
 
+    if let Err(e) = dillo::launch::LaunchPlan::read(&pmi, machine::HOST_ARCH, memory) {
+        eprintln!("dillo: {e}");
+        std::process::exit(e.exit_code());
+    }
+
     // Per ARCH §13.5: if stdin is a TTY, enter raw mode for the
     // session. A Drop guard restores cooked mode at exit; a custom
     // panic hook restores it before printing the panic message so

@@ -23,6 +23,7 @@ vm-tests = []
 
 [dependencies]
 dillo-vm.workspace = true
+dillo-machine.workspace = true
 dillo-pmi.workspace = true
 dillo-platform.workspace = true
 dillo-virtio-console.workspace = true
