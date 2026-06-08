@@ -87,7 +87,7 @@ pub static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[cfg(all(test, target_os = "macos"))]
 use dillo_mmio::MmioBus;
-use dillo_mmio::MmioWindow;
+use dillo_mmio::{MappedSharedMemory, MmioWindow, SharedAccess};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::PciRoot;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -212,6 +212,10 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         vcpus,
         guest_memory: guest_mem.clone(),
     })?;
+    vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
+        guest_mem.clone(),
+        SharedAccess::ReadWrite,
+    ))]);
 
     apply_load_sections(
         &mut vm,
@@ -563,6 +567,11 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         vcpus,
         memory_regions,
     })?;
+    let guest_mem = vm.guest_memory()?;
+    vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
+        guest_mem.clone(),
+        SharedAccess::ReadWrite,
+    ))]);
 
     // 7. Attach MMIO devices once (reused across warm reboots): the ns16550a
     //    serial console (TX → stderr) here, then the PCIe ECAM + virtio-console BARs
@@ -614,8 +623,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
         );
         // No backend queue notifier on macOS; queue notifies kick directly.
-        let guest_mem = vm.guest_memory()?;
-        virtio_pci_dev.set_mem(guest_mem);
+        virtio_pci_dev.set_mem(guest_mem.clone());
 
         let mut pci_root = PciRoot::new(MmioWindow {
             name: "pcie-ecam",
@@ -645,7 +653,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 ))
             })),
         );
-        let guest_mem = vm.guest_memory()?;
         let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::new(
             MmioWindow {
                 name: "virtio-mmio-console",
@@ -1094,7 +1101,21 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             size: r.size,
         });
     }
+    let region_tuples: Vec<(u64, u64, u64)> = plan
+        .memslots
+        .iter()
+        .map(|r| {
+            let host = gpa_map.lookup(r.gpa).expect("memslot has host mapping");
+            (r.gpa, host, r.size)
+        })
+        .collect();
+    let guest_mem =
+        memory::build_guest_memory(&memfd, &region_tuples).map_err(RunError::MemfdSetup)?;
     let mut vm = <Vm as BackendVm>::new(backend::VmOptions { memslots })?;
+    vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
+        guest_mem.clone(),
+        SharedAccess::ReadWrite,
+    ))]);
 
     // ── 8.5. build PCI bus + virtio-console + MMIO dispatch ────────
     //
@@ -1196,19 +1217,9 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         irqfd_notifier as Arc<dyn MsixNotifier>,
     );
     virtio_pci_dev.set_queue_notifier(vm.queue_notifier());
-    // Build a vm-memory view over our memfd regions so virtio-pci can
-    // access queues / descriptors when the guest activates the device.
-    let region_tuples: Vec<(u64, u64, u64)> = plan
-        .memslots
-        .iter()
-        .map(|r| {
-            let host = gpa_map.lookup(r.gpa).expect("memslot has host mapping");
-            (r.gpa, host, r.size)
-        })
-        .collect();
-    let guest_mem =
-        memory::build_guest_memory(&memfd, &region_tuples).map_err(RunError::MemfdSetup)?;
-    virtio_pci_dev.set_mem(guest_mem);
+    // Retain the compatibility vm-memory view for virtio-pci activation while
+    // queue and payload access move to attachment-scoped shared memory.
+    virtio_pci_dev.set_mem(guest_mem.clone());
 
     let mut pci_root = PciRoot::new(MmioWindow {
         name: "pcie-ecam",

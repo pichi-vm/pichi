@@ -19,6 +19,7 @@ mod imp {
         inner: dillo_hypervisor::Vm,
         mmio_bus: Arc<Mutex<MmioBus>>,
         vcpu_cancels: Arc<Mutex<Vec<VcpuCancel>>>,
+        shared_memory: Vec<Arc<dyn SharedMemory>>,
     }
 
     impl std::fmt::Debug for Vm {
@@ -36,6 +37,7 @@ mod imp {
                 inner: dillo_hypervisor::Vm::new()?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
                 vcpu_cancels: Arc::new(Mutex::new(Vec::new())),
+                shared_memory: Vec::new(),
             })
         }
 
@@ -44,6 +46,7 @@ mod imp {
                 inner: dillo_hypervisor::Vm::new_x86_64_with_local_apic_count(processor_count)?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
                 vcpu_cancels: Arc::new(Mutex::new(Vec::new())),
+                shared_memory: Vec::new(),
             })
         }
 
@@ -96,6 +99,13 @@ mod imp {
         pub fn interrupt_controller(&self) -> InterruptController {
             self.inner.interrupt_controller()
         }
+
+        pub fn set_shared_memory_capabilities(
+            &mut self,
+            shared_memory: Vec<Arc<dyn SharedMemory>>,
+        ) {
+            self.shared_memory = shared_memory;
+        }
     }
 
     impl<D> Attach<Arc<D>> for Vm
@@ -116,12 +126,23 @@ mod imp {
                 .lock()
                 .expect("MMIO bus lock poisoned")
                 .register_device(item);
-            Ok(Arc::new(MachineMmioAttachment))
+            Ok(Arc::new(MachineMmioAttachment {
+                shared_memory: self.shared_memory.clone(),
+            }))
         }
     }
 
-    #[derive(Debug)]
-    struct MachineMmioAttachment;
+    struct MachineMmioAttachment {
+        shared_memory: Vec<Arc<dyn SharedMemory>>,
+    }
+
+    impl std::fmt::Debug for MachineMmioAttachment {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("MachineMmioAttachment")
+                .field("shared_memory", &self.shared_memory.len())
+                .finish()
+        }
+    }
 
     impl MmioAttachment for MachineMmioAttachment {
         fn interrupts(&self) -> &[MmioInterrupt] {
@@ -129,7 +150,7 @@ mod imp {
         }
 
         fn shared_memory(&self) -> &[Arc<dyn SharedMemory>] {
-            &[]
+            &self.shared_memory
         }
 
         fn spawn(

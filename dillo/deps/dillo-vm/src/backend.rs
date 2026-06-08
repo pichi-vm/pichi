@@ -9,7 +9,7 @@ use vm_memory::GuestMemoryMmap;
 
 #[cfg(target_os = "macos")]
 use dillo_mmio::MmioBus;
-use dillo_mmio::{Attach, MmioAttachment, MmioDevice, MmioWindow};
+use dillo_mmio::{Attach, MmioAttachment, MmioDevice, MmioWindow, SharedMemory};
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
@@ -94,6 +94,8 @@ pub(crate) trait BackendVm {
     fn attach_mmio<D>(&mut self, device: Arc<D>) -> Result<Arc<dyn MmioAttachment>, RunError>
     where
         D: MmioDevice + 'static;
+
+    fn set_shared_memory_capabilities(&mut self, capabilities: Vec<Arc<dyn SharedMemory>>);
 
     fn attach_x86_syscon_devices(
         &mut self,
@@ -221,6 +223,10 @@ impl BackendVm for dillo_machine_backend::Vm {
         D: MmioDevice + 'static,
     {
         Attach::attach(self, device).map_err(RunError::Kvm)
+    }
+
+    fn set_shared_memory_capabilities(&mut self, capabilities: Vec<Arc<dyn SharedMemory>>) {
+        dillo_machine_backend::Vm::set_shared_memory_capabilities(self, capabilities);
     }
 
     fn attach_x86_syscon_devices(
@@ -378,6 +384,10 @@ impl BackendVm for dillo_machine_backend::Vm {
         Attach::attach(self, device).map_err(RunError::Kvm)
     }
 
+    fn set_shared_memory_capabilities(&mut self, capabilities: Vec<Arc<dyn SharedMemory>>) {
+        dillo_machine_backend::Vm::set_shared_memory_capabilities(self, capabilities);
+    }
+
     fn attach_x86_syscon_devices(
         &mut self,
         _poweroff: dillo_platform::Syscon,
@@ -495,6 +505,10 @@ impl BackendVm for dillo_machine_backend::Vm {
         D: MmioDevice + 'static,
     {
         Attach::attach(self, device).map_err(RunError::Kvm)
+    }
+
+    fn set_shared_memory_capabilities(&mut self, capabilities: Vec<Arc<dyn SharedMemory>>) {
+        dillo_machine_backend::Vm::set_shared_memory_capabilities(self, capabilities);
     }
 
     fn attach_x86_syscon_devices(

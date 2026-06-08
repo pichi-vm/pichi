@@ -746,6 +746,11 @@ Completed changes:
 - Added a standard-VM `MappedSharedMemory::for_guest_memory` constructor whose
   runtime claim limits are derived from the machine's actual guest RAM regions,
   not from guessed DTB data.
+- Added machine-owned shared-memory capability storage to KVM, HVF, and WHP
+  attachments.
+- Wired standard-VM guest-RAM shared-memory capabilities into KVM, HVF, and WHP
+  before device attachment, so virtio queue and payload accesses can claim
+  runtime guest-supplied GPAs through the attachment.
 
 Remaining divergence:
 - `VirtioActivate` still retains whole guest memory internally so Linux
@@ -753,14 +758,13 @@ Remaining divergence:
   general device field.
 - vhost-user devices still use their backend-specific whole-memory protocol
   path.
-- Machine attachments still return no shared-memory capabilities because no
-  backend has wired its machine memory model into the returned MMIO attachment
-  yet; they now reject non-empty fixed shared-memory requirements instead of
-  silently ignoring them.
+- KVM, HVF, and WHP standard-VM attachments treat all mapped guest RAM as
+  currently shared. Confidential backends still need backend-owned
+  shared/private page tracking.
 
 ## Stage 13 - Resolve explicit DMA constraints in DTB/device model
 
-Status: deferred; divergence recorded.
+Status: complete for current DTBs; future explicit-constraint support recorded.
 
 Goal: ensure DTB-declared DMA constraints are consumed exactly once when present,
 without inventing a DTB-defined virtio buffer aperture.
