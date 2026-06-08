@@ -18,6 +18,7 @@ members = [
     "dillo/deps/dillo-vm/deps/dillo-platform",
     "dillo/deps/dillo-vm/deps/dillo-pmi",
     "dillo/deps/dillo-vm/deps/vm-pci",
+    "dillo/deps/dillo-machine",
     "dillo/deps/dillo-mmio",
     "dillo/deps/dillo-mmio-uart",
     "dillo/deps/dillo-mmio-virtio",
@@ -76,6 +77,7 @@ dillo-pmi = { path = "dillo/deps/dillo-vm/deps/dillo-pmi" }
 dillo-platform = { path = "dillo/deps/dillo-vm/deps/dillo-platform" }
 dillo-hypervisor = { path = "dillo/deps/dillo-vm/deps/dillo-hypervisor" }
 dillo-device = { path = "dillo/deps/dillo-device" }
+dillo-machine = { path = "dillo/deps/dillo-machine" }
 dillo-mmio = { path = "dillo/deps/dillo-mmio" }
 dillo-mmio-uart = { path = "dillo/deps/dillo-mmio-uart" }
 dillo-mmio-virtio = { path = "dillo/deps/dillo-mmio-virtio" }

@@ -1,0 +1,13 @@
+[package]
+name = "dillo-machine"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Host-neutral machine and vCPU traits for dillo."
+
+[dependencies]
+dillo-mmio.workspace = true
+
+[lints]
+workspace = true

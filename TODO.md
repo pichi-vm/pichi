@@ -274,7 +274,7 @@ Pushed commit:
 
 ## Stage 5 - Move concrete devices behind final crate boundaries
 
-Status: complete; CI pending for the implementation commit.
+Status: complete.
 
 Goal: move concrete device implementations into their final leaf crates.
 
@@ -311,12 +311,18 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 
 CI verification:
-- Pending for this implementation commit; Stage 6 must not start until it
-  passes.
+- `27138666519` failed on Linux because the Linux-only UART test harness still
+  named `Ns16550State` without its trigger type parameter.
+- `27138891882` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` after
+  the follow-up fix.
+
+Pushed commit:
+- `af1750b refactor: extract dillo uart device`
+- `5bc46d2 fix: compile uart tests on linux`
 
 ## Stage 6 - Create `dillo-machine`
 
-Status: pending.
+Status: complete; CI pending for the implementation commit.
 
 Goal: introduce the final host-neutral machine trait crate.
 
@@ -335,6 +341,28 @@ Success criteria:
 - `Machine` has no universal CPU-state type.
 - Existing backend code can implement the trait through adapters.
 - Default local verification and all target checks pass.
+
+Completed changes:
+- Added `dillo-machine` as the host-neutral machine trait crate.
+- Defined `DeviceModel`, `Machine`, `Vcpu`, and `VcpuStop`.
+- Kept constructors out of the traits; backend crates will expose inherent
+  constructors on concrete machine/input types.
+- Used `Machine` associated types for `Error`, `Vcpu`, `Cpu`, and `Memory`.
+- Added a compile-time test adapter that assembles memory and CPU inputs through
+  `dillo_mmio::Attach` using fully qualified associated-type bounds.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+Pushed commit:
+- `refactor: add dillo machine traits`; final pushed hash and CI run to be
+  recorded with the next implementation commit.
 
 ## Stage 7 - Split backend crates
 
