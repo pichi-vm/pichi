@@ -102,8 +102,6 @@ mod imp {
         Interrupted,
 
         Shutdown,
-
-        Unknown(String),
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,7 +209,7 @@ mod imp {
                     VmExit::Smc { args } => {
                         log::warn!("unexpected KVM SMC exit: args={args:?}");
                     }
-                    VmExit::Unknown(reason) => return Ok(VcpuExit::Unknown(reason)),
+                    VmExit::Unknown(reason) => return Err(Error::UnhandledExit(reason)),
                 }
             }
         }

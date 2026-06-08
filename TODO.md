@@ -521,10 +521,12 @@ Completed changes:
   instead of exposing those raw exits to `dillo-vm`.
 - Split Linux gdb onto an explicit KVM `DebugExit` runner so normal KVM/WHP
   supervisor execution no longer sees debug exits.
+- Mapped unknown KVM/WHP exits to backend errors instead of normal supervisor
+  `VcpuExit` variants.
 
 Remaining divergence:
-- Normal x86 supervisor execution still sees interrupt, shutdown, and unknown
-  facade exits while Stage 10 stop control is pending.
+- Normal x86 supervisor execution still sees interrupt and shutdown facade exits
+  while Stage 10 stop control is pending.
 - AArch64 HVC/SMC/PSCI and raw HVF exits still cross into `dillo-vm`. These
   must move below the machine boundary before Stage 9 is complete.
 
@@ -540,11 +542,13 @@ Pushed commit:
 - `189e9c9 refactor: handle x86 pio writes in backends`
 - `a6577cb refactor: hide pio exits behind backend facades`
 - `cdd6f5b refactor: keep x86 halt exits in backends`
+- `915e649 refactor: split kvm debug exits from normal run`
 
 CI verification:
 - `27143278195` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27143928716` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27144366150` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27144798819` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 

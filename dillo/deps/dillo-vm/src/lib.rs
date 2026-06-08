@@ -494,10 +494,6 @@ fn run_windows_vcpu_loop(
                 shutdown.store(true, Ordering::Release);
                 return Ok(RunOutcome::Exit(0));
             }
-            VcpuExit::Unknown(reason) => {
-                log::warn!("unknown WHP exit: {reason}");
-                return Err(anyhow!("unknown WHP exit: {reason}"));
-            }
         }
     }
 }
@@ -1746,10 +1742,6 @@ fn run_vcpu_loop(
                 return Ok(RunOutcome::Exit(0));
             }
             VcpuExit::Interrupted => {}
-            VcpuExit::Unknown(reason) => {
-                log::warn!("unknown KVM exit: {reason}");
-                return Err(anyhow!("unknown KVM exit: {reason}"));
-            }
         }
     }
 }

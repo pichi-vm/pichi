@@ -111,8 +111,6 @@ mod imp {
         Interrupted,
 
         Shutdown,
-
-        Unknown(String),
     }
 
     impl std::fmt::Debug for Vcpu {
@@ -189,7 +187,7 @@ mod imp {
                     VmExit::Smc { args } => {
                         log::warn!("unexpected WHP SMC exit: args={args:?}");
                     }
-                    VmExit::Unknown(reason) => return Ok(VcpuExit::Unknown(reason)),
+                    VmExit::Unknown(reason) => return Err(Error::UnhandledExit(reason)),
                 }
             }
         }

@@ -56,6 +56,9 @@ pub enum Error {
     #[error("run vCPU {0}: {1}")]
     RunVcpu(u32, std::io::Error),
 
+    #[error("unhandled KVM vCPU exit: {0}")]
+    UnhandledExit(String),
+
     #[error("cpu:profile {profile:?} not recognized by dillo")]
     UnknownCpuProfile { profile: String },
 

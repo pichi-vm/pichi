@@ -61,6 +61,9 @@ pub enum Error {
     #[error("WHP run vCPU {idx} failed: {hr}")]
     RunVcpu { idx: u32, hr: HResult },
 
+    #[error("unhandled WHP vCPU exit: {0}")]
+    UnhandledExit(String),
+
     #[error("WHP cancel vCPU {idx} failed: {hr}")]
     CancelVcpu { idx: u32, hr: HResult },
 
