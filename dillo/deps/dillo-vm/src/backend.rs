@@ -7,7 +7,12 @@ use dillo_pci::MsixNotifier;
 use dillo_pci_virtio::QueueNotifier;
 use vm_memory::GuestMemoryMmap;
 
-use dillo_mmio::{MmioBus, MmioDevice, MmioWindow};
+#[cfg(target_os = "macos")]
+use dillo_mmio::MmioBus;
+use dillo_mmio::{Attach, MmioAttachment, MmioDevice, MmioWindow};
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
 
 #[cfg(target_os = "macos")]
 use crate::{RunError, hvf_devices, syscon};
@@ -72,23 +77,26 @@ pub(crate) trait BackendVm {
         idx: u32,
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
+        #[cfg(any(target_os = "linux", target_os = "windows"))] pio_read: PioRead,
     ) -> Result<Self::Vcpu, RunError>;
 
-    fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<Self::Vcpu, RunError>
+    fn current_thread_vcpu(
+        seed: VcpuSeed<'_>,
+        #[cfg(target_os = "macos")] mmio_bus: Arc<std::sync::Mutex<MmioBus>>,
+    ) -> Result<Self::Vcpu, RunError>
     where
         Self: Sized;
 
-    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
+    fn attach_mmio<D>(&mut self, device: Arc<D>) -> Result<Arc<dyn MmioAttachment>, RunError>
     where
         D: MmioDevice + 'static;
 
     fn attach_x86_syscon_devices(
-        &self,
-        bus: &mut MmioBus,
+        &mut self,
         poweroff: dillo_platform::Syscon,
         reboot: Option<dillo_platform::Syscon>,
         state: Arc<syscon::SysconState>,
-    );
+    ) -> Result<Vec<Arc<dyn MmioAttachment>>, RunError>;
 
     fn ns16550(
         &self,
@@ -172,9 +180,11 @@ impl BackendVm for dillo_machine_backend::Vm {
         idx: u32,
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
+        pio_read: PioRead,
     ) -> Result<Self::Vcpu, RunError> {
-        let mut vcpu = dillo_machine_backend::Vm::create_vcpu(self, idx, cpu_profile)
-            .map_err(RunError::Kvm)?;
+        let mut vcpu =
+            dillo_machine_backend::Vm::create_vcpu_with_pio(self, idx, cpu_profile, pio_read)
+                .map_err(RunError::Kvm)?;
         match seed {
             VcpuSeed::X86_64Boot(state) => {
                 #[cfg(target_arch = "x86_64")]
@@ -196,40 +206,35 @@ impl BackendVm for dillo_machine_backend::Vm {
         ))
     }
 
-    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
+    fn attach_mmio<D>(&mut self, device: Arc<D>) -> Result<Arc<dyn MmioAttachment>, RunError>
     where
         D: MmioDevice + 'static,
     {
-        bus.register_device(device);
+        Attach::attach(self, device).map_err(RunError::Kvm)
     }
 
     fn attach_x86_syscon_devices(
-        &self,
-        bus: &mut MmioBus,
+        &mut self,
         poweroff: dillo_platform::Syscon,
         reboot: Option<dillo_platform::Syscon>,
         state: Arc<syscon::SysconState>,
-    ) {
-        self.attach_mmio(
-            bus,
-            Arc::new(syscon::SysconDevice::new(
-                "syscon-poweroff",
-                poweroff,
-                syscon::SysconAction::Poweroff,
-                Arc::clone(&state),
-            )),
-        );
+    ) -> Result<Vec<Arc<dyn MmioAttachment>>, RunError> {
+        let mut attachments = Vec::new();
+        attachments.push(self.attach_mmio(Arc::new(syscon::SysconDevice::new(
+            "syscon-poweroff",
+            poweroff,
+            syscon::SysconAction::Poweroff,
+            Arc::clone(&state),
+        )))?);
         if let Some(reboot) = reboot {
-            self.attach_mmio(
-                bus,
-                Arc::new(syscon::SysconDevice::new(
-                    "syscon-reboot",
-                    reboot,
-                    syscon::SysconAction::Reboot,
-                    state,
-                )),
-            );
+            attachments.push(self.attach_mmio(Arc::new(syscon::SysconDevice::new(
+                "syscon-reboot",
+                reboot,
+                syscon::SysconAction::Reboot,
+                state,
+            )))?);
         }
+        Ok(attachments)
     }
 
     fn ns16550(
@@ -341,8 +346,12 @@ impl BackendVm for dillo_machine_backend::Vm {
         ))
     }
 
-    fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<Self::Vcpu, RunError> {
-        let vcpu = dillo_machine_backend::create_vcpu_current_thread().map_err(RunError::Kvm)?;
+    fn current_thread_vcpu(
+        seed: VcpuSeed<'_>,
+        mmio_bus: Arc<std::sync::Mutex<MmioBus>>,
+    ) -> Result<Self::Vcpu, RunError> {
+        let vcpu =
+            dillo_machine_backend::create_vcpu_current_thread(mmio_bus).map_err(RunError::Kvm)?;
         match seed {
             VcpuSeed::Aarch64 { mpidr, state } => {
                 vcpu.set_mpidr(mpidr)?;
@@ -352,20 +361,20 @@ impl BackendVm for dillo_machine_backend::Vm {
         Ok(vcpu)
     }
 
-    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
+    fn attach_mmio<D>(&mut self, device: Arc<D>) -> Result<Arc<dyn MmioAttachment>, RunError>
     where
         D: MmioDevice + 'static,
     {
-        bus.register_device(device);
+        Attach::attach(self, device).map_err(RunError::Kvm)
     }
 
     fn attach_x86_syscon_devices(
-        &self,
-        _bus: &mut MmioBus,
+        &mut self,
         _poweroff: dillo_platform::Syscon,
         _reboot: Option<dillo_platform::Syscon>,
         _state: Arc<syscon::SysconState>,
-    ) {
+    ) -> Result<Vec<Arc<dyn MmioAttachment>>, RunError> {
+        Ok(Vec::new())
     }
 
     fn ns16550(
@@ -447,9 +456,11 @@ impl BackendVm for dillo_machine_backend::Vm {
         idx: u32,
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
+        pio_read: PioRead,
     ) -> Result<Self::Vcpu, RunError> {
-        let mut vcpu = dillo_machine_backend::Vm::create_vcpu(self, idx, cpu_profile)
-            .map_err(RunError::Kvm)?;
+        let mut vcpu =
+            dillo_machine_backend::Vm::create_vcpu_with_pio(self, idx, cpu_profile, pio_read)
+                .map_err(RunError::Kvm)?;
         match seed {
             VcpuSeed::X86_64Boot(state) => vcpu.set_x86_64_state(state)?,
             VcpuSeed::X86_64Secondary => {}
@@ -463,40 +474,35 @@ impl BackendVm for dillo_machine_backend::Vm {
         ))
     }
 
-    fn attach_mmio<D>(&self, bus: &mut MmioBus, device: Arc<D>)
+    fn attach_mmio<D>(&mut self, device: Arc<D>) -> Result<Arc<dyn MmioAttachment>, RunError>
     where
         D: MmioDevice + 'static,
     {
-        bus.register_device(device);
+        Attach::attach(self, device).map_err(RunError::Kvm)
     }
 
     fn attach_x86_syscon_devices(
-        &self,
-        bus: &mut MmioBus,
+        &mut self,
         poweroff: dillo_platform::Syscon,
         reboot: Option<dillo_platform::Syscon>,
         state: Arc<syscon::SysconState>,
-    ) {
-        self.attach_mmio(
-            bus,
-            Arc::new(syscon::SysconDevice::new(
-                "syscon-poweroff",
-                poweroff,
-                syscon::SysconAction::Poweroff,
-                Arc::clone(&state),
-            )),
-        );
+    ) -> Result<Vec<Arc<dyn MmioAttachment>>, RunError> {
+        let mut attachments = Vec::new();
+        attachments.push(self.attach_mmio(Arc::new(syscon::SysconDevice::new(
+            "syscon-poweroff",
+            poweroff,
+            syscon::SysconAction::Poweroff,
+            Arc::clone(&state),
+        )))?);
         if let Some(reboot) = reboot {
-            self.attach_mmio(
-                bus,
-                Arc::new(syscon::SysconDevice::new(
-                    "syscon-reboot",
-                    reboot,
-                    syscon::SysconAction::Reboot,
-                    state,
-                )),
-            );
+            attachments.push(self.attach_mmio(Arc::new(syscon::SysconDevice::new(
+                "syscon-reboot",
+                reboot,
+                syscon::SysconAction::Reboot,
+                state,
+            )))?);
         }
+        Ok(attachments)
     }
 
     fn ns16550(

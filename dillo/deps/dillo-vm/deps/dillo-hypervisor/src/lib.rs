@@ -22,7 +22,7 @@ pub use kvm::{Error, Vcpu, Vm};
 mod whp;
 
 #[cfg(target_os = "windows")]
-pub use whp::{Error, InterruptController, Vcpu, Vm};
+pub use whp::{Error, InterruptController, Vcpu, VcpuCancel, Vm};
 
 #[cfg(target_os = "macos")]
 mod hvf;

@@ -455,6 +455,8 @@ dependencies = [
  "dillo-hypervisor",
  "dillo-machine",
  "dillo-mmio",
+ "log",
+ "pmi",
 ]
 
 [[package]]
@@ -464,6 +466,9 @@ dependencies = [
  "dillo-hypervisor",
  "dillo-machine",
  "dillo-mmio",
+ "kvm-ioctls",
+ "log",
+ "pmi",
 ]
 
 [[package]]
@@ -473,6 +478,9 @@ dependencies = [
  "dillo-hypervisor",
  "dillo-machine",
  "dillo-mmio",
+ "log",
+ "pmi",
+ "vm-memory",
 ]
 
 [[package]]

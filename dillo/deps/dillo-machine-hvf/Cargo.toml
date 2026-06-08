@@ -10,6 +10,8 @@ description = "HVF machine backend crate for dillo."
 dillo-hypervisor.workspace = true
 dillo-machine.workspace = true
 dillo-mmio.workspace = true
+pmi.workspace = true
+log.workspace = true
 
 [lints]
 workspace = true

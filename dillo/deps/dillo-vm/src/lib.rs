@@ -143,7 +143,9 @@ impl VcpuKicker {
 pub static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use dillo_mmio::{MmioBus, MmioWindow};
+#[cfg(target_os = "macos")]
+use dillo_mmio::MmioBus;
+use dillo_mmio::MmioWindow;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::PciRoot;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -279,24 +281,12 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         vcpus,
     )?;
 
-    let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
     let cpu_profile = parsed.cpu_profile.as_str();
     let boot_state = match &parsed.vcpu {
         VcpuState::X86_64(state) => state,
         VcpuState::Aarch64(_) => return Err(RunError::ArchMismatch),
     };
-    for idx in 0..vcpus {
-        let seed = if idx == 0 {
-            VcpuSeed::X86_64Boot(boot_state)
-        } else {
-            VcpuSeed::X86_64Secondary
-        };
-        vcpu_handles.push(BackendVm::create_vcpu(&vm, idx, cpu_profile, seed)?);
-    }
-    log::info!(
-        "WHP created {} vCPU(s); boot vCPU state programmed",
-        vcpu_handles.len()
-    );
+    let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
     let msix_vectors: u16 = 3;
     let notifier = vm.msix_notifier((), msix_vectors);
@@ -335,7 +325,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         size: ioapic_region.size,
     }));
     let syscon_state = Arc::new(syscon::SysconState::default());
-    let mut mmio_bus = MmioBus::new();
     match &machine.uart {
         Some(uart) => {
             let serial = vm.ns16550(
@@ -348,7 +337,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 (Arc::clone(&ioapic), uart.irq),
                 Box::new(std::io::stderr()),
             )?;
-            vm.attach_mmio(&mut mmio_bus, Arc::new(serial));
+            vm.attach_mmio(Arc::new(serial))?;
             log::info!(
                 "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
                 uart.base,
@@ -359,35 +348,51 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         }
         None => log::warn!("no UART in Machine — guest console output will be dropped"),
     }
-    vm.attach_x86_syscon_devices(
-        &mut mmio_bus,
-        poweroff,
-        machine.reboot,
-        Arc::clone(&syscon_state),
+    vm.attach_x86_syscon_devices(poweroff, machine.reboot, Arc::clone(&syscon_state))?;
+    vm.attach_mmio(ioapic)?;
+    vm.attach_mmio(Arc::clone(&pci_root))?;
+
+    let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
+    for idx in 0..vcpus {
+        let seed = if idx == 0 {
+            VcpuSeed::X86_64Boot(boot_state)
+        } else {
+            VcpuSeed::X86_64Secondary
+        };
+        let legacy_for_read = Arc::clone(&legacy_pci);
+        let pci_for_read = Arc::clone(&pci_root);
+        let pio_read = Arc::new(move |port, size| {
+            if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
+                || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
+            {
+                pio_pci::pio_read(&legacy_for_read, &pci_for_read, port, size)
+            } else {
+                0
+            }
+        });
+        vcpu_handles.push(BackendVm::create_vcpu(
+            &vm,
+            idx,
+            cpu_profile,
+            seed,
+            pio_read,
+        )?);
+    }
+    log::info!(
+        "WHP created {} vCPU(s); boot vCPU state programmed",
+        vcpu_handles.len()
     );
-    vm.attach_mmio(&mut mmio_bus, ioapic);
-    vm.attach_mmio(&mut mmio_bus, Arc::clone(&pci_root));
-    let mmio_bus = Arc::new(mmio_bus);
-    let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
     let mut joins = Vec::with_capacity(vcpu_handles.len());
     let mut vcpu_cancels = Vec::with_capacity(vcpu_handles.len());
     for mut vcpu in vcpu_handles {
         vcpu_cancels.push(vcpu.cancel_handle());
         let shutdown_c = Arc::clone(&shutdown);
-        let mmio_c = Arc::clone(&mmio_bus);
         let legacy_c = Arc::clone(&legacy_pci);
         let pci_c = Arc::clone(&pci_root);
         let syscon_c = Arc::clone(&syscon_state);
         joins.push(thread::spawn(move || -> Result<RunOutcome> {
-            run_windows_vcpu_loop(
-                &mut vcpu,
-                &shutdown_c,
-                &mmio_c,
-                &legacy_c,
-                &pci_c,
-                &syscon_c,
-            )
+            run_windows_vcpu_loop(&mut vcpu, &shutdown_c, &legacy_c, &pci_c, &syscon_c)
         }));
     }
 
@@ -448,7 +453,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 fn run_windows_vcpu_loop(
     vcpu: &mut dillo_machine_backend::Vcpu,
     shutdown: &Arc<AtomicBool>,
-    mmio_bus: &Arc<MmioBus>,
     legacy_pci: &Arc<pio_pci::LegacyPciState>,
     pci_bus: &Arc<PciRoot>,
     syscon_state: &Arc<syscon::SysconState>,
@@ -467,33 +471,7 @@ fn run_windows_vcpu_loop(
             return Ok(RunOutcome::Exit(0));
         }
 
-        let mmio_bus_for_read = Arc::clone(mmio_bus);
-        let legacy_for_read = Arc::clone(legacy_pci);
-        let pci_for_read = Arc::clone(pci_bus);
-        let exit = vcpu.run(
-            move |port, size| {
-                // x86 serial is MMIO (ns16550a), so the only PIO devices are
-                // the architectural PCI config ports.
-                if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
-                    || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
-                {
-                    pio_pci::pio_read(&legacy_for_read, &pci_for_read, port, size)
-                } else {
-                    0
-                }
-            },
-            move |addr, data| {
-                let handled = mmio_bus_for_read.read(addr, data);
-                if !handled {
-                    log::debug!(
-                        "WHP MMIO read from unmapped {:#x} (size {}); returning zeros",
-                        addr,
-                        data.len(),
-                    );
-                }
-                handled
-            },
-        )?;
+        let exit = vcpu.run()?;
 
         exit_count += 1;
         if exit_count <= 20 || exit_count % 1000 == 0 {
@@ -517,16 +495,7 @@ fn run_windows_vcpu_loop(
                 }
             }
             VmExit::PioRead { .. } => {}
-            VmExit::MmioWrite { addr, data, size } => {
-                if !mmio_bus.write(addr, &data[..size as usize]) {
-                    log::warn!(
-                        "WHP MMIO write to unmapped {:#x} (size {}, data {:02x?})",
-                        addr,
-                        size,
-                        &data[..size as usize],
-                    );
-                }
-            }
+            VmExit::MmioWrite { .. } => {}
             VmExit::MmioRead { .. } => {}
             VmExit::Interrupted => {}
             VmExit::Halted => {}
@@ -689,11 +658,10 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         memory_regions,
     })?;
 
-    // 7. Build the MMIO bus once (reused across warm reboots): the ns16550a
+    // 7. Attach MMIO devices once (reused across warm reboots): the ns16550a
     //    serial console (TX → stderr) here, then the PCIe ECAM + virtio-console BARs
     //    in 7b. aarch64 shutdown/reboot is PSCI (handled in the run loop), so
     //    there is no syscon device.
-    let mut mmio_bus = MmioBus::new();
     match &machine.uart {
         Some(uart) => {
             log::info!(
@@ -702,19 +670,16 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 uart.size,
                 uart.reg_shift
             );
-            vm.attach_mmio(
-                &mut mmio_bus,
-                Arc::new(dillo_mmio_uart::Ns16550::new(
-                    MmioWindow {
-                        name: "ns16550a",
-                        base: uart.base,
-                        size: uart.size,
-                    },
-                    uart.reg_shift,
-                    dillo_mmio_uart::NoopTrigger,
-                    Box::new(std::io::stderr()),
-                )),
-            );
+            vm.attach_mmio(Arc::new(dillo_mmio_uart::Ns16550::new(
+                MmioWindow {
+                    name: "ns16550a",
+                    base: uart.base,
+                    size: uart.size,
+                },
+                uart.reg_shift,
+                dillo_mmio_uart::NoopTrigger,
+                Box::new(std::io::stderr()),
+            )))?;
         }
         None => log::warn!("no UART in Machine — guest console output will be dropped"),
     }
@@ -753,7 +718,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         });
         pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
         let pci_root = Arc::new(pci_root);
-        vm.attach_mmio(&mut mmio_bus, Arc::clone(&pci_root));
+        vm.attach_mmio(Arc::clone(&pci_root))?;
     } // end: if platform.has_pcie (microVM with --pci-slots 0 skips PCI fabric)
 
     // 7c. virtio-mmio (F6): bind a virtio-console to the first transport slot
@@ -785,7 +750,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             irq.clone(),
             guest_mem,
         ));
-        vm.attach_mmio(&mut mmio_bus, transport);
+        vm.attach_mmio(transport)?;
         log::info!(
             "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
             slot.base,
@@ -794,7 +759,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         );
     }
 
-    let mmio_bus = Arc::new(mmio_bus);
+    let mmio_bus = vm.mmio_bus();
 
     let boot_state = match &parsed.vcpu {
         VcpuState::Aarch64(state) => state.clone(),
@@ -1029,7 +994,7 @@ fn mpidr_for(idx: usize) -> u64 {
 fn run_smp(
     vcpus: u32,
     boot_state: pmi::vm::vcpu::aarch64::CpuState,
-    mmio_bus: Arc<MmioBus>,
+    mmio_bus: Arc<std::sync::Mutex<MmioBus>>,
 ) -> Result<RunOutcome, RunError> {
     use dillo_machine_backend::VcpuHandle;
     use std::sync::Mutex;
@@ -1053,7 +1018,7 @@ fn run_smp(
             let exit_code = &exit_code;
             scope.spawn(move || {
                 if let Err(e) = vcpu_thread(
-                    idx, n, boot, &mmio, slots, handles, shutdown, reboot, exit_code,
+                    idx, n, boot, mmio, slots, handles, shutdown, reboot, exit_code,
                 ) {
                     log::error!("vCPU{idx} thread error: {e}");
                 }
@@ -1088,7 +1053,7 @@ fn vcpu_thread(
     idx: usize,
     n: usize,
     boot_state: pmi::vm::vcpu::aarch64::CpuState,
-    mmio_bus: &MmioBus,
+    mmio_bus: Arc<std::sync::Mutex<MmioBus>>,
     slots: &[CpuSlot],
     handles: &[std::sync::Mutex<Option<dillo_machine_backend::VcpuHandle>>],
     shutdown: &AtomicBool,
@@ -1105,10 +1070,13 @@ fn vcpu_thread(
             None => return Ok(()), // shutdown before this core was ever powered on
         }
     };
-    let vcpu = <Vm as BackendVm>::current_thread_vcpu(VcpuSeed::Aarch64 {
-        mpidr: mpidr_for(idx),
-        state: &init,
-    })?;
+    let vcpu = <Vm as BackendVm>::current_thread_vcpu(
+        VcpuSeed::Aarch64 {
+            mpidr: mpidr_for(idx),
+            state: &init,
+        },
+        mmio_bus,
+    )?;
     *handles[idx].lock().expect("handle poisoned") = Some(vcpu.handle());
     if idx != 0 {
         log::info!("vCPU{idx} powered on: pc={:#x}", init.pc);
@@ -1119,16 +1087,7 @@ fn vcpu_thread(
             return Ok(());
         }
         match vcpu.run()? {
-            VmExit::MmioRead { addr, size } => {
-                let mut data = [0u8; 8];
-                let size = (size as usize).min(8);
-                mmio_bus.read(addr, &mut data[..size]);
-                vcpu.complete_mmio_read(u64::from_le_bytes(data))?;
-            }
-            VmExit::MmioWrite { addr, data, size } => {
-                let size = (size as usize).min(8);
-                mmio_bus.write(addr, &data[..size]);
-            }
+            VmExit::MmioRead { .. } | VmExit::MmioWrite { .. } => {}
             VmExit::Hvc { args } => match psci::dispatch(&args) {
                 psci::PsciAction::SystemOff => {
                     log::info!("guest issued PSCI SYSTEM_OFF (vCPU{idx})");
@@ -1256,7 +1215,8 @@ mod macos_tests {
 
         // Run via the production single-/multi-vCPU launcher (vcpus = 1). It
         // creates the vCPU on its own thread, so `vm` must outlive the call.
-        let outcome = run_smp(1, state, Arc::new(mmio_bus)).expect("run loop");
+        let outcome =
+            run_smp(1, state, Arc::new(std::sync::Mutex::new(mmio_bus))).expect("run loop");
         drop(vm);
         assert!(
             matches!(outcome, RunOutcome::Exit(0)),
@@ -1503,7 +1463,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             size: r.size,
         });
     }
-    let vm = <Vm as BackendVm>::new(backend::VmOptions { memslots })?;
+    let mut vm = <Vm as BackendVm>::new(backend::VmOptions { memslots })?;
 
     // ── 8.5. build PCI bus + virtio-console + MMIO dispatch ────────
     //
@@ -1517,14 +1477,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // MSI-X uses a backend notifier: on each MSI-X table write the guest does,
     // a fresh backend interrupt route is allocated. Queue completions are then
     // backend-direct — no VMM relay.
-    let mut mmio_bus = MmioBus::new();
     let syscon_state = Arc::new(syscon::SysconState::default());
-    vm.attach_x86_syscon_devices(
-        &mut mmio_bus,
-        poweroff,
-        machine.reboot,
-        Arc::clone(&syscon_state),
-    );
+    vm.attach_x86_syscon_devices(poweroff, machine.reboot, Arc::clone(&syscon_state))?;
 
     // Build the device → adapter → bus chain.
     let irq_mgr = vm.interrupt_state()?;
@@ -1545,7 +1499,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 (Arc::clone(&irq_mgr), uart.irq),
                 Box::new(std::io::stdout()),
             )?;
-            vm.attach_mmio(&mut mmio_bus, Arc::new(serial));
+            vm.attach_mmio(Arc::new(serial))?;
             log::info!(
                 "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
                 uart.base,
@@ -1648,9 +1602,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     });
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
-    vm.attach_mmio(&mut mmio_bus, Arc::clone(&pci_root));
-
-    let mmio_bus = Arc::new(mmio_bus);
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
     // ── 9. create vCPUs + set boot vCPU state ──────────────────────
@@ -1668,7 +1619,18 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         } else {
             VcpuSeed::X86_64Secondary
         };
-        let vcpu = BackendVm::create_vcpu(&vm, idx, cpu_profile, seed)?;
+        let legacy_for_read = Arc::clone(&legacy_pci);
+        let pci_for_read = Arc::clone(&pci_root);
+        let pio_read = Arc::new(move |port, size| {
+            if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
+                || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
+            {
+                pio_pci::pio_read(&legacy_for_read, &pci_for_read, port, size)
+            } else {
+                0
+            }
+        });
+        let vcpu = BackendVm::create_vcpu(&vm, idx, cpu_profile, seed, pio_read)?;
         vcpu_handles.push(vcpu);
     }
 
@@ -1704,19 +1666,11 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let mut vcpu_kicker = VcpuKicker::with_capacity(vcpus as usize);
     for mut vcpu in vcpu_handles {
         let shutdown_c = Arc::clone(&shutdown);
-        let mmio_c = Arc::clone(&mmio_bus);
         let legacy_c = Arc::clone(&legacy_pci);
         let pci_c = Arc::clone(&pci_root);
         let syscon_c = Arc::clone(&syscon_state);
         let join = thread::spawn(move || -> Result<RunOutcome> {
-            run_vcpu_loop(
-                &mut vcpu,
-                &shutdown_c,
-                &mmio_c,
-                &legacy_c,
-                &pci_c,
-                &syscon_c,
-            )
+            run_vcpu_loop(&mut vcpu, &shutdown_c, &legacy_c, &pci_c, &syscon_c)
         });
         vcpu_kicker.push(join.as_pthread_t());
         joins.push(join);
@@ -1766,7 +1720,6 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 fn run_vcpu_loop(
     vcpu: &mut dillo_machine_backend::Vcpu,
     shutdown: &Arc<AtomicBool>,
-    mmio_bus: &Arc<MmioBus>,
     legacy_pci: &Arc<pio_pci::LegacyPciState>,
     pci_bus: &Arc<PciRoot>,
     syscon_state: &Arc<syscon::SysconState>,
@@ -1785,36 +1738,7 @@ fn run_vcpu_loop(
             shutdown.store(true, Ordering::Release);
             return Ok(RunOutcome::Exit(0));
         }
-        let mmio_bus_for_read = Arc::clone(mmio_bus);
-        let legacy_for_read = Arc::clone(legacy_pci);
-        let pci_for_read = Arc::clone(pci_bus);
-        let exit = vcpu.run(
-            move |port, size| {
-                // x86 serial is MMIO (ns16550a), so the only PIO devices are
-                // the architectural PCI config ports.
-                if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
-                    || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
-                {
-                    pio_pci::pio_read(&legacy_for_read, &pci_for_read, port, size)
-                } else {
-                    0
-                }
-            },
-            move |addr, data| {
-                let handled = mmio_bus_for_read.read(addr, data);
-                if !handled {
-                    // Reads of unmapped MMIO are common (probes for HPET,
-                    // etc.) — debug-level so a curious operator can see them
-                    // without spamming normal runs.
-                    log::debug!(
-                        "MMIO read from unmapped {:#x} (size {}); returning zeros",
-                        addr,
-                        data.len(),
-                    );
-                }
-                handled
-            },
-        )?;
+        let exit = vcpu.run()?;
         exit_count += 1;
         if exit_count <= 20 || exit_count % 1000 == 0 {
             log::debug!("vCPU exit #{}: {:?}", exit_count, exit);
@@ -1836,21 +1760,7 @@ fn run_vcpu_loop(
             VmExit::PioRead { .. } => {
                 // Handled inline in vcpu.run via pio_read callback above.
             }
-            VmExit::MmioWrite { addr, data, size } => {
-                // Dispatch to the MMIO bus. Syscon-poweroff, PCIe ECAM,
-                // and BARs are all registered there at startup. If the
-                // bus doesn't claim the address it's a stray write —
-                // log and continue (matches "no device" behavior).
-                if !mmio_bus.write(addr, &data[..size as usize]) {
-                    log::warn!(
-                        "MMIO write to unmapped {:#x} (size {}, data {:02x?}) — possible \
-                         unbacked-RAM access",
-                        addr,
-                        size,
-                        &data[..size as usize],
-                    );
-                }
-            }
+            VmExit::MmioWrite { .. } => {}
             VmExit::MmioRead { .. } => {
                 // Handled inline in vcpu.run via mmio_read callback above.
             }

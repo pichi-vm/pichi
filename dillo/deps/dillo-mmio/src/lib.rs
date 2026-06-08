@@ -197,6 +197,30 @@ pub trait MessageInterruptDomain: Send + Sync {
     fn interrupt(&self, vector: u16) -> Option<Interrupt>;
 }
 
+/// Backend-resolved interrupt resource for an attached MMIO device.
+#[derive(Clone)]
+pub enum MmioInterrupt {
+    Line(Interrupt),
+
+    MessageDomain(Arc<dyn MessageInterruptDomain>),
+}
+
+impl std::fmt::Debug for MmioInterrupt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Line(line) => f.debug_tuple("Line").field(line).finish(),
+            Self::MessageDomain(_) => f.debug_tuple("MessageDomain").finish(),
+        }
+    }
+}
+
+/// Backend-owned services for one successfully attached MMIO device.
+pub trait MmioAttachment: Send + Sync + std::fmt::Debug {
+    fn interrupts(&self) -> &[MmioInterrupt];
+
+    fn shared_memory(&self) -> &[Arc<dyn SharedMemory>];
+}
+
 struct Range {
     window: MmioWindow,
     device: Arc<dyn MmioDevice>,

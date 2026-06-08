@@ -10,6 +10,11 @@ description = "KVM machine backend crate for dillo."
 dillo-hypervisor.workspace = true
 dillo-machine.workspace = true
 dillo-mmio.workspace = true
+log.workspace = true
+pmi.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kvm-ioctls.workspace = true
 
 [lints]
 workspace = true

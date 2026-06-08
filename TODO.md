@@ -369,7 +369,7 @@ CI verification:
 
 ## Stage 7 - Split backend crates
 
-Status: complete; CI pending for the implementation commit.
+Status: complete.
 
 Goal: split backend implementations into `dillo-machine-kvm`,
 `dillo-machine-whp`, and `dillo-machine-hvf`.
@@ -413,12 +413,14 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 
 Pushed commit:
-- `refactor: split dillo machine backend crates`; final pushed hash and CI run
-  to be recorded with the next implementation commit.
+- `55326b9 refactor: split dillo machine backend crates`
+
+CI verification:
+- `27140379136` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 8 - Move MMIO routing below `Machine`
 
-Status: pending.
+Status: complete; CI pending for the implementation commit.
 
 Goal: make `Vcpu::run()` callback-free and route MMIO through machine-owned
 state populated by `Attach<Arc<dyn MmioDevice>>`.
@@ -437,6 +439,40 @@ Success criteria:
 - MMIO routing remains range-checked and overlap-checked.
 - Existing MMIO, UART, PCI, virtio-mmio, and virtio-pci behavior is preserved.
 - Default local verification and all target checks pass.
+
+Completed changes:
+- Added backend-resolved `MmioAttachment` and `MmioInterrupt` types to
+  `dillo-mmio`.
+- Made the KVM, WHP, and HVF machine facade crates own their MMIO buses.
+- Implemented `Attach<Arc<D>>` for backend machine facades so MMIO devices are
+  registered through the machine.
+- Made the facade-level KVM, WHP, and HVF vCPU `run()` methods callback-free;
+  backend vCPUs now route MMIO through machine-owned bus state internally.
+- Updated `dillo-vm` to attach UART, syscon, PCI root, and virtio-mmio devices
+  to the machine instead of to supervisor-owned MMIO buses.
+- Kept x86 PIO reads as constructor-time vCPU input until Stage 9 moves
+  non-MMIO exits fully below the machine boundary.
+
+Remaining divergence:
+- `MmioAttachment` currently exposes empty interrupt/shared-memory slices. Later
+  stages wire backend-resolved interrupts, notify registration, spawn handles,
+  and shared-memory capabilities.
+- PIO writes and other non-MMIO exits can still surface above the backend
+  facade. Stage 9 owns that boundary cleanup.
+- The lower `dillo-hypervisor` wrappers still use callback-style run methods
+  internally. The public backend facade no longer exposes those callbacks.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+Pushed commit:
+- `refactor: route mmio inside machine backends`; final pushed hash and CI run
+  to be recorded with the next implementation commit.
 
 ## Stage 9 - Move non-MMIO exits below `Machine`
 

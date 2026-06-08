@@ -95,13 +95,7 @@ impl GdbTarget {
     /// `Some` when execution should stop and gdb should be notified.
     fn run_one(&mut self) -> Result<Option<SingleThreadStopReason<u64>>, &'static str> {
         self.configure_debug()?;
-        let exit = self
-            .vcpu
-            .run(
-                |_port, _size| 0u32,  // gdb stub: no PIO device wiring
-                |_addr, _data| false, // gdb stub: no MMIO bus wiring
-            )
-            .map_err(|_| "vcpu.run failed")?;
+        let exit = self.vcpu.run().map_err(|_| "vcpu.run failed")?;
         Ok(self.classify_exit(exit))
     }
 
