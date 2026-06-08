@@ -518,10 +518,8 @@ dependencies = [
  "dillo-mmio",
  "dillo-pci",
  "dillo-virtio",
- "libc",
  "log",
  "vm-memory",
- "vmm-sys-util",
 ]
 
 [[package]]

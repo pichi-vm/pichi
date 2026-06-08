@@ -894,6 +894,9 @@ Completed changes:
 - Made `dillo-mmio-uart` target-neutral by replacing Linux/macOS/WHP trigger
   types with an optional backend-resolved `dillo-mmio::Interrupt`; KVM and WHP
   now provide their interrupt-line implementations from machine backend crates.
+- Removed stale Linux-only dependencies from `dillo-pci-virtio`; the PCI virtio
+  transport no longer depends on `vmm-sys-util` or `libc` after queue notifier
+  ownership moved to machine backends.
 
 ## Stage 15 - Restore macOS CI
 

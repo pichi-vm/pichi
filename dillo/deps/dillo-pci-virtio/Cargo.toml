@@ -11,11 +11,7 @@ dillo-mmio.workspace = true
 dillo-pci.workspace = true
 dillo-virtio.workspace = true
 vm-memory.workspace = true
-vmm-sys-util.workspace = true
 log.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
 
 [lints]
 workspace = true
