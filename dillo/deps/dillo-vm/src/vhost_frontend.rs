@@ -17,7 +17,7 @@ use dillo_virtio::{ActivateError, VirtioActivate, VirtioDevice, VirtioDeviceHand
 use vhost::vhost_user::message::{VhostUserConfigFlags, VhostUserProtocolFeatures};
 use vhost::vhost_user::{Frontend, VhostUserFrontend as _};
 use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
-use vm_memory::{Address, GuestMemory};
+use vm_memory::Address;
 
 use crate::pci_irq::IrqfdNotifier;
 
@@ -150,17 +150,14 @@ impl VirtioDevice for VhostUserFrontend {
 
     fn activate(
         &mut self,
-        activation: VirtioActivate,
+        mut activation: VirtioActivate,
     ) -> Result<VirtioDeviceHandle, ActivateError> {
-        let VirtioActivate {
-            mem,
-            shared_memory: _,
-            queue_memory: _,
-            buffer_memory: _,
-            queues,
-            queue_evts,
-            host,
-        } = activation;
+        let queues = activation.take_queues();
+        let queue_evts = activation.take_queue_evts();
+        let host = activation.host();
+        let mem = activation.take_vhost_user_memory().ok_or_else(|| {
+            ActivateError::InvalidConfig("missing vhost-user memory export".into())
+        })?;
         // Re-intersect with backend_features as a safety net (the value
         // passed in is the driver-negotiated subset of what we advertised).
         // PROTOCOL_FEATURES MUST be preserved in the value passed to
@@ -175,7 +172,7 @@ impl VirtioDevice for VhostUserFrontend {
 
         // Share guest memory with the backend.
         let regions: Vec<VhostUserMemoryRegionInfo> = mem
-            .iter()
+            .regions()
             .filter_map(|region| {
                 VhostUserMemoryRegionInfo::from_guest_region(region)
                     .map_err(|e| log::warn!("vhost-user: skipping region: {e}"))

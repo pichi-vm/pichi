@@ -143,17 +143,13 @@ impl VirtioDevice for VirtioConsole {
 
     fn activate(
         &mut self,
-        activation: VirtioActivate,
+        mut activation: VirtioActivate,
     ) -> Result<VirtioDeviceHandle, ActivateError> {
-        let VirtioActivate {
-            mem: _,
-            shared_memory: _,
-            queue_memory,
-            buffer_memory,
-            mut queues,
-            mut queue_evts,
-            host,
-        } = activation;
+        let queue_memory = activation.queue_memory();
+        let buffer_memory = activation.buffer_memory();
+        let mut queues = activation.take_queues();
+        let mut queue_evts = activation.take_queue_evts();
+        let host = activation.host();
         if self.activated {
             return Err(ActivateError::InvalidConfig(
                 "VirtioConsole::activate called twice".into(),

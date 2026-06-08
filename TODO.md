@@ -734,12 +734,16 @@ Completed changes:
 - Converted the in-process virtio-console RX/TX descriptor payload path to use
   the activation-scoped buffer-memory handle; descriptors outside the shared
   payload aperture fail instead of falling back to whole guest memory.
+- Made `VirtioActivate` fields private and replaced the public
+  `GuestMemoryMmap` field with explicit accessors for queue memory, buffer
+  memory, device host, queues, kicks, and a vhost-user-only memory export.
 
 Remaining divergence:
-- `VirtioActivate` still carries `GuestMemoryMmap` for compatibility; in-process
-  virtio-console no longer consumes it, but vhost-user activation still needs
-  whole-memory export.
-- vhost-user devices still use their backend-specific whole-memory path.
+- `VirtioActivate` still retains whole guest memory internally so Linux
+  vhost-user activation can build `SET_MEM_TABLE`; the export is no longer a
+  general device field.
+- vhost-user devices still use their backend-specific whole-memory protocol
+  path.
 - Machine attachments still return no shared-memory capabilities because no
   DTB-derived virtio DMA aperture is currently consumed; they now reject
   non-empty shared-memory requirements instead of silently ignoring them.
