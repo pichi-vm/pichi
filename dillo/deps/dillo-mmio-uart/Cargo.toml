@@ -10,9 +10,5 @@ description = "MMIO ns16550a UART device for dillo."
 dillo-mmio.workspace = true
 vm-superio.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
-vmm-sys-util.workspace = true
-
 [lints]
 workspace = true

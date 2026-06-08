@@ -4,9 +4,10 @@ mod imp {
 
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
-        Attach, MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioDeviceHost,
-        MmioInterrupt, MmioSpawnError, SharedMemory,
+        Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
+        MmioDeviceHandle, MmioDeviceHost, MmioInterrupt, MmioSpawnError, SharedMemory,
     };
+    use dillo_x86::IoApic;
     use vm_memory::GuestMemoryMmap;
 
     use dillo_hypervisor::VmExit;
@@ -129,6 +130,54 @@ mod imp {
             Ok(Arc::new(MachineMmioAttachment {
                 shared_memory: self.shared_memory.clone(),
             }))
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct IoApicInterruptLine {
+        interrupt_controller: InterruptController,
+        ioapic: Arc<IoApic>,
+        gsi: u32,
+    }
+
+    impl IoApicInterruptLine {
+        pub fn new(
+            interrupt_controller: InterruptController,
+            ioapic: Arc<IoApic>,
+            gsi: u32,
+        ) -> Self {
+            Self {
+                interrupt_controller,
+                ioapic,
+                gsi,
+            }
+        }
+
+        fn inject(&self) -> Result<(), InterruptError> {
+            let Some(route) = self.ioapic.route(self.gsi) else {
+                return Ok(());
+            };
+            self.interrupt_controller
+                .request_fixed_interrupt(route.destination, route.vector)
+                .map_err(|e| InterruptError::Delivery(e.to_string()))
+        }
+    }
+
+    impl InterruptLine for IoApicInterruptLine {
+        fn signal(&self) {
+            if let Err(e) = self.inject() {
+                log::warn!(
+                    "WHP IOAPIC interrupt signal failed for GSI {}: {e}",
+                    self.gsi
+                );
+            }
+        }
+
+        fn set_level(&self, level: bool) -> Result<(), InterruptError> {
+            if level {
+                self.inject()?;
+            }
+            Ok(())
         }
     }
 

@@ -891,6 +891,9 @@ Completed changes:
 - Added `dillo-x86` and moved the x86 IOAPIC MMIO register model out of
   `dillo-vm`; the remaining WHP-specific trigger glue now injects decoded
   IOAPIC routes instead of owning the register model.
+- Made `dillo-mmio-uart` target-neutral by replacing Linux/macOS/WHP trigger
+  types with an optional backend-resolved `dillo-mmio::Interrupt`; KVM and WHP
+  now provide their interrupt-line implementations from machine backend crates.
 
 ## Stage 15 - Restore macOS CI
 

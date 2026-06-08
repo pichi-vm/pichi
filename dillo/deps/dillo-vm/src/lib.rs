@@ -17,10 +17,6 @@ mod overlay;
 mod placement;
 #[allow(dead_code)]
 mod syscon;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[cfg(target_os = "windows")]
-mod uart;
-
 // HVF MSI-X notifier + guest-memory builder (KVM uses memfd + irqfd instead).
 #[cfg(target_os = "macos")]
 mod hvf_devices;
@@ -586,7 +582,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                     size: uart.size,
                 },
                 uart.reg_shift,
-                dillo_mmio_uart::NoopTrigger,
+                None,
                 Box::new(std::io::stderr()),
             )))?;
         }
@@ -861,7 +857,7 @@ mod macos_tests {
                 size: 0x1000,
             },
             0,
-            dillo_mmio_uart::NoopTrigger,
+            None,
             Box::new(std::io::stderr()),
         )));
 

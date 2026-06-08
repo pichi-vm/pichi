@@ -469,6 +469,7 @@ dependencies = [
  "dillo-hypervisor",
  "dillo-machine",
  "dillo-mmio",
+ "dillo-x86",
  "log",
  "pmi",
  "vm-memory",
@@ -488,9 +489,7 @@ name = "dillo-mmio-uart"
 version = "0.1.0"
 dependencies = [
  "dillo-mmio",
- "libc",
  "vm-superio",
- "vmm-sys-util",
 ]
 
 [[package]]

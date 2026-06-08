@@ -6,8 +6,9 @@ mod imp {
 
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
-        Attach, MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioDeviceHost,
-        MmioInterrupt, MmioNotifyEvent, MmioSpawnError, QueueNotifier, SharedMemory,
+        Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
+        MmioDeviceHandle, MmioDeviceHost, MmioInterrupt, MmioNotifyEvent, MmioSpawnError,
+        QueueNotifier, SharedMemory,
     };
 
     use dillo_hypervisor::VmExit;
@@ -154,6 +155,34 @@ mod imp {
                     );
                 }
             }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct EventFdInterruptLine {
+        eventfd: EventFd,
+    }
+
+    impl EventFdInterruptLine {
+        pub fn new(eventfd: EventFd) -> Self {
+            Self { eventfd }
+        }
+    }
+
+    impl InterruptLine for EventFdInterruptLine {
+        fn signal(&self) {
+            if let Err(e) = self.eventfd.write(1) {
+                log::warn!("KVM irqfd interrupt signal failed: {e}");
+            }
+        }
+
+        fn set_level(&self, level: bool) -> Result<(), InterruptError> {
+            if level {
+                self.eventfd
+                    .write(1)
+                    .map_err(|e| InterruptError::Delivery(e.to_string()))?;
+            }
+            Ok(())
         }
     }
 

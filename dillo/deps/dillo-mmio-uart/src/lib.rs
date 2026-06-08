@@ -4,16 +4,15 @@
 //! file that responds to LCR/DLAB, the MCR loopback probe, IIR/FCR FIFO
 //! control, and the LSR TX-ready bit — a hand-rolled stub fails one of
 //! those probes and the kernel silently disables the console. Writes to
-//! THR go to the host (stdout on Linux, stderr elsewhere).
+//! THR go to the configured host writer.
 //!
 //! Per the arma device model (see `arma/docs/device-model.md` §"Serial
 //! port") the serial port is an **MMIO `ns16550a`** on every arch — there
 //! is no legacy x86 `0x3f8` port-I/O UART. When the PMI Platform declares a
 //! UART, dillo constructs an owned [`Ns16550`] with the node's register
 //! window and attaches it to the MMIO bus (register `N` at offset
-//! `N << reg_shift`). The IRQ is delivered per host: a KVM irqfd on Linux,
-//! WHP's fixed-interrupt injection through the userspace IOAPIC on Windows,
-//! and polled (no IRQ) on macOS/HVF.
+//! `N << reg_shift`). IRQ delivery is provided by the machine backend as a
+//! resolved [`dillo_mmio::Interrupt`].
 //!
 //! ## THR-empty interrupt on enable
 //!
@@ -36,12 +35,8 @@ use std::sync::Mutex;
 use vm_superio::Serial;
 use vm_superio::Trigger;
 use vm_superio::serial::NoEvents;
-#[cfg(target_os = "linux")]
-use vmm_sys_util::eventfd::EventFd;
 
-use dillo_mmio::{MmioDevice, MmioWindow};
-
-pub use vm_superio::Trigger as UartTrigger;
+use dillo_mmio::{Interrupt, MmioDevice, MmioWindow};
 
 // 16550 register offsets and bits we post-process on top of vm-superio.
 // Offsets are pre-`reg_shift` register indices (0..=7).
@@ -64,58 +59,39 @@ const IIR_FIFO: u8 = 0b1100_0000;
 /// LCR bit: divisor-latch access (remaps offsets 0/1 to the baud divisor).
 const LCR_DLAB: u8 = 0b1000_0000;
 
-/// `vm-superio` Trigger that fires a KVM irqfd. Cloned EventFd; writes
-/// of 1 cause KVM's in-kernel IOAPIC to inject the configured ISA IRQ.
-#[cfg(target_os = "linux")]
-#[derive(Debug)]
-pub struct EventFdTrigger(EventFd);
+/// `vm-superio` trigger backed by an optional backend-resolved interrupt.
+#[derive(Clone, Debug)]
+struct InterruptTrigger {
+    interrupt: Option<Interrupt>,
+}
 
-#[cfg(target_os = "linux")]
-impl EventFdTrigger {
-    pub fn new(efd: EventFd) -> Self {
-        Self(efd)
+impl InterruptTrigger {
+    fn new(interrupt: Option<Interrupt>) -> Self {
+        Self { interrupt }
     }
 }
 
-#[cfg(target_os = "linux")]
-impl vm_superio::Trigger for EventFdTrigger {
+impl Trigger for InterruptTrigger {
     type E = io::Error;
-    fn trigger(&self) -> io::Result<()> {
-        self.0.write(1)
-    }
-}
 
-// On macOS/HVF the serial is polled: the kernel's console write path polls
-// LSR-THRE (which vm-superio drives correctly), so boot-time output works
-// without wiring the GIC SPI. The trigger is a no-op.
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-pub struct NoopTrigger;
-
-#[cfg(target_os = "macos")]
-impl vm_superio::Trigger for NoopTrigger {
-    type E = io::Error;
     fn trigger(&self) -> io::Result<()> {
+        if let Some(interrupt) = &self.interrupt {
+            interrupt.signal();
+        }
         Ok(())
     }
 }
 
-type Mmio16550<T> = Serial<T, NoEvents, Box<dyn Write + Send>>;
+type Mmio16550 = Serial<InterruptTrigger, NoEvents, Box<dyn Write + Send>>;
 
 /// MMIO ns16550a: a `vm-superio` `Serial` plus the THR-empty-on-enable
 /// emulation it lacks (see module docs).
-pub struct Ns16550<T>
-where
-    T: Trigger<E = io::Error>,
-{
+pub struct Ns16550 {
     window: MmioWindow,
-    state: Mutex<Ns16550State<T>>,
+    state: Mutex<Ns16550State>,
 }
 
-impl<T> std::fmt::Debug for Ns16550<T>
-where
-    T: Trigger<E = io::Error> + std::fmt::Debug,
-{
+impl std::fmt::Debug for Ns16550 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Ns16550")
             .field("window", &self.window)
@@ -123,15 +99,21 @@ where
     }
 }
 
-impl<T> Ns16550<T>
-where
-    T: Trigger<E = io::Error>,
-{
-    pub fn new(window: MmioWindow, reg_shift: u32, trigger: T, out: Box<dyn Write + Send>) -> Self {
-        Self::with_serial(window, reg_shift, Serial::new(trigger, out))
+impl Ns16550 {
+    pub fn new(
+        window: MmioWindow,
+        reg_shift: u32,
+        interrupt: Option<Interrupt>,
+        out: Box<dyn Write + Send>,
+    ) -> Self {
+        Self::with_serial(
+            window,
+            reg_shift,
+            Serial::new(InterruptTrigger::new(interrupt), out),
+        )
     }
 
-    fn with_serial(window: MmioWindow, reg_shift: u32, serial: Mmio16550<T>) -> Self {
+    fn with_serial(window: MmioWindow, reg_shift: u32, serial: Mmio16550) -> Self {
         Self {
             window,
             state: Mutex::new(Ns16550State::new(reg_shift, serial)),
@@ -139,10 +121,7 @@ where
     }
 }
 
-impl<T> MmioDevice for Ns16550<T>
-where
-    T: Trigger<E = io::Error> + Send + 'static,
-{
+impl MmioDevice for Ns16550 {
     fn windows(&self) -> &[MmioWindow] {
         std::slice::from_ref(&self.window)
     }
@@ -165,23 +144,17 @@ where
     }
 }
 
-struct Ns16550State<T>
-where
-    T: Trigger<E = io::Error>,
-{
+struct Ns16550State {
     reg_shift: u32,
-    serial: Mmio16550<T>,
+    serial: Mmio16550,
     /// Mirror of IER.THRE (DLAB-aware). When set, the THR-empty interrupt is
     /// enabled, so — the THR being permanently empty for this virtual device
     /// — we treat THRE as continuously assertable.
     thri_enabled: bool,
 }
 
-impl<T> Ns16550State<T>
-where
-    T: Trigger<E = io::Error>,
-{
-    fn new(reg_shift: u32, serial: Mmio16550<T>) -> Self {
+impl Ns16550State {
+    fn new(reg_shift: u32, serial: Mmio16550) -> Self {
         Self {
             reg_shift,
             serial,
@@ -235,20 +208,53 @@ where
     }
 }
 
-// The THR-empty-on-enable emulation is identical across backends; we exercise
-// it on Linux, where the trigger is a real `EventFd` we can observe directly.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use vmm_sys_util::eventfd::EventFd;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Build an `Ns16550` whose trigger writes an observable `EventFd`.
-    fn harness() -> (Ns16550State<EventFdTrigger>, EventFd) {
-        let efd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
-        let observe = efd.try_clone().unwrap();
+    use dillo_mmio::{InterruptError, InterruptLine};
+
+    #[derive(Debug)]
+    struct CountLine {
+        count: AtomicU64,
+    }
+
+    impl CountLine {
+        fn new() -> Self {
+            Self {
+                count: AtomicU64::new(0),
+            }
+        }
+
+        fn count(&self) -> u64 {
+            self.count.load(Ordering::SeqCst)
+        }
+    }
+
+    impl InterruptLine for CountLine {
+        fn signal(&self) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn set_level(&self, level: bool) -> Result<(), InterruptError> {
+            if level {
+                self.signal();
+            }
+            Ok(())
+        }
+    }
+
+    /// Build an `Ns16550` whose trigger increments an observable counter.
+    fn harness() -> (Ns16550State, Arc<CountLine>) {
+        let line = Arc::new(CountLine::new());
         let out: Box<dyn Write + Send> = Box::new(io::sink());
-        let serial = Serial::new(EventFdTrigger::new(efd), out);
-        (Ns16550State::new(0, serial), observe)
+        let serial = Serial::new(
+            InterruptTrigger::new(Some(Interrupt::new(line.clone()))),
+            out,
+        );
+        (Ns16550State::new(0, serial), line)
     }
 
     /// Enabling THRI while THR is empty must immediately raise the interrupt
@@ -256,17 +262,17 @@ mod tests {
     /// 16550 contract `serial8250_start_tx` relies on for interrupt-driven TX.
     #[test]
     fn thri_enable_raises_thre_interrupt() {
-        let (mut uart, efd) = harness();
+        let (mut uart, line) = harness();
 
         // Nothing pending before THRI is enabled.
-        assert!(efd.read().is_err(), "spurious interrupt before enable");
+        assert_eq!(line.count(), 0, "spurious interrupt before enable");
         assert_eq!(uart.read(u64::from(REG_IIR)) & IIR_NO_INT, IIR_NO_INT);
 
         // Enable the THR-empty interrupt.
         uart.write(u64::from(REG_IER), &[IER_THRE]);
 
         // The enable edge must have fired the trigger exactly once...
-        assert_eq!(efd.read().unwrap(), 1, "THRI enable did not fire the IRQ");
+        assert_eq!(line.count(), 1, "THRI enable did not fire the IRQ");
         // ...and IIR must identify it as the THR-empty interrupt.
         assert_eq!(uart.read(u64::from(REG_IIR)), IIR_THRE | IIR_FIFO);
     }
@@ -286,14 +292,14 @@ mod tests {
     /// (edge-detected), and disabling it stops THRE being reported.
     #[test]
     fn thri_enable_is_edge_detected_and_clears() {
-        let (mut uart, efd) = harness();
+        let (mut uart, line) = harness();
 
         uart.write(u64::from(REG_IER), &[IER_THRE]);
-        assert_eq!(efd.read().unwrap(), 1);
+        assert_eq!(line.count(), 1);
 
         // Writing the same enabled value again is not a fresh edge.
         uart.write(u64::from(REG_IER), &[IER_THRE]);
-        assert!(efd.read().is_err(), "non-edge write fired a spurious IRQ");
+        assert_eq!(line.count(), 1, "non-edge write fired a spurious IRQ");
 
         // Disabling THRI stops THRE from being surfaced.
         uart.write(u64::from(REG_IER), &[0]);
@@ -304,11 +310,11 @@ mod tests {
     /// it must never be mistaken for a THRI enable.
     #[test]
     fn dlab_high_byte_is_not_an_ier_write() {
-        let (mut uart, efd) = harness();
+        let (mut uart, line) = harness();
 
         uart.write(u64::from(REG_LCR), &[LCR_DLAB]); // set DLAB
         uart.write(u64::from(REG_IER), &[IER_THRE]); // divisor high, not IER
 
-        assert!(efd.read().is_err(), "divisor write fired the THRE IRQ");
+        assert_eq!(line.count(), 0, "divisor write fired the THRE IRQ");
     }
 }

@@ -6,6 +6,8 @@ use dillo_mmio_uart::Ns16550;
 use dillo_pci::MsixNotifier;
 use vm_memory::GuestMemoryMmap;
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use dillo_mmio::Interrupt;
 #[cfg(target_os = "macos")]
 use dillo_mmio::MmioBus;
 use dillo_mmio::{Attach, MmioAttachment, MmioDevice, MmioWindow, QueueNotifier, SharedMemory};
@@ -20,7 +22,7 @@ use crate::{RunError, hvf_devices, syscon};
 #[cfg(target_os = "linux")]
 use crate::{RunError, irq::IrqManager, pci_irq::IrqfdNotifier, syscon};
 #[cfg(target_os = "windows")]
-use crate::{RunError, syscon, uart, whp_devices::WhpMsixNotifier};
+use crate::{RunError, syscon, whp_devices::WhpMsixNotifier};
 #[cfg(target_os = "windows")]
 use dillo_x86::IoApic;
 
@@ -138,7 +140,7 @@ impl BackendVm for dillo_machine_backend::Vm {
     type Vcpu = dillo_machine_backend::Vcpu;
     type InterruptState = Arc<Mutex<IrqManager>>;
     type SerialIrq = (Arc<Mutex<IrqManager>>, u32);
-    type SerialDevice = Ns16550<dillo_mmio_uart::EventFdTrigger>;
+    type SerialDevice = Ns16550;
     type WiredIrq = ();
     type MsiNotifier = IrqfdNotifier;
 
@@ -271,7 +273,9 @@ impl BackendVm for dillo_machine_backend::Vm {
         Ok(Ns16550::new(
             window,
             reg_shift,
-            dillo_mmio_uart::EventFdTrigger::new(eventfd),
+            Some(Interrupt::new(Arc::new(
+                dillo_machine_backend::EventFdInterruptLine::new(eventfd),
+            ))),
             out,
         ))
     }
@@ -305,7 +309,7 @@ impl BackendVm for dillo_machine_backend::Vm {
     type Vcpu = dillo_machine_backend::Vcpu;
     type InterruptState = ();
     type SerialIrq = ();
-    type SerialDevice = Ns16550<dillo_mmio_uart::NoopTrigger>;
+    type SerialDevice = Ns16550;
     type WiredIrq = dillo_mmio_virtio::WiredIrq;
     type MsiNotifier = hvf_devices::HvfMsixNotifier;
 
@@ -403,12 +407,7 @@ impl BackendVm for dillo_machine_backend::Vm {
         _irq: Self::SerialIrq,
         out: Box<dyn std::io::Write + Send>,
     ) -> Result<Self::SerialDevice, RunError> {
-        Ok(Ns16550::new(
-            window,
-            reg_shift,
-            dillo_mmio_uart::NoopTrigger,
-            out,
-        ))
+        Ok(Ns16550::new(window, reg_shift, None, out))
     }
 
     fn wired_irq(&self, intid: u32) -> Self::WiredIrq {
@@ -435,7 +434,7 @@ impl BackendVm for dillo_machine_backend::Vm {
     type Vcpu = dillo_machine_backend::Vcpu;
     type InterruptState = ();
     type SerialIrq = (Arc<IoApic>, u32);
-    type SerialDevice = Ns16550<uart::WhpTrigger>;
+    type SerialDevice = Ns16550;
     type WiredIrq = ();
     type MsiNotifier = WhpMsixNotifier;
 
@@ -545,7 +544,13 @@ impl BackendVm for dillo_machine_backend::Vm {
         Ok(Ns16550::new(
             window,
             reg_shift,
-            uart::WhpTrigger::new(self.interrupt_controller(), ioapic, gsi),
+            Some(Interrupt::new(Arc::new(
+                dillo_machine_backend::IoApicInterruptLine::new(
+                    self.interrupt_controller(),
+                    ioapic,
+                    gsi,
+                ),
+            ))),
             out,
         ))
     }
