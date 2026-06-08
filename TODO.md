@@ -851,6 +851,11 @@ Process:
 - Remove the old monolithic `dillo-vm` composition surface. The final
   composition point is the `dillo` crate/binary; `dillo-vm` may only survive if
   it has a renamed, non-monolithic role that matches the target graph.
+- Do not retain the `dillo-vm::run` API shape in `dillo`. `dillo` must compose
+  the selected `Machine`, PMI/devtree survey, transports, and concrete portable
+  devices directly.
+- Confine target selection in `dillo` to `src/machine_select.rs`. No other
+  `dillo/src` file may contain OS, target, or architecture `cfg` branches.
 - Remove `dillo-machine-backend` once `dillo` can bind the selected
   `dillo-machine-*` crate directly through target dependencies without exposing
   KVM/HVF/WHP names above backend crates.
@@ -871,7 +876,12 @@ Process:
 
 Success criteria:
 - The implemented crate graph matches `DILLO-CRATE-SPLIT.md`.
+- `dillo` depends on `dillo-machine-*`, portable device/transport crates, PMI,
+  and devtree/survey code directly; it does not depend on `dillo-vm` as a VM
+  launcher facade.
 - Source search finds no KVM/HVF/WHP imports in `dillo` or device crates.
+- Source search finds no target cfg in `dillo/src` outside
+  `src/machine_select.rs`.
 - Source search finds no whole-guest-memory device activation.
 - Source search finds no backend imports of PCI, virtio transport, UART, or
   concrete device crates.
@@ -920,6 +930,16 @@ Completed changes:
   selected `dillo-machine-*` crate. `dillo/src/main.rs` now has no direct
   OS/arch cfgs; only `dillo/src/machine_select.rs` selects the native machine
   crate.
+- Added `dillo/tests/architecture_cfg.rs` to enforce that target cfg remains
+  confined to `dillo/src/machine_select.rs`.
+- Added a target-neutral `dillo` library surface for launch support moved from
+  the monolithic VM layer: CPU compatible lookup, FDT overlay writing, DTBO
+  synthesis, and memory placement. These are now available to the future direct
+  `dillo` runner without introducing target cfg outside machine selection.
+
+CI verification:
+- `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `3bcafcc test: confine target cfg in dillo`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
@@ -927,6 +947,8 @@ Latest local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --lib`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
 

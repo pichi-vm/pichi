@@ -23,9 +23,12 @@ vm-tests = []
 
 [dependencies]
 dillo-vm.workspace = true
+dillo-pmi.workspace = true
+dillo-platform.workspace = true
 dillo-virtio-console.workspace = true
 argh.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 log.workspace = true
 env_logger.workspace = true
 
@@ -47,6 +50,7 @@ rstest = "0.23"                                    # parameterized boot matrix
 burrow = { path = "../deps/burrow" }               # cached kernel download
 tempfile = "3"                                      # scratch dirs for PMIs
 wait-timeout = "0.2"                                # cross-platform boot timeout
+devtree.workspace = true
 
 # snuffler is pulled once, as both a library (the Report schema, host target)
 # and a binary artifact (the guest probe, cross-built for the guest musl
