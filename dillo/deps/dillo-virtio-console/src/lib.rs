@@ -31,9 +31,8 @@ use std::time::Duration;
 use dillo_virtio::queue::{Queue, QueueMemory, VIRTQ_DESC_F_WRITE};
 use dillo_virtio::{
     ActivateError, Interrupt, Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle,
-    VirtioDeviceHost, VirtioRunToken,
+    VirtioDeviceHost, VirtioMemory, VirtioRunToken,
 };
-use vm_memory::{Bytes, GuestMemoryMmap};
 
 /// VIRTIO_F_VERSION_1 from the virtio 1.x spec.
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;
@@ -147,9 +146,10 @@ impl VirtioDevice for VirtioConsole {
         activation: VirtioActivate,
     ) -> Result<VirtioDeviceHandle, ActivateError> {
         let VirtioActivate {
-            mem,
+            mem: _,
             shared_memory: _,
             queue_memory,
+            buffer_memory,
             mut queues,
             mut queue_evts,
             host,
@@ -174,8 +174,8 @@ impl VirtioDevice for VirtioConsole {
         let tx_call_fd = (self.call_fd_lookup)(tx_queue.msix_vector);
         let tx_handle = Arc::new(Mutex::new(Some(spawn_tx_worker(
             Arc::clone(&host),
-            mem.clone(),
             Arc::clone(&queue_memory),
+            Arc::clone(&buffer_memory),
             tx_queue,
             tx_evt,
             tx_call_fd,
@@ -188,8 +188,8 @@ impl VirtioDevice for VirtioConsole {
         let rx_call_fd = (self.call_fd_lookup)(rx_queue.msix_vector);
         let rx_handle = Arc::new(Mutex::new(Some(spawn_rx_worker(
             host,
-            mem.clone(),
             queue_memory,
+            buffer_memory,
             rx_queue,
             rx_evt,
             rx_call_fd,
@@ -254,35 +254,35 @@ impl VirtioDevice for VirtioConsole {
 
 fn spawn_tx_worker(
     host: Arc<dyn VirtioDeviceHost>,
-    mem: GuestMemoryMmap,
     queue_memory: Arc<dyn QueueMemory>,
+    buffer_memory: Arc<dyn VirtioMemory>,
     queue: Queue,
     kick: Kick,
     call_fd: Option<Interrupt>,
 ) -> Result<VirtioDeviceHandle, ActivateError> {
     host.spawn(Box::new(move |token| {
-        tx_worker(mem, queue_memory, queue, kick, call_fd, token);
+        tx_worker(queue_memory, buffer_memory, queue, kick, call_fd, token);
         Ok(())
     }))
 }
 
 fn spawn_rx_worker(
     host: Arc<dyn VirtioDeviceHost>,
-    mem: GuestMemoryMmap,
     queue_memory: Arc<dyn QueueMemory>,
+    buffer_memory: Arc<dyn VirtioMemory>,
     queue: Queue,
     kick: Kick,
     call_fd: Option<Interrupt>,
 ) -> Result<VirtioDeviceHandle, ActivateError> {
     host.spawn(Box::new(move |token| {
-        rx_worker(mem, queue_memory, queue, kick, call_fd, token);
+        rx_worker(queue_memory, buffer_memory, queue, kick, call_fd, token);
         Ok(())
     }))
 }
 
 fn tx_worker(
-    mem: GuestMemoryMmap,
     queue_memory: Arc<dyn QueueMemory>,
+    buffer_memory: Arc<dyn VirtioMemory>,
     queue: Queue,
     kick: Kick,
     call_fd: Option<Interrupt>,
@@ -317,13 +317,13 @@ fn tx_worker(
         if token.is_shutdown_requested() {
             return;
         }
-        drain_tx(&mem, &queue_memory, &queue, call_fd.as_ref());
+        drain_tx(&queue_memory, &buffer_memory, &queue, call_fd.as_ref());
     }
 }
 
 fn rx_worker(
-    mem: GuestMemoryMmap,
     queue_memory: Arc<dyn QueueMemory>,
+    buffer_memory: Arc<dyn VirtioMemory>,
     queue: Queue,
     kick: Kick,
     call_fd: Option<Interrupt>,
@@ -347,7 +347,13 @@ fn rx_worker(
             if token.is_shutdown_requested() {
                 return;
             }
-            if drain_rx(&mem, &queue_memory, &queue, &mut pending, call_fd.as_ref()) {
+            if drain_rx(
+                &queue_memory,
+                &buffer_memory,
+                &queue,
+                &mut pending,
+                call_fd.as_ref(),
+            ) {
                 continue;
             }
             if let Err(e) = kick.read() {
@@ -374,8 +380,8 @@ fn clear_kick_nonblock(kick: &Kick) {
 }
 
 fn drain_rx(
-    mem: &GuestMemoryMmap,
     queue_memory: &Arc<dyn QueueMemory>,
+    buffer_memory: &Arc<dyn VirtioMemory>,
     queue: &Arc<Mutex<Queue>>,
     pending: &mut VecDeque<u8>,
     call_fd: Option<&Interrupt>,
@@ -395,7 +401,7 @@ fn drain_rx(
                 let n = pending.len().min(desc.len as usize);
                 if n != 0 {
                     let chunk: Vec<u8> = pending.drain(..n).collect();
-                    match mem.write(&chunk, desc.addr) {
+                    match buffer_memory.write(desc.addr, &chunk) {
                         Ok(bytes) => {
                             written = written.saturating_add(bytes as u32);
                             made_progress = true;
@@ -439,8 +445,8 @@ fn drain_rx(
 }
 
 fn drain_tx(
-    mem: &GuestMemoryMmap,
     queue_memory: &Arc<dyn QueueMemory>,
+    buffer_memory: &Arc<dyn VirtioMemory>,
     queue: &Arc<Mutex<Queue>>,
     call_fd: Option<&Interrupt>,
 ) {
@@ -457,7 +463,7 @@ fn drain_tx(
             // Device-readable = guest-to-host data (TX path).
             if desc.flags & VIRTQ_DESC_F_WRITE == 0 {
                 let mut buf = vec![0u8; desc.len as usize];
-                match mem.read(&mut buf, desc.addr) {
+                match buffer_memory.read(desc.addr, &mut buf) {
                     Ok(n) => {
                         output.extend_from_slice(&buf[..n]);
                         written += n as u32;
@@ -491,9 +497,9 @@ fn drain_tx(
 mod tests {
     use super::*;
     use dillo_mmio::{AddressRange, MappedSharedMemory, SharedAccess, SharedMemoryRequirement};
-    use dillo_virtio::SharedQueueMemory;
     use dillo_virtio::queue::VIRTQ_DESC_F_WRITE;
-    use vm_memory::{Address, GuestAddress};
+    use dillo_virtio::{SharedQueueMemory, SharedVirtioMemory};
+    use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
 
     #[test]
     fn rx_drains_pending_input_into_guest_buffer() {
@@ -518,13 +524,20 @@ mod tests {
             .unwrap();
 
         let queue_memory: Arc<dyn QueueMemory> = Arc::new(mem.clone());
+        let buffer_memory: Arc<dyn VirtioMemory> = Arc::new(mem.clone());
         let queue = Arc::new(Mutex::new(queue));
         let mut pending: VecDeque<u8> = b"abc".iter().copied().collect();
-        assert!(drain_rx(&mem, &queue_memory, &queue, &mut pending, None));
+        assert!(drain_rx(
+            &queue_memory,
+            &buffer_memory,
+            &queue,
+            &mut pending,
+            None
+        ));
         assert!(pending.is_empty());
 
         let mut out = [0u8; 3];
-        mem.read(&mut out, GuestAddress(0x5000)).unwrap();
+        Bytes::read(&mem, &mut out, GuestAddress(0x5000)).unwrap();
         assert_eq!(&out, b"abc");
         let used_idx: u16 = mem.read_obj(GuestAddress(0x2002)).unwrap();
         assert_eq!(used_idx, 1);
@@ -543,7 +556,19 @@ mod tests {
                 access: SharedAccess::ReadWrite,
             },
         ));
+        let buffer_shared = Arc::new(MappedSharedMemory::new(
+            mem.clone(),
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x5000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        ));
         let queue_memory: Arc<dyn QueueMemory> = Arc::new(SharedQueueMemory::new(vec![shared]));
+        let buffer_memory: Arc<dyn VirtioMemory> =
+            Arc::new(SharedVirtioMemory::new(vec![buffer_shared]));
         let mut queue = Queue::new(16);
         queue.size = 16;
         queue.ready = true;
@@ -565,11 +590,76 @@ mod tests {
 
         let queue = Arc::new(Mutex::new(queue));
         let mut pending: VecDeque<u8> = b"abc".iter().copied().collect();
-        assert!(drain_rx(&mem, &queue_memory, &queue, &mut pending, None));
+        assert!(drain_rx(
+            &queue_memory,
+            &buffer_memory,
+            &queue,
+            &mut pending,
+            None
+        ));
 
         let mut out = [0u8; 3];
-        mem.read(&mut out, GuestAddress(0x5000)).unwrap();
+        Bytes::read(&mem, &mut out, GuestAddress(0x5000)).unwrap();
         assert_eq!(&out, b"abc");
+        assert_eq!(queue_memory.read_u16(GuestAddress(0x2002)), Some(1));
+    }
+
+    #[test]
+    fn rx_rejects_payload_outside_shared_memory() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let queue_shared = Arc::new(MappedSharedMemory::new(
+            mem.clone(),
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x100,
+                    size: 0x3000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        ));
+        let buffer_shared = Arc::new(MappedSharedMemory::new(
+            mem.clone(),
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x6000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        ));
+        let queue_memory: Arc<dyn QueueMemory> =
+            Arc::new(SharedQueueMemory::new(vec![queue_shared]));
+        let buffer_memory: Arc<dyn VirtioMemory> =
+            Arc::new(SharedVirtioMemory::new(vec![buffer_shared]));
+        let mut queue = Queue::new(16);
+        queue.size = 16;
+        queue.ready = true;
+        queue.desc_table = GuestAddress(0x100);
+        queue.avail_ring = GuestAddress(0x1000);
+        queue.used_ring = GuestAddress(0x2000);
+
+        mem.write_obj::<u64>(0x5000, queue.desc_table).unwrap();
+        mem.write_obj::<u32>(8, queue.desc_table.unchecked_add(8))
+            .unwrap();
+        mem.write_obj::<u16>(VIRTQ_DESC_F_WRITE, queue.desc_table.unchecked_add(12))
+            .unwrap();
+        mem.write_obj::<u16>(0, queue.desc_table.unchecked_add(14))
+            .unwrap();
+        mem.write_obj::<u16>(0, queue.avail_ring.unchecked_add(4))
+            .unwrap();
+        mem.write_obj::<u16>(1, queue.avail_ring.unchecked_add(2))
+            .unwrap();
+
+        let queue = Arc::new(Mutex::new(queue));
+        let mut pending: VecDeque<u8> = b"abc".iter().copied().collect();
+        assert!(!drain_rx(
+            &queue_memory,
+            &buffer_memory,
+            &queue,
+            &mut pending,
+            None
+        ));
+        assert_eq!(pending.iter().copied().collect::<Vec<_>>(), b"abc");
         assert_eq!(queue_memory.read_u16(GuestAddress(0x2002)), Some(1));
     }
 }

@@ -156,6 +156,7 @@ impl VirtioDevice for VhostUserFrontend {
             mem,
             shared_memory: _,
             queue_memory: _,
+            buffer_memory: _,
             queues,
             queue_evts,
             host,

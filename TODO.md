@@ -726,10 +726,19 @@ Completed changes:
   queue metadata access when the backend supplies shared-memory capabilities.
 - Converted the in-process virtio-console RX/TX queue metadata path to use the
   activation-scoped queue-memory handle.
+- Added a virtio descriptor-buffer memory interface and a shared-memory-backed
+  implementation so device payload buffers can dynamically claim
+  attachment-scoped shared-memory regions.
+- Added an activation-scoped buffer-memory handle that selects shared-memory
+  payload access when the backend supplies shared-memory capabilities.
+- Converted the in-process virtio-console RX/TX descriptor payload path to use
+  the activation-scoped buffer-memory handle; descriptors outside the shared
+  payload aperture fail instead of falling back to whole guest memory.
 
 Remaining divergence:
-- `VirtioActivate` still carries `GuestMemoryMmap`; current queue and vhost-user
-  paths still use whole guest memory.
+- `VirtioActivate` still carries `GuestMemoryMmap` for compatibility; in-process
+  virtio-console no longer consumes it, but vhost-user activation still needs
+  whole-memory export.
 - vhost-user devices still use their backend-specific whole-memory path.
 - Machine attachments still return no shared-memory capabilities because no
   DTB-derived virtio DMA aperture is currently consumed; they now reject

@@ -7,6 +7,7 @@ use vm_memory::GuestMemoryMmap;
 use dillo_mmio::SharedMemory;
 
 use crate::kick::Kick;
+use crate::memory::{SharedVirtioMemory, VirtioMemory};
 use crate::queue::{Queue, QueueMemory, SharedQueueMemory};
 
 use std::process::Child;
@@ -20,6 +21,7 @@ pub struct VirtioActivate {
     pub mem: GuestMemoryMmap,
     pub shared_memory: Vec<Arc<dyn SharedMemory>>,
     pub queue_memory: Arc<dyn QueueMemory>,
+    pub buffer_memory: Arc<dyn VirtioMemory>,
     pub queues: Vec<Queue>,
     pub queue_evts: Vec<Kick>,
     pub host: Arc<dyn VirtioDeviceHost>,
@@ -31,6 +33,7 @@ impl std::fmt::Debug for VirtioActivate {
             .field("mem", &"GuestMemoryMmap")
             .field("shared_memory_count", &self.shared_memory.len())
             .field("queue_memory", &"QueueMemory")
+            .field("buffer_memory", &"VirtioMemory")
             .field("queues", &self.queues)
             .field("queue_evts", &self.queue_evts)
             .field("host", &self.host)
@@ -41,10 +44,12 @@ impl std::fmt::Debug for VirtioActivate {
 impl VirtioActivate {
     pub fn new(mem: GuestMemoryMmap, queues: Vec<Queue>, queue_evts: Vec<Kick>) -> Self {
         let queue_memory = Arc::new(mem.clone());
+        let buffer_memory = Arc::new(mem.clone());
         Self {
             mem,
             shared_memory: Vec::new(),
             queue_memory,
+            buffer_memory,
             queues,
             queue_evts,
             host: Arc::new(ThreadDeviceHost),
@@ -59,10 +64,12 @@ impl VirtioActivate {
     ) -> Self {
         let shared_memory = host.shared_memory();
         let queue_memory = Self::queue_memory(mem.clone(), &shared_memory);
+        let buffer_memory = Self::buffer_memory(mem.clone(), &shared_memory);
         Self {
             mem,
             shared_memory,
             queue_memory,
+            buffer_memory,
             queues,
             queue_evts,
             host,
@@ -77,10 +84,12 @@ impl VirtioActivate {
         host: Arc<dyn VirtioDeviceHost>,
     ) -> Self {
         let queue_memory = Self::queue_memory(mem.clone(), &shared_memory);
+        let buffer_memory = Self::buffer_memory(mem.clone(), &shared_memory);
         Self {
             mem,
             shared_memory,
             queue_memory,
+            buffer_memory,
             queues,
             queue_evts,
             host,
@@ -95,6 +104,17 @@ impl VirtioActivate {
             Arc::new(mem)
         } else {
             Arc::new(SharedQueueMemory::new(shared_memory.to_vec()))
+        }
+    }
+
+    fn buffer_memory(
+        mem: GuestMemoryMmap,
+        shared_memory: &[Arc<dyn SharedMemory>],
+    ) -> Arc<dyn VirtioMemory> {
+        if shared_memory.is_empty() {
+            Arc::new(mem)
+        } else {
+            Arc::new(SharedVirtioMemory::new(shared_memory.to_vec()))
         }
     }
 }
@@ -386,6 +406,20 @@ mod tests {
     }
 
     #[test]
+    fn activation_buffer_memory_defaults_to_guest_memory() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let activation = VirtioActivate::new(mem.clone(), Vec::new(), Vec::new());
+
+        activation
+            .buffer_memory
+            .write(GuestAddress(0x1000), &[1, 2, 3])
+            .expect("write through buffer memory");
+        let mut data = [0; 3];
+        Bytes::read(&mem, &mut data, GuestAddress(0x1000)).unwrap();
+        assert_eq!(data, [1, 2, 3]);
+    }
+
+    #[test]
     fn activation_queue_memory_uses_shared_memory_when_present() {
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
         let shared = Arc::new(MappedSharedMemory::new(
@@ -419,6 +453,43 @@ mod tests {
                 .queue_memory
                 .read_u16(GuestAddress(0x1000))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn activation_buffer_memory_uses_shared_memory_when_present() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let shared = Arc::new(MappedSharedMemory::new(
+            mem.clone(),
+            SharedMemoryRequirement {
+                range: AddressRange {
+                    base: 0x2000,
+                    size: 0x1000,
+                },
+                access: SharedAccess::ReadWrite,
+            },
+        ));
+        let activation = VirtioActivate::with_shared_memory(
+            mem.clone(),
+            vec![shared],
+            Vec::new(),
+            Vec::new(),
+            Arc::new(ThreadDeviceHost),
+        );
+
+        activation
+            .buffer_memory
+            .write(GuestAddress(0x2000), &[9])
+            .expect("write inside shared aperture");
+        let mut data = [0];
+        Bytes::read(&mem, &mut data, GuestAddress(0x2000)).unwrap();
+        assert_eq!(data, [9]);
+        let mut outside = [0];
+        assert!(
+            activation
+                .buffer_memory
+                .read(GuestAddress(0x1000), &mut outside)
+                .is_err()
         );
     }
 }
