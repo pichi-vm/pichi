@@ -492,7 +492,7 @@ mod tests {
         activation
             .queue_memory()
             .write_u16(GuestAddress(0x2000), 9)
-            .expect("write inside shared aperture");
+            .expect("write inside shared capability limits");
         assert_eq!(
             activation.queue_memory().read_u16(GuestAddress(0x2000)),
             Some(9)
@@ -529,7 +529,7 @@ mod tests {
         activation
             .buffer_memory()
             .write(GuestAddress(0x2000), &[9])
-            .expect("write inside shared aperture");
+            .expect("write inside shared capability limits");
         let mut data = [0];
         Bytes::read(&mem, &mut data, GuestAddress(0x2000)).unwrap();
         assert_eq!(data, [9]);

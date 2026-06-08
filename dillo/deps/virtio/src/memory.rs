@@ -104,7 +104,7 @@ mod tests {
     use dillo_mmio::{AddressRange, MappedSharedMemory, SharedMemoryRequirement};
 
     #[test]
-    fn shared_virtio_memory_reads_inside_aperture() {
+    fn shared_virtio_memory_reads_inside_capability_limits() {
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
         Bytes::write(&mem, &[1, 2, 3], GuestAddress(0x5000)).unwrap();
         let shared = SharedVirtioMemory::new(vec![Arc::new(MappedSharedMemory::new(
@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_virtio_memory_rejects_access_outside_aperture() {
+    fn shared_virtio_memory_rejects_access_outside_capability_limits() {
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
         let shared = SharedVirtioMemory::new(vec![Arc::new(MappedSharedMemory::new(
             mem,
@@ -140,7 +140,7 @@ mod tests {
         let mut data = [0; 1];
         assert!(matches!(
             shared.read(GuestAddress(0x4fff), &mut data),
-            Err(VirtioMemoryError::Shared(SharedMemoryError::OutOfAperture))
+            Err(VirtioMemoryError::Shared(SharedMemoryError::OutOfLimits))
         ));
     }
 }

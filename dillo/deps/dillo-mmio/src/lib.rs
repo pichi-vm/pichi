@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
+use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 
 /// Device host execution model selected by one machine backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +77,11 @@ impl SharedAccess {
     }
 }
 
-/// One DTB-derived shared-memory aperture requirement.
+/// Fixed shared-memory requirement declared by a device.
+///
+/// This is for device-owned shared ranges whose bounds are known at attach
+/// time. Runtime virtio descriptor-buffer DMA is instead requested through
+/// [`SharedMemory::region`] using guest-supplied GPAs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SharedMemoryRequirement {
     pub range: AddressRange,
@@ -154,8 +158,8 @@ pub struct SharedRange {
 /// Error from attachment-scoped shared-memory access.
 #[derive(Debug, thiserror::Error)]
 pub enum SharedMemoryError {
-    #[error("shared-memory range is outside the attached aperture")]
-    OutOfAperture,
+    #[error("shared-memory range is outside the capability limits")]
+    OutOfLimits,
 
     #[error("shared-memory range is not currently shared")]
     NotShared,
@@ -231,7 +235,7 @@ pub trait SharedMemory: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct MappedSharedMemory {
     memory: GuestMemoryMmap,
-    aperture: AddressRange,
+    limits: Vec<AddressRange>,
     access: SharedAccess,
     shared: Vec<AddressRange>,
 }
@@ -240,9 +244,19 @@ impl MappedSharedMemory {
     pub fn new(memory: GuestMemoryMmap, requirement: SharedMemoryRequirement) -> Self {
         Self {
             memory,
-            aperture: requirement.range,
+            limits: vec![requirement.range],
             access: requirement.access,
             shared: vec![requirement.range],
+        }
+    }
+
+    pub fn for_guest_memory(memory: GuestMemoryMmap, access: SharedAccess) -> Self {
+        let limits = Self::guest_memory_ranges(&memory);
+        Self {
+            memory,
+            access,
+            shared: limits.clone(),
+            limits,
         }
     }
 
@@ -253,10 +267,23 @@ impl MappedSharedMemory {
     ) -> Self {
         Self {
             memory,
-            aperture: requirement.range,
+            limits: vec![requirement.range],
             access: requirement.access,
             shared,
         }
+    }
+
+    fn guest_memory_ranges(memory: &GuestMemoryMmap) -> Vec<AddressRange> {
+        memory
+            .iter()
+            .filter_map(|region| {
+                let size = region.len();
+                (size > 0).then(|| AddressRange {
+                    base: region.start_addr().raw_value(),
+                    size,
+                })
+            })
+            .collect()
     }
 }
 
@@ -265,8 +292,12 @@ impl SharedMemory for MappedSharedMemory {
         if !self.access.includes(range.access) {
             return Err(SharedMemoryError::AccessDenied);
         }
-        if !self.aperture.contains(range.gpa, range.size) {
-            return Err(SharedMemoryError::OutOfAperture);
+        if !self
+            .limits
+            .iter()
+            .any(|limit| limit.contains(range.gpa, range.size))
+        {
+            return Err(SharedMemoryError::OutOfLimits);
         }
         if !self
             .shared
@@ -785,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    fn mapped_shared_memory_rejects_outside_aperture() {
+    fn mapped_shared_memory_rejects_outside_capability_limits() {
         let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x4000)]).unwrap();
         let shared = MappedSharedMemory::new(
             memory,
@@ -804,8 +835,39 @@ mod tests {
                 size: 0x20,
                 access: SharedAccess::ReadOnly,
             })
-            .expect_err("range crosses aperture");
-        assert!(matches!(err, SharedMemoryError::OutOfAperture));
+            .expect_err("range crosses capability limits");
+        assert!(matches!(err, SharedMemoryError::OutOfLimits));
+    }
+
+    #[test]
+    fn mapped_shared_memory_can_limit_claims_to_guest_ram() {
+        let memory = GuestMemoryMmap::from_ranges(&[
+            (GuestAddress(0x1000), 0x1000),
+            (GuestAddress(0x4000), 0x1000),
+        ])
+        .unwrap();
+        memory.write(&[1, 2], GuestAddress(0x4100)).unwrap();
+        let shared = MappedSharedMemory::for_guest_memory(memory, SharedAccess::ReadWrite);
+
+        let region = shared
+            .region(SharedRange {
+                gpa: 0x4100,
+                size: 2,
+                access: SharedAccess::ReadOnly,
+            })
+            .expect("runtime claim inside guest RAM");
+        let mut buf = [0; 2];
+        region.read(0, &mut buf).unwrap();
+        assert_eq!(buf, [1, 2]);
+
+        let err = shared
+            .region(SharedRange {
+                gpa: 0x3000,
+                size: 0x10,
+                access: SharedAccess::ReadOnly,
+            })
+            .expect_err("runtime claim outside guest RAM");
+        assert!(matches!(err, SharedMemoryError::OutOfLimits));
     }
 
     #[test]

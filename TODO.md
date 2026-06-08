@@ -695,8 +695,10 @@ Process:
 - Add backend-owned shared/private page tracking.
 - Implement `SharedMemory::region()` as the dynamic runtime claim API used by
   virtio queues and device DMA.
-- Ensure region claims succeed only inside the DTB-derived aperture and only for
-  pages the backend currently tracks as shared.
+- Ensure region claims succeed only inside machine-granted guest-RAM/DMA limits
+  and only for pages the backend currently tracks as shared.
+- Treat DTB `dma-ranges`, IOMMU, or restricted-DMA properties as constraints
+  only when present; do not require a DTB-defined virtio buffer aperture.
 - Route guest shared/private conversion exits or hypercalls inside the backend.
 - On KVM, add guest-private memory support with the appropriate memory APIs.
 - For standard VMs, implement the same API over ordinary mapped memory without
@@ -706,7 +708,8 @@ Success criteria:
 - `VirtioActivate` no longer gives devices `GuestMemoryMmap`.
 - Virtio descriptor, avail, used, and buffer access goes through
   `SharedMemory::region()`.
-- A descriptor pointing outside the device aperture fails.
+- A descriptor pointing outside the machine-granted DMA/shared-memory limits
+  fails.
 - A descriptor pointing to private memory fails in CC mode.
 - Default local verification and Linux target checks pass.
 
@@ -717,11 +720,11 @@ Completed changes:
 - Updated the design crate graph to show the implied `dillo-virtio` dependency
   on `dillo-mmio` for `SharedMemory`.
 - Added a portable mapped-memory `SharedMemory` implementation for standard VMs
-  that enforces capability aperture, currently shared ranges, access mode, and
+  that enforces capability limits, currently shared ranges, access mode, and
   per-region bounds.
 - Made KVM, HVF, and WHP MMIO attachment fail closed if a device advertises a
-  shared-memory requirement before the backend can realize DTB-derived
-  shared-memory apertures.
+  fixed shared-memory requirement before the backend can realize
+  machine-mediated shared-memory capabilities.
 - Added a virtqueue metadata memory interface and a shared-memory-backed
   implementation so descriptor, avail, and used ring accesses can dynamically
   claim attachment-scoped shared-memory regions.
@@ -736,10 +739,13 @@ Completed changes:
   payload access when the backend supplies shared-memory capabilities.
 - Converted the in-process virtio-console RX/TX descriptor payload path to use
   the activation-scoped buffer-memory handle; descriptors outside the shared
-  payload aperture fail instead of falling back to whole guest memory.
+  payload capability limits fail instead of falling back to whole guest memory.
 - Made `VirtioActivate` fields private and replaced the public
   `GuestMemoryMmap` field with explicit accessors for queue memory, buffer
   memory, device host, queues, kicks, and a vhost-user-only memory export.
+- Added a standard-VM `MappedSharedMemory::for_guest_memory` constructor whose
+  runtime claim limits are derived from the machine's actual guest RAM regions,
+  not from guessed DTB data.
 
 Remaining divergence:
 - `VirtioActivate` still retains whole guest memory internally so Linux
@@ -748,26 +754,29 @@ Remaining divergence:
 - vhost-user devices still use their backend-specific whole-memory protocol
   path.
 - Machine attachments still return no shared-memory capabilities because no
-  DTB-derived virtio DMA aperture is currently consumed; they now reject
-  non-empty shared-memory requirements instead of silently ignoring them.
+  backend has wired its machine memory model into the returned MMIO attachment
+  yet; they now reject non-empty fixed shared-memory requirements instead of
+  silently ignoring them.
 
-## Stage 13 - Resolve restricted DMA aperture in DTB/device model
+## Stage 13 - Resolve explicit DMA constraints in DTB/device model
 
 Status: deferred; divergence recorded.
 
-Goal: ensure every shared-memory aperture used by dillo is derived from DTB
-data.
+Goal: ensure DTB-declared DMA constraints are consumed exactly once when present,
+without inventing a DTB-defined virtio buffer aperture.
 
 Process:
-- Audit whether current arma DTBs can describe virtio DMA/bounce-buffer
-  apertures well enough for Stage 12.
+- Audit whether current arma DTBs declare `dma-ranges`, IOMMU, restricted-DMA,
+  or equivalent constraints that must filter runtime shared-memory claims.
 - If not, write the arma device-model extension proposal before changing arma.
-- Only after agreement, add the minimum DTB binding support needed.
+- Only after agreement, add the minimum DTB binding support needed for explicit
+  constraints.
 - Update `FromDevTree` consumers to drain the new properties/nodes.
 
 Success criteria:
-- Dillo does not guess a DMA aperture.
-- Every shared-memory capability has DTB provenance.
+- Dillo does not guess DMA constraints.
+- Every DTB-declared DMA constraint has provenance and is enforced or rejected
+  fail-closed.
 - All new DTB nodes/properties are consumed exactly once.
 - Existing DTB-drain tests cover the new binding.
 - Default local verification passes.
@@ -776,16 +785,16 @@ Completed changes:
 - Audited the current Arma device model and DTB generation paths. The current
   base DTB describes virtio-mmio slots, PCI ECAM/BAR windows, and PCI
   `dma-coherent`, but no `dma-ranges`, `memory-region`, `restricted-dma-pool`,
-  virtio-iommu, or equivalent restricted DMA/shared-memory aperture.
+  virtio-iommu, or equivalent restricted DMA/shared-memory constraints.
 - Made the platform survey fail closed if a PCI host bridge declares
   `dma-ranges` before dillo models that property into a provenance-carrying DMA
-  aperture.
+  limit.
 
 Remaining divergence:
-- No agreed DTB binding currently exists for the virtio DMA/shared-memory
-  aperture needed by Stage 12.
-- If `dma-ranges` becomes the chosen binding, dillo must parse it into modeled
-  shared-memory apertures instead of rejecting it.
+- No backend currently maps DTB-declared DMA constraints into
+  `SharedMemory::region()` filtering.
+- If `dma-ranges` becomes a supported constraint, dillo must parse it into
+  modeled DMA limits instead of rejecting it.
 
 ## Stage 14 - Remove compatibility adapters
 
@@ -923,7 +932,7 @@ Process:
 - Audit the final crate graph against the target graph one last time.
 - Audit source imports for forbidden backend, device, PMI, and DTB dependencies.
 - Audit DTB consumption tests for all supported devices and transports.
-- Audit shared-memory tests for aperture and private/shared behavior.
+- Audit shared-memory tests for runtime limits and private/shared behavior.
 - Run Linux, Windows, and macOS local/CI verification.
 
 Success criteria:

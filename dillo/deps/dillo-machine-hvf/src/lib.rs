@@ -65,7 +65,7 @@ mod imp {
         fn attach(&mut self, item: Arc<D>) -> Result<Self::Output, Self::Error> {
             if !item.shared_memory().is_empty() {
                 return Err(Error::Hv(format!(
-                    "MMIO device requested {} shared-memory capability/capabilities, but HVF attachment does not realize DTB-derived shared-memory apertures yet",
+                    "MMIO device requested {} fixed shared-memory requirement(s), but HVF attachment does not realize machine-mediated shared-memory capabilities yet",
                     item.shared_memory().len()
                 )));
             }
