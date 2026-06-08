@@ -488,7 +488,7 @@ CI verification:
 
 ## Stage 9 - Move non-MMIO exits below `Machine`
 
-Status: in progress.
+Status: complete.
 
 Goal: hide PIO, HVC, SMC, CPUID leaves, WFI/HLT, debug exits, and
 backend-specific exits below `dillo-machine`.
@@ -534,8 +534,6 @@ Completed changes:
 Remaining divergence:
 - Linux gdb intentionally imports the explicit KVM `DebugExit` runner. Normal
   supervisor paths no longer import or match backend vCPU exit enums.
-- The pushed CI result for the HVF boundary slice is still pending; mark Stage 9
-  complete after that CI run passes.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
@@ -552,6 +550,7 @@ Pushed commit:
 - `915e649 refactor: split kvm debug exits from normal run`
 - `d715295 refactor: report unknown vcpu exits as errors`
 - `ca1ba18 refactor: run x86 vcpus until lifecycle stop`
+- `223c36c refactor: move hvf psci exits behind backend`
 
 CI verification:
 - `27143278195` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
@@ -560,10 +559,11 @@ CI verification:
 - `27144798819` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27145113148` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27145571028` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27147561569` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
-Status: pending.
+Status: in progress.
 
 Goal: make guest poweroff reliably stop all vCPU worker threads on KVM, WHP, and
 HVF.
@@ -583,6 +583,18 @@ Success criteria:
 - Device hosts are not shut down until all vCPU workers are joined.
 - KVM, WHP, and local HVF poweroff tests pass.
 - Default local verification and all target checks pass.
+
+Completed changes:
+- Moved WHP vCPU cancel-handle ownership into `dillo-machine-whp::Vm`.
+- Added backend-owned `Vm::request_vcpu_exit()` on WHP and updated the Windows
+  supervisor loop to request vCPU exit through the machine backend instead of
+  iterating cancel handles in `dillo-vm`.
+
+Remaining divergence:
+- KVM vCPU thread signaling is still owned by `dillo-vm::VcpuKicker`.
+- HVF uses backend-owned `force_vcpus_exit` inside `dillo-machine-hvf::run_smp`,
+  but the `Machine::request_vcpu_exit` trait is not wired for the backend
+  crates yet.
 
 ## Stage 11 - Implement process/thread device host attachment
 

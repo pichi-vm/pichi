@@ -395,9 +395,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     );
 
     let mut joins = Vec::with_capacity(vcpu_handles.len());
-    let mut vcpu_cancels = Vec::with_capacity(vcpu_handles.len());
     for mut vcpu in vcpu_handles {
-        vcpu_cancels.push(vcpu.cancel_handle());
         let shutdown_c = Arc::clone(&shutdown);
         let syscon_c = Arc::clone(&syscon_state);
         joins.push(thread::spawn(move || -> Result<RunOutcome> {
@@ -414,10 +412,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                     outcome = RunOutcome::Reboot;
                 }
                 if shutdown.load(Ordering::Acquire) {
-                    for cancel in &vcpu_cancels {
-                        if let Err(e) = cancel.cancel() {
-                            log::warn!("failed to cancel WHP vCPU run: {e}");
-                        }
+                    if let Err(e) = vm.request_vcpu_exit() {
+                        log::warn!("failed to cancel WHP vCPU run: {e}");
                     }
                 }
             }
@@ -425,20 +421,16 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 let msg = format!("{e:#}");
                 log::error!("Windows/WHP vCPU thread error: {msg}");
                 shutdown.store(true, Ordering::Release);
-                for cancel in &vcpu_cancels {
-                    if let Err(e) = cancel.cancel() {
-                        log::warn!("failed to cancel WHP vCPU run: {e}");
-                    }
+                if let Err(e) = vm.request_vcpu_exit() {
+                    log::warn!("failed to cancel WHP vCPU run: {e}");
                 }
                 err = err.or(Some(RunError::VcpuThread(msg)));
             }
             Err(_) => {
                 log::error!("Windows/WHP vCPU thread panicked");
                 shutdown.store(true, Ordering::Release);
-                for cancel in &vcpu_cancels {
-                    if let Err(e) = cancel.cancel() {
-                        log::warn!("failed to cancel WHP vCPU run: {e}");
-                    }
+                if let Err(e) = vm.request_vcpu_exit() {
+                    log::warn!("failed to cancel WHP vCPU run: {e}");
                 }
                 err = err.or(Some(RunError::VcpuPanic));
             }

@@ -12,10 +12,19 @@ mod imp {
     type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
     type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 
-    #[derive(Debug)]
     pub struct Vm {
         inner: dillo_hypervisor::Vm,
         mmio_bus: Arc<Mutex<MmioBus>>,
+        vcpu_cancels: Arc<Mutex<Vec<VcpuCancel>>>,
+    }
+
+    impl std::fmt::Debug for Vm {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Vm")
+                .field("inner", &self.inner)
+                .field("mmio_bus", &self.mmio_bus)
+                .finish_non_exhaustive()
+        }
     }
 
     impl Vm {
@@ -23,6 +32,7 @@ mod imp {
             Ok(Self {
                 inner: dillo_hypervisor::Vm::new()?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
+                vcpu_cancels: Arc::new(Mutex::new(Vec::new())),
             })
         }
 
@@ -30,6 +40,7 @@ mod imp {
             Ok(Self {
                 inner: dillo_hypervisor::Vm::new_x86_64_with_local_apic_count(processor_count)?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
+                vcpu_cancels: Arc::new(Mutex::new(Vec::new())),
             })
         }
 
@@ -56,12 +67,29 @@ mod imp {
             pio_read: PioRead,
             pio_write: PioWrite,
         ) -> Result<Vcpu, Error> {
+            let inner = self.inner.create_vcpu(idx, cpu_profile)?;
+            self.vcpu_cancels
+                .lock()
+                .expect("vCPU cancel list poisoned")
+                .push(inner.cancel_handle());
             Ok(Vcpu {
-                inner: self.inner.create_vcpu(idx, cpu_profile)?,
+                inner,
                 mmio_bus: Arc::clone(&self.mmio_bus),
                 pio_read,
                 pio_write,
             })
+        }
+
+        pub fn request_vcpu_exit(&self) -> Result<(), Error> {
+            for cancel in self
+                .vcpu_cancels
+                .lock()
+                .expect("vCPU cancel list poisoned")
+                .iter()
+            {
+                cancel.cancel()?;
+            }
+            Ok(())
         }
 
         pub fn interrupt_controller(&self) -> InterruptController {
@@ -126,10 +154,6 @@ mod imp {
     impl Vcpu {
         pub fn index(&self) -> u32 {
             self.inner.index()
-        }
-
-        pub fn cancel_handle(&self) -> VcpuCancel {
-            self.inner.cancel_handle()
         }
 
         pub fn set_x86_64_state(
