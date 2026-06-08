@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::process::Child;
 use std::sync::Arc;
 
-use dillo_virtio::{ActivateError, VirtioActivate, VirtioDevice};
+use dillo_virtio::{ActivateError, VirtioActivate, VirtioDevice, VirtioDeviceHandle};
 use vhost::vhost_user::message::{VhostUserConfigFlags, VhostUserProtocolFeatures};
 use vhost::vhost_user::{Frontend, VhostUserFrontend as _};
 use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
@@ -123,7 +123,10 @@ impl VirtioDevice for VhostUserFrontend {
         self.backend_features & !VHOST_USER_PROTOCOL_FEATURES_BIT
     }
 
-    fn activate(&mut self, activation: VirtioActivate) -> Result<(), ActivateError> {
+    fn activate(
+        &mut self,
+        activation: VirtioActivate,
+    ) -> Result<VirtioDeviceHandle, ActivateError> {
         let VirtioActivate {
             mem,
             queues,
@@ -219,7 +222,7 @@ impl VirtioDevice for VhostUserFrontend {
             queues.len(),
             negotiated
         );
-        Ok(())
+        Ok(VirtioDeviceHandle::noop())
     }
 
     fn read_config(&self, offset: u64, data: &mut [u8]) {

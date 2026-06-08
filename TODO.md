@@ -561,6 +561,7 @@ CI verification:
 - `27145571028` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27147561569` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27149322531` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27149884240` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
@@ -641,6 +642,12 @@ Completed changes:
   `MmioAttachment::spawn` as the backend-neutral launch/connect API.
 - Implemented thread-host spawning for KVM, WHP, and HVF attachment objects;
   process-host requests currently fail closed as unsupported.
+- Commit `18d0b7d` added the attachment API; CI run `27149884240` passed on
+  fmt, Ubuntu/KVM boot tests, and Windows/WHP boot tests.
+- Changed virtio activation to return a retained `VirtioDeviceHandle` and
+  updated PCI/MMIO virtio transports to drop activation handles on reset/drop.
+- Updated virtio-console TX/RX workers to observe shutdown and join through the
+  retained activation handle.
 
 Remaining divergence:
 - Existing devices are still activated by the compatibility path; no device

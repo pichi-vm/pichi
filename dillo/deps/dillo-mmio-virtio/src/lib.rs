@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use dillo_mmio::{MmioDevice, MmioWindow};
 use dillo_virtio::queue::Queue;
-use dillo_virtio::{Kick, VirtioActivate, VirtioDevice};
+use dillo_virtio::{Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 // Register offsets (virtio-mmio v2; see the virtio spec §4.2.2).
@@ -98,6 +98,7 @@ struct Inner {
     queues: Vec<QueueCfg>,
     status: u32,
     activated: bool,
+    activation: Option<VirtioDeviceHandle>,
     mem: GuestMemoryMmap,
     /// One per queue after activation; `QueueNotify` writes kick these.
     kicks: Vec<Kick>,
@@ -155,6 +156,7 @@ impl VirtioMmio {
                 queues,
                 status: 0,
                 activated: false,
+                activation: None,
                 mem,
                 kicks: Vec::new(),
             }),
@@ -245,6 +247,7 @@ impl VirtioMmio {
                 if val == 0 {
                     // Reset: the driver will re-negotiate. Devices stay; a real
                     // re-activation path is out of scope for the boot console.
+                    g.activation.take();
                     g.activated = false;
                 } else {
                     maybe_activate(&mut g);
@@ -267,6 +270,16 @@ impl VirtioMmio {
             int_status.fetch_or(INT_VRING, Ordering::SeqCst);
             irq.set(true);
         })
+    }
+}
+
+impl Drop for VirtioMmio {
+    fn drop(&mut self) {
+        self.inner
+            .lock()
+            .expect("virtio-mmio poisoned")
+            .activation
+            .take();
     }
 }
 
@@ -327,10 +340,14 @@ fn maybe_activate(g: &mut Inner) {
         }
     };
     g.kicks = kicks.iter().filter_map(|k| k.try_clone().ok()).collect();
-    if let Err(e) = g.device.activate(VirtioActivate::new(mem, queues, kicks)) {
-        log::error!("virtio-mmio: activate failed: {e}");
-        return;
-    }
+    let handle = match g.device.activate(VirtioActivate::new(mem, queues, kicks)) {
+        Ok(handle) => handle,
+        Err(e) => {
+            log::error!("virtio-mmio: activate failed: {e}");
+            return;
+        }
+    };
+    g.activation = Some(handle);
     g.activated = true;
     log::info!("virtio-mmio: device-id {} activated", g.device_id);
 }

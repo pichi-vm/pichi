@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use dillo_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, PciConfiguration};
 use dillo_virtio::Kick;
 use dillo_virtio::queue::Queue;
-use dillo_virtio::{VIRTIO_F_VERSION_1, VirtioActivate, VirtioDevice};
+use dillo_virtio::{VIRTIO_F_VERSION_1, VirtioActivate, VirtioDevice, VirtioDeviceHandle};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 use crate::capabilities::{add_virtio_cap, add_virtio_notify_cap};
@@ -143,6 +143,7 @@ pub struct VirtioPciDevice {
 
     // Activation state.
     activated: bool,
+    activation: Option<VirtioDeviceHandle>,
 
     // Guest memory for Queue operations during activation.
     mem: Option<GuestMemoryMmap>,
@@ -305,6 +306,7 @@ impl VirtioPciDevice {
             bar0_gpa,
             bar2_gpa,
             activated: false,
+            activation: None,
             mem: None,
             notifier,
             queue_notifier: None,
@@ -358,6 +360,7 @@ impl VirtioPciDevice {
     /// guest driver continues to see the same PCI device without re-enumeration.
     pub fn reset_for_reconnect(&mut self) {
         self.deregister_all_queue_notifiers();
+        self.activation.take();
         self.activated = false;
         self.device_status = 0;
     }
@@ -594,6 +597,7 @@ impl VirtioPciDevice {
             self.device_feature_select = 0;
             self.driver_feature_select = 0;
             self.queue_select = 0;
+            self.activation.take();
             self.activated = false;
             for qc in &mut self.queues {
                 *qc = QueueConfig::new(qc.queue.max_size);
@@ -677,16 +681,20 @@ impl VirtioPciDevice {
             })
         };
 
-        if let Err(e) = self
+        let handle = match self
             .device
             .lock()
             .expect("device mutex")
             .activate(VirtioActivate::new(mem, queues, kicks))
         {
-            log::error!("virtio-pci: device activation failed: {e}");
-            return;
-        }
+            Ok(handle) => handle,
+            Err(e) => {
+                log::error!("virtio-pci: device activation failed: {e}");
+                return;
+            }
+        };
 
+        self.activation = Some(handle);
         self.activated = true;
         log::info!("virtio-pci: device activated");
     }
@@ -745,6 +753,7 @@ impl Drop for VirtioPciDevice {
     /// BAR addresses are released. Without this, a respawned device at the same
     /// BAR address cannot re-register its bindings.
     fn drop(&mut self) {
+        self.activation.take();
         self.deregister_all_queue_notifiers();
     }
 }
@@ -754,7 +763,9 @@ impl Drop for VirtioPciDevice {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use dillo_virtio::{ActivateError, VIRTIO_F_VERSION_1, VirtioActivate, VirtioDevice};
+    use dillo_virtio::{
+        ActivateError, VIRTIO_F_VERSION_1, VirtioActivate, VirtioDevice, VirtioDeviceHandle,
+    };
 
     // --- Mock VirtioDevice for testing ---
 
@@ -795,9 +806,12 @@ mod tests {
             self.features
         }
 
-        fn activate(&mut self, _activation: VirtioActivate) -> Result<(), ActivateError> {
+        fn activate(
+            &mut self,
+            _activation: VirtioActivate,
+        ) -> Result<VirtioDeviceHandle, ActivateError> {
             self.activated = true;
-            Ok(())
+            Ok(VirtioDeviceHandle::noop())
         }
 
         fn read_config(&self, offset: u64, data: &mut [u8]) {

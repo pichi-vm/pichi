@@ -28,7 +28,9 @@ pub mod interrupt;
 pub mod kick;
 pub mod queue;
 
-pub use device::{ActivateError, VirtioActivate, VirtioDevice};
+pub use device::{
+    ActivateError, DeviceJoinError, VirtioActivate, VirtioDevice, VirtioDeviceHandle,
+};
 pub use features::{VIRTIO_F_RING_EVENT_IDX, VIRTIO_F_VERSION_1};
 pub use interrupt::Interrupt;
 pub use kick::Kick;

@@ -23,12 +23,18 @@
 use std::collections::VecDeque;
 use std::io::{self, BufWriter, Read, Write};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use dillo_virtio::queue::{Queue, VIRTQ_DESC_F_WRITE};
-use dillo_virtio::{ActivateError, Interrupt, Kick, VirtioActivate, VirtioDevice};
+use dillo_virtio::{
+    ActivateError, DeviceJoinError, Interrupt, Kick, VirtioActivate, VirtioDevice,
+    VirtioDeviceHandle,
+};
 use vm_memory::{Bytes, GuestMemoryMmap};
 
 /// VIRTIO_F_VERSION_1 from the virtio 1.x spec.
@@ -138,7 +144,10 @@ impl VirtioDevice for VirtioConsole {
         VIRTIO_F_VERSION_1
     }
 
-    fn activate(&mut self, activation: VirtioActivate) -> Result<(), ActivateError> {
+    fn activate(
+        &mut self,
+        activation: VirtioActivate,
+    ) -> Result<VirtioDeviceHandle, ActivateError> {
         let VirtioActivate {
             mem,
             mut queues,
@@ -160,18 +169,33 @@ impl VirtioDevice for VirtioConsole {
         // Queue 1 is TX. Pop it out and spawn a worker.
         let tx_queue = queues.remove(1);
         let tx_evt = queue_evts.remove(1);
+        let tx_wake = tx_evt.try_clone()?;
         let tx_call_fd = (self.call_fd_lookup)(tx_queue.msix_vector);
-        spawn_tx_worker(mem.clone(), tx_queue, tx_evt, tx_call_fd);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let tx_shutdown = Arc::clone(&shutdown);
+        let tx_join = spawn_tx_worker(mem.clone(), tx_queue, tx_evt, tx_call_fd, tx_shutdown);
 
         // Queue 0 is RX. Feed host stdin into guest-provided writable buffers.
         let rx_queue = queues.remove(0);
         let rx_evt = queue_evts.remove(0);
+        let rx_wake = rx_evt.try_clone()?;
         let rx_call_fd = (self.call_fd_lookup)(rx_queue.msix_vector);
-        spawn_rx_worker(mem.clone(), rx_queue, rx_evt, rx_call_fd);
+        let rx_shutdown = Arc::clone(&shutdown);
+        let rx_join = spawn_rx_worker(mem.clone(), rx_queue, rx_evt, rx_call_fd, rx_shutdown);
 
         self.activated = true;
         log::info!("virtio-console: activated (TX/RX workers spawned)");
-        Ok(())
+        Ok(VirtioDeviceHandle::new(
+            move || {
+                shutdown.store(true, Ordering::Release);
+                let _ = tx_wake.write(1);
+                let _ = rx_wake.write(1);
+            },
+            move || {
+                join_worker("virtio-console-tx", tx_join)?;
+                join_worker("virtio-console-rx", rx_join)
+            },
+        ))
     }
 
     fn read_config(&self, _offset: u64, data: &mut [u8]) {
@@ -188,14 +212,26 @@ impl VirtioDevice for VirtioConsole {
     }
 }
 
-fn spawn_tx_worker(mem: GuestMemoryMmap, queue: Queue, kick: Kick, call_fd: Option<Interrupt>) {
+fn spawn_tx_worker(
+    mem: GuestMemoryMmap,
+    queue: Queue,
+    kick: Kick,
+    call_fd: Option<Interrupt>,
+    shutdown: Arc<AtomicBool>,
+) -> JoinHandle<()> {
     thread::Builder::new()
         .name("virtio-console-tx".into())
-        .spawn(move || tx_worker(mem, queue, kick, call_fd))
-        .expect("spawn virtio-console TX worker");
+        .spawn(move || tx_worker(mem, queue, kick, call_fd, shutdown))
+        .expect("spawn virtio-console TX worker")
 }
 
-fn spawn_rx_worker(mem: GuestMemoryMmap, queue: Queue, kick: Kick, call_fd: Option<Interrupt>) {
+fn spawn_rx_worker(
+    mem: GuestMemoryMmap,
+    queue: Queue,
+    kick: Kick,
+    call_fd: Option<Interrupt>,
+    shutdown: Arc<AtomicBool>,
+) -> JoinHandle<()> {
     let (input_tx, input_rx) = mpsc::channel();
     thread::Builder::new()
         .name("virtio-console-stdin".into())
@@ -203,8 +239,13 @@ fn spawn_rx_worker(mem: GuestMemoryMmap, queue: Queue, kick: Kick, call_fd: Opti
         .expect("spawn virtio-console stdin worker");
     thread::Builder::new()
         .name("virtio-console-rx".into())
-        .spawn(move || rx_worker(mem, queue, kick, call_fd, input_rx))
-        .expect("spawn virtio-console RX worker");
+        .spawn(move || rx_worker(mem, queue, kick, call_fd, input_rx, shutdown))
+        .expect("spawn virtio-console RX worker")
+}
+
+fn join_worker(name: &'static str, join: JoinHandle<()>) -> Result<(), DeviceJoinError> {
+    join.join()
+        .map_err(|_| DeviceJoinError::Worker(format!("{name} panicked")))
 }
 
 fn stdin_worker(tx: mpsc::Sender<Vec<u8>>) {
@@ -228,7 +269,13 @@ fn stdin_worker(tx: mpsc::Sender<Vec<u8>>) {
     }
 }
 
-fn tx_worker(mem: GuestMemoryMmap, queue: Queue, kick: Kick, call_fd: Option<Interrupt>) {
+fn tx_worker(
+    mem: GuestMemoryMmap,
+    queue: Queue,
+    kick: Kick,
+    call_fd: Option<Interrupt>,
+    shutdown: Arc<AtomicBool>,
+) {
     // Linux: virtio-pci's queue eventfds are created `EFD_NONBLOCK` (so the
     // ioeventfd-side write never blocks). For the worker we want blocking
     // reads — clear O_NONBLOCK so each kick.read() suspends the worker until
@@ -255,6 +302,9 @@ fn tx_worker(mem: GuestMemoryMmap, queue: Queue, kick: Kick, call_fd: Option<Int
             log::error!("virtio-console TX: kick eventfd read error: {e}");
             return;
         }
+        if shutdown.load(Ordering::Acquire) {
+            return;
+        }
         drain_tx(&mem, &queue, call_fd.as_ref());
     }
 }
@@ -265,6 +315,7 @@ fn rx_worker(
     kick: Kick,
     call_fd: Option<Interrupt>,
     input_rx: mpsc::Receiver<Vec<u8>>,
+    shutdown: Arc<AtomicBool>,
 ) {
     #[cfg(target_os = "linux")]
     clear_kick_nonblock(&kick);
@@ -272,14 +323,21 @@ fn rx_worker(
     let queue = Arc::new(Mutex::new(queue));
     let mut pending = VecDeque::new();
     loop {
+        if shutdown.load(Ordering::Acquire) {
+            return;
+        }
         if pending.is_empty() {
-            match input_rx.recv() {
+            match input_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(bytes) => pending.extend(bytes),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(_) => return,
             }
         }
 
         while !pending.is_empty() {
+            if shutdown.load(Ordering::Acquire) {
+                return;
+            }
             if drain_rx(&mem, &queue, &mut pending, call_fd.as_ref()) {
                 continue;
             }
