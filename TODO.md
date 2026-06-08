@@ -13,10 +13,13 @@ next stage starts.
 3. Derive all guest-visible hardware from the merged DTB. Every consumed node
    and property must have one owner; residual DTB facts are launch errors.
 4. Do one stage at a time.
-5. Run local verification before committing.
-6. Commit only the stage change.
-7. Push the commit so CI can verify the supported lanes.
-8. Update this file when a stage is complete, including the commands that were
+5. Before starting a stage, confirm the latest pushed commit has passing CI; if
+   CI failed, fix that prior stage first.
+6. Run local verification before committing.
+7. Commit only the stage change.
+8. Push the commit so CI can verify the supported lanes.
+9. Wait for that pushed commit's CI to pass before starting the next stage.
+10. Update this file when a stage is complete, including the commands that were
    run and the pushed commit.
 
 Default local verification:
@@ -78,6 +81,8 @@ Local verification:
 
 Pushed commit:
 - `498a2e5 docs: plan final dillo crate split`
+- `05d0ae9 docs: mark macos ci quarantine complete`
+- `1de220c fix: wake vcpus during shutdown`
 
 ## Stage 1 - Reconcile design docs and plan
 
@@ -92,12 +97,19 @@ Process:
 - Keep `DILLO-CRATE-SPLIT.md` as the source of truth for trait contracts.
 - Record any unresolved design decisions as explicit stage work, not hidden
   assumptions.
+- Confirm the workspace already uses the upstream PMI crate through a git
+  dependency; later stages may move or remove dillo-local PMI parsing, but must
+  not replace the PMI spec crate with a local fork.
 
 Success criteria:
 - No plan stage requires a cfg-variable public trait.
 - No plan stage adds a universal CPU-state type; CPU/memory inputs remain
   `Machine` associated types.
 - The plan preserves native Windows MSVC support.
+- The plan records the CI-before-next-stage gate.
+- `DILLO-CRATE-SPLIT.md` records that `BackendVm` is current-state evidence,
+  not the target API.
+- The root workspace keeps `pmi = { git = "https://github.com/pichi-vm/pmi" }`.
 - Default local verification passes.
 
 ## Stage 2 - Extract `dillo-mmio`

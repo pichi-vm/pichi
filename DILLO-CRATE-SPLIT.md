@@ -201,9 +201,10 @@ platform facts with provenance. Today this logic lives in `dillo-platform`, but
 the target design does not require that crate name or that it remain a separate
 crate. It does not know backend crates or concrete device implementations.
 
-`pmi` is the upstream PMI spec/data crate. Today's `dillo-pmi` crate is
-dillo-specific PE parsing, resource caps, and defensive validation. That can
-become a `dillo` module unless reuse justifies a crate.
+`pmi` is the upstream PMI spec/data crate and must be consumed from
+`https://github.com/pichi-vm/pmi`, not from a dillo-local fork. Today's
+`dillo-pmi` crate is dillo-specific PE parsing, resource caps, and defensive
+validation. That can become a `dillo` module unless reuse justifies a crate.
 
 ## Runtime assembly flow
 
