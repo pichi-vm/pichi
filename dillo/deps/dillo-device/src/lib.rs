@@ -7,13 +7,13 @@
 
 use std::sync::Arc;
 
-use virtio::{Interrupt as VirtioInterrupt, Kick};
+use dillo_virtio::{Interrupt as VirtioInterrupt, Kick};
 use vm_memory::GuestMemoryMmap;
 
 /// One virtqueue handle as seen by a backend. Wraps the transport's
 /// `Queue` together with its platform-specific kick + call handles.
 pub struct BackendQueue {
-    pub queue: virtio::queue::Queue,
+    pub queue: dillo_virtio::queue::Queue,
     /// Guest → device notification.
     pub kick: Kick,
     /// Device → guest interrupt; cloned from the transport's MSI-X

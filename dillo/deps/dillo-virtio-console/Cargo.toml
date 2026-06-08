@@ -4,10 +4,10 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "virtio-console device implementing virtio::VirtioDevice. Drives hvc0 to stdout."
+description = "virtio-console device implementing dillo_virtio::VirtioDevice. Drives hvc0 to stdout."
 
 [dependencies]
-virtio.workspace = true
+dillo-virtio.workspace = true
 vm-memory.workspace = true
 vmm-sys-util.workspace = true
 log.workspace = true

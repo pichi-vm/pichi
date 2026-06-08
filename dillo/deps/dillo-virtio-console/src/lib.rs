@@ -27,8 +27,8 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use virtio::queue::{Queue, VIRTQ_DESC_F_WRITE};
-use virtio::{ActivateError, Interrupt, Kick, VirtioDevice};
+use dillo_virtio::queue::{Queue, VIRTQ_DESC_F_WRITE};
+use dillo_virtio::{ActivateError, Interrupt, Kick, VirtioActivate, VirtioDevice};
 use vm_memory::{Bytes, GuestMemoryMmap};
 
 /// VIRTIO_F_VERSION_1 from the virtio 1.x spec.
@@ -138,12 +138,12 @@ impl VirtioDevice for VirtioConsole {
         VIRTIO_F_VERSION_1
     }
 
-    fn activate(
-        &mut self,
-        mem: GuestMemoryMmap,
-        mut queues: Vec<Queue>,
-        mut queue_evts: Vec<Kick>,
-    ) -> Result<(), ActivateError> {
+    fn activate(&mut self, activation: VirtioActivate) -> Result<(), ActivateError> {
+        let VirtioActivate {
+            mem,
+            mut queues,
+            mut queue_evts,
+        } = activation;
         if self.activated {
             return Err(ActivateError::InvalidConfig(
                 "VirtioConsole::activate called twice".into(),
@@ -417,7 +417,7 @@ fn drain_tx(mem: &GuestMemoryMmap, queue: &Arc<Mutex<Queue>>, call_fd: Option<&I
 #[cfg(test)]
 mod tests {
     use super::*;
-    use virtio::queue::VIRTQ_DESC_F_WRITE;
+    use dillo_virtio::queue::VIRTQ_DESC_F_WRITE;
     use vm_memory::{Address, GuestAddress};
 
     #[test]

@@ -11,8 +11,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use virtio::Interrupt;
-use vm_pci::msix::{MsixNotifier, MsixTableEntry};
+use dillo_pci::{MsixNotifier, MsixTableEntry};
+use dillo_virtio::Interrupt;
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::irq::IrqManager;

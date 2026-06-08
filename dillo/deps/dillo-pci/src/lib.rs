@@ -8,7 +8,10 @@
 use std::sync::Mutex;
 
 use dillo_mmio::{MmioDevice, MmioWindow};
-use vm_pci::PciConfiguration;
+pub use vm_pci::{
+    CAP_ID_MSIX, CAP_ID_VENDOR, MsixNotifier, MsixTable, MsixTableEntry, NoopNotifier,
+    PciConfiguration,
+};
 
 /// One BAR exposed by a PCI device, in GPA terms — used by the MMIO
 /// bus to wire the BAR's range to the device's `bar_read`/`bar_write`.

@@ -10,8 +10,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use dillo_hypervisor::InterruptController;
-use virtio::Interrupt;
-use vm_pci::{MsixNotifier, MsixTableEntry};
+use dillo_pci::{MsixNotifier, MsixTableEntry};
+use dillo_virtio::Interrupt;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Vector {

@@ -1,5 +1,5 @@
 [package]
-name = "virtio"
+name = "dillo-virtio"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

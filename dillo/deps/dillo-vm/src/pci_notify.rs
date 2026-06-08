@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use dillo_pci_virtio::QueueNotifier;
+use dillo_virtio::Kick;
 use kvm_ioctls::{IoEventAddress, NoDatamatch, VmFd};
-use virtio::Kick;
-use virtio_pci::QueueNotifier;
 use vmm_sys_util::eventfd::EventFd;
 
 pub(crate) struct KvmQueueNotifier {

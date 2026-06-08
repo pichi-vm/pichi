@@ -7,6 +7,24 @@ use vm_memory::GuestMemoryMmap;
 use crate::kick::Kick;
 use crate::queue::Queue;
 
+/// Transport-resolved activation inputs for one virtio device.
+#[derive(Debug)]
+pub struct VirtioActivate {
+    pub mem: GuestMemoryMmap,
+    pub queues: Vec<Queue>,
+    pub queue_evts: Vec<Kick>,
+}
+
+impl VirtioActivate {
+    pub fn new(mem: GuestMemoryMmap, queues: Vec<Queue>, queue_evts: Vec<Kick>) -> Self {
+        Self {
+            mem,
+            queues,
+            queue_evts,
+        }
+    }
+}
+
 /// Errors returned by [`VirtioDevice::activate`].
 #[derive(Debug, thiserror::Error)]
 pub enum ActivateError {
@@ -46,12 +64,7 @@ pub trait VirtioDevice: Send {
     /// `queue_evts` are [`Kick`]s: on Linux they wrap KVM-ioeventfd-driven
     /// eventfds; on macOS/HVF they are in-process condvar notifiers raised by
     /// the transport's MMIO notify path.
-    fn activate(
-        &mut self,
-        mem: GuestMemoryMmap,
-        queues: Vec<Queue>,
-        queue_evts: Vec<Kick>,
-    ) -> Result<(), ActivateError>;
+    fn activate(&mut self, activation: VirtioActivate) -> Result<(), ActivateError>;
 
     /// Read device-specific configuration space.
     fn read_config(&self, offset: u64, data: &mut [u8]);

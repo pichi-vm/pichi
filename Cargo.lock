@@ -408,10 +408,10 @@ dependencies = [
 name = "dillo-device"
 version = "0.1.0"
 dependencies = [
+ "dillo-virtio",
  "nix",
  "thiserror",
  "vhost-user-backend",
- "virtio",
  "vm-memory",
  "vmm-sys-util",
 ]
@@ -440,12 +440,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "dillo-mmio-virtio"
+version = "0.1.0"
+dependencies = [
+ "dillo-mmio",
+ "dillo-virtio",
+ "log",
+ "vm-memory",
+]
+
+[[package]]
 name = "dillo-pci"
 version = "0.1.0"
 dependencies = [
  "dillo-mmio",
  "log",
  "vm-pci",
+]
+
+[[package]]
+name = "dillo-pci-virtio"
+version = "0.1.0"
+dependencies = [
+ "dillo-pci",
+ "dillo-virtio",
+ "libc",
+ "log",
+ "vm-memory",
+ "vmm-sys-util",
 ]
 
 [[package]]
@@ -468,9 +490,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dillo-virtio"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "thiserror",
+ "vm-memory",
+ "vmm-sys-util",
+]
+
+[[package]]
 name = "dillo-virtio-console"
 version = "0.1.0"
 dependencies = [
+ "dillo-virtio",
  "extrasafe",
  "libc",
  "log",
@@ -478,7 +511,6 @@ dependencies = [
  "vhost",
  "vhost-backend",
  "vhost-user-backend",
- "virtio",
  "virtio-queue",
  "vm-memory",
  "vmm-sys-util",
@@ -492,9 +524,12 @@ dependencies = [
  "devtree",
  "dillo-hypervisor",
  "dillo-mmio",
+ "dillo-mmio-virtio",
  "dillo-pci",
+ "dillo-pci-virtio",
  "dillo-platform",
  "dillo-pmi",
+ "dillo-virtio",
  "dillo-virtio-console",
  "gdbstub",
  "gdbstub_arch",
@@ -506,10 +541,7 @@ dependencies = [
  "pmi",
  "thiserror",
  "vhost",
- "virtio",
- "virtio-pci",
  "vm-memory",
- "vm-pci",
  "vm-superio",
  "vmm-sys-util",
 ]
@@ -1881,32 +1913,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "virtio"
-version = "0.1.0"
-dependencies = [
- "libc",
- "thiserror",
- "vm-memory",
- "vmm-sys-util",
-]
-
-[[package]]
 name = "virtio-bindings"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "091f1f09cfbf2a78563b562e7a949465cce1aef63b6065645188d995162f8868"
-
-[[package]]
-name = "virtio-pci"
-version = "0.1.0"
-dependencies = [
- "libc",
- "log",
- "virtio",
- "vm-memory",
- "vm-pci",
- "vmm-sys-util",
-]
 
 [[package]]
 name = "virtio-queue"

@@ -13,10 +13,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
-use virtio::Interrupt;
+use dillo_pci::{MsixNotifier, MsixTableEntry};
+use dillo_virtio::Interrupt;
 use vm_memory::mmap::MmapRegionBuilder;
 use vm_memory::{GuestAddress, GuestMemoryMmap, GuestRegionMmap};
-use vm_pci::{MsixNotifier, MsixTableEntry};
 
 /// One MSI-X table vector as last programmed by the guest.
 #[derive(Clone, Copy, Default)]
@@ -30,7 +30,7 @@ struct Vector {
 }
 
 /// MSI-X notifier for the HVF path: records guest-programmed vectors and
-/// injects them through the in-kernel GIC. Implements [`vm_pci::MsixNotifier`]
+/// injects them through the in-kernel GIC. Implements [`MsixNotifier`]
 /// (the same interface the KVM `IrqfdNotifier` implements).
 pub(crate) struct HvfMsixNotifier {
     vectors: Mutex<Vec<Vector>>,

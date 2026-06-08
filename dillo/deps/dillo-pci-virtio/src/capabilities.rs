@@ -19,7 +19,7 @@
 //! Bytes 16-19: notify_off_multiplier (only for cfg_type=2, 20-byte cap)
 //! ```
 
-use vm_pci::{CAP_ID_VENDOR, PciConfiguration};
+use dillo_pci::{CAP_ID_VENDOR, PciConfiguration};
 
 /// Add a standard virtio PCI capability (16 bytes) to the config space.
 ///

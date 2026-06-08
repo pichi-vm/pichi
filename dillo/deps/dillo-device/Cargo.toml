@@ -10,7 +10,7 @@ description = "Symmetric device-side abstraction (DeviceBackend + ProcessHost/Th
 thiserror.workspace = true
 vm-memory.workspace = true
 vmm-sys-util.workspace = true
-virtio.workspace = true
+dillo-virtio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 vhost-user-backend.workspace = true

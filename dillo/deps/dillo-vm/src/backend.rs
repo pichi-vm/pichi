@@ -2,13 +2,14 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
 
-use virtio_pci::QueueNotifier;
+use dillo_pci::MsixNotifier;
+use dillo_pci_virtio::QueueNotifier;
 use vm_memory::GuestMemoryMmap;
 
 use dillo_mmio::{MmioBus, MmioDevice, MmioWindow};
 
 #[cfg(target_os = "macos")]
-use crate::{RunError, hvf_devices, syscon, uart, virtio_mmio};
+use crate::{RunError, hvf_devices, syscon, uart};
 #[cfg(target_os = "windows")]
 use crate::{RunError, ioapic::IoApic, syscon, uart, whp_devices::WhpMsixNotifier};
 #[cfg(target_os = "linux")]
@@ -48,7 +49,7 @@ pub(crate) trait BackendVm {
     type InterruptState: Clone;
     type SerialIrq;
     type WiredIrq;
-    type MsiNotifier: vm_pci::MsixNotifier + 'static;
+    type MsiNotifier: MsixNotifier + 'static;
 
     fn new(opts: Self::Options) -> Result<Self, RunError>
     where
@@ -108,7 +109,7 @@ impl QueueNotifier for NoopQueueNotifier {
         &mut self,
         _queue_index: usize,
         _addr: u64,
-        _kick: &virtio::Kick,
+        _kick: &dillo_virtio::Kick,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -276,7 +277,7 @@ impl BackendVm for dillo_hypervisor::Vm {
     type Vcpu = dillo_hypervisor::Vcpu;
     type InterruptState = ();
     type SerialIrq = ();
-    type WiredIrq = virtio_mmio::WiredIrq;
+    type WiredIrq = dillo_mmio_virtio::WiredIrq;
     type MsiNotifier = hvf_devices::HvfMsixNotifier;
 
     fn new(opts: Self::Options) -> Result<Self, RunError> {
@@ -369,7 +370,7 @@ impl BackendVm for dillo_hypervisor::Vm {
     }
 
     fn wired_irq(&self, intid: u32) -> Self::WiredIrq {
-        virtio_mmio::WiredIrq::new(
+        dillo_mmio_virtio::WiredIrq::new(
             intid,
             Arc::new(|intid, level| {
                 if let Err(e) = dillo_hypervisor::set_spi(intid, level) {

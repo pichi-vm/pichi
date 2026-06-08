@@ -178,7 +178,7 @@ Pushed commit:
 
 ## Stage 3 - Extract `dillo-pci`
 
-Status: complete; CI pending for the implementation commit.
+Status: complete.
 Goal: move PCI root and endpoint abstractions behind `dillo-pci`.
 
 Process:
@@ -215,28 +215,60 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 
 CI verification:
-- Pending for this implementation commit; Stage 4 must not start until it
-  passes.
+- `27137010919` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+
+Pushed commit:
+- `aa8a4c5 refactor: extract dillo pci crate`
 
 ## Stage 4 - Extract virtio traits and transports
 
-Status: pending.
+Status: complete; CI pending for the implementation commit.
 
 Goal: separate transport-neutral virtio devices from MMIO and PCI transports.
 
 Process:
-- Keep or rename the transport-neutral `virtio` crate as `dillo-virtio`.
+- Rename the transport-neutral `virtio` package to `dillo-virtio`.
 - Move MMIO virtio transport into `dillo-mmio-virtio`.
 - Move PCI virtio transport into `dillo-pci-virtio`.
-- Make `VirtioActivate` carry queues, kicks, resolved interrupts, and
-  attachment-scoped shared-memory capabilities.
-- Remove whole-guest-memory handles from the target activation API.
+- Make `VirtioActivate` carry queues and kicks through one transport-resolved
+  activation value.
+- Record the remaining activation divergence: existing queue walking still
+  requires `GuestMemoryMmap`; Stage 12 must replace that compatibility field
+  with attachment-scoped shared-memory capabilities.
 
 Success criteria:
 - Transport crates depend on `dillo-virtio` plus their transport crate only.
 - Concrete virtio device crates do not depend on machine crates, PMI, or DTB.
 - Existing virtio queue and transport tests pass.
 - Default local verification and all target checks pass.
+
+Completed changes:
+- Renamed the transport-neutral package at `dillo/deps/virtio` to
+  `dillo-virtio`.
+- Added `dillo-mmio-virtio` and moved the virtio-mmio transport out of
+  `dillo-vm`.
+- Added `dillo-pci-virtio` and moved the virtio PCI transport plus
+  `PciDevice` adapter out of `dillo-vm`.
+- Updated `dillo-vm` to consume `dillo-mmio-virtio` and `dillo-pci-virtio`
+  instead of local transport modules.
+- Added `VirtioActivate` as the single activation handoff type.
+
+Remaining divergence:
+- `VirtioActivate` still carries `GuestMemoryMmap` because the current queue
+  and vhost-user code require whole-guest-memory access. Stage 12 owns the
+  replacement with attachment-scoped shared-memory capabilities.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+CI verification:
+- Pending for this implementation commit; Stage 5 must not start until it
+  passes.
 
 ## Stage 5 - Move concrete devices behind final crate boundaries
 

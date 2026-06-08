@@ -14,7 +14,6 @@ mod cpu_id;
 mod error;
 mod fdt_writer;
 mod overlay;
-mod pci;
 #[cfg(target_os = "linux")]
 mod pci_notify;
 mod placement;
@@ -29,10 +28,6 @@ mod psci;
 // HVF MSI-X notifier + guest-memory builder (KVM uses memfd + irqfd instead).
 #[cfg(target_os = "macos")]
 mod hvf_devices;
-// virtio-mmio transport (microVM device-attach; F6) — HVF wired-SPI path.
-#[cfg(target_os = "macos")]
-mod virtio_mmio;
-
 // KVM/Linux-only submodules (memfd, irqfd, vhost-user, gdb stub).
 #[cfg(target_os = "linux")]
 mod gdb;
@@ -74,6 +69,8 @@ use backend::{BackendVm, VcpuSeed};
 use dillo_hypervisor::Vm;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_hypervisor::VmExit;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use dillo_pci::MsixNotifier;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use dillo_pmi::{Action as PmiAction, FillKind, HostArch, ParseOptions, VcpuState};
 #[cfg(target_os = "windows")]
@@ -144,16 +141,12 @@ impl VcpuKicker {
 /// dillo-vm exits 0 cleanly within the §13.2 grace period.
 pub static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-#[cfg(target_os = "linux")]
-use crate::pci::VirtioPciAdapter;
-#[cfg(target_os = "macos")]
-use crate::pci::VirtioPciAdapter;
-#[cfg(target_os = "windows")]
-use crate::pci::VirtioPciAdapter;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_mmio::{MmioBus, MmioWindow};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::PciRoot;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use dillo_pci_virtio::VirtioPciAdapter;
 #[cfg(target_os = "windows")]
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
@@ -307,7 +300,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let msix_vectors: u16 = 3;
     let notifier = vm.msix_notifier((), msix_vectors);
     let lookup_notifier = Arc::clone(&notifier);
-    let console: Arc<std::sync::Mutex<Box<dyn virtio::VirtioDevice>>> = Arc::new(
+    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
         std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
             Arc::new(move |vector| lookup_notifier.interrupt_for(vector)),
         ))),
@@ -315,12 +308,12 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
     let bar0_gpa = machine.pcie.mmio_base;
     let bar2_gpa = machine.pcie.mmio_base + 0x1000;
-    let mut virtio_pci_dev = virtio_pci::VirtioPciDevice::new(
+    let mut virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
         console,
         msix_vectors,
         bar0_gpa,
         bar2_gpa,
-        Arc::clone(&notifier) as Arc<dyn vm_pci::MsixNotifier>,
+        Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
     );
     virtio_pci_dev.set_mem(guest_mem.clone());
 
@@ -732,7 +725,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let msix_vectors: u16 = 3; // 2 queues (rx/tx) + config-change vector
         let notifier = vm.msix_notifier((), msix_vectors);
         let lookup_notifier = Arc::clone(&notifier);
-        let console: Arc<std::sync::Mutex<Box<dyn virtio::VirtioDevice>>> = Arc::new(
+        let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
             std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
                 Arc::new(move |vector| lookup_notifier.interrupt_for(vector)),
             ))),
@@ -740,12 +733,12 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
         let bar0_gpa = machine.pcie.mmio_base;
         let bar2_gpa = machine.pcie.mmio_base + 0x1000;
-        let mut virtio_pci_dev = virtio_pci::VirtioPciDevice::new(
+        let mut virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
             console,
             msix_vectors,
             bar0_gpa,
             bar2_gpa,
-            Arc::clone(&notifier) as Arc<dyn vm_pci::MsixNotifier>,
+            Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
         );
         // No backend queue notifier on macOS; queue notifies kick directly.
         let guest_mem = vm.guest_memory()?;
@@ -770,16 +763,16 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let irq = vm.wired_irq(slot.irq);
         let interrupt_irq = irq.clone();
         let is = Arc::clone(&int_status);
-        let console: Box<dyn virtio::VirtioDevice> = Box::new(
+        let console: Box<dyn dillo_virtio::VirtioDevice> = Box::new(
             dillo_virtio_console::VirtioConsole::new(Arc::new(move |_vector| {
-                Some(virtio_mmio::VirtioMmio::interrupt(
+                Some(dillo_mmio_virtio::VirtioMmio::interrupt(
                     Arc::clone(&is),
                     interrupt_irq.clone(),
                 ))
             })),
         );
         let guest_mem = vm.guest_memory()?;
-        let transport = Arc::new(virtio_mmio::VirtioMmio::new(
+        let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::new(
             MmioWindow {
                 name: "virtio-mmio-console",
                 base: slot.base,
@@ -1575,7 +1568,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     // queue events. Falls back to the in-process device if the spawn
     // fails so a missing/unreadable /proc/self/exe doesn't crash boot.
     #[cfg(feature = "process-isolation-spawn")]
-    let console: Arc<std::sync::Mutex<Box<dyn virtio::VirtioDevice>>> = {
+    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = {
         let notifier_for_frontend = Arc::clone(&irqfd_notifier);
         match spawn_backend("console") {
             Ok((stream, child)) => {
@@ -1612,7 +1605,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     };
 
     #[cfg(not(feature = "process-isolation-spawn"))]
-    let console: Arc<std::sync::Mutex<Box<dyn virtio::VirtioDevice>>> = Arc::new(
+    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
         std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
             Arc::new(move |vector| call_lookup_notifier.get_irqfd_for_vector(vector)),
         ))),
@@ -1623,12 +1616,12 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let bar_window_base = machine.pcie.mmio_base;
     let bar0_gpa = bar_window_base + 0x0000;
     let bar2_gpa = bar_window_base + 0x1000;
-    let mut virtio_pci_dev = virtio_pci::VirtioPciDevice::new(
+    let mut virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
         console,
         msix_vectors,
         bar0_gpa,
         bar2_gpa,
-        irqfd_notifier as Arc<dyn vm_pci::MsixNotifier>,
+        irqfd_notifier as Arc<dyn MsixNotifier>,
     );
     virtio_pci_dev.set_queue_notifier(vm.queue_notifier());
     // Build a vm-memory view over our memfd regions so virtio-pci can

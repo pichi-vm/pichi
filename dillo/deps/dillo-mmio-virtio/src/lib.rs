@@ -14,8 +14,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use dillo_mmio::{MmioDevice, MmioWindow};
-use virtio::queue::Queue;
-use virtio::{Kick, VirtioDevice};
+use dillo_virtio::queue::Queue;
+use dillo_virtio::{Kick, VirtioActivate, VirtioDevice};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 // Register offsets (virtio-mmio v2; see the virtio spec §4.2.2).
@@ -47,20 +47,29 @@ const CONFIG: u64 = 0x100;
 const MAGIC_VALUE: u32 = 0x7472_6976; // "virt"
 const STATUS_DRIVER_OK: u32 = 0x4;
 /// InterruptStatus bit: used-buffer notification (a virtqueue completed).
+#[cfg(not(target_os = "linux"))]
 const INT_VRING: u32 = 0x1;
 
 #[derive(Clone)]
-pub(crate) struct WiredIrq {
+pub struct WiredIrq {
     intid: u32,
     set_level: Arc<dyn Fn(u32, bool) + Send + Sync>,
 }
 
+impl std::fmt::Debug for WiredIrq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WiredIrq")
+            .field("intid", &self.intid)
+            .finish_non_exhaustive()
+    }
+}
+
 impl WiredIrq {
-    pub(crate) fn new(intid: u32, set_level: Arc<dyn Fn(u32, bool) + Send + Sync>) -> Self {
+    pub fn new(intid: u32, set_level: Arc<dyn Fn(u32, bool) + Send + Sync>) -> Self {
         Self { intid, set_level }
     }
 
-    pub(crate) fn intid(&self) -> u32 {
+    pub fn intid(&self) -> u32 {
         self.intid
     }
 
@@ -95,7 +104,7 @@ struct Inner {
 }
 
 /// A single virtio-mmio transport slot bound to one [`VirtioDevice`].
-pub(crate) struct VirtioMmio {
+pub struct VirtioMmio {
     window: MmioWindow,
     inner: Mutex<Inner>,
     /// Shared with the device's interrupt closure (raised on the worker thread,
@@ -105,8 +114,18 @@ pub(crate) struct VirtioMmio {
     irq: WiredIrq,
 }
 
+impl std::fmt::Debug for VirtioMmio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VirtioMmio")
+            .field("window", &self.window)
+            .field("int_status", &self.int_status)
+            .field("irq", &self.irq)
+            .finish_non_exhaustive()
+    }
+}
+
 impl VirtioMmio {
-    pub(crate) fn new(
+    pub fn new(
         window: MmioWindow,
         device: Box<dyn VirtioDevice>,
         int_status: std::sync::Arc<AtomicU32>,
@@ -144,7 +163,7 @@ impl VirtioMmio {
         }
     }
 
-    pub(crate) fn read(&self, offset: u64, data: &mut [u8]) -> bool {
+    pub fn read(&self, offset: u64, data: &mut [u8]) -> bool {
         let g = self.inner.lock().expect("virtio-mmio poisoned");
         if offset >= CONFIG {
             g.device.read_config(offset - CONFIG, data);
@@ -177,7 +196,7 @@ impl VirtioMmio {
         true
     }
 
-    pub(crate) fn write(&self, offset: u64, data: &[u8]) -> bool {
+    pub fn write(&self, offset: u64, data: &[u8]) -> bool {
         let mut g = self.inner.lock().expect("virtio-mmio poisoned");
         if offset >= CONFIG {
             g.device.write_config(offset - CONFIG, data);
@@ -239,11 +258,12 @@ impl VirtioMmio {
     /// An interrupt closure for the backing device: sets the used-buffer status
     /// bit and asserts the wired IRQ. Clone of `int_status`/`irq` so it can run
     /// on the device's worker thread.
-    pub(crate) fn interrupt(
+    #[cfg(not(target_os = "linux"))]
+    pub fn interrupt(
         int_status: std::sync::Arc<AtomicU32>,
         irq: WiredIrq,
-    ) -> virtio::Interrupt {
-        virtio::Interrupt::from_fn(move || {
+    ) -> dillo_virtio::Interrupt {
+        dillo_virtio::Interrupt::from_fn(move || {
             int_status.fetch_or(INT_VRING, Ordering::SeqCst);
             irq.set(true);
         })
@@ -307,7 +327,7 @@ fn maybe_activate(g: &mut Inner) {
         }
     };
     g.kicks = kicks.iter().filter_map(|k| k.try_clone().ok()).collect();
-    if let Err(e) = g.device.activate(mem, queues, kicks) {
+    if let Err(e) = g.device.activate(VirtioActivate::new(mem, queues, kicks)) {
         log::error!("virtio-mmio: activate failed: {e}");
         return;
     }

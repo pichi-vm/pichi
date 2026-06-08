@@ -11,13 +11,13 @@ dillo-pmi.workspace = true
 dillo-platform.workspace = true
 dillo-hypervisor.workspace = true
 dillo-mmio.workspace = true
+dillo-mmio-virtio.workspace = true
 dillo-pci.workspace = true
+dillo-pci-virtio.workspace = true
 devtree.workspace = true
 
 pmi.workspace = true
-virtio.workspace = true
-virtio-pci.workspace = true
-vm-pci.workspace = true
+dillo-virtio.workspace = true
 vm-memory.workspace = true
 vmm-sys-util.workspace = true
 dillo-virtio-console.workspace = true

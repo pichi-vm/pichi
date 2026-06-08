@@ -9,11 +9,11 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use virtio::Kick;
-use virtio::queue::Queue;
-use virtio::{VIRTIO_F_VERSION_1, VirtioDevice};
+use dillo_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, PciConfiguration};
+use dillo_virtio::Kick;
+use dillo_virtio::queue::Queue;
+use dillo_virtio::{VIRTIO_F_VERSION_1, VirtioActivate, VirtioDevice};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
-use vm_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, PciConfiguration};
 
 use crate::capabilities::{add_virtio_cap, add_virtio_notify_cap};
 
@@ -681,7 +681,7 @@ impl VirtioPciDevice {
             .device
             .lock()
             .expect("device mutex")
-            .activate(mem, queues, kicks)
+            .activate(VirtioActivate::new(mem, queues, kicks))
         {
             log::error!("virtio-pci: device activation failed: {e}");
             return;
@@ -754,9 +754,7 @@ impl Drop for VirtioPciDevice {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use virtio::queue::Queue;
-    use virtio::{ActivateError, Kick, VIRTIO_F_VERSION_1, VirtioDevice};
-    use vm_memory::GuestMemoryMmap;
+    use dillo_virtio::{ActivateError, VIRTIO_F_VERSION_1, VirtioActivate, VirtioDevice};
 
     // --- Mock VirtioDevice for testing ---
 
@@ -797,12 +795,7 @@ mod tests {
             self.features
         }
 
-        fn activate(
-            &mut self,
-            _mem: GuestMemoryMmap,
-            _queues: Vec<Queue>,
-            _queue_evts: Vec<Kick>,
-        ) -> Result<(), ActivateError> {
+        fn activate(&mut self, _activation: VirtioActivate) -> Result<(), ActivateError> {
             self.activated = true;
             Ok(())
         }
@@ -845,7 +838,7 @@ mod tests {
             msix_vectors,
             BAR0_GPA,
             BAR2_GPA,
-            Arc::new(vm_pci::NoopNotifier),
+            Arc::new(dillo_pci::NoopNotifier),
         )
     }
 

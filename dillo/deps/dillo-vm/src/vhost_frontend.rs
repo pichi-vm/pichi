@@ -1,5 +1,5 @@
 //! VM-side proxy: makes a forked vhost-user backend look like an
-//! in-process `virtio::VirtioDevice` so the existing virtio-pci
+//! in-process `dillo_virtio::VirtioDevice` so the existing virtio-pci
 //! transport can talk to it unchanged.
 //!
 //! Modeled on the PoC at `~/Projects/dillo/dillo-vmm/src/vhost_frontend.rs`.
@@ -13,12 +13,11 @@ use std::os::unix::net::UnixStream;
 use std::process::Child;
 use std::sync::Arc;
 
+use dillo_virtio::{ActivateError, VirtioActivate, VirtioDevice};
 use vhost::vhost_user::message::{VhostUserConfigFlags, VhostUserProtocolFeatures};
 use vhost::vhost_user::{Frontend, VhostUserFrontend as _};
 use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
-use virtio::queue::Queue;
-use virtio::{ActivateError, Kick, VirtioDevice};
-use vm_memory::{Address, GuestMemory, GuestMemoryMmap};
+use vm_memory::{Address, GuestMemory};
 
 use crate::pci_irq::IrqfdNotifier;
 
@@ -124,12 +123,12 @@ impl VirtioDevice for VhostUserFrontend {
         self.backend_features & !VHOST_USER_PROTOCOL_FEATURES_BIT
     }
 
-    fn activate(
-        &mut self,
-        mem: GuestMemoryMmap,
-        queues: Vec<Queue>,
-        queue_evts: Vec<Kick>,
-    ) -> Result<(), ActivateError> {
+    fn activate(&mut self, activation: VirtioActivate) -> Result<(), ActivateError> {
+        let VirtioActivate {
+            mem,
+            queues,
+            queue_evts,
+        } = activation;
         // Re-intersect with backend_features as a safety net (the value
         // passed in is the driver-negotiated subset of what we advertised).
         // PROTOCOL_FEATURES MUST be preserved in the value passed to
