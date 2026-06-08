@@ -13,9 +13,11 @@ use std::os::unix::net::UnixStream;
 use std::process::Child;
 #[cfg(feature = "process-isolation-spawn")]
 use std::sync::Arc;
+#[cfg(feature = "process-isolation-spawn")]
+use std::thread;
 
 #[cfg(feature = "process-isolation-spawn")]
-use dillo_virtio::{ActivateError, VirtioActivate, VirtioDevice, VirtioDeviceHandle};
+use dillo_virtio::{ActivateError, Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle};
 #[cfg(feature = "process-isolation-spawn")]
 use vhost::vhost_user::message::{VhostUserConfigFlags, VhostUserProtocolFeatures};
 #[cfg(feature = "process-isolation-spawn")]
@@ -24,6 +26,8 @@ use vhost::vhost_user::{Frontend, VhostUserFrontend as _};
 use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
 #[cfg(feature = "process-isolation-spawn")]
 use vm_memory::{Address, GuestMemory, GuestMemoryMmap};
+#[cfg(feature = "process-isolation-spawn")]
+use vmm_sys_util::eventfd::EventFd;
 
 #[cfg(feature = "process-isolation-spawn")]
 use crate::backend::KvmMsixNotifier;
@@ -150,6 +154,45 @@ fn terminate_child(child: &mut Child) {
 }
 
 #[cfg(feature = "process-isolation-spawn")]
+fn bridge_kick_to_eventfd(queue_index: usize, kick: &Kick) -> Result<EventFd, ActivateError> {
+    let eventfd = EventFd::new(libc::EFD_CLOEXEC).map_err(|e| {
+        ActivateError::InvalidConfig(format!(
+            "create vhost-user kick eventfd[{queue_index}]: {e}"
+        ))
+    })?;
+    let eventfd_for_thread = eventfd.try_clone().map_err(|e| {
+        ActivateError::InvalidConfig(format!("clone vhost-user kick eventfd[{queue_index}]: {e}"))
+    })?;
+    let kick = kick.try_clone().map_err(|e| {
+        ActivateError::InvalidConfig(format!("clone vhost-user kick[{queue_index}]: {e}"))
+    })?;
+    thread::Builder::new()
+        .name(format!("dillo-vhost-kick-{queue_index}"))
+        .spawn(move || {
+            loop {
+                match kick.read() {
+                    Ok(count) => {
+                        if let Err(e) = eventfd_for_thread.write(count) {
+                            log::warn!("vhost-user kick bridge[{queue_index}] write: {e}");
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("vhost-user kick bridge[{queue_index}] read: {e}");
+                        return;
+                    }
+                }
+            }
+        })
+        .map_err(|e| {
+            ActivateError::InvalidConfig(format!(
+                "spawn vhost-user kick bridge[{queue_index}]: {e}"
+            ))
+        })?;
+    Ok(eventfd)
+}
+
+#[cfg(feature = "process-isolation-spawn")]
 impl VirtioDevice for VhostUserFrontend {
     fn device_type(&self) -> u32 {
         VIRTIO_ID_CONSOLE
@@ -210,13 +253,10 @@ impl VirtioDevice for VhostUserFrontend {
         // Per-queue setup.
         for (i, queue) in queues.iter().enumerate() {
             let kick = queue_evts.get(i).ok_or_else(|| {
-                ActivateError::InvalidConfig(format!("missing kick eventfd for queue {i}"))
+                ActivateError::InvalidConfig(format!("missing kick for queue {i}"))
             })?;
             let call_opt = self.notifier.eventfd_for_vector(queue.msix_vector);
-            // Linux vhost-user requires raw eventfds for set_vring_kick and
-            // set_vring_call. Portable in-process devices use dillo-mmio
-            // interrupt handles instead.
-            let kick_fd = kick.as_eventfd();
+            let kick_fd = bridge_kick_to_eventfd(i, kick)?;
 
             self.frontend
                 .set_vring_num(i, queue.size)
@@ -240,7 +280,7 @@ impl VirtioDevice for VhostUserFrontend {
                 .map_err(|e| ActivateError::InvalidConfig(format!("set_vring_base[{i}]: {e}")))?;
 
             self.frontend
-                .set_vring_kick(i, kick_fd)
+                .set_vring_kick(i, &kick_fd)
                 .map_err(|e| ActivateError::InvalidConfig(format!("set_vring_kick[{i}]: {e}")))?;
 
             if let Some(ref call) = call_opt {

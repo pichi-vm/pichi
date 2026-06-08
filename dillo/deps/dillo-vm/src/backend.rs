@@ -10,7 +10,7 @@ use vm_memory::GuestMemoryMmap;
 use dillo_mmio::Interrupt;
 #[cfg(target_os = "macos")]
 use dillo_mmio::MmioBus;
-use dillo_mmio::{Attach, MmioAttachment, MmioDevice, MmioWindow, QueueNotifier, SharedMemory};
+use dillo_mmio::{Attach, MmioAttachment, MmioDevice, MmioWindow, SharedMemory};
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
@@ -112,8 +112,6 @@ pub(crate) trait BackendVm {
 
     fn interrupt_state(&self) -> Result<Self::InterruptState, RunError>;
 
-    fn queue_notifier(&self) -> Box<dyn QueueNotifier>;
-
     fn msix_notifier(
         &self,
         interrupt_state: Self::InterruptState,
@@ -162,22 +160,6 @@ pub(crate) trait BackendVm {
     fn wired_irq(&self, intid: u32) -> Self::WiredIrq;
 }
 
-#[allow(dead_code)]
-struct NoopQueueNotifier;
-
-impl QueueNotifier for NoopQueueNotifier {
-    fn register(
-        &mut self,
-        _queue_index: usize,
-        _addr: u64,
-        _event: &dyn dillo_mmio::MmioNotifyEvent,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn unregister_all(&mut self) {}
-}
-
 #[cfg(target_os = "linux")]
 impl BackendVm for backend_machine::Vm {
     type Options = VmOptions;
@@ -212,10 +194,6 @@ impl BackendVm for backend_machine::Vm {
             ))
         })?;
         Ok(Arc::new(Mutex::new(manager)))
-    }
-
-    fn queue_notifier(&self) -> Box<dyn QueueNotifier> {
-        Box::new(backend_machine::Vm::create_queue_notifier(self))
     }
 
     fn msix_notifier(
@@ -384,10 +362,6 @@ impl BackendVm for backend_machine::Vm {
         Ok(())
     }
 
-    fn queue_notifier(&self) -> Box<dyn QueueNotifier> {
-        Box::new(NoopQueueNotifier)
-    }
-
     fn msix_notifier(
         &self,
         _interrupt_state: Self::InterruptState,
@@ -496,10 +470,6 @@ impl BackendVm for backend_machine::Vm {
 
     fn interrupt_state(&self) -> Result<Self::InterruptState, RunError> {
         Ok(())
-    }
-
-    fn queue_notifier(&self) -> Box<dyn QueueNotifier> {
-        Box::new(NoopQueueNotifier)
     }
 
     fn msix_notifier(

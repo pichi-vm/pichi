@@ -298,26 +298,6 @@ fn tx_worker(
     call_interrupt: Option<Interrupt>,
     token: VirtioRunToken,
 ) {
-    // Linux: virtio-pci's queue eventfds are created `EFD_NONBLOCK` (so the
-    // ioeventfd-side write never blocks). For the worker we want blocking
-    // reads — clear O_NONBLOCK so each kick.read() suspends the worker until
-    // KVM injects the next queue notify. On macOS the Kick is a condvar that
-    // blocks natively, so there is no fd to adjust.
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd;
-        // SAFETY: fcntl is a pure syscall; no aliasing concerns. EAGAIN from
-        // F_GETFL/F_SETFL is the only failure mode and we just log.
-        #[allow(unsafe_code)]
-        unsafe {
-            let fd = kick.as_eventfd().as_raw_fd();
-            let flags = libc::fcntl(fd, libc::F_GETFL);
-            if flags >= 0 {
-                let _ = libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
-            }
-        }
-    }
-
     let queue = Arc::new(Mutex::new(queue));
     loop {
         if let Err(e) = kick.read() {
@@ -344,9 +324,6 @@ fn rx_worker(
     call_interrupt: Option<Interrupt>,
     token: VirtioRunToken,
 ) {
-    #[cfg(target_os = "linux")]
-    clear_kick_nonblock(&kick);
-
     let queue = Arc::new(Mutex::new(queue));
     let mut pending = VecDeque::new();
     loop {
@@ -375,21 +352,6 @@ fn rx_worker(
                 log::error!("virtio-console RX: kick eventfd read error: {e}");
                 return;
             }
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn clear_kick_nonblock(kick: &Kick) {
-    use std::os::fd::AsRawFd;
-    // SAFETY: fcntl is a pure syscall; failures are non-fatal and only affect
-    // whether the device worker spins or blocks.
-    #[allow(unsafe_code)]
-    unsafe {
-        let fd = kick.as_eventfd().as_raw_fd();
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        if flags >= 0 {
-            let _ = libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
         }
     }
 }

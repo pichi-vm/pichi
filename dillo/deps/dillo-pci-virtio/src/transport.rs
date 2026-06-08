@@ -4,13 +4,13 @@
 //!
 //! Wraps a VirtioDevice and presents it as a PCI device with virtio
 //! capabilities, common config BAR, MSI-X, device status FSM, feature
-//! negotiation, and ioeventfd-based notification.
+//! negotiation, and queue notification.
 
 use std::process::Child;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dillo_mmio::{QueueNotifier, SharedMemory};
+use dillo_mmio::SharedMemory;
 use dillo_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, PciConfiguration};
 use dillo_pci::{MmioDeviceHost, MmioJoinError, MmioProcessHost, PciDeviceHost};
 use dillo_virtio::Kick;
@@ -107,7 +107,7 @@ impl QueueConfig {
 ///
 /// Wraps any `VirtioDevice` and exposes it as a PCI device with all 5 virtio
 /// capabilities, common config BAR (BAR 0), MSI-X BAR (BAR 2), device status
-/// FSM, feature negotiation, and ioeventfd-based notification at `DRIVER_OK`.
+/// FSM, feature negotiation, and queue notification at `DRIVER_OK`.
 ///
 /// The `device` field is `Arc<Mutex<Box<dyn VirtioDevice>>>` (boxed) so that
 /// the console soft-reconnect path can replace the inner `VhostUserFrontendDevice`
@@ -145,13 +145,7 @@ pub struct VirtioPciDevice {
     // MSI-X notifier (VMM provides real implementation, tests use NoopNotifier).
     notifier: Arc<dyn MsixNotifier>,
 
-    // Backend queue notification registrar. Linux/KVM supplies an ioeventfd
-    // implementation; non-Linux backends leave this unset and kick directly.
-    queue_notifier: Option<Box<dyn QueueNotifier>>,
-
-    // macOS/HVF: retained kick clones (sharing the worker's counters) so the
-    // MMIO notify path can signal queue kicks directly — there is no ioeventfd.
-    #[cfg(not(target_os = "linux"))]
+    // Retained kick clones so the MMIO notify path can signal queue workers.
     queue_kicks: Vec<Kick>,
 
     // Cached device features.
@@ -302,17 +296,10 @@ impl VirtioPciDevice {
             activation: None,
             host: Arc::new(ThreadDeviceHost),
             notifier,
-            queue_notifier: None,
-            #[cfg(not(target_os = "linux"))]
             queue_kicks: Vec::new(),
             device_features,
             num_queues: num_queues as u16,
         }
-    }
-
-    /// Set the backend queue-notification registrar used at activation.
-    pub fn set_queue_notifier(&mut self, notifier: Box<dyn QueueNotifier>) {
-        self.queue_notifier = Some(notifier);
     }
 
     /// Set the host service inherited from the attached PCI root.
@@ -329,29 +316,19 @@ impl VirtioPciDevice {
         Arc::clone(&self.device)
     }
 
-    /// Deregister all backend queue-notification bindings.
-    ///
-    /// Called from both `Drop` and `reset_for_reconnect` to avoid code duplication.
-    #[cfg_attr(not(target_os = "linux"), allow(clippy::unused_self))]
-    fn deregister_all_queue_notifiers(&mut self) {
-        if let Some(notifier) = self.queue_notifier.as_mut() {
-            notifier.unregister_all();
-        }
-    }
-
     /// Reset transport state for console soft reconnect.
     ///
-    /// Deregisters queue-notification bindings and clears activation state so that
-    /// the guest driver's next `DRIVER_OK` write triggers a fresh `activate_device()`
-    /// call with new bindings and a new vhost-user handshake.
+    /// Clears activation state so that the guest driver's next `DRIVER_OK` write
+    /// triggers a fresh `activate_device()` call with new queue kicks and a new
+    /// vhost-user handshake.
     ///
     /// Does NOT touch the PCIe config space, MSI-X table, or BAR addresses — the
     /// guest driver continues to see the same PCI device without re-enumeration.
     pub fn reset_for_reconnect(&mut self) {
-        self.deregister_all_queue_notifiers();
         self.activation.take();
         self.activated = false;
         self.device_status = 0;
+        self.queue_kicks.clear();
     }
 
     /// Set the ISR status bits (used by device to signal interrupts).
@@ -634,27 +611,7 @@ impl VirtioPciDevice {
             }
         }
 
-        // Register backend queue notifications when the backend provides an
-        // accelerated notify path. Linux/KVM uses this for ioeventfd.
-        if let Some(notifier) = self.queue_notifier.as_mut() {
-            for (qi, kick) in kicks.iter().enumerate() {
-                let addr =
-                    self.bar0_gpa + NOTIFY_CFG_OFFSET + (qi as u64) * NOTIFY_OFF_MULTIPLIER as u64;
-                if let Err(e) = notifier.register(qi, addr, kick) {
-                    log::error!(
-                        "virtio-pci: failed to register queue notifier for queue {qi} at {addr:#x}: {e}"
-                    );
-                } else {
-                    log::debug!(
-                        "virtio-pci: registered queue notifier for queue {qi} at {addr:#x}"
-                    );
-                }
-            }
-        }
-
-        // macOS/HVF: retain kick clones (shared counters) so notify_write can
-        // signal the worker directly — there is no ioeventfd.
-        #[cfg(not(target_os = "linux"))]
+        self.queue_kicks.clear();
         for kick in &kicks {
             if let Ok(clone) = kick.try_clone() {
                 self.queue_kicks.push(clone);
@@ -713,14 +670,9 @@ impl VirtioPciDevice {
 
     // --- Notify ---
 
-    #[cfg_attr(target_os = "linux", allow(clippy::unused_self))]
     fn notify_write(&self, offset: u64, _data: &[u8]) {
         let queue_idx = offset / NOTIFY_OFF_MULTIPLIER as u64;
         log::debug!("virtio-pci: notify queue {queue_idx}");
-        // Linux: KVM ioeventfd raises the kick in-kernel on this MMIO write,
-        // so there is nothing to do here (this path is rarely hit).
-        // macOS/HVF: no ioeventfd — signal the device worker's kick directly.
-        #[cfg(not(target_os = "linux"))]
         if let Some(kick) = self.queue_kicks.get(queue_idx as usize) {
             if let Err(e) = kick.write(1) {
                 log::warn!("virtio-pci: failed to signal kick for queue {queue_idx}: {e}");
@@ -817,15 +769,8 @@ impl VirtioDeviceHost for PciVirtioHost {
 }
 
 impl Drop for VirtioPciDevice {
-    /// Deregister all queue-notification bindings when the device is dropped.
-    ///
-    /// This is critical for crash recovery: when `hot_remove` drops the
-    /// `VirtioPciDevice`, this ensures backend notify bindings at the device's
-    /// BAR addresses are released. Without this, a respawned device at the same
-    /// BAR address cannot re-register its bindings.
     fn drop(&mut self) {
         self.activation.take();
-        self.deregister_all_queue_notifiers();
     }
 }
 

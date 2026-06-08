@@ -5,8 +5,8 @@
 //! This crate bridges the virtio device model and the PCI bus. It wraps any
 //! [`VirtioDevice`](dillo_virtio::VirtioDevice) as a PCI device with all 5 virtio
 //! PCI capabilities (common cfg, notify, ISR, device cfg, PCI cfg access),
-//! MSI-X interrupts, device status FSM, feature negotiation, and
-//! backend-provided queue notification.
+//! MSI-X interrupts, device status FSM, feature negotiation, and queue
+//! notification.
 //!
 //! # Composition chain
 //!
@@ -37,7 +37,6 @@ pub(crate) mod capabilities;
 /// PCI transport implementation: device status FSM, feature negotiation, BAR I/O.
 pub mod transport;
 
-pub use dillo_mmio::QueueNotifier;
 pub use transport::VirtioPciDevice;
 
 use std::sync::Mutex;

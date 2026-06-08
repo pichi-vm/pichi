@@ -14,13 +14,11 @@ mod imp {
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
         Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
-        MmioDeviceHandle, MmioDeviceHost, MmioInterrupt, MmioNotifyEvent, MmioSpawnError,
-        QueueNotifier, SharedMemory,
+        MmioDeviceHandle, MmioDeviceHost, MmioInterrupt, MmioSpawnError, SharedMemory,
     };
 
     use dillo_hypervisor::VmExit;
     pub use dillo_hypervisor::{Error, debug_flags, kvm_regs, kvm_sregs};
-    use kvm_ioctls::{IoEventAddress, NoDatamatch};
     pub use vmm_sys_util::eventfd::EventFd;
 
     pub use crate::irq::{IrqError, IrqManager};
@@ -212,10 +210,6 @@ mod imp {
             IrqManager::new(self.vm_fd_arc())
         }
 
-        pub fn create_queue_notifier(&self) -> KvmQueueNotifier {
-            KvmQueueNotifier::new(self.vm_fd_arc())
-        }
-
         pub fn add_memslot(
             &self,
             slot: u32,
@@ -260,56 +254,6 @@ mod imp {
             shared_memory: Vec<Arc<dyn SharedMemory>>,
         ) {
             self.shared_memory = shared_memory;
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct KvmQueueNotifier {
-        vm_fd: Arc<kvm_ioctls::VmFd>,
-        registered: Vec<(usize, u64, EventFd)>,
-    }
-
-    impl KvmQueueNotifier {
-        pub fn new(vm_fd: Arc<kvm_ioctls::VmFd>) -> Self {
-            Self {
-                vm_fd,
-                registered: Vec::new(),
-            }
-        }
-    }
-
-    impl QueueNotifier for KvmQueueNotifier {
-        fn register(
-            &mut self,
-            queue_index: usize,
-            addr: u64,
-            event: &dyn MmioNotifyEvent,
-        ) -> Result<(), String> {
-            let eventfd = event.as_eventfd().try_clone().map_err(|e| e.to_string())?;
-            self.vm_fd
-                .register_ioevent(event.as_eventfd(), &IoEventAddress::Mmio(addr), NoDatamatch)
-                .map_err(|e| e.to_string())?;
-            self.registered.push((queue_index, addr, eventfd));
-            Ok(())
-        }
-
-        fn unregister_all(&mut self) {
-            for (queue_index, addr, eventfd) in self.registered.drain(..) {
-                if let Err(e) = self.vm_fd.unregister_ioevent(
-                    &eventfd,
-                    &IoEventAddress::Mmio(addr),
-                    NoDatamatch,
-                ) {
-                    log::warn!(
-                        "virtio-pci: failed to unregister ioeventfd for queue {queue_index} \
-                         at {addr:#x}: {e}"
-                    );
-                } else {
-                    log::debug!(
-                        "virtio-pci: unregistered ioeventfd for queue {queue_index} at {addr:#x}"
-                    );
-                }
-            }
         }
     }
 

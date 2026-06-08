@@ -54,7 +54,6 @@ const CONFIG: u64 = 0x100;
 const MAGIC_VALUE: u32 = 0x7472_6976; // "virt"
 const STATUS_DRIVER_OK: u32 = 0x4;
 /// InterruptStatus bit: used-buffer notification (a virtqueue completed).
-#[cfg(not(target_os = "linux"))]
 const INT_VRING: u32 = 0x1;
 
 #[derive(Clone)]
@@ -275,7 +274,6 @@ impl VirtioMmio {
     /// An interrupt closure for the backing device: sets the used-buffer status
     /// bit and asserts the wired IRQ. Clone of `int_status`/`irq` so it can run
     /// on the device's worker thread.
-    #[cfg(not(target_os = "linux"))]
     pub fn interrupt(
         int_status: std::sync::Arc<AtomicU32>,
         irq: WiredIrq,

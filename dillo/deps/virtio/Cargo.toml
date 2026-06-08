@@ -10,11 +10,6 @@ description = "Virtio device primitives: split virtqueue, device trait, feature 
 dillo-mmio.workspace = true
 thiserror.workspace = true
 vm-memory.workspace = true
-vmm-sys-util.workspace = true
-
-# eventfd-backed Kick (EFD_NONBLOCK | EFD_CLOEXEC) is Linux-only.
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
 
 [lints]
 workspace = true

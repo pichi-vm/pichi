@@ -481,7 +481,6 @@ version = "0.1.0"
 dependencies = [
  "thiserror",
  "vm-memory",
- "vmm-sys-util",
 ]
 
 [[package]]
@@ -546,10 +545,8 @@ name = "dillo-virtio"
 version = "0.1.0"
 dependencies = [
  "dillo-mmio",
- "libc",
  "thiserror",
  "vm-memory",
- "vmm-sys-util",
 ]
 
 [[package]]
@@ -599,6 +596,7 @@ dependencies = [
  "thiserror",
  "vhost",
  "vm-memory",
+ "vmm-sys-util",
 ]
 
 [[package]]

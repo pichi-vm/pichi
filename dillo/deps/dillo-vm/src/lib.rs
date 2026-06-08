@@ -1048,14 +1048,13 @@ pub fn run(
     let bar_window_base = machine.pcie.mmio_base;
     let bar0_gpa = bar_window_base + 0x0000;
     let bar2_gpa = bar_window_base + 0x1000;
-    let mut virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
+    let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
         console,
         msix_vectors,
         bar0_gpa,
         bar2_gpa,
         irqfd_notifier as Arc<dyn MsixNotifier>,
     );
-    virtio_pci_dev.set_queue_notifier(vm.queue_notifier());
 
     let mut pci_root = PciRoot::new(MmioWindow {
         name: "pcie-ecam",

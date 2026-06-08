@@ -48,9 +48,10 @@ gh run list --branch main --limit 12
 
 - `dillo` is the only composition point that knows PMI/devtree, concrete
   devices, transports, and the selected machine backend.
-- All OS, target, and architecture differences are constrained to
-  `dillo-machine-*`, `dillo-x86`, and `dillo-arm`; reusable architecture
-  substrate must not know concrete devices.
+- The only target/OS/arch cfg in the top-level launcher is selected-machine
+  binding. Portable devices and transports contain no target cfg; backend and
+  architecture substrate crates hide target-specific implementation details
+  behind portable crate APIs.
 - Each guest-visible device is implemented exactly once as an `MmioDevice`,
   `PciDevice`, or `VirtioDevice`, then adapted through portable transport
   crates.
@@ -962,6 +963,19 @@ Completed changes:
 - Moved x86 CF8/CFC PCI configuration PIO decoding from `dillo-vm` into
   `dillo-x86::pio_pci`; `dillo-vm` now consumes that architecture substrate
   instead of owning the decoder. The CF8/CFC tests now run under `dillo-x86`.
+- Removed the leaked eventfd-shaped queue-notifier API from portable virtio
+  crates. `dillo-virtio::Kick` is now one target-neutral blocking counter, and
+  `dillo-pci-virtio` always records queue kicks and signals workers from its
+  MMIO notify write path.
+- Removed `dillo-mmio::MmioNotifyEvent` and `QueueNotifier` plus the KVM
+  ioeventfd notifier implementation that depended on exposing Linux eventfds
+  through portable transport APIs.
+- Kept the Linux fd requirement confined to the legacy `dillo-vm`
+  process-isolation vhost-user compatibility path by bridging portable `Kick`
+  notifications to local eventfds there.
+- Tightened `dillo/tests/architecture_cfg.rs` so the no-target-cfg guard covers
+  `dillo/src` plus the portable MMIO, PCI, and virtio core crates, not just
+  the top-level launcher sources.
 
 CI verification:
 - `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
@@ -974,15 +988,16 @@ CI verification:
   `860a900 refactor: preflight launch from selected machine`.
 - `27172880665` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `1ca55d1 refactor: pass launch plan into vm runner`.
+- `27173202552` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `5583a7e refactor: move x86 pci pio into substrate`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `git diff --check`
-- `grep -R "cfg(.*target\|cfg_attr(.*target" -n dillo/src || true`
+- `grep -R "target_os\|target_arch\|target_env\|MmioNotifyEvent\|QueueNotifier\|as_eventfd" -n dillo/deps/dillo-pci-virtio dillo/deps/virtio dillo/deps/dillo-mmio dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-mmio-uart --include='*.rs' --include='Cargo.toml'`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --lib`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --no-run`

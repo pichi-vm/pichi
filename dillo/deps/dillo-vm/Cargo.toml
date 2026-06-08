@@ -31,6 +31,7 @@ dillo-machine-kvm.workspace = true
 nix.workspace = true
 libc = "0.2"
 vhost.workspace = true
+vmm-sys-util.workspace = true
 gdbstub.workspace = true
 gdbstub_arch.workspace = true
 
