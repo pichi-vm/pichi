@@ -440,6 +440,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "dillo-machine-backend"
+version = "0.1.0"
+dependencies = [
+ "dillo-machine-hvf",
+ "dillo-machine-kvm",
+ "dillo-machine-whp",
+]
+
+[[package]]
+name = "dillo-machine-hvf"
+version = "0.1.0"
+dependencies = [
+ "dillo-hypervisor",
+ "dillo-machine",
+ "dillo-mmio",
+]
+
+[[package]]
+name = "dillo-machine-kvm"
+version = "0.1.0"
+dependencies = [
+ "dillo-hypervisor",
+ "dillo-machine",
+ "dillo-mmio",
+]
+
+[[package]]
+name = "dillo-machine-whp"
+version = "0.1.0"
+dependencies = [
+ "dillo-hypervisor",
+ "dillo-machine",
+ "dillo-mmio",
+]
+
+[[package]]
 name = "dillo-mmio"
 version = "0.1.0"
 dependencies = [
@@ -539,7 +575,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "devtree",
- "dillo-hypervisor",
+ "dillo-machine-backend",
  "dillo-mmio",
  "dillo-mmio-uart",
  "dillo-mmio-virtio",

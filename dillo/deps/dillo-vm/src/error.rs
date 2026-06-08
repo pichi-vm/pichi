@@ -53,7 +53,7 @@ pub enum RunError {
     Mmap(#[source] anyhow::Error),
 
     #[error("KVM: {0}")]
-    Kvm(#[from] dillo_hypervisor::Error),
+    Kvm(#[from] dillo_machine_backend::Error),
 
     #[error("write load section `{section}` to GPA {gpa:#x}: {source}")]
     SectionWrite {

@@ -6,7 +6,7 @@
 
 use std::sync::Mutex;
 
-use dillo_hypervisor::InterruptController;
+use dillo_machine_backend::InterruptController;
 
 use dillo_mmio::{MmioDevice, MmioWindow};
 
@@ -60,7 +60,7 @@ impl IoApic {
         &self,
         interrupt_controller: &InterruptController,
         gsi: u32,
-    ) -> Result<(), dillo_hypervisor::Error> {
+    ) -> Result<(), dillo_machine_backend::Error> {
         let Some(route) = self.route(gsi) else {
             return Ok(());
         };

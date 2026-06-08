@@ -1,7 +1,7 @@
 use std::io;
 use std::sync::Arc;
 
-use dillo_hypervisor::InterruptController;
+use dillo_machine_backend::InterruptController;
 use dillo_mmio_uart::UartTrigger;
 
 use crate::ioapic::IoApic;

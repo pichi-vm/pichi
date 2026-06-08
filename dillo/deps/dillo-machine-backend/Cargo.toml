@@ -1,0 +1,19 @@
+[package]
+name = "dillo-machine-backend"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Target-selected machine backend facade for dillo."
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dillo-machine-kvm.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dillo-machine-hvf.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+dillo-machine-whp.workspace = true
+
+[lints]
+workspace = true

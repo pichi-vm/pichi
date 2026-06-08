@@ -322,7 +322,7 @@ Pushed commit:
 
 ## Stage 6 - Create `dillo-machine`
 
-Status: complete; CI pending for the implementation commit.
+Status: complete.
 
 Goal: introduce the final host-neutral machine trait crate.
 
@@ -364,9 +364,12 @@ Pushed commit:
 - `refactor: add dillo machine traits`; final pushed hash and CI run to be
   recorded with the next implementation commit.
 
+CI verification:
+- `27139795918` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+
 ## Stage 7 - Split backend crates
 
-Status: pending.
+Status: complete; CI pending for the implementation commit.
 
 Goal: split backend implementations into `dillo-machine-kvm`,
 `dillo-machine-whp`, and `dillo-machine-hvf`.
@@ -386,6 +389,32 @@ Success criteria:
   devices.
 - Linux/KVM, Windows/WHP, and local macOS/HVF builds pass.
 - Default local verification and all target checks pass.
+
+Completed changes:
+- Added `dillo-machine-kvm`, `dillo-machine-hvf`, and `dillo-machine-whp`.
+- Added `dillo-machine-backend` as the single target-selected backend facade
+  consumed by `dillo-vm`.
+- Replaced direct `dillo_hypervisor` imports in `dillo-vm` with
+  `dillo_machine_backend`.
+- Kept backend crates free of PCI, virtio transports, UART, concrete devices,
+  PMI, and DTB dependencies.
+
+Remaining divergence:
+- The new backend crates are facade crates over the existing
+  `dillo-hypervisor` wrapper. Stages 8-10 own moving MMIO routing, non-MMIO
+  exits, and vCPU stop control below the machine boundary.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+Pushed commit:
+- `refactor: split dillo machine backend crates`; final pushed hash and CI run
+  to be recorded with the next implementation commit.
 
 ## Stage 8 - Move MMIO routing below `Machine`
 

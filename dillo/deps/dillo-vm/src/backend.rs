@@ -120,9 +120,9 @@ impl QueueNotifier for NoopQueueNotifier {
 }
 
 #[cfg(target_os = "linux")]
-impl BackendVm for dillo_hypervisor::Vm {
+impl BackendVm for dillo_machine_backend::Vm {
     type Options = VmOptions;
-    type Vcpu = dillo_hypervisor::Vcpu;
+    type Vcpu = dillo_machine_backend::Vcpu;
     type InterruptState = Arc<Mutex<IrqManager>>;
     type SerialIrq = (Arc<Mutex<IrqManager>>, u32);
     type SerialDevice = Ns16550<dillo_mmio_uart::EventFdTrigger>;
@@ -130,7 +130,7 @@ impl BackendVm for dillo_hypervisor::Vm {
     type MsiNotifier = IrqfdNotifier;
 
     fn new(opts: Self::Options) -> Result<Self, RunError> {
-        let vm = dillo_hypervisor::Vm::new()?;
+        let vm = dillo_machine_backend::Vm::new()?;
         for memslot in opts.memslots {
             log::info!(
                 "registering memslot {}: GPA {:#x}..{:#x} -> host {:#x} ({} bytes)",
@@ -147,7 +147,7 @@ impl BackendVm for dillo_hypervisor::Vm {
 
     fn interrupt_state(&self) -> Result<Self::InterruptState, RunError> {
         let manager = IrqManager::new(self.vm_fd_arc()).map_err(|e| {
-            RunError::Kvm(dillo_hypervisor::Error::RunVcpu(
+            RunError::Kvm(dillo_machine_backend::Error::RunVcpu(
                 0,
                 std::io::Error::other(format!("irq manager: {e}")),
             ))
@@ -173,8 +173,8 @@ impl BackendVm for dillo_hypervisor::Vm {
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
     ) -> Result<Self::Vcpu, RunError> {
-        let mut vcpu =
-            dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)?;
+        let mut vcpu = dillo_machine_backend::Vm::create_vcpu(self, idx, cpu_profile)
+            .map_err(RunError::Kvm)?;
         match seed {
             VcpuSeed::X86_64Boot(state) => {
                 #[cfg(target_arch = "x86_64")]
@@ -273,16 +273,16 @@ pub(crate) struct MemoryRegion {
 
 #[cfg(target_os = "macos")]
 pub(crate) struct VmOptions {
-    pub(crate) gic_params: dillo_hypervisor::GicParams,
+    pub(crate) gic_params: dillo_machine_backend::GicParams,
     pub(crate) min_addr_space_bits: u32,
     pub(crate) vcpus: u32,
     pub(crate) memory_regions: Vec<MemoryRegion>,
 }
 
 #[cfg(target_os = "macos")]
-impl BackendVm for dillo_hypervisor::Vm {
+impl BackendVm for dillo_machine_backend::Vm {
     type Options = VmOptions;
-    type Vcpu = dillo_hypervisor::Vcpu;
+    type Vcpu = dillo_machine_backend::Vcpu;
     type InterruptState = ();
     type SerialIrq = ();
     type SerialDevice = Ns16550<dillo_mmio_uart::NoopTrigger>;
@@ -290,7 +290,7 @@ impl BackendVm for dillo_hypervisor::Vm {
     type MsiNotifier = hvf_devices::HvfMsixNotifier;
 
     fn new(opts: Self::Options) -> Result<Self, RunError> {
-        let mut vm = dillo_hypervisor::Vm::new(&opts.gic_params, opts.min_addr_space_bits)?;
+        let mut vm = dillo_machine_backend::Vm::new(&opts.gic_params, opts.min_addr_space_bits)?;
         let max_vcpus = vm.max_vcpus()?;
         if opts.vcpus > max_vcpus {
             return Err(RunError::TooManyVcpus {
@@ -342,7 +342,7 @@ impl BackendVm for dillo_hypervisor::Vm {
     }
 
     fn current_thread_vcpu(seed: VcpuSeed<'_>) -> Result<Self::Vcpu, RunError> {
-        let vcpu = dillo_hypervisor::create_vcpu_current_thread().map_err(RunError::Kvm)?;
+        let vcpu = dillo_machine_backend::create_vcpu_current_thread().map_err(RunError::Kvm)?;
         match seed {
             VcpuSeed::Aarch64 { mpidr, state } => {
                 vcpu.set_mpidr(mpidr)?;
@@ -387,7 +387,7 @@ impl BackendVm for dillo_hypervisor::Vm {
         dillo_mmio_virtio::WiredIrq::new(
             intid,
             Arc::new(|intid, level| {
-                if let Err(e) = dillo_hypervisor::set_spi(intid, level) {
+                if let Err(e) = dillo_machine_backend::set_spi(intid, level) {
                     log::warn!("virtio-mmio SPI {intid} inject failed: {e}");
                 }
             }),
@@ -402,9 +402,9 @@ pub(crate) struct VmOptions {
 }
 
 #[cfg(target_os = "windows")]
-impl BackendVm for dillo_hypervisor::Vm {
+impl BackendVm for dillo_machine_backend::Vm {
     type Options = VmOptions;
-    type Vcpu = dillo_hypervisor::Vcpu;
+    type Vcpu = dillo_machine_backend::Vcpu;
     type InterruptState = ();
     type SerialIrq = (Arc<IoApic>, u32);
     type SerialDevice = Ns16550<uart::WhpTrigger>;
@@ -412,7 +412,7 @@ impl BackendVm for dillo_hypervisor::Vm {
     type MsiNotifier = WhpMsixNotifier;
 
     fn new(opts: Self::Options) -> Result<Self, RunError> {
-        let mut vm = dillo_hypervisor::Vm::new_x86_64_with_local_apic_count(opts.vcpus)?;
+        let mut vm = dillo_machine_backend::Vm::new_x86_64_with_local_apic_count(opts.vcpus)?;
         vm.set_memory(opts.guest_memory)?;
         for (gpa, host, size) in vm.region_mappings() {
             log::info!(
@@ -448,8 +448,8 @@ impl BackendVm for dillo_hypervisor::Vm {
         cpu_profile: &str,
         seed: VcpuSeed<'_>,
     ) -> Result<Self::Vcpu, RunError> {
-        let mut vcpu =
-            dillo_hypervisor::Vm::create_vcpu(self, idx, cpu_profile).map_err(RunError::Kvm)?;
+        let mut vcpu = dillo_machine_backend::Vm::create_vcpu(self, idx, cpu_profile)
+            .map_err(RunError::Kvm)?;
         match seed {
             VcpuSeed::X86_64Boot(state) => vcpu.set_x86_64_state(state)?,
             VcpuSeed::X86_64Secondary => {}

@@ -67,9 +67,9 @@ use anyhow::{Result, anyhow};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use backend::{BackendVm, VcpuSeed};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use dillo_hypervisor::Vm;
+use dillo_machine_backend::Vm;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use dillo_hypervisor::VmExit;
+use dillo_machine_backend::VmExit;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::MsixNotifier;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -264,7 +264,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let guest_mem: GuestMemoryMmap = GuestMemoryMmap::from_ranges(&ranges)
         .map_err(|e| RunError::MemfdSetup(anyhow!("GuestMemoryMmap: {e}")))?;
 
-    let mut vm = <dillo_hypervisor::Vm as BackendVm>::new(backend::VmOptions {
+    let mut vm = <dillo_machine_backend::Vm as BackendVm>::new(backend::VmOptions {
         vcpus,
         guest_memory: guest_mem.clone(),
     })?;
@@ -446,7 +446,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
 #[cfg(target_os = "windows")]
 fn run_windows_vcpu_loop(
-    vcpu: &mut dillo_hypervisor::Vcpu,
+    vcpu: &mut dillo_machine_backend::Vcpu,
     shutdown: &Arc<AtomicBool>,
     mmio_bus: &Arc<MmioBus>,
     legacy_pci: &Arc<pio_pci::LegacyPciState>,
@@ -667,7 +667,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         .gic
         .as_ref()
         .ok_or_else(|| RunError::DtbExtract(dillo_platform::Error::MissingNode("GIC config")))?;
-    let gic_params = dillo_hypervisor::GicParams {
+    let gic_params = dillo_machine_backend::GicParams {
         dist_base: gic.dist_base,
         redist_base: gic.redist_base,
         msi_base: gic.msi_frame_base,
@@ -1031,7 +1031,7 @@ fn run_smp(
     boot_state: pmi::vm::vcpu::aarch64::CpuState,
     mmio_bus: Arc<MmioBus>,
 ) -> Result<RunOutcome, RunError> {
-    use dillo_hypervisor::VcpuHandle;
+    use dillo_machine_backend::VcpuHandle;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicI32;
 
@@ -1068,7 +1068,7 @@ fn run_smp(
                     .iter()
                     .filter_map(|h| h.lock().expect("handle poisoned").clone())
                     .collect();
-                let _ = dillo_hypervisor::force_vcpus_exit(&live);
+                let _ = dillo_machine_backend::force_vcpus_exit(&live);
             });
         }
     });
@@ -1090,7 +1090,7 @@ fn vcpu_thread(
     boot_state: pmi::vm::vcpu::aarch64::CpuState,
     mmio_bus: &MmioBus,
     slots: &[CpuSlot],
-    handles: &[std::sync::Mutex<Option<dillo_hypervisor::VcpuHandle>>],
+    handles: &[std::sync::Mutex<Option<dillo_machine_backend::VcpuHandle>>],
     shutdown: &AtomicBool,
     reboot: &AtomicBool,
     exit_code: &std::sync::atomic::AtomicI32,
@@ -1211,7 +1211,7 @@ mod macos_tests {
     #[test]
     #[ignore = "requires a codesigned binary with com.apple.security.hypervisor; run via the codesigned harness with --ignored"]
     fn run_loop_ns16550_write_then_psci_off() {
-        let gic = dillo_hypervisor::GicParams {
+        let gic = dillo_machine_backend::GicParams {
             dist_base: 0x8000000,
             redist_base: 0x8100000,
             msi_base: 0xa100000,
@@ -1764,7 +1764,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
 
 #[cfg(target_os = "linux")]
 fn run_vcpu_loop(
-    vcpu: &mut dillo_hypervisor::Vcpu,
+    vcpu: &mut dillo_machine_backend::Vcpu,
     shutdown: &Arc<AtomicBool>,
     mmio_bus: &Arc<MmioBus>,
     legacy_pci: &Arc<pio_pci::LegacyPciState>,

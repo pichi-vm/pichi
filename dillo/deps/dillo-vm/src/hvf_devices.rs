@@ -53,7 +53,7 @@ impl HvfMsixNotifier {
         let me = Arc::clone(self);
         Some(Interrupt::from_fn(move || {
             if let Some((addr, intid)) = me.msi_for(vector) {
-                if let Err(e) = dillo_hypervisor::send_msi(addr, intid) {
+                if let Err(e) = dillo_machine_backend::send_msi(addr, intid) {
                     log::warn!("hvf MSI-X inject (vector {vector}) failed: {e}");
                 }
             }

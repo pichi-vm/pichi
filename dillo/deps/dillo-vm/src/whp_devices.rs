@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use dillo_hypervisor::InterruptController;
+use dillo_machine_backend::InterruptController;
 use dillo_pci::{MsixNotifier, MsixTableEntry};
 use dillo_virtio::Interrupt;
 
