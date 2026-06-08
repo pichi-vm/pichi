@@ -589,12 +589,18 @@ Completed changes:
 - Added backend-owned `Vm::request_vcpu_exit()` on WHP and updated the Windows
   supervisor loop to request vCPU exit through the machine backend instead of
   iterating cancel handles in `dillo-vm`.
+- Added a cloneable WHP backend exit requester and gave each Windows vCPU
+  thread its own requester so the first returning vCPU cancels the rest without
+  waiting on join order.
 
 Remaining divergence:
 - KVM vCPU thread signaling is still owned by `dillo-vm::VcpuKicker`.
 - HVF uses backend-owned `force_vcpus_exit` inside `dillo-machine-hvf::run_smp`,
   but the `Machine::request_vcpu_exit` trait is not wired for the backend
   crates yet.
+- CI run `27147948508` failed the WHP two-vCPU boot tests after cancellation
+  ownership moved into the backend; the per-thread exit requester is the fix
+  awaiting pushed CI verification.
 
 ## Stage 11 - Implement process/thread device host attachment
 

@@ -398,8 +398,14 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     for mut vcpu in vcpu_handles {
         let shutdown_c = Arc::clone(&shutdown);
         let syscon_c = Arc::clone(&syscon_state);
+        let exit_requester = vm.exit_requester();
         joins.push(thread::spawn(move || -> Result<RunOutcome> {
-            run_windows_vcpu_loop(&mut vcpu, &shutdown_c, &syscon_c)
+            let result = run_windows_vcpu_loop(&mut vcpu, &shutdown_c, &syscon_c);
+            shutdown_c.store(true, Ordering::Release);
+            if let Err(e) = exit_requester.request_vcpu_exit() {
+                log::warn!("failed to cancel WHP vCPU run: {e}");
+            }
+            result
         }));
     }
 

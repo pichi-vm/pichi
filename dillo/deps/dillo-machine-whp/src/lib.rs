@@ -81,15 +81,13 @@ mod imp {
         }
 
         pub fn request_vcpu_exit(&self) -> Result<(), Error> {
-            for cancel in self
-                .vcpu_cancels
-                .lock()
-                .expect("vCPU cancel list poisoned")
-                .iter()
-            {
-                cancel.cancel()?;
+            self.exit_requester().request_vcpu_exit()
+        }
+
+        pub fn exit_requester(&self) -> VcpuExitRequester {
+            VcpuExitRequester {
+                vcpu_cancels: Arc::clone(&self.vcpu_cancels),
             }
-            Ok(())
         }
 
         pub fn interrupt_controller(&self) -> InterruptController {
@@ -123,6 +121,31 @@ mod imp {
 
         fn shared_memory(&self) -> &[Arc<dyn SharedMemory>] {
             &[]
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct VcpuExitRequester {
+        vcpu_cancels: Arc<Mutex<Vec<VcpuCancel>>>,
+    }
+
+    impl std::fmt::Debug for VcpuExitRequester {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("VcpuExitRequester").finish_non_exhaustive()
+        }
+    }
+
+    impl VcpuExitRequester {
+        pub fn request_vcpu_exit(&self) -> Result<(), Error> {
+            for cancel in self
+                .vcpu_cancels
+                .lock()
+                .expect("vCPU cancel list poisoned")
+                .iter()
+            {
+                cancel.cancel()?;
+            }
+            Ok(())
         }
     }
 
