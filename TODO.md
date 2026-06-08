@@ -560,6 +560,7 @@ CI verification:
 - `27145113148` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27145571028` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27147561569` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27149322531` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
@@ -598,6 +599,9 @@ Completed changes:
 - Moved KVM vCPU thread signaling into `dillo-machine-kvm::Vm` through a
   backend-owned `VcpuExitRequester`; the Linux supervisor loop now asks the KVM
   backend to wake blocked vCPU runs instead of owning pthread IDs directly.
+- Commit `c54d1e4` moved KVM wakeup ownership into the backend; CI run
+  `27149322531` passed on fmt, Ubuntu/KVM boot tests, and Windows/WHP boot
+  tests.
 
 Remaining divergence:
 - KVM still uses the existing signal wake path; no `immediate_exit` wrapper
@@ -611,7 +615,7 @@ Remaining divergence:
 
 ## Stage 11 - Implement process/thread device host attachment
 
-Status: pending.
+Status: in progress.
 
 Goal: make `MmioAttachment::spawn` the single backend-owned launch/connect point
 for long-lived device hosts.
@@ -629,6 +633,20 @@ Success criteria:
 - Device wrappers do not know KVM, WHP, or HVF.
 - VM shutdown stops device hosts after vCPU quiescence.
 - Default local verification and all target checks pass.
+
+Completed changes:
+- Moved `DeviceModel` ownership into `dillo-mmio` and kept
+  `dillo_machine::DeviceModel` as a re-export to avoid a dependency cycle.
+- Added `MmioDeviceHost`, `MmioRunToken`, `MmioDeviceHandle`, and
+  `MmioAttachment::spawn` as the backend-neutral launch/connect API.
+- Implemented thread-host spawning for KVM, WHP, and HVF attachment objects;
+  process-host requests currently fail closed as unsupported.
+
+Remaining divergence:
+- Existing devices are still activated by the compatibility path; no device
+  wrapper calls `MmioAttachment::spawn` yet.
+- Process-host support is represented in the API but not wired to current
+  vhost-user behavior yet.
 
 ## Stage 12 - Implement CC-first shared-memory capabilities
 

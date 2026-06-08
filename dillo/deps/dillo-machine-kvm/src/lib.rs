@@ -5,7 +5,10 @@ mod imp {
     use std::sync::{OnceLock, atomic::AtomicBool, atomic::Ordering};
 
     use dillo_machine::VcpuStop;
-    use dillo_mmio::{Attach, MmioAttachment, MmioBus, MmioDevice, MmioInterrupt, SharedMemory};
+    use dillo_mmio::{
+        Attach, MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioDeviceHost,
+        MmioInterrupt, MmioSpawnError, SharedMemory,
+    };
 
     use dillo_hypervisor::VmExit;
     pub use dillo_hypervisor::{Error, debug_flags, kvm_regs, kvm_sregs};
@@ -104,6 +107,13 @@ mod imp {
 
         fn shared_memory(&self) -> &[Arc<dyn SharedMemory>] {
             &[]
+        }
+
+        fn spawn(
+            self: Arc<Self>,
+            host: MmioDeviceHost,
+        ) -> Result<MmioDeviceHandle, MmioSpawnError> {
+            host.spawn_thread_model()
         }
     }
 

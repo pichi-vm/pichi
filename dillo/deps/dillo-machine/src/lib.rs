@@ -4,15 +4,7 @@
 //! implementations. Concrete backend crates provide inherent constructors and
 //! implement the attachment set that the top-level `dillo` launcher uses.
 
-/// Device host execution model selected by one machine backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceModel {
-    /// Device hosts run as threads in the supervisor process.
-    Thread,
-
-    /// Device hosts run outside the supervisor process.
-    Process,
-}
+pub use dillo_mmio::DeviceModel;
 
 /// A constructed VM capable of accepting DTB-derived resources and vCPUs.
 pub trait Machine: Sized + Send + Sync + 'static {

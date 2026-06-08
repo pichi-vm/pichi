@@ -5,6 +5,18 @@
 //! routing is introduced in later stages.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+
+/// Device host execution model selected by one machine backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceModel {
+    /// Device hosts run as threads in the supervisor process.
+    Thread,
+
+    /// Device hosts run outside the supervisor process.
+    Process,
+}
 
 /// A guest-physical MMIO window owned by one device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,11 +226,165 @@ impl std::fmt::Debug for MmioInterrupt {
     }
 }
 
+/// Backend-neutral launch request for an already-attached MMIO device host.
+pub enum MmioDeviceHost {
+    Thread(MmioThreadHost),
+
+    Process(MmioProcessHost),
+}
+
+impl std::fmt::Debug for MmioDeviceHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Thread(_) => f.debug_tuple("Thread").finish(),
+            Self::Process(_) => f.debug_tuple("Process").finish(),
+        }
+    }
+}
+
+impl MmioDeviceHost {
+    pub fn thread(
+        run: impl FnOnce(MmioRunToken) -> Result<(), MmioJoinError> + Send + 'static,
+    ) -> Self {
+        Self::Thread(MmioThreadHost { run: Box::new(run) })
+    }
+
+    pub fn process(spec: MmioProcessHost) -> Self {
+        Self::Process(spec)
+    }
+
+    pub fn model(&self) -> DeviceModel {
+        match self {
+            Self::Thread(_) => DeviceModel::Thread,
+            Self::Process(_) => DeviceModel::Process,
+        }
+    }
+
+    pub fn spawn_thread_model(self) -> Result<MmioDeviceHandle, MmioSpawnError> {
+        match self {
+            Self::Thread(host) => Ok(host.spawn()),
+            Self::Process(_) => Err(MmioSpawnError::UnsupportedModel(DeviceModel::Process)),
+        }
+    }
+}
+
+/// Thread-backed MMIO device host request.
+pub struct MmioThreadHost {
+    run: Box<dyn FnOnce(MmioRunToken) -> Result<(), MmioJoinError> + Send + 'static>,
+}
+
+impl std::fmt::Debug for MmioThreadHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MmioThreadHost").finish_non_exhaustive()
+    }
+}
+
+impl MmioThreadHost {
+    fn spawn(self) -> MmioDeviceHandle {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let token = MmioRunToken {
+            shutdown: Arc::clone(&shutdown),
+        };
+        let join = thread::spawn(move || (self.run)(token));
+        MmioDeviceHandle {
+            inner: MmioDeviceHandleInner::Thread { shutdown, join },
+        }
+    }
+}
+
+/// Process-backed MMIO device host request.
+#[derive(Debug)]
+pub struct MmioProcessHost {
+    _priv: (),
+}
+
+/// Token passed to a running MMIO thread host.
+#[derive(Clone, Debug)]
+pub struct MmioRunToken {
+    shutdown: Arc<AtomicBool>,
+}
+
+impl MmioRunToken {
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
+    }
+}
+
+/// Handle for one running MMIO device host.
+#[derive(Debug)]
+pub struct MmioDeviceHandle {
+    inner: MmioDeviceHandleInner,
+}
+
+#[derive(Debug)]
+enum MmioDeviceHandleInner {
+    Noop,
+
+    Thread {
+        shutdown: Arc<AtomicBool>,
+        join: thread::JoinHandle<Result<(), MmioJoinError>>,
+    },
+}
+
+impl MmioDeviceHandle {
+    pub fn noop() -> Self {
+        Self {
+            inner: MmioDeviceHandleInner::Noop,
+        }
+    }
+
+    pub fn shutdown(&self) -> Result<(), MmioShutdownError> {
+        match &self.inner {
+            MmioDeviceHandleInner::Noop => {}
+            MmioDeviceHandleInner::Thread { shutdown, .. } => {
+                shutdown.store(true, Ordering::Release);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn join(self) -> Result<(), MmioJoinError> {
+        match self.inner {
+            MmioDeviceHandleInner::Noop => Ok(()),
+            MmioDeviceHandleInner::Thread { join, .. } => match join.join() {
+                Ok(result) => result,
+                Err(_) => Err(MmioJoinError::Panicked),
+            },
+        }
+    }
+}
+
+/// Error from spawning an MMIO device host.
+#[derive(Debug, thiserror::Error)]
+pub enum MmioSpawnError {
+    #[error("MMIO host model {0:?} is unsupported by this attachment")]
+    UnsupportedModel(DeviceModel),
+}
+
+/// Error from requesting MMIO device-host shutdown.
+#[derive(Debug, thiserror::Error)]
+pub enum MmioShutdownError {
+    #[error("MMIO device-host shutdown is unsupported")]
+    Unsupported,
+}
+
+/// Error from joining an MMIO device host.
+#[derive(Debug, thiserror::Error)]
+pub enum MmioJoinError {
+    #[error("MMIO device host panicked")]
+    Panicked,
+
+    #[error("MMIO device host failed: {0}")]
+    Host(String),
+}
+
 /// Backend-owned services for one successfully attached MMIO device.
 pub trait MmioAttachment: Send + Sync + std::fmt::Debug {
     fn interrupts(&self) -> &[MmioInterrupt];
 
     fn shared_memory(&self) -> &[Arc<dyn SharedMemory>];
+
+    fn spawn(self: Arc<Self>, host: MmioDeviceHost) -> Result<MmioDeviceHandle, MmioSpawnError>;
 }
 
 struct Range {
@@ -313,6 +479,7 @@ impl MmioBus {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
 
     struct TestDevice {
         window: [MmioWindow; 1],
@@ -402,5 +569,41 @@ mod tests {
         let mut bus = MmioBus::new();
         bus.register_device(Arc::new(TestDevice::new("a", 0x1000, 0x100)));
         bus.register_device(Arc::new(TestDevice::new("b", 0x1080, 0x100)));
+    }
+
+    #[test]
+    fn thread_host_observes_shutdown_and_joins() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let host = MmioDeviceHost::thread(move |token| {
+            started_tx.send(()).expect("send start");
+            while !token.is_shutdown_requested() {
+                std::thread::yield_now();
+            }
+            Ok(())
+        });
+        assert_eq!(host.model(), DeviceModel::Thread);
+
+        let handle = host.spawn_thread_model().expect("thread host spawned");
+        started_rx.recv().expect("thread host started");
+        handle.shutdown().expect("shutdown requested");
+        handle.join().expect("thread host joined");
+    }
+
+    #[test]
+    fn thread_host_error_reaches_join() {
+        let handle = MmioDeviceHost::thread(|_| Err(MmioJoinError::Host("boom".into())))
+            .spawn_thread_model()
+            .expect("thread host spawned");
+
+        let err = handle.join().expect_err("host error");
+        assert_eq!(err.to_string(), "MMIO device host failed: boom");
+    }
+
+    #[test]
+    fn noop_handle_shutdown_and_join_are_harmless() {
+        let handle = MmioDeviceHandle::noop();
+
+        handle.shutdown().expect("noop shutdown");
+        handle.join().expect("noop join");
     }
 }
