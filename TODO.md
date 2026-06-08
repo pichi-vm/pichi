@@ -43,7 +43,7 @@ gh run list --branch main --limit 12
 
 ## Stage 0 - Temporarily quarantine macOS CI
 
-Status: in progress.
+Status: complete.
 
 Goal: temporarily disable the self-hosted macOS/HVF CI lane while the runner is
 offline, without weakening the target design or local macOS expectations.
@@ -62,6 +62,22 @@ Success criteria:
   self-hosted runner returns.
 - `TODO.md` includes a later restore stage.
 - Default local verification passes.
+
+Completed changes:
+- Removed the `macos-arm64` matrix entry from `.github/workflows/ci.yml`.
+- Left macOS-only workflow steps in place behind `runner.os == 'macOS'` so the
+  restore diff is small.
+- Updated workflow comments and boot-test labeling to make the temporary
+  Linux/Windows-only schedule explicit.
+- Added Stage 15 to restore the macOS/HVF CI lane before final acceptance.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+Pushed commit:
+- `498a2e5 docs: plan final dillo crate split`
 
 ## Stage 1 - Reconcile design docs and plan
 
