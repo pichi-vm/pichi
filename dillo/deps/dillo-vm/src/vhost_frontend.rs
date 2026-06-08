@@ -17,7 +17,7 @@ use dillo_virtio::{ActivateError, VirtioActivate, VirtioDevice, VirtioDeviceHand
 use vhost::vhost_user::message::{VhostUserConfigFlags, VhostUserProtocolFeatures};
 use vhost::vhost_user::{Frontend, VhostUserFrontend as _};
 use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
-use vm_memory::Address;
+use vm_memory::{Address, GuestMemory, GuestMemoryMmap};
 
 use crate::pci_irq::IrqfdNotifier;
 
@@ -39,6 +39,8 @@ pub struct VhostUserFrontend {
     backend_features: u64,
     /// Source of MSI-X→irqfd call eventfds at activate() time.
     notifier: Arc<IrqfdNotifier>,
+    /// Linux vhost-user protocol memory export for `SET_MEM_TABLE`.
+    guest_memory: GuestMemoryMmap,
 }
 
 impl std::fmt::Debug for VhostUserFrontend {
@@ -62,6 +64,7 @@ impl VhostUserFrontend {
         socket: UnixStream,
         child: Child,
         notifier: Arc<IrqfdNotifier>,
+        guest_memory: GuestMemoryMmap,
     ) -> Result<Self, anyhow::Error> {
         let mut frontend = Frontend::from_stream(socket, QUEUE_SIZES.len() as u64);
 
@@ -100,6 +103,7 @@ impl VhostUserFrontend {
             child: Some(child),
             backend_features,
             notifier,
+            guest_memory,
         })
     }
 }
@@ -155,9 +159,6 @@ impl VirtioDevice for VhostUserFrontend {
         let queues = activation.take_queues();
         let queue_evts = activation.take_queue_evts();
         let host = activation.host();
-        let mem = activation.take_vhost_user_memory().ok_or_else(|| {
-            ActivateError::InvalidConfig("missing vhost-user memory export".into())
-        })?;
         // Re-intersect with backend_features as a safety net (the value
         // passed in is the driver-negotiated subset of what we advertised).
         // PROTOCOL_FEATURES MUST be preserved in the value passed to
@@ -171,8 +172,9 @@ impl VirtioDevice for VhostUserFrontend {
             .map_err(|e| ActivateError::InvalidConfig(format!("set_features: {e}")))?;
 
         // Share guest memory with the backend.
-        let regions: Vec<VhostUserMemoryRegionInfo> = mem
-            .regions()
+        let regions: Vec<VhostUserMemoryRegionInfo> = self
+            .guest_memory
+            .iter()
             .filter_map(|region| {
                 VhostUserMemoryRegionInfo::from_guest_region(region)
                     .map_err(|e| log::warn!("vhost-user: skipping region: {e}"))

@@ -751,11 +751,11 @@ Completed changes:
 - Wired standard-VM guest-RAM shared-memory capabilities into KVM, HVF, and WHP
   before device attachment, so virtio queue and payload accesses can claim
   runtime guest-supplied GPAs through the attachment.
+- Removed the Linux vhost-user memory export from portable `VirtioActivate`;
+  the Linux `dillo-vm` vhost-user frontend now owns the `SET_MEM_TABLE` memory
+  export directly.
 
 Remaining divergence:
-- `VirtioActivate` still retains whole guest memory internally so Linux
-  vhost-user activation can build `SET_MEM_TABLE`; the export is no longer a
-  general device field.
 - vhost-user devices still use their backend-specific whole-memory protocol
   path.
 - KVM, HVF, and WHP standard-VM attachments treat all mapped guest RAM as

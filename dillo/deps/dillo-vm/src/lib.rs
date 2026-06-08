@@ -1184,12 +1184,11 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 source: source.into(),
             })?;
         let frontend =
-            VhostUserFrontend::new(stream, child, notifier_for_frontend).map_err(|source| {
-                RunError::DeviceBackend {
+            VhostUserFrontend::new(stream, child, notifier_for_frontend, guest_mem.clone())
+                .map_err(|source| RunError::DeviceBackend {
                     kind: "console",
                     source,
-                }
-            })?;
+                })?;
         log::info!("process-isolation: vhost-user console backend wired");
         Arc::new(std::sync::Mutex::new(Box::new(frontend)))
     };

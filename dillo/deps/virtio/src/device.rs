@@ -2,7 +2,7 @@
 
 //! VirtioDevice trait defining the device contract for transport layers.
 
-use vm_memory::{GuestMemory, GuestMemoryMmap, GuestRegionMmap};
+use vm_memory::GuestMemoryMmap;
 
 use dillo_mmio::SharedMemory;
 
@@ -21,7 +21,6 @@ pub struct VirtioActivate {
     shared_memory: Vec<Arc<dyn SharedMemory>>,
     queue_memory: Arc<dyn QueueMemory>,
     buffer_memory: Arc<dyn VirtioMemory>,
-    vhost_user_memory: Option<VhostUserMemory>,
     queues: Vec<Queue>,
     queue_evts: Vec<Kick>,
     host: Arc<dyn VirtioDeviceHost>,
@@ -33,7 +32,6 @@ impl std::fmt::Debug for VirtioActivate {
             .field("shared_memory_count", &self.shared_memory.len())
             .field("queue_memory", &"QueueMemory")
             .field("buffer_memory", &"VirtioMemory")
-            .field("vhost_user_memory", &self.vhost_user_memory.is_some())
             .field("queues", &self.queues)
             .field("queue_evts", &self.queue_evts)
             .field("host", &self.host)
@@ -49,7 +47,6 @@ impl VirtioActivate {
             shared_memory: Vec::new(),
             queue_memory,
             buffer_memory,
-            vhost_user_memory: Some(VhostUserMemory::new(mem)),
             queues,
             queue_evts,
             host: Arc::new(ThreadDeviceHost),
@@ -69,7 +66,6 @@ impl VirtioActivate {
             shared_memory,
             queue_memory,
             buffer_memory,
-            vhost_user_memory: Some(VhostUserMemory::new(mem)),
             queues,
             queue_evts,
             host,
@@ -89,7 +85,6 @@ impl VirtioActivate {
             shared_memory,
             queue_memory,
             buffer_memory,
-            vhost_user_memory: Some(VhostUserMemory::new(mem)),
             queues,
             queue_evts,
             host,
@@ -136,35 +131,6 @@ impl VirtioActivate {
 
     pub fn take_queue_evts(&mut self) -> Vec<Kick> {
         std::mem::take(&mut self.queue_evts)
-    }
-
-    pub fn take_vhost_user_memory(&mut self) -> Option<VhostUserMemory> {
-        self.vhost_user_memory.take()
-    }
-}
-
-/// Whole-memory export for Linux vhost-user frontends.
-///
-/// Portable virtio devices should use [`VirtioActivate::queue_memory`] and
-/// [`VirtioActivate::buffer_memory`] instead. This type exists for the
-/// vhost-user protocol's `SET_MEM_TABLE` handoff.
-pub struct VhostUserMemory {
-    mem: GuestMemoryMmap,
-}
-
-impl std::fmt::Debug for VhostUserMemory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VhostUserMemory").finish_non_exhaustive()
-    }
-}
-
-impl VhostUserMemory {
-    fn new(mem: GuestMemoryMmap) -> Self {
-        Self { mem }
-    }
-
-    pub fn regions(&self) -> impl Iterator<Item = &GuestRegionMmap> {
-        self.mem.iter()
     }
 }
 
