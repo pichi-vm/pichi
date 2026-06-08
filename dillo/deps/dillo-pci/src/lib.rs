@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 pub use dillo_mmio::{
     MmioAttachment, MmioDeviceHandle, MmioDeviceHost, MmioJoinError, MmioProcessHost,
-    MmioSpawnError,
+    MmioSpawnError, SharedMemory,
 };
 use dillo_mmio::{MmioDevice, MmioWindow};
 pub use vm_pci::{
@@ -62,6 +62,8 @@ pub trait PciDevice: Send + Sync + std::fmt::Debug {
 
 /// Backend-owned host service inherited from the attached PCI root.
 pub trait PciDeviceHost: Send + Sync + std::fmt::Debug {
+    fn shared_memory(&self) -> &[Arc<dyn SharedMemory>];
+
     fn spawn(&self, host: MmioDeviceHost) -> Result<MmioDeviceHandle, MmioSpawnError>;
 }
 
@@ -297,6 +299,10 @@ struct PciRootHost {
 }
 
 impl PciDeviceHost for PciRootHost {
+    fn shared_memory(&self) -> &[Arc<dyn SharedMemory>] {
+        self.attachment.shared_memory()
+    }
+
     fn spawn(&self, host: MmioDeviceHost) -> Result<MmioDeviceHandle, MmioSpawnError> {
         Arc::clone(&self.attachment).spawn(host)
     }

@@ -10,6 +10,7 @@ use std::process::Child;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
+use dillo_mmio::SharedMemory;
 use dillo_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, PciConfiguration};
 use dillo_pci::{MmioDeviceHost, MmioJoinError, MmioProcessHost, PciDeviceHost};
 use dillo_virtio::Kick;
@@ -774,6 +775,10 @@ impl PciVirtioHost {
 }
 
 impl VirtioDeviceHost for PciVirtioHost {
+    fn shared_memory(&self) -> Vec<Arc<dyn SharedMemory>> {
+        self.host.shared_memory().to_vec()
+    }
+
     fn spawn(
         &self,
         run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,

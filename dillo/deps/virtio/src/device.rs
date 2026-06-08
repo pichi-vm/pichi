@@ -4,6 +4,8 @@
 
 use vm_memory::GuestMemoryMmap;
 
+use dillo_mmio::SharedMemory;
+
 use crate::kick::Kick;
 use crate::queue::Queue;
 
@@ -14,18 +16,31 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 /// Transport-resolved activation inputs for one virtio device.
-#[derive(Debug)]
 pub struct VirtioActivate {
     pub mem: GuestMemoryMmap,
+    pub shared_memory: Vec<Arc<dyn SharedMemory>>,
     pub queues: Vec<Queue>,
     pub queue_evts: Vec<Kick>,
     pub host: Arc<dyn VirtioDeviceHost>,
+}
+
+impl std::fmt::Debug for VirtioActivate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VirtioActivate")
+            .field("mem", &"GuestMemoryMmap")
+            .field("shared_memory_count", &self.shared_memory.len())
+            .field("queues", &self.queues)
+            .field("queue_evts", &self.queue_evts)
+            .field("host", &self.host)
+            .finish()
+    }
 }
 
 impl VirtioActivate {
     pub fn new(mem: GuestMemoryMmap, queues: Vec<Queue>, queue_evts: Vec<Kick>) -> Self {
         Self {
             mem,
+            shared_memory: Vec::new(),
             queues,
             queue_evts,
             host: Arc::new(ThreadDeviceHost),
@@ -40,6 +55,23 @@ impl VirtioActivate {
     ) -> Self {
         Self {
             mem,
+            shared_memory: host.shared_memory(),
+            queues,
+            queue_evts,
+            host,
+        }
+    }
+
+    pub fn with_shared_memory(
+        mem: GuestMemoryMmap,
+        shared_memory: Vec<Arc<dyn SharedMemory>>,
+        queues: Vec<Queue>,
+        queue_evts: Vec<Kick>,
+        host: Arc<dyn VirtioDeviceHost>,
+    ) -> Self {
+        Self {
+            mem,
+            shared_memory,
             queues,
             queue_evts,
             host,
@@ -97,6 +129,10 @@ impl VirtioRunToken {
 
 /// Host-side execution service for virtio device workers.
 pub trait VirtioDeviceHost: Send + Sync + std::fmt::Debug {
+    fn shared_memory(&self) -> Vec<Arc<dyn SharedMemory>> {
+        Vec::new()
+    }
+
     fn spawn(
         &self,
         run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,
@@ -128,45 +164,8 @@ impl VirtioDeviceHost for ThreadDeviceHost {
     }
 
     fn adopt_process(&self, child: Child) -> Result<VirtioDeviceHandle, ActivateError> {
-        Ok(process_handle(child))
+        Ok(VirtioDeviceHandle::from_process(child))
     }
-}
-
-fn process_handle(child: Child) -> VirtioDeviceHandle {
-    let child = Arc::new(Mutex::new(Some(child)));
-    let shutdown_child = Arc::clone(&child);
-    let join_child = Arc::clone(&child);
-    VirtioDeviceHandle::new(
-        move || {
-            if let Some(mut child) = shutdown_child
-                .lock()
-                .expect("virtio process child poisoned")
-                .take()
-            {
-                let _ = terminate_process(&mut child);
-            }
-        },
-        move || {
-            if let Some(mut child) = join_child
-                .lock()
-                .expect("virtio process child poisoned")
-                .take()
-            {
-                terminate_process(&mut child)
-                    .map_err(|e| DeviceJoinError::Worker(e.to_string()))?;
-            }
-            Ok(())
-        },
-    )
-}
-
-fn terminate_process(child: &mut Child) -> std::io::Result<()> {
-    if child.try_wait()?.is_some() {
-        return Ok(());
-    }
-    child.kill()?;
-    child.wait()?;
-    Ok(())
 }
 
 /// Runtime handle for workers started by one virtio device activation.
@@ -192,6 +191,34 @@ impl VirtioDeviceHandle {
         }
     }
 
+    pub fn from_process(child: Child) -> Self {
+        let child = Arc::new(Mutex::new(Some(child)));
+        let shutdown_child = Arc::clone(&child);
+        let join_child = Arc::clone(&child);
+        Self::new(
+            move || {
+                if let Some(mut child) = shutdown_child
+                    .lock()
+                    .expect("virtio process child poisoned")
+                    .take()
+                {
+                    let _ = Self::terminate_process(&mut child);
+                }
+            },
+            move || {
+                if let Some(mut child) = join_child
+                    .lock()
+                    .expect("virtio process child poisoned")
+                    .take()
+                {
+                    Self::terminate_process(&mut child)
+                        .map_err(|e| DeviceJoinError::Worker(e.to_string()))?;
+                }
+                Ok(())
+            },
+        )
+    }
+
     pub fn noop() -> Self {
         Self::new(|| {}, || Ok(()))
     }
@@ -210,6 +237,22 @@ impl VirtioDeviceHandle {
             Ok(())
         }
     }
+
+    fn terminate_process(child: &mut Child) -> std::io::Result<()> {
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        child.kill()?;
+        child.wait()?;
+        Ok(())
+    }
+
+    fn log_join_error(e: &DeviceJoinError) {
+        #[cfg(any(test, debug_assertions))]
+        eprintln!("virtio device worker join failed during drop: {e}");
+        #[cfg(not(any(test, debug_assertions)))]
+        let _ = e;
+    }
 }
 
 impl Drop for VirtioDeviceHandle {
@@ -217,17 +260,10 @@ impl Drop for VirtioDeviceHandle {
         self.shutdown();
         if let Some(join) = self.join.take() {
             if let Err(e) = join() {
-                log_join_error(&e);
+                Self::log_join_error(&e);
             }
         }
     }
-}
-
-fn log_join_error(e: &DeviceJoinError) {
-    #[cfg(any(test, debug_assertions))]
-    eprintln!("virtio device worker join failed during drop: {e}");
-    #[cfg(not(any(test, debug_assertions)))]
-    let _ = e;
 }
 
 /// Transport-agnostic virtio device contract.

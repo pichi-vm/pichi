@@ -74,6 +74,8 @@ flowchart TD
     dillo-pci-virtio --> dillo-pci
     dillo-pci-virtio --> dillo-virtio
 
+    dillo-virtio --> dillo-mmio
+
     dillo-mmio-uart --> dillo-mmio
 
     dillo-virtio-blk --> dillo-virtio

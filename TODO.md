@@ -567,6 +567,7 @@ CI verification:
 - `27151569414` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27152061240` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27152820089` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27153405345` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
@@ -680,7 +681,7 @@ Remaining divergence:
 
 ## Stage 12 - Implement CC-first shared-memory capabilities
 
-Status: pending.
+Status: in progress.
 
 Goal: replace whole-guest-memory exposure with attachment-scoped shared-memory
 capabilities.
@@ -703,6 +704,18 @@ Success criteria:
 - A descriptor pointing outside the device aperture fails.
 - A descriptor pointing to private memory fails in CC mode.
 - Default local verification and Linux target checks pass.
+
+Completed changes:
+- Added attachment-scoped shared-memory capabilities to `VirtioActivate`.
+- Routed virtio-mmio and virtio-pci activation through the shared-memory handles
+  exposed by the backend-owned MMIO attachment.
+- Updated the design crate graph to show the implied `dillo-virtio` dependency
+  on `dillo-mmio` for `SharedMemory`.
+
+Remaining divergence:
+- `VirtioActivate` still carries `GuestMemoryMmap`; current queue and vhost-user
+  paths still use whole guest memory.
+- Machine attachments still return no shared-memory capabilities.
 
 ## Stage 13 - Resolve restricted DMA aperture in DTB/device model
 

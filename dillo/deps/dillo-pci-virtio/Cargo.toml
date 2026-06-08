@@ -7,6 +7,7 @@ license.workspace = true
 description = "Virtio PCI transport adapter for dillo-pci devices."
 
 [dependencies]
+dillo-mmio.workspace = true
 dillo-pci.workspace = true
 dillo-virtio.workspace = true
 vm-memory.workspace = true

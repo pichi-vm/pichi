@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use dillo_mmio::{
     MmioAttachment, MmioDevice, MmioDeviceHost, MmioJoinError, MmioProcessHost, MmioWindow,
+    SharedMemory,
 };
 use dillo_virtio::queue::Queue;
 use dillo_virtio::{
@@ -381,6 +382,10 @@ struct MmioVirtioHost {
 }
 
 impl VirtioDeviceHost for MmioVirtioHost {
+    fn shared_memory(&self) -> Vec<Arc<dyn SharedMemory>> {
+        self.attachment.shared_memory().to_vec()
+    }
+
     fn spawn(
         &self,
         run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,

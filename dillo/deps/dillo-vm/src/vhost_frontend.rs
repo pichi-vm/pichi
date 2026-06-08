@@ -154,6 +154,7 @@ impl VirtioDevice for VhostUserFrontend {
     ) -> Result<VirtioDeviceHandle, ActivateError> {
         let VirtioActivate {
             mem,
+            shared_memory: _,
             queues,
             queue_evts,
             host,
