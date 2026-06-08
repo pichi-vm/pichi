@@ -23,9 +23,6 @@ mod syscon;
 #[cfg(target_os = "windows")]
 mod uart;
 
-// Userspace PSCI handling is the HVF/aarch64 path (KVM handles PSCI in-kernel).
-#[cfg(target_os = "macos")]
-mod psci;
 // HVF MSI-X notifier + guest-memory builder (KVM uses memfd + irqfd instead).
 #[cfg(target_os = "macos")]
 mod hvf_devices;
@@ -60,20 +57,20 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::atomic::Ordering;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::thread;
 
 use anyhow::{Result, anyhow};
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use backend::{BackendVm, VcpuSeed};
+#[cfg(target_os = "macos")]
+use backend::BackendVm;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
+use backend::{BackendVm, VcpuSeed};
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_machine::VcpuStop;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use dillo_machine_backend::Vm;
 #[cfg(target_os = "macos")]
 use dillo_machine_backend::Vm;
-#[cfg(target_os = "macos")]
-use dillo_machine_backend::VmExit;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::MsixNotifier;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -147,7 +144,7 @@ impl VcpuKicker {
 pub static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 use dillo_mmio::MmioBus;
 use dillo_mmio::MmioWindow;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -757,7 +754,10 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             boot_state.pc,
             vcpus,
         );
-        match run_smp(vcpus, boot_state.clone(), Arc::clone(&mmio_bus))? {
+        match vcpu_stop_outcome(
+            dillo_machine_backend::run_smp(vcpus, boot_state.clone(), Arc::clone(&mmio_bus))?,
+            &AtomicBool::new(false),
+        ) {
             RunOutcome::Exit(code) => {
                 drop(vm); // unmap guest RAM only after all vCPU threads joined
                 return Ok(code);
@@ -831,7 +831,7 @@ impl syscon::SysconAction {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn vcpu_stop_outcome(stop: VcpuStop, shutdown: &AtomicBool) -> RunOutcome {
     match stop {
         VcpuStop::GuestPoweroff => {
@@ -881,259 +881,6 @@ fn parse_armv_profile(s: &str) -> Option<(u32, u32)> {
     let body = s.strip_prefix("armv")?.strip_suffix("-a")?;
     let (major, minor) = body.split_once('.')?;
     Some((major.parse().ok()?, minor.parse().ok()?))
-}
-
-/// PSCI return codes the SMP launcher writes into `x0`.
-#[cfg(target_os = "macos")]
-mod psci_ret {
-    pub(crate) const SUCCESS: u64 = 0;
-    pub(crate) const INVALID_PARAMETERS: u64 = (-2i64) as u64;
-    pub(crate) const ALREADY_ON: u64 = (-4i64) as u64;
-}
-
-/// Per-vCPU power-on mailbox. A core parks on the condvar until another core's
-/// PSCI `CPU_ON` deposits a `(entry, context)` request and notifies it.
-#[cfg(target_os = "macos")]
-struct CpuSlot {
-    /// Started flag (for `ALREADY_ON`); set by the core that powers a target on.
-    started: std::sync::atomic::AtomicBool,
-    /// Pending power-on request: `Some((entry, context))`.
-    request: std::sync::Mutex<Option<(u64, u64)>>,
-    cv: std::sync::Condvar,
-}
-
-#[cfg(target_os = "macos")]
-impl CpuSlot {
-    fn new() -> Self {
-        Self {
-            started: std::sync::atomic::AtomicBool::new(false),
-            request: std::sync::Mutex::new(None),
-            cv: std::sync::Condvar::new(),
-        }
-    }
-
-    /// Deposit a power-on request and wake the target's thread.
-    fn deposit(&self, entry: u64, context: u64) {
-        *self.request.lock().expect("cpu-slot poisoned") = Some((entry, context));
-        self.cv.notify_all();
-    }
-
-    /// Block until a power-on request arrives, or `shutdown` is set. Returns the
-    /// `(entry, context)`, or `None` if woken for shutdown. Uses a timed wait so
-    /// a shutdown notify can never be lost.
-    fn wait(&self, shutdown: &AtomicBool) -> Option<(u64, u64)> {
-        let mut g = self.request.lock().expect("cpu-slot poisoned");
-        loop {
-            if let Some(req) = g.take() {
-                return Some(req);
-            }
-            if shutdown.load(Ordering::SeqCst) {
-                return None;
-            }
-            let (ng, _) = self
-                .cv
-                .wait_timeout(g, std::time::Duration::from_millis(100))
-                .expect("cpu-slot poisoned");
-            g = ng;
-        }
-    }
-}
-
-/// Initial register state for a secondary brought up via PSCI `CPU_ON`: it
-/// enters at `entry` with `x0 = context`, MMU off (sctlr=0), at EL1h with
-/// interrupts masked. `pstate`/`cpacr` mirror the boot vCPU so FP/SIMD doesn't
-/// trap before the kernel configures it.
-#[cfg(target_os = "macos")]
-fn secondary_state(
-    entry: u64,
-    context: u64,
-    boot: &pmi::vm::vcpu::aarch64::CpuState,
-) -> pmi::vm::vcpu::aarch64::CpuState {
-    pmi::vm::vcpu::aarch64::CpuState {
-        pc: entry,
-        x0: context,
-        pstate: boot.pstate,
-        cpacr_el1: boot.cpacr_el1,
-        ..Default::default()
-    }
-}
-
-/// MPIDR for vCPU `idx`: bit31 RES1, affinity Aff0 = `idx` (matches the host
-/// overlay's `cpu@N { reg = N; }`, so a PSCI `CPU_ON` target resolves to `idx`).
-#[cfg(target_os = "macos")]
-fn mpidr_for(idx: usize) -> u64 {
-    0x8000_0000 | (idx as u64)
-}
-
-/// Launch one thread per vCPU and run until guest shutdown. Returns the process
-/// exit code (0 on PSCI `SYSTEM_OFF`). vCPU0 boots from `boot_state`;
-/// secondaries park until a PSCI `CPU_ON` (issued by a running core) wakes them.
-#[cfg(target_os = "macos")]
-fn run_smp(
-    vcpus: u32,
-    boot_state: pmi::vm::vcpu::aarch64::CpuState,
-    mmio_bus: Arc<std::sync::Mutex<MmioBus>>,
-) -> Result<RunOutcome, RunError> {
-    use dillo_machine_backend::VcpuHandle;
-    use std::sync::Mutex;
-    use std::sync::atomic::AtomicI32;
-
-    let n = vcpus.max(1) as usize;
-    let shutdown = AtomicBool::new(false);
-    let reboot = AtomicBool::new(false);
-    let exit_code = AtomicI32::new(0);
-    let slots: Vec<CpuSlot> = (0..n).map(|_| CpuSlot::new()).collect();
-    let handles: Vec<Mutex<Option<VcpuHandle>>> = (0..n).map(|_| Mutex::new(None)).collect();
-
-    thread::scope(|scope| {
-        for idx in 0..n {
-            let mmio = Arc::clone(&mmio_bus);
-            let boot = boot_state.clone();
-            let slots = &slots;
-            let handles = &handles;
-            let shutdown = &shutdown;
-            let reboot = &reboot;
-            let exit_code = &exit_code;
-            scope.spawn(move || {
-                if let Err(e) = vcpu_thread(
-                    idx, n, boot, mmio, slots, handles, shutdown, reboot, exit_code,
-                ) {
-                    log::error!("vCPU{idx} thread error: {e}");
-                }
-                // First thread to return triggers shutdown for the rest: set the
-                // flag, wake parked secondaries, and force running ones out of
-                // run() so every thread observes it and the scope can join.
-                shutdown.store(true, Ordering::SeqCst);
-                for s in slots {
-                    s.cv.notify_all();
-                }
-                let live: Vec<VcpuHandle> = handles
-                    .iter()
-                    .filter_map(|h| h.lock().expect("handle poisoned").clone())
-                    .collect();
-                let _ = dillo_machine_backend::force_vcpus_exit(&live);
-            });
-        }
-    });
-
-    if reboot.load(Ordering::SeqCst) {
-        Ok(RunOutcome::Reboot)
-    } else {
-        Ok(RunOutcome::Exit(exit_code.load(Ordering::SeqCst)))
-    }
-}
-
-/// One vCPU thread: create the (thread-bound) vCPU, bring it up, and run the
-/// MMIO/PSCI loop until shutdown.
-#[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
-fn vcpu_thread(
-    idx: usize,
-    n: usize,
-    boot_state: pmi::vm::vcpu::aarch64::CpuState,
-    mmio_bus: Arc<std::sync::Mutex<MmioBus>>,
-    slots: &[CpuSlot],
-    handles: &[std::sync::Mutex<Option<dillo_machine_backend::VcpuHandle>>],
-    shutdown: &AtomicBool,
-    reboot: &AtomicBool,
-    exit_code: &std::sync::atomic::AtomicI32,
-) -> Result<(), RunError> {
-    // vCPU0 boots immediately; secondaries park until powered on.
-    let init = if idx == 0 {
-        slots[0].started.store(true, Ordering::SeqCst);
-        boot_state.clone()
-    } else {
-        match slots[idx].wait(shutdown) {
-            Some((entry, context)) => secondary_state(entry, context, &boot_state),
-            None => return Ok(()), // shutdown before this core was ever powered on
-        }
-    };
-    let vcpu = <Vm as BackendVm>::current_thread_vcpu(
-        VcpuSeed::Aarch64 {
-            mpidr: mpidr_for(idx),
-            state: &init,
-        },
-        mmio_bus,
-    )?;
-    *handles[idx].lock().expect("handle poisoned") = Some(vcpu.handle());
-    if idx != 0 {
-        log::info!("vCPU{idx} powered on: pc={:#x}", init.pc);
-    }
-
-    loop {
-        if shutdown.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        match vcpu.run()? {
-            VmExit::MmioRead { .. } | VmExit::MmioWrite { .. } => {}
-            VmExit::Hvc { args } => match psci::dispatch(&args) {
-                psci::PsciAction::SystemOff => {
-                    log::info!("guest issued PSCI SYSTEM_OFF (vCPU{idx})");
-                    // Drain the virtio-console output before teardown — a guest
-                    // that writes its last line to hvc0 then immediately powers
-                    // off would otherwise lose it to the async TX worker.
-                    dillo_virtio_console::flush_output();
-                    exit_code.store(0, Ordering::SeqCst);
-                    return Ok(());
-                }
-                psci::PsciAction::SystemReset => {
-                    // Warm in-VM restart: signal the launcher to re-apply the
-                    // load plan + reset the GIC and run again (Phase 2).
-                    log::info!("guest issued PSCI SYSTEM_RESET (vCPU{idx}) — warm reboot");
-                    reboot.store(true, Ordering::SeqCst);
-                    return Ok(());
-                }
-                psci::PsciAction::CpuOff => {
-                    // This core powers off and re-parks; a later CPU_ON can
-                    // bring it back. (Linux keeps cores online until shutdown,
-                    // so this is rare in practice.)
-                    log::info!("vCPU{idx} PSCI CPU_OFF — parking");
-                    slots[idx].started.store(false, Ordering::SeqCst);
-                    match slots[idx].wait(shutdown) {
-                        Some((entry, context)) => {
-                            let st = secondary_state(entry, context, &boot_state);
-                            vcpu.set_aarch64_state(&st)?;
-                        }
-                        None => return Ok(()),
-                    }
-                }
-                psci::PsciAction::CpuOn {
-                    target,
-                    entry,
-                    context,
-                } => {
-                    // cpu@N { reg = N } ⇒ target affinity == N == thread index.
-                    let tgt = (target & 0x00ff_ffff) as usize;
-                    let code = if tgt >= n {
-                        log::warn!("vCPU{idx} CPU_ON target={target:#x} out of range (n={n})");
-                        psci_ret::INVALID_PARAMETERS
-                    } else if slots[tgt].started.swap(true, Ordering::SeqCst) {
-                        psci_ret::ALREADY_ON
-                    } else {
-                        log::info!("vCPU{idx} powers on vCPU{tgt} at pc={entry:#x}");
-                        slots[tgt].deposit(entry, context);
-                        psci_ret::SUCCESS
-                    };
-                    vcpu.set_gpr(0, code)?;
-                }
-                psci::PsciAction::Return(value) => {
-                    vcpu.set_gpr(0, value)?;
-                }
-            },
-            // A forced exit (vcpus_exit, from the shutdown broadcast) surfaces
-            // as Unknown; if we're shutting down, just stop.
-            VmExit::Unknown(_) if shutdown.load(Ordering::SeqCst) => return Ok(()),
-            other => {
-                let (esr, elr, far) = vcpu.el1_exception_state();
-                log::warn!(
-                    "vCPU{idx} unhandled exit: {other:?}; guest EL1 state at first exception: \
-                     ESR_EL1={esr:#x} (EC={:#x}) ELR_EL1={elr:#x} FAR_EL1={far:#x}",
-                    esr >> 26
-                );
-                return Err(RunError::UnknownKvmExit(format!("{other:?}")));
-            }
-        }
-    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -1194,49 +941,13 @@ mod macos_tests {
         // Run via the production single-/multi-vCPU launcher (vcpus = 1). It
         // creates the vCPU on its own thread, so `vm` must outlive the call.
         let outcome =
-            run_smp(1, state, Arc::new(std::sync::Mutex::new(mmio_bus))).expect("run loop");
+            dillo_machine_backend::run_smp(1, state, Arc::new(std::sync::Mutex::new(mmio_bus)))
+                .expect("run loop");
         drop(vm);
         assert!(
-            matches!(outcome, RunOutcome::Exit(0)),
-            "PSCI SYSTEM_OFF → Exit(0)"
+            matches!(outcome, VcpuStop::GuestPoweroff),
+            "PSCI SYSTEM_OFF -> GuestPoweroff"
         );
-    }
-
-    /// The PSCI bring-up bookkeeping is HVF-independent, so test it under plain
-    /// `cargo test`: a deposited request wakes a waiting core; `started` gates
-    /// `ALREADY_ON`; affinity maps to the thread index.
-    #[test]
-    fn cpu_slot_deposit_wakes_waiter() {
-        use std::sync::Arc;
-        use std::sync::atomic::AtomicBool;
-
-        assert_eq!(mpidr_for(0), 0x8000_0000);
-        assert_eq!(mpidr_for(3), 0x8000_0003);
-        // CPU_ON target affinity resolves to the thread index.
-        assert_eq!((mpidr_for(2) & 0x00ff_ffff) as usize, 2);
-
-        let slot = Arc::new(CpuSlot::new());
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let s2 = Arc::clone(&slot);
-        let sd2 = Arc::clone(&shutdown);
-        let waiter = thread::spawn(move || s2.wait(&sd2));
-        // Deposit a request; the waiter must observe exactly it.
-        slot.deposit(0x4000_0000, 0xABCD);
-        assert_eq!(waiter.join().unwrap(), Some((0x4000_0000, 0xABCD)));
-
-        // A shutdown wakes a parked core with None.
-        let slot = Arc::new(CpuSlot::new());
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let s2 = Arc::clone(&slot);
-        let sd2 = Arc::clone(&shutdown);
-        let waiter = thread::spawn(move || s2.wait(&sd2));
-        sd2_store_and_wake(&shutdown, &slot);
-        assert_eq!(waiter.join().unwrap(), None);
-    }
-
-    fn sd2_store_and_wake(shutdown: &std::sync::atomic::AtomicBool, slot: &CpuSlot) {
-        shutdown.store(true, Ordering::SeqCst);
-        slot.cv.notify_all();
     }
 
     #[test]

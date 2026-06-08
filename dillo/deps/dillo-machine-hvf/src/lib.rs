@@ -1,12 +1,17 @@
 #[cfg(target_os = "macos")]
 mod imp {
     use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Condvar,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    };
+    use std::thread;
 
+    use dillo_machine::VcpuStop;
     use dillo_mmio::{Attach, MmioAttachment, MmioBus, MmioDevice, MmioInterrupt, SharedMemory};
 
-    pub use dillo_hypervisor::{
-        Error, GicParams, VcpuHandle, VmExit, force_vcpus_exit, send_msi, set_spi,
-    };
+    use dillo_hypervisor::VmExit;
+    pub use dillo_hypervisor::{Error, GicParams, VcpuHandle, force_vcpus_exit, send_msi, set_spi};
 
     #[derive(Debug)]
     pub struct Vm {
@@ -149,6 +154,385 @@ mod imp {
                     other => return Ok(other),
                 }
             }
+        }
+    }
+
+    const STOP_NONE: u8 = 0;
+    const STOP_POWEROFF: u8 = 1;
+    const STOP_RESET: u8 = 2;
+
+    /// Run one HVF AArch64 guest with one thread per vCPU.
+    ///
+    /// HVF exposes PSCI HVCs to userspace, so the backend owns the HVC decode,
+    /// secondary CPU parking, and raw-exit handling. The supervisor sees only a
+    /// lifecycle stop reason.
+    pub fn run_smp(
+        vcpus: u32,
+        boot_state: pmi::vm::vcpu::aarch64::CpuState,
+        mmio_bus: Arc<Mutex<MmioBus>>,
+    ) -> Result<VcpuStop, Error> {
+        let n = vcpus.max(1) as usize;
+        let shutdown = AtomicBool::new(false);
+        let stop = AtomicU8::new(STOP_NONE);
+        let slots: Vec<CpuSlot> = (0..n).map(|_| CpuSlot::new()).collect();
+        let handles: Vec<Mutex<Option<VcpuHandle>>> = (0..n).map(|_| Mutex::new(None)).collect();
+        let first_error = Mutex::new(None);
+
+        thread::scope(|scope| {
+            for idx in 0..n {
+                let mmio = Arc::clone(&mmio_bus);
+                let boot = boot_state.clone();
+                let slots = &slots;
+                let handles = &handles;
+                let shutdown = &shutdown;
+                let stop = &stop;
+                let first_error = &first_error;
+                scope.spawn(move || {
+                    if let Err(e) = vcpu_thread(idx, n, boot, mmio, slots, handles, shutdown, stop)
+                    {
+                        log::error!("vCPU{idx} thread error: {e}");
+                        let mut error = first_error.lock().expect("error lock poisoned");
+                        if error.is_none() {
+                            *error = Some(e.to_string());
+                        }
+                    }
+                    shutdown.store(true, Ordering::SeqCst);
+                    for s in slots {
+                        s.cv.notify_all();
+                    }
+                    let live: Vec<VcpuHandle> = handles
+                        .iter()
+                        .filter_map(|h| h.lock().expect("handle poisoned").clone())
+                        .collect();
+                    let _ = force_vcpus_exit(&live);
+                });
+            }
+        });
+
+        if let Some(error) = first_error.lock().expect("error lock poisoned").take() {
+            return Err(Error::Hv(error));
+        }
+
+        match stop.load(Ordering::SeqCst) {
+            STOP_POWEROFF => Ok(VcpuStop::GuestPoweroff),
+            STOP_RESET => Ok(VcpuStop::GuestReset),
+            _ => Ok(VcpuStop::Stopped),
+        }
+    }
+
+    fn set_stop(stop: &AtomicU8, value: u8) {
+        let _ = stop.compare_exchange(STOP_NONE, value, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn vcpu_thread(
+        idx: usize,
+        n: usize,
+        boot_state: pmi::vm::vcpu::aarch64::CpuState,
+        mmio_bus: Arc<Mutex<MmioBus>>,
+        slots: &[CpuSlot],
+        handles: &[Mutex<Option<VcpuHandle>>],
+        shutdown: &AtomicBool,
+        stop: &AtomicU8,
+    ) -> Result<(), Error> {
+        let init = if idx == 0 {
+            slots[0].started.store(true, Ordering::SeqCst);
+            boot_state.clone()
+        } else {
+            match slots[idx].wait(shutdown) {
+                Some((entry, context)) => secondary_state(entry, context, &boot_state),
+                None => return Ok(()),
+            }
+        };
+        let vcpu = create_vcpu_current_thread(mmio_bus)?;
+        vcpu.set_mpidr(mpidr_for(idx))?;
+        vcpu.set_aarch64_state(&init)?;
+        *handles[idx].lock().expect("handle poisoned") = Some(vcpu.handle());
+        if idx != 0 {
+            log::info!("vCPU{idx} powered on: pc={:#x}", init.pc);
+        }
+
+        loop {
+            if shutdown.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            match vcpu.run()? {
+                VmExit::MmioRead { .. } | VmExit::MmioWrite { .. } => {}
+                VmExit::Hvc { args } => match psci::dispatch(&args) {
+                    psci::PsciAction::SystemOff => {
+                        log::info!("guest issued PSCI SYSTEM_OFF (vCPU{idx})");
+                        set_stop(stop, STOP_POWEROFF);
+                        return Ok(());
+                    }
+                    psci::PsciAction::SystemReset => {
+                        log::info!("guest issued PSCI SYSTEM_RESET (vCPU{idx})");
+                        set_stop(stop, STOP_RESET);
+                        return Ok(());
+                    }
+                    psci::PsciAction::CpuOff => {
+                        log::info!("vCPU{idx} PSCI CPU_OFF; parking");
+                        slots[idx].started.store(false, Ordering::SeqCst);
+                        match slots[idx].wait(shutdown) {
+                            Some((entry, context)) => {
+                                let st = secondary_state(entry, context, &boot_state);
+                                vcpu.set_aarch64_state(&st)?;
+                            }
+                            None => return Ok(()),
+                        }
+                    }
+                    psci::PsciAction::CpuOn {
+                        target,
+                        entry,
+                        context,
+                    } => {
+                        let tgt = (target & 0x00ff_ffff) as usize;
+                        let code = if tgt >= n {
+                            log::warn!("vCPU{idx} CPU_ON target={target:#x} out of range (n={n})");
+                            psci::ret::INVALID_PARAMETERS
+                        } else if slots[tgt].started.swap(true, Ordering::SeqCst) {
+                            psci::ret::ALREADY_ON
+                        } else {
+                            log::info!("vCPU{idx} powers on vCPU{tgt} at pc={entry:#x}");
+                            slots[tgt].deposit(entry, context);
+                            psci::ret::SUCCESS
+                        };
+                        vcpu.set_gpr(0, code)?;
+                    }
+                    psci::PsciAction::Return(value) => {
+                        vcpu.set_gpr(0, value)?;
+                    }
+                },
+                VmExit::Unknown(_) if shutdown.load(Ordering::SeqCst) => return Ok(()),
+                other => {
+                    let (esr, elr, far) = vcpu.el1_exception_state();
+                    log::warn!(
+                        "vCPU{idx} unhandled exit: {other:?}; guest EL1 state at first \
+                         exception: ESR_EL1={esr:#x} (EC={:#x}) ELR_EL1={elr:#x} \
+                         FAR_EL1={far:#x}",
+                        esr >> 26
+                    );
+                    return Err(Error::Hv(format!("unhandled HVF exit: {other:?}")));
+                }
+            }
+        }
+    }
+
+    /// Per-vCPU power-on mailbox. A parked secondary waits here until another
+    /// core's PSCI `CPU_ON` deposits a target entry point and context.
+    #[derive(Debug)]
+    struct CpuSlot {
+        started: AtomicBool,
+        request: Mutex<Option<(u64, u64)>>,
+        cv: Condvar,
+    }
+
+    impl CpuSlot {
+        fn new() -> Self {
+            Self {
+                started: AtomicBool::new(false),
+                request: Mutex::new(None),
+                cv: Condvar::new(),
+            }
+        }
+
+        fn deposit(&self, entry: u64, context: u64) {
+            *self.request.lock().expect("cpu-slot poisoned") = Some((entry, context));
+            self.cv.notify_all();
+        }
+
+        fn wait(&self, shutdown: &AtomicBool) -> Option<(u64, u64)> {
+            let mut g = self.request.lock().expect("cpu-slot poisoned");
+            loop {
+                if let Some(req) = g.take() {
+                    return Some(req);
+                }
+                if shutdown.load(Ordering::SeqCst) {
+                    return None;
+                }
+                let (ng, _) = self
+                    .cv
+                    .wait_timeout(g, std::time::Duration::from_millis(100))
+                    .expect("cpu-slot poisoned");
+                g = ng;
+            }
+        }
+    }
+
+    fn secondary_state(
+        entry: u64,
+        context: u64,
+        boot: &pmi::vm::vcpu::aarch64::CpuState,
+    ) -> pmi::vm::vcpu::aarch64::CpuState {
+        pmi::vm::vcpu::aarch64::CpuState {
+            pc: entry,
+            x0: context,
+            pstate: boot.pstate,
+            cpacr_el1: boot.cpacr_el1,
+            ..Default::default()
+        }
+    }
+
+    fn mpidr_for(idx: usize) -> u64 {
+        0x8000_0000 | (idx as u64)
+    }
+
+    mod psci {
+        mod fid {
+            pub(super) const VERSION: u32 = 0x8400_0000;
+            pub(super) const CPU_OFF: u32 = 0x8400_0002;
+            pub(super) const CPU_ON_32: u32 = 0x8400_0003;
+            pub(super) const CPU_ON_64: u32 = 0xC400_0003;
+            pub(super) const AFFINITY_INFO_32: u32 = 0x8400_0004;
+            pub(super) const AFFINITY_INFO_64: u32 = 0xC400_0004;
+            pub(super) const MIGRATE_INFO_TYPE: u32 = 0x8400_0006;
+            pub(super) const SYSTEM_OFF: u32 = 0x8400_0008;
+            pub(super) const SYSTEM_RESET: u32 = 0x8400_0009;
+            pub(super) const FEATURES: u32 = 0x8400_000A;
+        }
+
+        pub(super) mod ret {
+            pub(crate) const SUCCESS: u64 = 0;
+            pub(crate) const NOT_SUPPORTED: u64 = (-1i64) as u64;
+            pub(crate) const INVALID_PARAMETERS: u64 = (-2i64) as u64;
+            pub(crate) const ALREADY_ON: u64 = (-4i64) as u64;
+            pub(crate) const AFF_ON: u64 = 0;
+            pub(crate) const MIGRATE_NOT_REQUIRED: u64 = 2;
+            pub(crate) const VERSION_1_1: u64 = 0x0001_0001;
+        }
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(super) enum PsciAction {
+            CpuOn {
+                target: u64,
+                entry: u64,
+                context: u64,
+            },
+            CpuOff,
+            SystemOff,
+            SystemReset,
+            Return(u64),
+        }
+
+        pub(super) fn dispatch(args: &[u64; 8]) -> PsciAction {
+            #[allow(clippy::cast_possible_truncation)]
+            let function = args[0] as u32;
+            match function {
+                fid::VERSION => PsciAction::Return(ret::VERSION_1_1),
+                fid::CPU_ON_32 | fid::CPU_ON_64 => PsciAction::CpuOn {
+                    target: args[1],
+                    entry: args[2],
+                    context: args[3],
+                },
+                fid::CPU_OFF => PsciAction::CpuOff,
+                fid::AFFINITY_INFO_32 | fid::AFFINITY_INFO_64 => PsciAction::Return(ret::AFF_ON),
+                fid::MIGRATE_INFO_TYPE => PsciAction::Return(ret::MIGRATE_NOT_REQUIRED),
+                fid::SYSTEM_OFF => PsciAction::SystemOff,
+                fid::SYSTEM_RESET => PsciAction::SystemReset,
+                fid::FEATURES => PsciAction::Return(features(args[1] as u32)),
+                _ => PsciAction::Return(ret::NOT_SUPPORTED),
+            }
+        }
+
+        fn features(queried: u32) -> u64 {
+            match queried {
+                fid::VERSION
+                | fid::CPU_OFF
+                | fid::CPU_ON_32
+                | fid::CPU_ON_64
+                | fid::AFFINITY_INFO_32
+                | fid::AFFINITY_INFO_64
+                | fid::MIGRATE_INFO_TYPE
+                | fid::SYSTEM_OFF
+                | fid::SYSTEM_RESET
+                | fid::FEATURES => ret::SUCCESS,
+                _ => ret::NOT_SUPPORTED,
+            }
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+
+            fn call(fid: u64, a1: u64, a2: u64, a3: u64) -> PsciAction {
+                dispatch(&[fid, a1, a2, a3, 0, 0, 0, 0])
+            }
+
+            #[test]
+            fn version_reports_1_1() {
+                assert_eq!(call(0x8400_0000, 0, 0, 0), PsciAction::Return(0x0001_0001));
+            }
+
+            #[test]
+            fn cpu_on_decodes_target_entry_context() {
+                let want = PsciAction::CpuOn {
+                    target: 0x1,
+                    entry: 0x4000_0000,
+                    context: 0xABCD,
+                };
+                assert_eq!(call(0xC400_0003, 0x1, 0x4000_0000, 0xABCD), want);
+                assert_eq!(call(0x8400_0003, 0x1, 0x4000_0000, 0xABCD), want);
+            }
+
+            #[test]
+            fn shutdown_and_reset() {
+                assert_eq!(call(0x8400_0008, 0, 0, 0), PsciAction::SystemOff);
+                assert_eq!(call(0x8400_0009, 0, 0, 0), PsciAction::SystemReset);
+            }
+
+            #[test]
+            fn cpu_off_and_affinity_and_migrate() {
+                assert_eq!(call(0x8400_0002, 0, 0, 0), PsciAction::CpuOff);
+                assert_eq!(call(0xC400_0004, 0, 0, 0), PsciAction::Return(0));
+                assert_eq!(call(0x8400_0006, 0, 0, 0), PsciAction::Return(2));
+            }
+
+            #[test]
+            fn features_known_vs_unknown() {
+                assert_eq!(call(0x8400_000A, 0xC400_0003, 0, 0), PsciAction::Return(0));
+                assert_eq!(
+                    call(0x8400_000A, 0xDEAD_BEEF, 0, 0),
+                    PsciAction::Return((-1i64) as u64)
+                );
+            }
+
+            #[test]
+            fn unknown_function_is_not_supported() {
+                assert_eq!(
+                    call(0x8400_00FF, 0, 0, 0),
+                    PsciAction::Return((-1i64) as u64)
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::sync::Arc;
+
+        use super::*;
+
+        #[test]
+        fn cpu_slot_deposit_wakes_waiter() {
+            assert_eq!(mpidr_for(0), 0x8000_0000);
+            assert_eq!(mpidr_for(3), 0x8000_0003);
+            assert_eq!((mpidr_for(2) & 0x00ff_ffff) as usize, 2);
+
+            let slot = Arc::new(CpuSlot::new());
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let s2 = Arc::clone(&slot);
+            let sd2 = Arc::clone(&shutdown);
+            let waiter = thread::spawn(move || s2.wait(&sd2));
+            slot.deposit(0x4000_0000, 0xABCD);
+            assert_eq!(waiter.join().unwrap(), Some((0x4000_0000, 0xABCD)));
+
+            let slot = Arc::new(CpuSlot::new());
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let s2 = Arc::clone(&slot);
+            let sd2 = Arc::clone(&shutdown);
+            let waiter = thread::spawn(move || s2.wait(&sd2));
+            shutdown.store(true, Ordering::SeqCst);
+            slot.cv.notify_all();
+            assert_eq!(waiter.join().unwrap(), None);
         }
     }
 }

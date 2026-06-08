@@ -38,6 +38,7 @@ pub(crate) struct VmOptions {
     pub(crate) memslots: Vec<Memslot>,
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) enum VcpuSeed<'a> {
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     X86_64Boot(&'a pmi::vm::vcpu::x86_64::CpuState),

@@ -525,10 +525,17 @@ Completed changes:
   `VcpuExit` variants.
 - Moved normal x86 KVM/WHP supervisor execution to `VcpuStop` via backend
   `run_until_stop` methods; `dillo-vm` no longer matches x86 `VcpuExit`.
+- Moved HVF AArch64 PSCI decode, secondary CPU parking, and raw `VmExit`
+  handling into `dillo-machine-hvf::run_smp`; `dillo-vm` now consumes only
+  `VcpuStop` for the normal macOS supervisor path.
+- Moved the PSCI decoder tests and CPU-slot wakeup tests into
+  `dillo-machine-hvf`.
 
 Remaining divergence:
-- AArch64 HVC/SMC/PSCI and raw HVF exits still cross into `dillo-vm`. These
-  must move below the machine boundary before Stage 9 is complete.
+- Linux gdb intentionally imports the explicit KVM `DebugExit` runner. Normal
+  supervisor paths no longer import or match backend vCPU exit enums.
+- The pushed CI result for the HVF boundary slice is still pending; mark Stage 9
+  complete after that CI run passes.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
@@ -544,6 +551,7 @@ Pushed commit:
 - `cdd6f5b refactor: keep x86 halt exits in backends`
 - `915e649 refactor: split kvm debug exits from normal run`
 - `d715295 refactor: report unknown vcpu exits as errors`
+- `ca1ba18 refactor: run x86 vcpus until lifecycle stop`
 
 CI verification:
 - `27143278195` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
@@ -551,6 +559,7 @@ CI verification:
 - `27144366150` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27144798819` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27145113148` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27145571028` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
