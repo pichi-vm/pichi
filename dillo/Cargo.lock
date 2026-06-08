@@ -239,18 +239,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dillo-device"
-version = "0.1.0"
-dependencies = [
- "nix",
- "thiserror",
- "vhost-user-backend",
- "virtio",
- "vm-memory",
- "vmm-sys-util",
-]
-
-[[package]]
 name = "dillo-e2e-schema"
 version = "0.1.0"
 dependencies = [

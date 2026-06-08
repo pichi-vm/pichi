@@ -33,7 +33,7 @@ jobs:
         # Note: avoid `cargo fmt --all` because it recurses into path dependencies
         # (devtree, pmi) which live in sibling repos and are not our concern.
         run: |
-          for p in dillo dillo-pmi dillo-platform dillo-hypervisor dillo-device dillo-virtio-console dillo-vm; do
+          for p in dillo dillo-pmi dillo-platform dillo-hypervisor dillo-virtio-console dillo-vm; do
             cargo fmt --check -p "$p"
           done
 

@@ -768,6 +768,8 @@ Completed changes:
 - Removed the public `GuestMemoryMmap` implementations of `QueueMemory` and
   `VirtioMemory`; virtio device code now reaches guest queue metadata and
   descriptor payloads through explicit shared-memory adapters.
+- Removed the orphaned `dillo-device` compatibility crate, which still exposed
+  an old `DeviceBackend::activate(..., GuestMemoryMmap, ...)` API.
 
 Remaining divergence:
 - vhost-user devices still use their backend-specific whole-memory protocol

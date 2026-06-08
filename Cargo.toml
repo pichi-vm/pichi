@@ -31,7 +31,6 @@ members = [
     "dillo/deps/dillo-virtio-console",
     "dillo/deps/dillo-virtio-console/deps/vhost-backend",
     "dillo/deps/virtio",
-    "dillo/deps/dillo-device",
     "dillo/deps/snuffler",
 ]
 exclude = [
@@ -80,7 +79,6 @@ devtree = { path = "deps/devtree" }
 dillo-pmi = { path = "dillo/deps/dillo-vm/deps/dillo-pmi" }
 dillo-platform = { path = "dillo/deps/dillo-vm/deps/dillo-platform" }
 dillo-hypervisor = { path = "dillo/deps/dillo-vm/deps/dillo-hypervisor" }
-dillo-device = { path = "dillo/deps/dillo-device" }
 dillo-machine-backend = { path = "dillo/deps/dillo-machine-backend" }
 dillo-machine = { path = "dillo/deps/dillo-machine" }
 dillo-machine-hvf = { path = "dillo/deps/dillo-machine-hvf" }
