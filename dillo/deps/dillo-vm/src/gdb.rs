@@ -145,7 +145,8 @@ impl GdbTarget {
             VmExit::MmioRead { .. }
             | VmExit::PioRead { .. }
             | VmExit::Hvc { .. }
-            | VmExit::Smc { .. } => None,
+            | VmExit::Smc { .. }
+            | VmExit::Interrupted => None,
             VmExit::Unknown(reason) => {
                 log::warn!("gdb: unknown KVM exit: {reason}");
                 Some(SingleThreadStopReason::Signal(Signal::SIGSEGV))

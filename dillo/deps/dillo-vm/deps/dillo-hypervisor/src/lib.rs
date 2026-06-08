@@ -66,6 +66,10 @@ pub enum VmExit {
     /// Platform-signaled guest halt (PSCI SYSTEM_OFF surfaced as
     /// SystemEvent by KVM on aarch64).
     Shutdown,
+
+    /// Host interrupt of the vCPU run ioctl.
+    Interrupted,
+
     /// vCPU executed HLT or WFI.
     Halted,
     /// Hypervisor returned an exit reason dillo does not handle.

@@ -61,6 +61,9 @@ pub enum Error {
     #[error("WHP run vCPU {idx} failed: {hr}")]
     RunVcpu { idx: u32, hr: HResult },
 
+    #[error("WHP cancel vCPU {idx} failed: {hr}")]
+    CancelVcpu { idx: u32, hr: HResult },
+
     #[error("WHP request interrupt failed: {0}")]
     RequestInterrupt(HResult),
 
@@ -419,6 +422,13 @@ impl Vcpu {
         self.idx
     }
 
+    pub fn cancel_handle(&self) -> VcpuCancel {
+        VcpuCancel {
+            partition: Arc::clone(&self.partition),
+            idx: self.idx,
+        }
+    }
+
     pub fn set_x86_64_state(
         &mut self,
         state: &pmi::vm::vcpu::x86_64::CpuState,
@@ -485,8 +495,22 @@ impl Vcpu {
             raw::RunExit::MmioRead { addr, size } => VmExit::MmioRead { addr, size },
             raw::RunExit::MmioWrite { addr, data, size } => VmExit::MmioWrite { addr, data, size },
             raw::RunExit::Shutdown => VmExit::Shutdown,
+            raw::RunExit::Canceled => VmExit::Interrupted,
             raw::RunExit::Unknown(reason) => VmExit::Unknown(reason),
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct VcpuCancel {
+    partition: Arc<VmInner>,
+    idx: u32,
+}
+
+impl VcpuCancel {
+    pub fn cancel(&self) -> Result<(), Error> {
+        raw::cancel_run_virtual_processor(self.partition.partition, self.idx)
+            .map_err(|hr| Error::CancelVcpu { idx: self.idx, hr })
     }
 }
 
@@ -591,14 +615,15 @@ mod raw {
         WHV_PARTITION_HANDLE, WHV_PARTITION_PROPERTY, WHV_REGISTER_NAME, WHV_REGISTER_VALUE,
         WHV_RUN_VP_EXIT_CONTEXT, WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS, WHV_TRANSLATE_GVA_FLAGS,
         WHV_TRANSLATE_GVA_RESULT, WHV_TRANSLATE_GVA_RESULT_CODE, WHV_X64_CPUID_RESULT,
-        WHvCapabilityCodeHypervisorPresent, WHvCapabilityCodeInterruptClockFrequency,
-        WHvCapabilityCodeProcessorClockFrequency, WHvCapabilityCodeSyntheticProcessorFeaturesBanks,
-        WHvCreatePartition, WHvCreateVirtualProcessor, WHvDeletePartition,
-        WHvDeleteVirtualProcessor, WHvEmulatorCreateEmulator, WHvEmulatorDestroyEmulator,
-        WHvEmulatorTryIoEmulation, WHvEmulatorTryMmioEmulation, WHvGetCapability,
-        WHvGetVirtualProcessorRegisters, WHvMapGpaRange, WHvMapGpaRangeFlagExecute,
-        WHvMapGpaRangeFlagRead, WHvMapGpaRangeFlagWrite, WHvPartitionPropertyCodeCpuidExitList,
-        WHvPartitionPropertyCodeCpuidResultList, WHvPartitionPropertyCodeInterruptClockFrequency,
+        WHvCancelRunVirtualProcessor, WHvCapabilityCodeHypervisorPresent,
+        WHvCapabilityCodeInterruptClockFrequency, WHvCapabilityCodeProcessorClockFrequency,
+        WHvCapabilityCodeSyntheticProcessorFeaturesBanks, WHvCreatePartition,
+        WHvCreateVirtualProcessor, WHvDeletePartition, WHvDeleteVirtualProcessor,
+        WHvEmulatorCreateEmulator, WHvEmulatorDestroyEmulator, WHvEmulatorTryIoEmulation,
+        WHvEmulatorTryMmioEmulation, WHvGetCapability, WHvGetVirtualProcessorRegisters,
+        WHvMapGpaRange, WHvMapGpaRangeFlagExecute, WHvMapGpaRangeFlagRead, WHvMapGpaRangeFlagWrite,
+        WHvPartitionPropertyCodeCpuidExitList, WHvPartitionPropertyCodeCpuidResultList,
+        WHvPartitionPropertyCodeInterruptClockFrequency,
         WHvPartitionPropertyCodeLocalApicEmulationMode,
         WHvPartitionPropertyCodeProcessorClockFrequency, WHvPartitionPropertyCodeProcessorCount,
         WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks, WHvRequestInterrupt,
@@ -631,6 +656,7 @@ mod raw {
         MmioRead { addr: u64, size: u8 },
         MmioWrite { addr: u64, data: [u8; 8], size: u8 },
         Shutdown,
+        Canceled,
         Unknown(String),
     }
 
@@ -974,6 +1000,19 @@ mod raw {
         Ok(())
     }
 
+    pub(super) fn cancel_run_virtual_processor(
+        partition: PartitionHandle,
+        idx: u32,
+    ) -> Result<(), HResult> {
+        // SAFETY: requests cancellation of the active or next WHP run for `idx`
+        // in this partition; flags must be zero per the WHP API.
+        let hr = unsafe { WHvCancelRunVirtualProcessor(partition, idx, 0) };
+        if failed(hr) {
+            return Err(HResult(hr));
+        }
+        Ok(())
+    }
+
     pub(super) fn run_virtual_processor(
         partition: PartitionHandle,
         idx: u32,
@@ -1006,7 +1045,7 @@ mod raw {
                     return emulate_mmio_exit(partition, idx, &exit, pio_read, mmio_read);
                 }
                 EXIT_UNRECOVERABLE_EXCEPTION => return Ok(RunExit::Shutdown),
-                EXIT_CANCELED => return Ok(RunExit::Unknown("canceled".to_string())),
+                EXIT_CANCELED => return Ok(RunExit::Canceled),
                 other => return Ok(RunExit::Unknown(format!("WHP exit reason {other}"))),
             }
         }

@@ -363,11 +363,14 @@ impl Vcpu {
     /// zero-fill in place — equivalent to "device not present" /
     /// real-hardware all-zeros for unmapped MMIO.
     ///
-    /// `KVM_RUN` returning `EAGAIN` or `EINTR` is not a real failure —
-    /// per `Documentation/virt/kvm/api.rst`, "the call may be retried."
-    /// In particular, APs created with an in-kernel IRQchip start in
-    /// `MP_STATE_UNINITIALIZED`; their `KVM_RUN` returns `EAGAIN` until
-    /// the BSP delivers INIT+SIPI. Retry transparently.
+    /// `KVM_RUN` returning `EAGAIN` is not a real failure — per
+    /// `Documentation/virt/kvm/api.rst`, "the call may be retried." In
+    /// particular, APs created with an in-kernel IRQchip start in
+    /// `MP_STATE_UNINITIALIZED`; their `KVM_RUN` returns `EAGAIN` until the BSP
+    /// delivers INIT+SIPI. Retry transparently.
+    ///
+    /// `EINTR` is returned to the caller so the supervisor can use a
+    /// thread-directed signal to make blocked vCPUs observe shutdown.
     pub fn run(
         &mut self,
         pio_read: impl Fn(u16, u8) -> u32,
@@ -376,9 +379,8 @@ impl Vcpu {
         let exit = loop {
             match self.fd.run() {
                 Ok(e) => break e,
-                Err(e) if e.errno() == nix::libc::EAGAIN || e.errno() == nix::libc::EINTR => {
-                    continue;
-                }
+                Err(e) if e.errno() == nix::libc::EAGAIN => continue,
+                Err(e) if e.errno() == nix::libc::EINTR => return Ok(VmExit::Interrupted),
                 Err(e) => return Err(Error::RunVcpu(self.idx, io(e))),
             }
         };

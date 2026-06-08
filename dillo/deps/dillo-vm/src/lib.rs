@@ -57,6 +57,8 @@ pub use vhost_frontend::{VhostUserFrontend, spawn_backend};
 
 use std::fs::File;
 use std::io::Read;
+#[cfg(target_os = "linux")]
+use std::os::unix::thread::JoinHandleExt;
 use std::path::Path;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
@@ -79,6 +81,63 @@ use dillo_pmi::{Action as PmiAction, FillKind, HostArch, ParseOptions, VcpuState
 use dillo_pmi::{Action as PmiAction, FillKind, HostArch, ParseOptions, VcpuState};
 
 pub use error::RunError;
+
+#[cfg(target_os = "linux")]
+const VCPU_KICK_SIGNAL: nix::sys::signal::Signal = nix::sys::signal::Signal::SIGUSR1;
+
+#[cfg(target_os = "linux")]
+extern "C" fn vcpu_kick_signal_handler(_: libc::c_int) {}
+
+#[cfg(target_os = "linux")]
+struct VcpuKicker {
+    threads: Vec<libc::pthread_t>,
+}
+
+#[cfg(target_os = "linux")]
+impl VcpuKicker {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            threads: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn install_handler() {
+        use std::sync::OnceLock;
+
+        static INSTALLED: OnceLock<()> = OnceLock::new();
+        INSTALLED.get_or_init(|| {
+            let action = nix::sys::signal::SigAction::new(
+                nix::sys::signal::SigHandler::Handler(vcpu_kick_signal_handler),
+                nix::sys::signal::SaFlags::empty(),
+                nix::sys::signal::SigSet::empty(),
+            );
+            // SAFETY: installs a trivial async-signal-safe handler for a process-local
+            // wake signal used only to interrupt KVM_RUN.
+            #[allow(unsafe_code)]
+            unsafe {
+                nix::sys::signal::sigaction(VCPU_KICK_SIGNAL, &action)
+                    .expect("install vCPU kick signal handler");
+            }
+        });
+    }
+
+    fn push(&mut self, thread: libc::pthread_t) {
+        self.threads.push(thread);
+    }
+
+    fn kick_all(&self) {
+        for thread in &self.threads {
+            // SAFETY: pthread_t values come from live JoinHandles for vCPU worker
+            // threads. If a thread has already exited, pthread_kill returns an error
+            // and there is nothing left to wake.
+            #[allow(unsafe_code)]
+            let rc = unsafe { libc::pthread_kill(*thread, VCPU_KICK_SIGNAL as libc::c_int) };
+            if rc != 0 && rc != libc::ESRCH {
+                log::warn!("failed to kick vCPU thread with signal: errno {rc}");
+            }
+        }
+    }
+}
 
 /// Process-wide "supervisor wants us to shut down" flag — set by the
 /// supervisor's signal watcher on 1st SIGINT/SIGTERM, polled by every
@@ -317,7 +376,9 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
     let mut joins = Vec::with_capacity(vcpu_handles.len());
+    let mut vcpu_cancels = Vec::with_capacity(vcpu_handles.len());
     for mut vcpu in vcpu_handles {
+        vcpu_cancels.push(vcpu.cancel_handle());
         let shutdown_c = Arc::clone(&shutdown);
         let mmio_c = Arc::clone(&mmio_bus);
         let legacy_c = Arc::clone(&legacy_pci);
@@ -343,14 +404,33 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 if matches!(thread_outcome, RunOutcome::Reboot) {
                     outcome = RunOutcome::Reboot;
                 }
+                if shutdown.load(Ordering::Acquire) {
+                    for cancel in &vcpu_cancels {
+                        if let Err(e) = cancel.cancel() {
+                            log::warn!("failed to cancel WHP vCPU run: {e}");
+                        }
+                    }
+                }
             }
             Ok(Err(e)) => {
                 let msg = format!("{e:#}");
                 log::error!("Windows/WHP vCPU thread error: {msg}");
+                shutdown.store(true, Ordering::Release);
+                for cancel in &vcpu_cancels {
+                    if let Err(e) = cancel.cancel() {
+                        log::warn!("failed to cancel WHP vCPU run: {e}");
+                    }
+                }
                 err = err.or(Some(RunError::VcpuThread(msg)));
             }
             Err(_) => {
                 log::error!("Windows/WHP vCPU thread panicked");
+                shutdown.store(true, Ordering::Release);
+                for cancel in &vcpu_cancels {
+                    if let Err(e) = cancel.cancel() {
+                        log::warn!("failed to cancel WHP vCPU run: {e}");
+                    }
+                }
                 err = err.or(Some(RunError::VcpuPanic));
             }
         }
@@ -453,6 +533,7 @@ fn run_windows_vcpu_loop(
                 }
             }
             VmExit::MmioRead { .. } => {}
+            VmExit::Interrupted => {}
             VmExit::Halted => {}
             VmExit::Shutdown => {
                 log::warn!("guest shutdown via WHP shutdown exit");
@@ -1620,14 +1701,17 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         return Ok(0);
     }
 
+    VcpuKicker::install_handler();
+
     let mut joins = Vec::with_capacity(vcpus as usize);
+    let mut vcpu_kicker = VcpuKicker::with_capacity(vcpus as usize);
     for mut vcpu in vcpu_handles {
         let shutdown_c = Arc::clone(&shutdown);
         let mmio_c = Arc::clone(&mmio_bus);
         let legacy_c = Arc::clone(&legacy_pci);
         let pci_c = Arc::clone(&pci_root);
         let syscon_c = Arc::clone(&syscon_state);
-        joins.push(thread::spawn(move || -> Result<RunOutcome> {
+        let join = thread::spawn(move || -> Result<RunOutcome> {
             run_vcpu_loop(
                 &mut vcpu,
                 &shutdown_c,
@@ -1636,7 +1720,9 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 &pci_c,
                 &syscon_c,
             )
-        }));
+        });
+        vcpu_kicker.push(join.as_pthread_t());
+        joins.push(join);
     }
 
     // ── 11. wait for shutdown ──────────────────────────────────────
@@ -1648,14 +1734,21 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 if matches!(thread_outcome, RunOutcome::Reboot) {
                     outcome = RunOutcome::Reboot;
                 }
+                if shutdown.load(Ordering::Acquire) {
+                    vcpu_kicker.kick_all();
+                }
             }
             Ok(Err(e)) => {
                 let msg = format!("{e:#}");
                 log::error!("vCPU thread error: {msg}");
+                shutdown.store(true, Ordering::Release);
+                vcpu_kicker.kick_all();
                 err = err.or(Some(RunError::VcpuThread(msg)));
             }
             Err(_panic) => {
                 log::error!("vCPU thread panicked");
+                shutdown.store(true, Ordering::Release);
+                vcpu_kicker.kick_all();
                 err = err.or(Some(RunError::VcpuPanic));
             }
         }
@@ -1773,6 +1866,7 @@ fn run_vcpu_loop(
                 shutdown.store(true, Ordering::Release);
                 return Ok(RunOutcome::Exit(0));
             }
+            VmExit::Interrupted => {}
             VmExit::Hvc { args } | VmExit::Smc { args } => {
                 log::warn!("unhandled HVC/SMC: args={args:?}");
             }
