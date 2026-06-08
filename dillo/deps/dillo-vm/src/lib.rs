@@ -145,13 +145,15 @@ impl VcpuKicker {
 pub static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "linux")]
-use crate::pci::{PciRoot, VirtioPciAdapter};
+use crate::pci::VirtioPciAdapter;
 #[cfg(target_os = "macos")]
-use crate::pci::{PciRoot, VirtioPciAdapter};
+use crate::pci::VirtioPciAdapter;
 #[cfg(target_os = "windows")]
-use crate::pci::{PciRoot, VirtioPciAdapter};
+use crate::pci::VirtioPciAdapter;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_mmio::{MmioBus, MmioWindow};
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use dillo_pci::PciRoot;
 #[cfg(target_os = "windows")]
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 

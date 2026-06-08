@@ -1,0 +1,15 @@
+[package]
+name = "dillo-pci"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "PCI root complex and endpoint traits for dillo."
+
+[dependencies]
+dillo-mmio.workspace = true
+log.workspace = true
+vm-pci.workspace = true
+
+[lints]
+workspace = true

@@ -440,6 +440,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dillo-pci"
+version = "0.1.0"
+dependencies = [
+ "dillo-mmio",
+ "log",
+ "vm-pci",
+]
+
+[[package]]
 name = "dillo-platform"
 version = "0.1.0"
 dependencies = [
@@ -483,6 +492,7 @@ dependencies = [
  "devtree",
  "dillo-hypervisor",
  "dillo-mmio",
+ "dillo-pci",
  "dillo-platform",
  "dillo-pmi",
  "dillo-virtio-console",

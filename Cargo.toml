@@ -20,6 +20,7 @@ members = [
     "dillo/deps/dillo-vm/deps/virtio-pci",
     "dillo/deps/dillo-vm/deps/vm-pci",
     "dillo/deps/dillo-mmio",
+    "dillo/deps/dillo-pci",
     "dillo/deps/dillo-virtio-console",
     "dillo/deps/dillo-virtio-console/deps/vhost-backend",
     "dillo/deps/virtio",
@@ -74,6 +75,7 @@ dillo-platform = { path = "dillo/deps/dillo-vm/deps/dillo-platform" }
 dillo-hypervisor = { path = "dillo/deps/dillo-vm/deps/dillo-hypervisor" }
 dillo-device = { path = "dillo/deps/dillo-device" }
 dillo-mmio = { path = "dillo/deps/dillo-mmio" }
+dillo-pci = { path = "dillo/deps/dillo-pci" }
 dillo-virtio-console = { path = "dillo/deps/dillo-virtio-console" }
 dillo-vm = { path = "dillo/deps/dillo-vm" }
 virtio = { path = "dillo/deps/virtio" }

@@ -11,6 +11,7 @@ dillo-pmi.workspace = true
 dillo-platform.workspace = true
 dillo-hypervisor.workspace = true
 dillo-mmio.workspace = true
+dillo-pci.workspace = true
 devtree.workspace = true
 
 pmi.workspace = true

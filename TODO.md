@@ -131,7 +131,7 @@ Pushed commit:
 
 ## Stage 2 - Extract `dillo-mmio`
 
-Status: complete; CI pending for the implementation commit.
+Status: complete.
 
 Goal: create the first stable trait crate: MMIO windows, MMIO device
 requirements, interrupts, shared-memory capability traits, and `Attach<T>`.
@@ -171,13 +171,14 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 
 CI verification:
-- Pending for this implementation commit; Stage 3 must not start until it
-  passes.
+- `27136612124` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+
+Pushed commit:
+- `fd33516 refactor: extract dillo mmio crate`
 
 ## Stage 3 - Extract `dillo-pci`
 
-Status: pending.
-
+Status: complete; CI pending for the implementation commit.
 Goal: move PCI root and endpoint abstractions behind `dillo-pci`.
 
 Process:
@@ -194,6 +195,28 @@ Success criteria:
 - x86 CF8/CFC paths still decode onto the same `PciRoot` config accessor.
 - ECAM, BAR, and absent-BDF tests pass.
 - Default local verification and x86 Linux/Windows target checks pass.
+
+Completed changes:
+- Added `dillo/deps/dillo-pci` as a workspace crate.
+- Moved `PciRoot`, `PciBus`, `PciDevice`, `BarRegion`, `HostBridge`, and PCI
+  root tests into `dillo-pci`.
+- Kept `VirtioPciAdapter` in `dillo-vm` as compatibility glue until
+  `dillo-pci-virtio` exists.
+- Updated `PciDevice` to use shared-reference config/BAR write methods, with
+  mutable endpoint state behind locks.
+- Updated x86 CF8/CFC PIO decoding to use `dillo_pci::PciRoot`.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+CI verification:
+- Pending for this implementation commit; Stage 4 must not start until it
+  passes.
 
 ## Stage 4 - Extract virtio traits and transports
 
