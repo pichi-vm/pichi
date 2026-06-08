@@ -14,8 +14,6 @@ mod cpu_id;
 mod error;
 mod fdt_writer;
 mod overlay;
-#[cfg(target_os = "linux")]
-mod pci_notify;
 mod placement;
 #[allow(dead_code)]
 mod syscon;

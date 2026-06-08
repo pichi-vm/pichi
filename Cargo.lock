@@ -459,6 +459,7 @@ dependencies = [
  "log",
  "nix",
  "pmi",
+ "vmm-sys-util",
 ]
 
 [[package]]

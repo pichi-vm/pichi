@@ -17,6 +17,7 @@ pmi.workspace = true
 kvm-ioctls.workspace = true
 libc = "0.2"
 nix.workspace = true
+vmm-sys-util.workspace = true
 
 [lints]
 workspace = true

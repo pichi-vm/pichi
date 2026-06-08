@@ -868,6 +868,9 @@ Completed changes:
   PCI virtio still accepts a notifier, but machine-facing code no longer has to
   import a PCI transport trait just to expose backend MMIO notification
   acceleration.
+- Moved the KVM ioeventfd `QueueNotifier` implementation out of `dillo-vm` and
+  into `dillo-machine-kvm`, so Linux-specific MMIO notification registration is
+  owned by the KVM backend crate.
 
 ## Stage 15 - Restore macOS CI
 

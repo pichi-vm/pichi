@@ -20,9 +20,7 @@ use crate::{RunError, hvf_devices, syscon};
 #[cfg(target_os = "windows")]
 use crate::{RunError, ioapic::IoApic, syscon, uart, whp_devices::WhpMsixNotifier};
 #[cfg(target_os = "linux")]
-use crate::{
-    RunError, irq::IrqManager, pci_irq::IrqfdNotifier, pci_notify::KvmQueueNotifier, syscon,
-};
+use crate::{RunError, irq::IrqManager, pci_irq::IrqfdNotifier, syscon};
 
 #[cfg(target_os = "linux")]
 pub(crate) struct Memslot {
@@ -169,7 +167,7 @@ impl BackendVm for dillo_machine_backend::Vm {
     }
 
     fn queue_notifier(&self) -> Box<dyn QueueNotifier> {
-        Box::new(KvmQueueNotifier::new(self.vm_fd_arc()))
+        Box::new(dillo_machine_backend::Vm::create_queue_notifier(self))
     }
 
     fn msix_notifier(
