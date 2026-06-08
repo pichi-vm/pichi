@@ -35,4 +35,6 @@ pub use device::{
 pub use features::{VIRTIO_F_RING_EVENT_IDX, VIRTIO_F_VERSION_1};
 pub use interrupt::Interrupt;
 pub use kick::Kick;
-pub use queue::{DescriptorChain, Queue, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
+pub use queue::{
+    DescriptorChain, Queue, QueueMemory, SharedQueueMemory, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE,
+};

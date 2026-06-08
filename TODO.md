@@ -722,12 +722,14 @@ Completed changes:
 - Added a virtqueue metadata memory interface and a shared-memory-backed
   implementation so descriptor, avail, and used ring accesses can dynamically
   claim attachment-scoped shared-memory regions.
+- Added an activation-scoped queue-memory handle that selects shared-memory
+  queue metadata access when the backend supplies shared-memory capabilities.
 
 Remaining divergence:
 - `VirtioActivate` still carries `GuestMemoryMmap`; current queue and vhost-user
   paths still use whole guest memory.
-- Virtio transports/devices still instantiate queues over `GuestMemoryMmap`
-  instead of `SharedQueueMemory`.
+- Virtio devices still pass `GuestMemoryMmap` to queue operations instead of the
+  activation-scoped queue-memory handle.
 - Machine attachments still return no shared-memory capabilities because no
   DTB-derived virtio DMA aperture is currently consumed; they now reject
   non-empty shared-memory requirements instead of silently ignoring them.

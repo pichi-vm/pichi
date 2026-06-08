@@ -149,6 +149,7 @@ impl VirtioDevice for VirtioConsole {
         let VirtioActivate {
             mem,
             shared_memory: _,
+            queue_memory: _,
             mut queues,
             mut queue_evts,
             host,

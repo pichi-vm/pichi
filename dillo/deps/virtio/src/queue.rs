@@ -58,7 +58,7 @@ impl DescriptorChain {
 }
 
 /// Memory access needed by split virtqueue metadata.
-pub trait QueueMemory {
+pub trait QueueMemory: Send + Sync {
     fn read_u16(&self, addr: GuestAddress) -> Option<u16>;
 
     fn read_u32(&self, addr: GuestAddress) -> Option<u32>;
@@ -89,6 +89,28 @@ impl QueueMemory for GuestMemoryMmap {
 
     fn write_u32(&self, addr: GuestAddress, value: u32) -> Option<()> {
         self.write_obj(value, addr).ok()
+    }
+}
+
+impl<T: QueueMemory + ?Sized> QueueMemory for Arc<T> {
+    fn read_u16(&self, addr: GuestAddress) -> Option<u16> {
+        (**self).read_u16(addr)
+    }
+
+    fn read_u32(&self, addr: GuestAddress) -> Option<u32> {
+        (**self).read_u32(addr)
+    }
+
+    fn read_u64(&self, addr: GuestAddress) -> Option<u64> {
+        (**self).read_u64(addr)
+    }
+
+    fn write_u16(&self, addr: GuestAddress, value: u16) -> Option<()> {
+        (**self).write_u16(addr, value)
+    }
+
+    fn write_u32(&self, addr: GuestAddress, value: u32) -> Option<()> {
+        (**self).write_u32(addr, value)
     }
 }
 
