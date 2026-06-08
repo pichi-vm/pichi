@@ -562,6 +562,7 @@ CI verification:
 - `27147561569` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27149322531` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27149884240` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27150535316` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
@@ -648,6 +649,11 @@ Completed changes:
   updated PCI/MMIO virtio transports to drop activation handles on reset/drop.
 - Updated virtio-console TX/RX workers to observe shutdown and join through the
   retained activation handle.
+- Commit `785d099` retained virtio activation worker handles; CI run
+  `27150535316` passed on fmt, Ubuntu/KVM boot tests, and Windows/WHP boot
+  tests.
+- Moved current vhost-user child-process ownership into the retained virtio
+  activation handle, with a frontend drop fallback when activation never occurs.
 
 Remaining divergence:
 - Existing devices are still activated by the compatibility path; no device

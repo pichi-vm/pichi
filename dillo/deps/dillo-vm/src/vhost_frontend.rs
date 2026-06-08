@@ -11,7 +11,7 @@
 
 use std::os::unix::net::UnixStream;
 use std::process::Child;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use dillo_virtio::{ActivateError, VirtioActivate, VirtioDevice, VirtioDeviceHandle};
 use vhost::vhost_user::message::{VhostUserConfigFlags, VhostUserProtocolFeatures};
@@ -34,7 +34,7 @@ const VHOST_USER_PROTOCOL_FEATURES_BIT: u64 = 0x4000_0000;
 /// Child handle so the backend can be shut down at VM teardown.
 pub struct VhostUserFrontend {
     frontend: Frontend,
-    _child: Child,
+    child: Option<Child>,
     /// Feature bits probed from the backend at construction.
     backend_features: u64,
     /// Source of MSI-X→irqfd call eventfds at activate() time.
@@ -97,10 +97,35 @@ impl VhostUserFrontend {
 
         Ok(Self {
             frontend,
-            _child: child,
+            child: Some(child),
             backend_features,
             notifier,
         })
+    }
+}
+
+impl Drop for VhostUserFrontend {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            terminate_child(&mut child);
+        }
+    }
+}
+
+fn terminate_child(child: &mut Child) {
+    match child.try_wait() {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(e) => {
+            log::warn!("vhost-user backend status check failed: {e}");
+            return;
+        }
+    }
+    if let Err(e) = child.kill() {
+        log::warn!("vhost-user backend kill failed: {e}");
+    }
+    if let Err(e) = child.wait() {
+        log::warn!("vhost-user backend wait failed: {e}");
     }
 }
 
@@ -222,7 +247,33 @@ impl VirtioDevice for VhostUserFrontend {
             queues.len(),
             negotiated
         );
-        Ok(VirtioDeviceHandle::noop())
+        let Some(child) = self.child.take() else {
+            return Ok(VirtioDeviceHandle::noop());
+        };
+        let child = Arc::new(Mutex::new(Some(child)));
+        let shutdown_child = Arc::clone(&child);
+        let join_child = Arc::clone(&child);
+        Ok(VirtioDeviceHandle::new(
+            move || {
+                if let Some(child) = shutdown_child
+                    .lock()
+                    .expect("vhost-user child lock poisoned")
+                    .as_mut()
+                {
+                    terminate_child(child);
+                }
+            },
+            move || {
+                if let Some(mut child) = join_child
+                    .lock()
+                    .expect("vhost-user child lock poisoned")
+                    .take()
+                {
+                    terminate_child(&mut child);
+                }
+                Ok(())
+            },
+        ))
     }
 
     fn read_config(&self, offset: u64, data: &mut [u8]) {
