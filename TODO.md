@@ -761,6 +761,10 @@ Completed changes:
 - Added a cloneable `SharedMemoryState` so machine backends can update
   shared/private ranges while existing attachment-scoped capabilities enforce
   the current state at runtime.
+- Removed the `GuestMemoryMmap` input from portable `VirtioActivate`
+  constructors. Missing shared-memory capabilities now fail closed through null
+  queue and descriptor-buffer memory instead of falling back to whole guest
+  memory.
 
 Remaining divergence:
 - vhost-user devices still use their backend-specific whole-memory protocol

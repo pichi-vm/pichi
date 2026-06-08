@@ -685,22 +685,12 @@ impl VirtioPciDevice {
             }
         }
 
-        let mem = if let Some(m) = &self.mem {
-            m.clone()
-        } else {
-            // Minimal fallback for unit tests -- real VMM provides actual guest memory.
-            GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap_or_else(|_| {
-                GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 4096)]).unwrap()
-            })
-        };
-
         let handle =
             match self
                 .device
                 .lock()
                 .expect("device mutex")
                 .activate(VirtioActivate::with_host(
-                    mem,
                     queues,
                     kicks,
                     Arc::clone(&self.host),

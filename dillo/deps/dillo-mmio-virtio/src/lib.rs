@@ -23,7 +23,7 @@ use dillo_virtio::{
     ActivateError, DeviceJoinError, Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle,
     VirtioDeviceHost, VirtioRunToken,
 };
-use vm_memory::{GuestAddress, GuestMemoryMmap};
+use vm_memory::GuestAddress;
 
 // Register offsets (virtio-mmio v2; see the virtio spec §4.2.2).
 const MAGIC: u64 = 0x000;
@@ -107,7 +107,6 @@ struct Inner {
     activated: bool,
     activation: Option<VirtioDeviceHandle>,
     host: Option<Arc<dyn VirtioDeviceHost>>,
-    mem: GuestMemoryMmap,
     /// One per queue after activation; `QueueNotify` writes kick these.
     kicks: Vec<Kick>,
 }
@@ -139,7 +138,6 @@ impl VirtioMmio {
         device: Box<dyn VirtioDevice>,
         int_status: std::sync::Arc<AtomicU32>,
         irq: WiredIrq,
-        mem: GuestMemoryMmap,
     ) -> Self {
         let device_id = device.device_type();
         let device_features = device.features();
@@ -166,7 +164,6 @@ impl VirtioMmio {
                 activated: false,
                 activation: None,
                 host: None,
-                mem,
                 kicks: Vec::new(),
             }),
             int_status,
@@ -332,7 +329,6 @@ fn maybe_activate(g: &mut Inner) {
     if g.activated || g.status & STATUS_DRIVER_OK == 0 {
         return;
     }
-    let mem = g.mem.clone();
     let Some(host) = g.host.as_ref().map(Arc::clone) else {
         log::error!("virtio-mmio: activate failed: no MMIO attachment host");
         return;
@@ -363,7 +359,7 @@ fn maybe_activate(g: &mut Inner) {
     g.kicks = kicks.iter().filter_map(|k| k.try_clone().ok()).collect();
     let handle = match g
         .device
-        .activate(VirtioActivate::with_host(mem, queues, kicks, host))
+        .activate(VirtioActivate::with_host(queues, kicks, host))
     {
         Ok(handle) => handle,
         Err(e) => {

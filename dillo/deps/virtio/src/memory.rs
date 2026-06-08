@@ -24,6 +24,20 @@ pub trait VirtioMemory: Send + Sync {
     fn write(&self, addr: GuestAddress, data: &[u8]) -> Result<usize, VirtioMemoryError>;
 }
 
+/// Fail-closed descriptor-buffer memory used when no backend capability exists.
+#[derive(Debug, Clone, Copy)]
+pub struct NullVirtioMemory;
+
+impl VirtioMemory for NullVirtioMemory {
+    fn read(&self, _addr: GuestAddress, _data: &mut [u8]) -> Result<usize, VirtioMemoryError> {
+        Err(VirtioMemoryError::Shared(SharedMemoryError::Unsupported))
+    }
+
+    fn write(&self, _addr: GuestAddress, _data: &[u8]) -> Result<usize, VirtioMemoryError> {
+        Err(VirtioMemoryError::Shared(SharedMemoryError::Unsupported))
+    }
+}
+
 impl VirtioMemory for GuestMemoryMmap {
     fn read(&self, addr: GuestAddress, data: &mut [u8]) -> Result<usize, VirtioMemoryError> {
         Bytes::read(self, data, addr).map_err(|e| VirtioMemoryError::Guest(e.to_string()))

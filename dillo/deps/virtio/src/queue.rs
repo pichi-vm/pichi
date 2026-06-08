@@ -70,6 +70,32 @@ pub trait QueueMemory: Send + Sync {
     fn write_u32(&self, addr: GuestAddress, value: u32) -> Option<()>;
 }
 
+/// Fail-closed virtqueue metadata memory used when no backend capability exists.
+#[derive(Debug, Clone, Copy)]
+pub struct NullQueueMemory;
+
+impl QueueMemory for NullQueueMemory {
+    fn read_u16(&self, _addr: GuestAddress) -> Option<u16> {
+        None
+    }
+
+    fn read_u32(&self, _addr: GuestAddress) -> Option<u32> {
+        None
+    }
+
+    fn read_u64(&self, _addr: GuestAddress) -> Option<u64> {
+        None
+    }
+
+    fn write_u16(&self, _addr: GuestAddress, _value: u16) -> Option<()> {
+        None
+    }
+
+    fn write_u32(&self, _addr: GuestAddress, _value: u32) -> Option<()> {
+        None
+    }
+}
+
 impl QueueMemory for GuestMemoryMmap {
     fn read_u16(&self, addr: GuestAddress) -> Option<u16> {
         self.read_obj(addr).ok()
