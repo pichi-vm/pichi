@@ -507,7 +507,10 @@ impl BackendVm for backend_machine::Vm {
         _interrupt_state: Self::InterruptState,
         count: u16,
     ) -> Arc<Self::MsiNotifier> {
-        Arc::new(WhpMsixNotifier::new(self.interrupt_controller(), count))
+        Arc::new(WhpMsixNotifier::new(
+            self.fixed_interrupt_requester(),
+            count,
+        ))
     }
 
     fn create_vcpu(
@@ -581,7 +584,7 @@ impl BackendVm for backend_machine::Vm {
             window,
             reg_shift,
             Some(Interrupt::new(Arc::new(
-                backend_machine::IoApicInterruptLine::new(self.interrupt_controller(), ioapic, gsi),
+                self.create_ioapic_interrupt_line(ioapic, gsi),
             ))),
             out,
         ))

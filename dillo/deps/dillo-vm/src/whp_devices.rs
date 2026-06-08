@@ -12,8 +12,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use dillo_mmio::Interrupt;
 use dillo_pci::{MsixNotifier, MsixTableEntry};
 
-use crate::backend_select::machine::InterruptController;
-
 #[derive(Clone, Copy, Debug, Default)]
 struct Vector {
     addr: u64,
@@ -23,15 +21,18 @@ struct Vector {
 
 #[derive(Debug)]
 pub(crate) struct WhpMsixNotifier {
-    interrupt_controller: InterruptController,
+    fixed_interrupts: crate::backend_select::machine::FixedInterruptRequester,
     vectors: Mutex<Vec<Vector>>,
     enabled: AtomicBool,
 }
 
 impl WhpMsixNotifier {
-    pub(crate) fn new(interrupt_controller: InterruptController, count: u16) -> Self {
+    pub(crate) fn new(
+        fixed_interrupts: crate::backend_select::machine::FixedInterruptRequester,
+        count: u16,
+    ) -> Self {
         Self {
-            interrupt_controller,
+            fixed_interrupts,
             vectors: Mutex::new(vec![Vector::default(); count as usize]),
             enabled: AtomicBool::new(false),
         }
@@ -44,7 +45,7 @@ impl WhpMsixNotifier {
                 return;
             };
             if let Err(e) = me
-                .interrupt_controller
+                .fixed_interrupts
                 .request_fixed_interrupt(msi.destination, msi.vector)
             {
                 log::warn!(

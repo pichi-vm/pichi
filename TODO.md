@@ -913,6 +913,9 @@ Completed changes:
 - Hid the KVM `VmFd` accessor inside `dillo-machine-kvm`; `dillo-vm` now asks
   the backend crate to create its IRQ manager instead of deriving that state
   from a raw backend handle.
+- Hid the WHP interrupt-controller handle inside `dillo-machine-whp`; `dillo-vm`
+  now asks the backend for fixed-MSI and IOAPIC interrupt helpers instead of
+  constructing them from a raw WHP controller.
 
 ## Stage 15 - Restore macOS CI
 

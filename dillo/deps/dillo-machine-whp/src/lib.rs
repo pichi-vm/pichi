@@ -10,8 +10,8 @@ mod imp {
     use dillo_x86::IoApic;
     use vm_memory::GuestMemoryMmap;
 
-    use dillo_hypervisor::VmExit;
-    pub use dillo_hypervisor::{Error, InterruptController, VcpuCancel};
+    pub use dillo_hypervisor::{Error, VcpuCancel};
+    use dillo_hypervisor::{InterruptController, VmExit};
 
     type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
     type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
@@ -97,8 +97,24 @@ mod imp {
             }
         }
 
-        pub fn interrupt_controller(&self) -> InterruptController {
-            self.inner.interrupt_controller()
+        pub fn request_fixed_interrupt(&self, destination: u32, vector: u8) -> Result<(), Error> {
+            self.inner
+                .interrupt_controller()
+                .request_fixed_interrupt(destination, vector)
+        }
+
+        pub fn fixed_interrupt_requester(&self) -> FixedInterruptRequester {
+            FixedInterruptRequester {
+                interrupt_controller: self.inner.interrupt_controller(),
+            }
+        }
+
+        pub fn create_ioapic_interrupt_line(
+            &self,
+            ioapic: Arc<IoApic>,
+            gsi: u32,
+        ) -> IoApicInterruptLine {
+            IoApicInterruptLine::new(self.inner.interrupt_controller(), ioapic, gsi)
         }
 
         pub fn set_shared_memory_capabilities(
@@ -134,6 +150,18 @@ mod imp {
     }
 
     #[derive(Debug)]
+    pub struct FixedInterruptRequester {
+        interrupt_controller: InterruptController,
+    }
+
+    impl FixedInterruptRequester {
+        pub fn request_fixed_interrupt(&self, destination: u32, vector: u8) -> Result<(), Error> {
+            self.interrupt_controller
+                .request_fixed_interrupt(destination, vector)
+        }
+    }
+
+    #[derive(Debug)]
     pub struct IoApicInterruptLine {
         interrupt_controller: InterruptController,
         ioapic: Arc<IoApic>,
@@ -141,11 +169,7 @@ mod imp {
     }
 
     impl IoApicInterruptLine {
-        pub fn new(
-            interrupt_controller: InterruptController,
-            ioapic: Arc<IoApic>,
-            gsi: u32,
-        ) -> Self {
+        fn new(interrupt_controller: InterruptController, ioapic: Arc<IoApic>, gsi: u32) -> Self {
             Self {
                 interrupt_controller,
                 ioapic,
