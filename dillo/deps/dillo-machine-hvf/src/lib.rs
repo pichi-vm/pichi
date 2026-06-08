@@ -63,6 +63,12 @@ mod imp {
         type Output = Arc<dyn MmioAttachment>;
 
         fn attach(&mut self, item: Arc<D>) -> Result<Self::Output, Self::Error> {
+            if !item.shared_memory().is_empty() {
+                return Err(Error::Hv(format!(
+                    "MMIO device requested {} shared-memory capability/capabilities, but HVF attachment does not realize DTB-derived shared-memory apertures yet",
+                    item.shared_memory().len()
+                )));
+            }
             self.mmio_bus
                 .lock()
                 .expect("MMIO bus lock poisoned")

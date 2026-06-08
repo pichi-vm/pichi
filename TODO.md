@@ -569,10 +569,11 @@ CI verification:
 - `27152820089` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27153405345` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27153919137` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27154497074` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
-Status: in progress.
+Status: deferred; divergence recorded.
 
 Goal: make guest poweroff reliably stop all vCPU worker threads on KVM, WHP, and
 HVF.
@@ -623,7 +624,7 @@ Remaining divergence:
 
 ## Stage 11 - Implement process/thread device host attachment
 
-Status: in progress.
+Status: deferred; divergence recorded.
 
 Goal: make `MmioAttachment::spawn` the single backend-owned launch/connect point
 for long-lived device hosts.
@@ -715,16 +716,20 @@ Completed changes:
 - Added a portable mapped-memory `SharedMemory` implementation for standard VMs
   that enforces capability aperture, currently shared ranges, access mode, and
   per-region bounds.
+- Made KVM, HVF, and WHP MMIO attachment fail closed if a device advertises a
+  shared-memory requirement before the backend can realize DTB-derived
+  shared-memory apertures.
 
 Remaining divergence:
 - `VirtioActivate` still carries `GuestMemoryMmap`; current queue and vhost-user
   paths still use whole guest memory.
 - Machine attachments still return no shared-memory capabilities because no
-  DTB-derived virtio DMA aperture is currently consumed.
+  DTB-derived virtio DMA aperture is currently consumed; they now reject
+  non-empty shared-memory requirements instead of silently ignoring them.
 
 ## Stage 13 - Resolve restricted DMA aperture in DTB/device model
 
-Status: pending.
+Status: in progress.
 
 Goal: ensure every shared-memory aperture used by dillo is derived from DTB
 data.
@@ -742,6 +747,16 @@ Success criteria:
 - All new DTB nodes/properties are consumed exactly once.
 - Existing DTB-drain tests cover the new binding.
 - Default local verification passes.
+
+Completed changes:
+- Audited the current Arma device model and DTB generation paths. The current
+  base DTB describes virtio-mmio slots, PCI ECAM/BAR windows, and PCI
+  `dma-coherent`, but no `dma-ranges`, `memory-region`, `restricted-dma-pool`,
+  virtio-iommu, or equivalent restricted DMA/shared-memory aperture.
+
+Remaining divergence:
+- No agreed DTB binding currently exists for the virtio DMA/shared-memory
+  aperture needed by Stage 12.
 
 ## Stage 14 - Remove compatibility adapters
 
