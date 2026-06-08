@@ -12,6 +12,7 @@ dillo-machine.workspace = true
 dillo-mmio.workspace = true
 pmi.workspace = true
 log.workspace = true
+libc = "0.2"
 
 [lints]
 workspace = true

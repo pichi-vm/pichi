@@ -7,7 +7,9 @@ mod msi;
 mod imp {
     use std::os::fd::{AsRawFd, RawFd};
     use std::sync::{Arc, Mutex};
-    use std::sync::{OnceLock, atomic::AtomicBool, atomic::Ordering};
+    use std::sync::{OnceLock, atomic::AtomicBool, atomic::AtomicU8, atomic::Ordering};
+    use std::thread;
+    use std::time::Duration;
 
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
@@ -30,6 +32,145 @@ mod imp {
     const VCPU_KICK_SIGNAL: nix::sys::signal::Signal = nix::sys::signal::Signal::SIGUSR1;
 
     extern "C" fn vcpu_kick_signal_handler(_: libc::c_int) {}
+
+    /// Install KVM/Linux host signal handling for the dillo supervisor.
+    pub fn install_signal_watchers(supervisor_shutdown: &'static AtomicBool) {
+        use nix::sys::signal::{SigSet, Signal};
+        use nix::sys::signalfd::{SfdFlags, SignalFd};
+
+        let mut mask = SigSet::empty();
+        mask.add(Signal::SIGINT);
+        mask.add(Signal::SIGTERM);
+        mask.add(Signal::SIGQUIT);
+        mask.add(Signal::SIGWINCH);
+        mask.thread_block().expect("block signals on main thread");
+
+        let sfd = SignalFd::with_flags(&mask, SfdFlags::SFD_CLOEXEC).expect("signalfd creation");
+
+        thread::Builder::new()
+            .name("dillo-signals".into())
+            .spawn(move || {
+                static SEEN: AtomicU8 = AtomicU8::new(0);
+                loop {
+                    match sfd.read_signal() {
+                        Ok(Some(sig)) => {
+                            let signo = sig.ssi_signo as i32;
+                            if signo == Signal::SIGWINCH as i32 {
+                                log::trace!("SIGWINCH - no console child to forward to yet");
+                                continue;
+                            }
+                            let count = SEEN.fetch_add(1, Ordering::SeqCst);
+                            let name = match signo {
+                                n if n == Signal::SIGINT as i32 => "SIGINT",
+                                n if n == Signal::SIGTERM as i32 => "SIGTERM",
+                                n if n == Signal::SIGQUIT as i32 => "SIGQUIT",
+                                _ => "signal",
+                            };
+                            if signo == Signal::SIGQUIT as i32 || count >= 1 {
+                                log::warn!("{name} - hard exit");
+                                std::process::exit(128 + signo);
+                            }
+                            log::warn!(
+                                "{name} - graceful shutdown requested; waiting 5s for guest before hard exit"
+                            );
+                            supervisor_shutdown.store(true, Ordering::Release);
+
+                            let signo_for_timer = signo;
+                            thread::Builder::new()
+                                .name("dillo-shutdown-watchdog".into())
+                                .spawn(move || {
+                                    thread::sleep(Duration::from_secs(5));
+                                    log::warn!("guest did not shut down within 5s - hard exit");
+                                    std::process::exit(128 + signo_for_timer);
+                                })
+                                .expect("spawn shutdown watchdog");
+                        }
+                        Ok(None) => continue,
+                        Err(e) => {
+                            log::error!("signalfd read: {e}");
+                            return;
+                        }
+                    }
+                }
+            })
+            .expect("spawn dillo-signals thread");
+    }
+
+    static ORIGINAL_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
+
+    /// Raw terminal guard for KVM/Linux supervisor sessions.
+    #[derive(Debug)]
+    pub struct RawStdio {
+        armed: bool,
+    }
+
+    impl RawStdio {
+        pub fn enter_if_tty() -> Self {
+            use std::os::fd::{AsFd, AsRawFd};
+            let stdin = std::io::stdin();
+            let fd = stdin.as_fd().as_raw_fd();
+            #[allow(unsafe_code)]
+            let is_tty = unsafe { libc::isatty(fd) } == 1;
+            if !is_tty {
+                return Self { armed: false };
+            }
+            #[allow(unsafe_code)]
+            let original = unsafe {
+                let mut t: libc::termios = std::mem::zeroed();
+                if libc::tcgetattr(fd, &mut t) != 0 {
+                    return Self { armed: false };
+                }
+                t
+            };
+            let mut raw = original;
+            raw.c_lflag &= !(libc::ECHO | libc::ICANON | libc::ISIG | libc::IEXTEN);
+            #[allow(unsafe_code)]
+            unsafe {
+                if libc::tcsetattr(fd, libc::TCSANOW, &raw) != 0 {
+                    return Self { armed: false };
+                }
+            }
+            if ORIGINAL_TERMIOS.set(original).is_ok() {
+                #[allow(unsafe_code)]
+                unsafe {
+                    libc::atexit(restore_termios_atexit);
+                }
+            }
+            Self { armed: true }
+        }
+    }
+
+    impl Drop for RawStdio {
+        fn drop(&mut self) {
+            if self.armed {
+                restore_termios();
+            }
+        }
+    }
+
+    fn restore_termios() {
+        use std::os::fd::{AsFd, AsRawFd};
+        if let Some(orig) = ORIGINAL_TERMIOS.get() {
+            let stdin = std::io::stdin();
+            let fd = stdin.as_fd().as_raw_fd();
+            #[allow(unsafe_code)]
+            unsafe {
+                let _ = libc::tcsetattr(fd, libc::TCSANOW, orig);
+            }
+        }
+    }
+
+    extern "C" fn restore_termios_atexit() {
+        restore_termios();
+    }
+
+    pub fn install_panic_terminal_restore() {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_termios();
+            prev(info);
+        }));
+    }
 
     #[derive(Clone)]
     pub struct Vm {

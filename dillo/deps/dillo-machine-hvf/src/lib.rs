@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 mod imp {
+    use std::sync::OnceLock;
     use std::sync::{Arc, Mutex};
     use std::sync::{
         Condvar,
@@ -15,6 +16,83 @@ mod imp {
 
     use dillo_hypervisor::VmExit;
     pub use dillo_hypervisor::{Error, GicParams, VcpuHandle, force_vcpus_exit, send_msi, set_spi};
+
+    pub fn install_signal_watchers(_supervisor_shutdown: &'static AtomicBool) {}
+
+    static ORIGINAL_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
+
+    #[derive(Debug)]
+    pub struct RawStdio {
+        armed: bool,
+    }
+
+    impl RawStdio {
+        pub fn enter_if_tty() -> Self {
+            use std::os::fd::{AsFd, AsRawFd};
+            let stdin = std::io::stdin();
+            let fd = stdin.as_fd().as_raw_fd();
+            #[allow(unsafe_code)]
+            let is_tty = unsafe { libc::isatty(fd) } == 1;
+            if !is_tty {
+                return Self { armed: false };
+            }
+            #[allow(unsafe_code)]
+            let original = unsafe {
+                let mut t: libc::termios = std::mem::zeroed();
+                if libc::tcgetattr(fd, &mut t) != 0 {
+                    return Self { armed: false };
+                }
+                t
+            };
+            let mut raw = original;
+            raw.c_lflag &= !(libc::ECHO | libc::ICANON | libc::ISIG | libc::IEXTEN);
+            #[allow(unsafe_code)]
+            unsafe {
+                if libc::tcsetattr(fd, libc::TCSANOW, &raw) != 0 {
+                    return Self { armed: false };
+                }
+            }
+            if ORIGINAL_TERMIOS.set(original).is_ok() {
+                #[allow(unsafe_code)]
+                unsafe {
+                    libc::atexit(restore_termios_atexit);
+                }
+            }
+            Self { armed: true }
+        }
+    }
+
+    impl Drop for RawStdio {
+        fn drop(&mut self) {
+            if self.armed {
+                restore_termios();
+            }
+        }
+    }
+
+    fn restore_termios() {
+        use std::os::fd::{AsFd, AsRawFd};
+        if let Some(orig) = ORIGINAL_TERMIOS.get() {
+            let stdin = std::io::stdin();
+            let fd = stdin.as_fd().as_raw_fd();
+            #[allow(unsafe_code)]
+            unsafe {
+                let _ = libc::tcsetattr(fd, libc::TCSANOW, orig);
+            }
+        }
+    }
+
+    extern "C" fn restore_termios_atexit() {
+        restore_termios();
+    }
+
+    pub fn install_panic_terminal_restore() {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_termios();
+            prev(info);
+        }));
+    }
 
     pub struct Vm {
         inner: dillo_hypervisor::Vm,

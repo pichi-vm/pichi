@@ -916,6 +916,19 @@ Completed changes:
 - Hid the WHP interrupt-controller handle inside `dillo-machine-whp`; `dillo-vm`
   now asks the backend for fixed-MSI and IOAPIC interrupt helpers instead of
   constructing them from a raw WHP controller.
+- Moved dillo's host signal handling and raw-terminal handling behind the
+  selected `dillo-machine-*` crate. `dillo/src/main.rs` now has no direct
+  OS/arch cfgs; only `dillo/src/machine_select.rs` selects the native machine
+  crate.
+
+Latest local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
 
 ## Stage 15 - Restore macOS CI
 

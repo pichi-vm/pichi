@@ -1,5 +1,6 @@
 #[cfg(target_os = "windows")]
 mod imp {
+    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
 
     use dillo_machine::VcpuStop;
@@ -15,6 +16,19 @@ mod imp {
 
     type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
     type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
+
+    pub fn install_signal_watchers(_supervisor_shutdown: &'static AtomicBool) {}
+
+    pub fn install_panic_terminal_restore() {}
+
+    #[derive(Debug)]
+    pub struct RawStdio;
+
+    impl RawStdio {
+        pub fn enter_if_tty() -> Self {
+            Self
+        }
+    }
 
     pub struct Vm {
         inner: dillo_hypervisor::Vm,

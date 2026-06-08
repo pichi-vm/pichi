@@ -28,10 +28,15 @@ argh.workspace = true
 anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
-libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { workspace = true }
+dillo-machine-kvm.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dillo-machine-hvf.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+dillo-machine-whp.workspace = true
 
 [dev-dependencies]
 # Boot/e2e tests build a PMI with arma and assert on the Report that snuffler
