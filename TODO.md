@@ -566,6 +566,7 @@ CI verification:
 - `27150863901` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27151569414` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27152061240` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27152820089` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
@@ -668,11 +669,14 @@ Completed changes:
   compatibility thread host when the root is attached.
 - Added adopted-process host support and routed the current vhost-user child
   process through the activation host after the vhost setup handshake.
+- Removed the detached virtio-console stdin reader; host-to-guest input now
+  requires a future portable host-input capability instead of direct OS polling
+  in the device.
 
 Remaining divergence:
-- The virtio-console stdin reader is still a detached local thread.
 - The vhost-user process still starts before activation because config-space
   reads need the vhost handshake before guest `DRIVER_OK`.
+- The in-process virtio-console no longer forwards host stdin to the guest.
 
 ## Stage 12 - Implement CC-first shared-memory capabilities
 

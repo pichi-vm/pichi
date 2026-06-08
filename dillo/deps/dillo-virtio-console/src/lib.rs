@@ -21,7 +21,7 @@
 //! See `dillo/ARCHITECTURE.md` §10 and §12.
 
 use std::collections::VecDeque;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Write};
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -268,36 +268,10 @@ fn spawn_rx_worker(
     kick: Kick,
     call_fd: Option<Interrupt>,
 ) -> Result<VirtioDeviceHandle, ActivateError> {
-    let (input_tx, input_rx) = mpsc::channel();
-    thread::Builder::new()
-        .name("virtio-console-stdin".into())
-        .spawn(move || stdin_worker(input_tx))
-        .expect("spawn virtio-console stdin worker");
     host.spawn(Box::new(move |token| {
-        rx_worker(mem, queue, kick, call_fd, input_rx, token);
+        rx_worker(mem, queue, kick, call_fd, token);
         Ok(())
     }))
-}
-
-fn stdin_worker(tx: mpsc::Sender<Vec<u8>>) {
-    let stdin = io::stdin();
-    let mut stdin = stdin.lock();
-    let mut buf = [0u8; 1024];
-    loop {
-        match stdin.read(&mut buf) {
-            Ok(0) => return,
-            Ok(n) => {
-                if tx.send(buf[..n].to_vec()).is_err() {
-                    return;
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => {
-                log::warn!("virtio-console stdin: read error: {e}");
-                return;
-            }
-        }
-    }
 }
 
 fn tx_worker(
@@ -345,7 +319,6 @@ fn rx_worker(
     queue: Queue,
     kick: Kick,
     call_fd: Option<Interrupt>,
-    input_rx: mpsc::Receiver<Vec<u8>>,
     token: VirtioRunToken,
 ) {
     #[cfg(target_os = "linux")]
@@ -358,11 +331,8 @@ fn rx_worker(
             return;
         }
         if pending.is_empty() {
-            match input_rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(bytes) => pending.extend(bytes),
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(_) => return,
-            }
+            thread::sleep(Duration::from_millis(50));
+            continue;
         }
 
         while !pending.is_empty() {
