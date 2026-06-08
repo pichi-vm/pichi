@@ -2,6 +2,7 @@
 mod imp {
     use std::os::fd::{AsRawFd, RawFd};
     use std::sync::{Arc, Mutex};
+    use std::sync::{OnceLock, atomic::AtomicBool, atomic::Ordering};
 
     use dillo_machine::VcpuStop;
     use dillo_mmio::{Attach, MmioAttachment, MmioBus, MmioDevice, MmioInterrupt, SharedMemory};
@@ -12,17 +13,24 @@ mod imp {
     type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
     type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 
+    const VCPU_KICK_SIGNAL: nix::sys::signal::Signal = nix::sys::signal::Signal::SIGUSR1;
+
+    extern "C" fn vcpu_kick_signal_handler(_: libc::c_int) {}
+
     #[derive(Clone, Debug)]
     pub struct Vm {
         inner: dillo_hypervisor::Vm,
         mmio_bus: Arc<Mutex<MmioBus>>,
+        exit_requester: VcpuExitRequester,
     }
 
     impl Vm {
         pub fn new() -> Result<Self, Error> {
+            let exit_requester = VcpuExitRequester::new();
             Ok(Self {
                 inner: dillo_hypervisor::Vm::new()?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
+                exit_requester,
             })
         }
 
@@ -56,7 +64,17 @@ mod imp {
                 mmio_bus: Arc::clone(&self.mmio_bus),
                 pio_read,
                 pio_write,
+                exit_requester: self.exit_requester(),
+                registered_thread: AtomicBool::new(false),
             })
+        }
+
+        pub fn request_vcpu_exit(&self) {
+            self.exit_requester.request_vcpu_exit();
+        }
+
+        pub fn exit_requester(&self) -> VcpuExitRequester {
+            self.exit_requester.clone()
         }
     }
 
@@ -94,6 +112,71 @@ mod imp {
         mmio_bus: Arc<Mutex<MmioBus>>,
         pio_read: PioRead,
         pio_write: PioWrite,
+        exit_requester: VcpuExitRequester,
+        registered_thread: AtomicBool,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct VcpuExitRequester {
+        threads: Arc<Mutex<Vec<libc::pthread_t>>>,
+    }
+
+    impl VcpuExitRequester {
+        fn new() -> Self {
+            Self::install_kick_handler();
+            Self {
+                threads: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn install_kick_handler() {
+            static INSTALLED: OnceLock<()> = OnceLock::new();
+            INSTALLED.get_or_init(|| {
+                let action = nix::sys::signal::SigAction::new(
+                    nix::sys::signal::SigHandler::Handler(vcpu_kick_signal_handler),
+                    nix::sys::signal::SaFlags::empty(),
+                    nix::sys::signal::SigSet::empty(),
+                );
+                // SAFETY: installs a trivial async-signal-safe handler for a
+                // process-local wake signal used only to interrupt KVM_RUN.
+                #[allow(unsafe_code)]
+                unsafe {
+                    nix::sys::signal::sigaction(VCPU_KICK_SIGNAL, &action)
+                        .expect("install vCPU kick signal handler");
+                }
+            });
+        }
+
+        fn register_current_thread(&self) {
+            // SAFETY: pthread_self returns the current thread identifier. It is
+            // stored only so request_vcpu_exit can send the wake signal while
+            // the vCPU worker thread may be blocked in KVM_RUN.
+            #[allow(unsafe_code)]
+            let thread = unsafe { libc::pthread_self() };
+            let mut threads = self.threads.lock().expect("vCPU thread list poisoned");
+            if !threads.contains(&thread) {
+                threads.push(thread);
+            }
+        }
+
+        pub fn request_vcpu_exit(&self) {
+            for thread in self
+                .threads
+                .lock()
+                .expect("vCPU thread list poisoned")
+                .iter()
+            {
+                // SAFETY: pthread_t values come from vCPU worker threads that
+                // registered themselves before entering KVM_RUN. If a thread
+                // has already exited, pthread_kill returns ESRCH and there is
+                // nothing left to wake.
+                #[allow(unsafe_code)]
+                let rc = unsafe { libc::pthread_kill(*thread, VCPU_KICK_SIGNAL as libc::c_int) };
+                if rc != 0 && rc != libc::ESRCH {
+                    log::warn!("failed to kick vCPU thread with signal: errno {rc}");
+                }
+            }
+        }
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,6 +302,9 @@ mod imp {
         where
             F: FnMut() -> Option<VcpuStop>,
         {
+            if !self.registered_thread.swap(true, Ordering::AcqRel) {
+                self.exit_requester.register_current_thread();
+            }
             loop {
                 if let Some(stop) = stop() {
                     return Ok(stop);

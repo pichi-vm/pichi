@@ -585,6 +585,9 @@ Success criteria:
 - Default local verification and all target checks pass.
 
 Completed changes:
+- Commit `a72a4ff` fixed WHP two-vCPU shutdown by canceling peer vCPUs from
+  the returning vCPU thread; CI run `27148630715` passed on fmt, Ubuntu, and
+  Windows/WHP.
 - Moved WHP vCPU cancel-handle ownership into `dillo-machine-whp::Vm`.
 - Added backend-owned `Vm::request_vcpu_exit()` on WHP and updated the Windows
   supervisor loop to request vCPU exit through the machine backend instead of
@@ -592,15 +595,19 @@ Completed changes:
 - Added a cloneable WHP backend exit requester and gave each Windows vCPU
   thread its own requester so the first returning vCPU cancels the rest without
   waiting on join order.
+- Moved KVM vCPU thread signaling into `dillo-machine-kvm::Vm` through a
+  backend-owned `VcpuExitRequester`; the Linux supervisor loop now asks the KVM
+  backend to wake blocked vCPU runs instead of owning pthread IDs directly.
 
 Remaining divergence:
-- KVM vCPU thread signaling is still owned by `dillo-vm::VcpuKicker`.
+- KVM still uses the existing signal wake path; no `immediate_exit` wrapper
+  exists in the current local KVM abstraction.
 - HVF uses backend-owned `force_vcpus_exit` inside `dillo-machine-hvf::run_smp`,
   but the `Machine::request_vcpu_exit` trait is not wired for the backend
   crates yet.
 - CI run `27147948508` failed the WHP two-vCPU boot tests after cancellation
-  ownership moved into the backend; the per-thread exit requester is the fix
-  awaiting pushed CI verification.
+  ownership moved into the backend; commit `a72a4ff` corrected that regression
+  and CI run `27148630715` confirmed the fix.
 
 ## Stage 11 - Implement process/thread device host attachment
 

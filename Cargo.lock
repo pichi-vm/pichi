@@ -467,7 +467,9 @@ dependencies = [
  "dillo-machine",
  "dillo-mmio",
  "kvm-ioctls",
+ "libc",
  "log",
+ "nix",
  "pmi",
 ]
 
