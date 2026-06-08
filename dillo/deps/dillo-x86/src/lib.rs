@@ -1,5 +1,7 @@
 //! x86 architecture substrate for dillo.
 
+pub mod pio_pci;
+
 use std::sync::Mutex;
 
 use dillo_mmio::{MmioDevice, MmioWindow};

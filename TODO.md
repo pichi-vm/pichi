@@ -959,6 +959,9 @@ Completed changes:
 - Moved the supervisor shutdown flag out of `dillo-vm` and into the top-level
   `dillo` process; backend-specific signal hooks now receive the process-owned
   shutdown state.
+- Moved x86 CF8/CFC PCI configuration PIO decoding from `dillo-vm` into
+  `dillo-x86::pio_pci`; `dillo-vm` now consumes that architecture substrate
+  instead of owning the decoder. The CF8/CFC tests now run under `dillo-x86`.
 
 CI verification:
 - `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
@@ -969,6 +972,8 @@ CI verification:
   `9ef45a5 refactor: add dillo launch preflight`.
 - `27172191122` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `860a900 refactor: preflight launch from selected machine`.
+- `27172880665` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `1ca55d1 refactor: pass launch plan into vm runner`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

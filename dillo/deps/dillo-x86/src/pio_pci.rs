@@ -15,21 +15,21 @@ use std::sync::{Arc, Mutex};
 
 use dillo_pci::PciRoot;
 
-pub(crate) const CF8_PORT: u16 = 0xCF8;
-pub(crate) const CF8_PORT_END: u16 = 0xCFB;
+pub const CF8_PORT: u16 = 0xCF8;
+pub const CF8_PORT_END: u16 = 0xCFB;
 /// CFC-CFF is the 4-byte data window. Guests may issue 1/2/4-byte
 /// accesses at any offset within it.
-pub(crate) const CFC_PORT_BASE: u16 = 0xCFC;
-pub(crate) const CFC_PORT_END: u16 = 0xCFF;
+pub const CFC_PORT_BASE: u16 = 0xCFC;
+pub const CFC_PORT_END: u16 = 0xCFF;
 
 /// Latched CF8 address — shared across vCPUs (one shared PCI bus).
 #[derive(Debug, Default)]
-pub(crate) struct LegacyPciState {
+pub struct LegacyPciState {
     cf8: Mutex<u32>,
 }
 
 impl LegacyPciState {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 }
@@ -51,12 +51,7 @@ fn decode_cf8(cf8: u32) -> Option<(u8, u8, u8, usize, usize)> {
 
 /// Dispatch a guest PIO read on `port`. Returns the value with `size`
 /// (1/2/4) low bytes meaningful.
-pub(crate) fn pio_read(
-    state: &Arc<LegacyPciState>,
-    bus: &Arc<PciRoot>,
-    port: u16,
-    size: u8,
-) -> u32 {
+pub fn pio_read(state: &Arc<LegacyPciState>, bus: &Arc<PciRoot>, port: u16, size: u8) -> u32 {
     match port {
         p if (CF8_PORT..=CF8_PORT_END).contains(&p) => {
             let cf8 = *state.cf8.lock().expect("cf8 mutex poisoned");
@@ -87,7 +82,7 @@ pub(crate) fn pio_read(
 }
 
 /// Dispatch a guest PIO write on `port`. `data` carries `size` bytes.
-pub(crate) fn pio_write(state: &Arc<LegacyPciState>, bus: &Arc<PciRoot>, port: u16, data: &[u8]) {
+pub fn pio_write(state: &Arc<LegacyPciState>, bus: &Arc<PciRoot>, port: u16, data: &[u8]) {
     match port {
         p if (CF8_PORT..=CF8_PORT_END).contains(&p) => {
             let off = (p - CF8_PORT) as usize;

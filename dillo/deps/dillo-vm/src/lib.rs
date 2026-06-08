@@ -27,8 +27,6 @@ mod hvf_devices;
 mod gdb;
 #[cfg(target_os = "linux")]
 mod memory;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-mod pio_pci;
 #[cfg(target_os = "linux")]
 mod vhost_frontend;
 #[cfg(target_os = "windows")]
@@ -62,6 +60,8 @@ use dillo_pci::MsixNotifier;
 use dillo_pmi::{Action as PmiAction, FillKind, VcpuState};
 #[cfg(target_os = "windows")]
 use dillo_pmi::{Action as PmiAction, FillKind, VcpuState};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use dillo_x86::pio_pci;
 
 pub use error::RunError;
 
