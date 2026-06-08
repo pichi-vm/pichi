@@ -438,12 +438,41 @@ impl Interrupt {
         Self(line)
     }
 
+    pub fn from_fn(signal: impl Fn() + Send + Sync + 'static) -> Self {
+        Self::new(Arc::new(FnInterruptLine {
+            signal: Box::new(signal),
+        }))
+    }
+
     pub fn signal(&self) {
         self.0.signal();
     }
 
     pub fn set_level(&self, level: bool) -> Result<(), InterruptError> {
         self.0.set_level(level)
+    }
+}
+
+struct FnInterruptLine {
+    signal: Box<dyn Fn() + Send + Sync>,
+}
+
+impl std::fmt::Debug for FnInterruptLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FnInterruptLine").finish_non_exhaustive()
+    }
+}
+
+impl InterruptLine for FnInterruptLine {
+    fn signal(&self) {
+        (self.signal)();
+    }
+
+    fn set_level(&self, level: bool) -> Result<(), InterruptError> {
+        if level {
+            self.signal();
+        }
+        Ok(())
     }
 }
 

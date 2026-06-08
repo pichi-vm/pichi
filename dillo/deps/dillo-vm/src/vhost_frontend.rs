@@ -195,10 +195,10 @@ impl VirtioDevice for VhostUserFrontend {
             let kick = queue_evts.get(i).ok_or_else(|| {
                 ActivateError::InvalidConfig(format!("missing kick eventfd for queue {i}"))
             })?;
-            let call_opt = self.notifier.get_irqfd_for_vector(queue.msix_vector);
-            // Both ends of vhost's set_vring_kick / set_vring_call want a
-            // raw &EventFd; pull it back out of our cross-platform wrappers
-            // (Linux only — vhost itself is Linux-only).
+            let call_opt = self.notifier.eventfd_for_vector(queue.msix_vector);
+            // Linux vhost-user requires raw eventfds for set_vring_kick and
+            // set_vring_call. Portable in-process devices use dillo-mmio
+            // interrupt handles instead.
             let kick_fd = kick.as_eventfd();
 
             self.frontend
@@ -227,11 +227,9 @@ impl VirtioDevice for VhostUserFrontend {
                 .map_err(|e| ActivateError::InvalidConfig(format!("set_vring_kick[{i}]: {e}")))?;
 
             if let Some(ref call) = call_opt {
-                self.frontend
-                    .set_vring_call(i, call.as_eventfd())
-                    .map_err(|e| {
-                        ActivateError::InvalidConfig(format!("set_vring_call[{i}]: {e}"))
-                    })?;
+                self.frontend.set_vring_call(i, call).map_err(|e| {
+                    ActivateError::InvalidConfig(format!("set_vring_call[{i}]: {e}"))
+                })?;
             } else {
                 log::warn!(
                     "VhostUserFrontend: queue {i} has no call eventfd \

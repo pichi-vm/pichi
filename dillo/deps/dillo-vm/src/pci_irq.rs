@@ -11,8 +11,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use dillo_mmio::Interrupt;
 use dillo_pci::{MsixNotifier, MsixTableEntry};
-use dillo_virtio::Interrupt;
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::irq::IrqManager;
@@ -26,9 +26,9 @@ use crate::irq::IrqManager;
 /// re-programming, the existing GSI route is updated to the new
 /// address/data.
 ///
-/// At device-activate time the device's `set_vring_call(idx, fd)` is
-/// driven from [`Self::get_irqfd_for_vector`] so the backend's writes
-/// trigger KVM to inject MSI-X directly — no VMM relay.
+/// At device-activate time, in-process devices use [`Self::interrupt_for_vector`].
+/// Linux vhost-user devices use [`Self::eventfd_for_vector`] because the
+/// protocol requires a raw eventfd for `set_vring_call`.
 pub struct IrqfdNotifier {
     irq_manager: Arc<Mutex<IrqManager>>,
     /// Per-vector: (gsi, eventfd clone for signaling).
@@ -60,13 +60,23 @@ impl IrqfdNotifier {
         }
     }
 
-    /// Clone the eventfd for `vector` (wrapped as an [`Interrupt`]) if it
-    /// has been programmed by the guest. Used at device-activate time to
-    /// pick `set_vring_call`'s fd per virtqueue.
-    pub fn get_irqfd_for_vector(&self, vector: u16) -> Option<Interrupt> {
+    /// Clone the eventfd for `vector` if it has been programmed by the guest.
+    /// The Linux vhost-user frontend needs this raw eventfd for
+    /// `set_vring_call`.
+    pub fn eventfd_for_vector(&self, vector: u16) -> Option<EventFd> {
         let vectors = self.vectors.lock().ok()?;
         let slot = vectors.get(vector as usize)?.as_ref()?;
-        slot.1.try_clone().ok().map(Interrupt::from_eventfd)
+        slot.1.try_clone().ok()
+    }
+
+    /// Portable interrupt handle for in-process virtio devices.
+    pub fn interrupt_for_vector(&self, vector: u16) -> Option<Interrupt> {
+        let eventfd = self.eventfd_for_vector(vector)?;
+        Some(Interrupt::from_fn(move || {
+            if let Err(e) = eventfd.write(1) {
+                log::warn!("KVM MSI-X irqfd signal for vector {vector} failed: {e}");
+            }
+        }))
     }
 
     /// All GSIs allocated for this notifier. Used by device-removal

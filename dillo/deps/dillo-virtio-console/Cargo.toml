@@ -7,6 +7,7 @@ license.workspace = true
 description = "virtio-console device implementing dillo_virtio::VirtioDevice. Drives hvc0 to stdout."
 
 [dependencies]
+dillo-mmio.workspace = true
 dillo-virtio.workspace = true
 vm-memory.workspace = true
 vmm-sys-util.workspace = true
@@ -20,9 +21,6 @@ vhost-user-backend = { workspace = true }
 vhost = { workspace = true }
 virtio-queue = { workspace = true }
 extrasafe = { workspace = true }
-
-[dev-dependencies]
-dillo-mmio.workspace = true
 
 [lints]
 workspace = true

@@ -28,10 +28,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use dillo_mmio::Interrupt;
 use dillo_virtio::queue::{Queue, QueueMemory, VIRTQ_DESC_F_WRITE};
 use dillo_virtio::{
-    ActivateError, Interrupt, Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle,
-    VirtioDeviceHost, VirtioMemory, VirtioRunToken,
+    ActivateError, Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle, VirtioDeviceHost,
+    VirtioMemory, VirtioRunToken,
 };
 
 /// VIRTIO_F_VERSION_1 from the virtio 1.x spec.
@@ -95,13 +96,12 @@ pub fn flush_output() {
 }
 
 /// Resolve the guest [`Interrupt`] for a given MSI-X vector at activate time.
-/// On Linux the dillo-vm side returns an irqfd-backed interrupt; on macOS/HVF
-/// it returns a closure that calls `hv_gic_send_msi` with the MSI-X entry.
-pub type CallFdLookup = Arc<dyn Fn(u16) -> Option<Interrupt> + Send + Sync>;
+/// The selected machine backend owns how that interrupt is delivered.
+pub type CallInterruptLookup = Arc<dyn Fn(u16) -> Option<Interrupt> + Send + Sync>;
 
 /// virtio-console: thread-mode device.
 pub struct VirtioConsole {
-    call_fd_lookup: CallFdLookup,
+    call_interrupt_lookup: CallInterruptLookup,
     activated: bool,
 }
 
@@ -114,9 +114,9 @@ impl std::fmt::Debug for VirtioConsole {
 }
 
 impl VirtioConsole {
-    pub fn new(call_fd_lookup: CallFdLookup) -> Self {
+    pub fn new(call_interrupt_lookup: CallInterruptLookup) -> Self {
         Self {
-            call_fd_lookup,
+            call_interrupt_lookup,
             activated: false,
         }
     }
@@ -167,28 +167,28 @@ impl VirtioDevice for VirtioConsole {
         let tx_queue = queues.remove(1);
         let tx_evt = queue_evts.remove(1);
         let tx_wake = tx_evt.try_clone()?;
-        let tx_call_fd = (self.call_fd_lookup)(tx_queue.msix_vector);
+        let tx_call_interrupt = (self.call_interrupt_lookup)(tx_queue.msix_vector);
         let tx_handle = Arc::new(Mutex::new(Some(spawn_tx_worker(
             Arc::clone(&host),
             Arc::clone(&queue_memory),
             Arc::clone(&buffer_memory),
             tx_queue,
             tx_evt,
-            tx_call_fd,
+            tx_call_interrupt,
         )?)));
 
         // Queue 0 is RX. Feed host stdin into guest-provided writable buffers.
         let rx_queue = queues.remove(0);
         let rx_evt = queue_evts.remove(0);
         let rx_wake = rx_evt.try_clone()?;
-        let rx_call_fd = (self.call_fd_lookup)(rx_queue.msix_vector);
+        let rx_call_interrupt = (self.call_interrupt_lookup)(rx_queue.msix_vector);
         let rx_handle = Arc::new(Mutex::new(Some(spawn_rx_worker(
             host,
             queue_memory,
             buffer_memory,
             rx_queue,
             rx_evt,
-            rx_call_fd,
+            rx_call_interrupt,
         )?)));
         let shutdown_tx_handle = Arc::clone(&tx_handle);
         let shutdown_rx_handle = Arc::clone(&rx_handle);
@@ -254,10 +254,17 @@ fn spawn_tx_worker(
     buffer_memory: Arc<dyn VirtioMemory>,
     queue: Queue,
     kick: Kick,
-    call_fd: Option<Interrupt>,
+    call_interrupt: Option<Interrupt>,
 ) -> Result<VirtioDeviceHandle, ActivateError> {
     host.spawn(Box::new(move |token| {
-        tx_worker(queue_memory, buffer_memory, queue, kick, call_fd, token);
+        tx_worker(
+            queue_memory,
+            buffer_memory,
+            queue,
+            kick,
+            call_interrupt,
+            token,
+        );
         Ok(())
     }))
 }
@@ -268,10 +275,17 @@ fn spawn_rx_worker(
     buffer_memory: Arc<dyn VirtioMemory>,
     queue: Queue,
     kick: Kick,
-    call_fd: Option<Interrupt>,
+    call_interrupt: Option<Interrupt>,
 ) -> Result<VirtioDeviceHandle, ActivateError> {
     host.spawn(Box::new(move |token| {
-        rx_worker(queue_memory, buffer_memory, queue, kick, call_fd, token);
+        rx_worker(
+            queue_memory,
+            buffer_memory,
+            queue,
+            kick,
+            call_interrupt,
+            token,
+        );
         Ok(())
     }))
 }
@@ -281,7 +295,7 @@ fn tx_worker(
     buffer_memory: Arc<dyn VirtioMemory>,
     queue: Queue,
     kick: Kick,
-    call_fd: Option<Interrupt>,
+    call_interrupt: Option<Interrupt>,
     token: VirtioRunToken,
 ) {
     // Linux: virtio-pci's queue eventfds are created `EFD_NONBLOCK` (so the
@@ -313,7 +327,12 @@ fn tx_worker(
         if token.is_shutdown_requested() {
             return;
         }
-        drain_tx(&queue_memory, &buffer_memory, &queue, call_fd.as_ref());
+        drain_tx(
+            &queue_memory,
+            &buffer_memory,
+            &queue,
+            call_interrupt.as_ref(),
+        );
     }
 }
 
@@ -322,7 +341,7 @@ fn rx_worker(
     buffer_memory: Arc<dyn VirtioMemory>,
     queue: Queue,
     kick: Kick,
-    call_fd: Option<Interrupt>,
+    call_interrupt: Option<Interrupt>,
     token: VirtioRunToken,
 ) {
     #[cfg(target_os = "linux")]
@@ -348,7 +367,7 @@ fn rx_worker(
                 &buffer_memory,
                 &queue,
                 &mut pending,
-                call_fd.as_ref(),
+                call_interrupt.as_ref(),
             ) {
                 continue;
             }
@@ -380,7 +399,7 @@ fn drain_rx(
     buffer_memory: &Arc<dyn VirtioMemory>,
     queue: &Arc<Mutex<Queue>>,
     pending: &mut VecDeque<u8>,
-    call_fd: Option<&Interrupt>,
+    call_interrupt: Option<&Interrupt>,
 ) -> bool {
     let mut q = queue.lock().expect("virtio-console RX queue mutex");
     let mut signaled = false;
@@ -431,10 +450,8 @@ fn drain_rx(
         signaled = true;
     }
     if signaled {
-        if let Some(intr) = call_fd {
-            if let Err(e) = intr.signal() {
-                log::warn!("virtio-console RX: signal interrupt: {e}");
-            }
+        if let Some(intr) = call_interrupt {
+            intr.signal();
         }
     }
     made_progress
@@ -444,7 +461,7 @@ fn drain_tx(
     queue_memory: &Arc<dyn QueueMemory>,
     buffer_memory: &Arc<dyn VirtioMemory>,
     queue: &Arc<Mutex<Queue>>,
-    call_fd: Option<&Interrupt>,
+    call_interrupt: Option<&Interrupt>,
 ) {
     let mut q = queue.lock().expect("virtio-console TX queue mutex");
     let mut signaled = false;
@@ -480,11 +497,9 @@ fn drain_tx(
     }
     if signaled {
         enqueue_output(output);
-        if let Some(intr) = call_fd {
+        if let Some(intr) = call_interrupt {
             // Tell the guest one or more descriptors completed.
-            if let Err(e) = intr.signal() {
-                log::warn!("virtio-console TX: signal interrupt: {e}");
-            }
+            intr.signal();
         }
     }
 }

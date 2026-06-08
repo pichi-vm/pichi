@@ -823,12 +823,14 @@ impl SharedRegion {
 ```
 
 `SharedMemory` is an attachment-scoped capability, not a whole-guest-memory
-view. `region()` succeeds only for ranges that are inside the capability's
-DTB-derived aperture and that the backend currently tracks as shared. In a
-non-confidential VM, the backend may implement `SharedRegion` with ordinary
-mapped RAM, but only for ranges reachable through a successful device
-attachment. Devices must never receive a handle that can inspect arbitrary
-guest-private memory.
+view. Virtio descriptor and buffer addresses are runtime guest protocol state:
+the device asks `region()` for the GPA range the guest supplied. The claim
+succeeds only when the range is inside machine-granted guest RAM, satisfies any
+supported DTB-declared DMA constraint for the attached device, and is currently
+tracked as shared by the backend. In a non-confidential VM, the backend may
+implement `SharedRegion` with ordinary mapped RAM, but only for ranges reachable
+through a successful device attachment. Devices must never receive a handle that
+can inspect arbitrary guest-private memory.
 
 This is net-new relative to the current Linux implementation. Today guest RAM is
 a hugetlb memfd mapped into userspace and registered with
@@ -840,10 +842,9 @@ device activation plumbing:
 - guest-driven conversion exits or hypercalls are handled below `Vcpu::run()`,
   update the backend's tracked shared set, and call the host API such as KVM
   memory attributes where required;
-- a `SharedMemoryRequirement` aperture must come from DTB-consumed device
-  resources. If the existing arma device model cannot describe a restricted DMA
-  aperture or bounce-buffer pool, dillo must fail closed until the model is
-  extended.
+- supported DMA restrictions must come from DTB-consumed device resources. If a
+  DTB declares an unsupported DMA constraint, dillo must fail closed until the
+  model is implemented.
 
 ### `MmioAttachment`
 

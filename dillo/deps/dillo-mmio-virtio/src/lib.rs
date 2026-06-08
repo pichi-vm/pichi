@@ -279,8 +279,8 @@ impl VirtioMmio {
     pub fn interrupt(
         int_status: std::sync::Arc<AtomicU32>,
         irq: WiredIrq,
-    ) -> dillo_virtio::Interrupt {
-        dillo_virtio::Interrupt::from_fn(move || {
+    ) -> dillo_mmio::Interrupt {
+        dillo_mmio::Interrupt::from_fn(move || {
             int_status.fetch_or(INT_VRING, Ordering::SeqCst);
             irq.set(true);
         })

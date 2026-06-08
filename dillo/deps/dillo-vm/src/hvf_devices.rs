@@ -13,8 +13,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
+use dillo_mmio::Interrupt;
 use dillo_pci::{MsixNotifier, MsixTableEntry};
-use dillo_virtio::Interrupt;
 use vm_memory::mmap::MmapRegionBuilder;
 use vm_memory::{GuestAddress, GuestMemoryMmap, GuestRegionMmap};
 

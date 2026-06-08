@@ -1184,7 +1184,7 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         let call_lookup_notifier = Arc::clone(&irqfd_notifier);
         Arc::new(std::sync::Mutex::new(Box::new(
             dillo_virtio_console::VirtioConsole::new(Arc::new(move |vector| {
-                call_lookup_notifier.get_irqfd_for_vector(vector)
+                call_lookup_notifier.interrupt_for_vector(vector)
             })),
         )))
     };

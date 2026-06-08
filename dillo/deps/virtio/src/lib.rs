@@ -24,7 +24,6 @@
 
 pub mod device;
 pub mod features;
-pub mod interrupt;
 pub mod kick;
 pub mod memory;
 pub mod queue;
@@ -34,7 +33,6 @@ pub use device::{
     VirtioDeviceHandle, VirtioDeviceHost, VirtioRunToken,
 };
 pub use features::{VIRTIO_F_RING_EVENT_IDX, VIRTIO_F_VERSION_1};
-pub use interrupt::Interrupt;
 pub use kick::Kick;
 pub use memory::{SharedVirtioMemory, VirtioMemory, VirtioMemoryError};
 pub use queue::{

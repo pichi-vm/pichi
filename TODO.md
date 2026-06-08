@@ -897,6 +897,9 @@ Completed changes:
 - Removed stale Linux-only dependencies from `dillo-pci-virtio`; the PCI virtio
   transport no longer depends on `vmm-sys-util` or `libc` after queue notifier
   ownership moved to machine backends.
+- Moved ordinary virtio call interrupts from `dillo-virtio` to backend-neutral
+  `dillo-mmio::Interrupt`; Linux vhost-user now obtains raw KVM eventfds
+  directly from the KVM notifier because that protocol is explicitly fd-based.
 
 ## Stage 15 - Restore macOS CI
 
