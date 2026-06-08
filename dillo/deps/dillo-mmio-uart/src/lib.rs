@@ -243,7 +243,7 @@ mod tests {
     use vmm_sys_util::eventfd::EventFd;
 
     /// Build an `Ns16550` whose trigger writes an observable `EventFd`.
-    fn harness() -> (Ns16550State, EventFd) {
+    fn harness() -> (Ns16550State<EventFdTrigger>, EventFd) {
         let efd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
         let observe = efd.try_clone().unwrap();
         let out: Box<dyn Write + Send> = Box::new(io::sink());
