@@ -489,16 +489,12 @@ fn run_windows_vcpu_loop(
         match exit {
             VcpuExit::MmioWrite { .. } => {}
             VcpuExit::Interrupted => {}
-            VcpuExit::Halted => {}
             VcpuExit::Shutdown => {
                 log::warn!("guest shutdown via WHP shutdown exit");
                 shutdown.store(true, Ordering::Release);
                 return Ok(RunOutcome::Exit(0));
             }
             VcpuExit::Debug => {}
-            VcpuExit::Hvc { args } | VcpuExit::Smc { args } => {
-                log::warn!("unexpected HVC/SMC on WHP: args={args:?}");
-            }
             VcpuExit::Unknown(reason) => {
                 log::warn!("unknown WHP exit: {reason}");
                 return Err(anyhow!("unknown WHP exit: {reason}"));
@@ -1747,7 +1743,6 @@ fn run_vcpu_loop(
                 // means stale state; ignore.
             }
             VcpuExit::MmioWrite { .. } => {}
-            VcpuExit::Halted => {}
             VcpuExit::Shutdown => {
                 log::warn!(
                     "guest shutdown via KVM_EXIT_SHUTDOWN (triple fault on x86, PSCI SYSTEM_OFF on aarch64) — \
@@ -1757,9 +1752,6 @@ fn run_vcpu_loop(
                 return Ok(RunOutcome::Exit(0));
             }
             VcpuExit::Interrupted => {}
-            VcpuExit::Hvc { args } | VcpuExit::Smc { args } => {
-                log::warn!("unhandled HVC/SMC: args={args:?}");
-            }
             VcpuExit::Unknown(reason) => {
                 log::warn!("unknown KVM exit: {reason}");
                 return Err(anyhow!("unknown KVM exit: {reason}"));

@@ -517,9 +517,11 @@ Completed changes:
   returns those PIO writes to the supervisor loop on KVM/WHP.
 - Added KVM/WHP `VcpuExit` facade enums so normal `dillo-vm` and Linux gdb
   callers no longer see raw PIO read/write exits from `dillo-hypervisor`.
+- Moved x86 HLT and unexpected HVC/SMC handling inside the KVM/WHP facades
+  instead of exposing those raw exits to `dillo-vm`.
 
 Remaining divergence:
-- HVC/SMC/PSCI, debug, halt, interrupt, shutdown, and unknown exits still cross
+- AArch64 HVC/SMC/PSCI, debug, interrupt, shutdown, and unknown exits still cross
   into `dillo-vm`. These must move below the machine boundary before Stage 9 is
   complete.
 
@@ -533,9 +535,11 @@ Local verification:
 
 Pushed commit:
 - `189e9c9 refactor: handle x86 pio writes in backends`
+- `a6577cb refactor: hide pio exits behind backend facades`
 
 CI verification:
 - `27143278195` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27143928716` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 

@@ -101,15 +101,9 @@ mod imp {
 
         Interrupted,
 
-        Halted,
-
         Shutdown,
 
         Debug,
-
-        Hvc { args: [u64; 8] },
-
-        Smc { args: [u64; 8] },
 
         Unknown(String),
     }
@@ -195,11 +189,15 @@ mod imp {
                         return Ok(VcpuExit::MmioWrite { addr, data, size });
                     }
                     VmExit::Interrupted => return Ok(VcpuExit::Interrupted),
-                    VmExit::Halted => return Ok(VcpuExit::Halted),
+                    VmExit::Halted => continue,
                     VmExit::Shutdown => return Ok(VcpuExit::Shutdown),
                     VmExit::Debug => return Ok(VcpuExit::Debug),
-                    VmExit::Hvc { args } => return Ok(VcpuExit::Hvc { args }),
-                    VmExit::Smc { args } => return Ok(VcpuExit::Smc { args }),
+                    VmExit::Hvc { args } => {
+                        log::warn!("unexpected KVM HVC exit: args={args:?}");
+                    }
+                    VmExit::Smc { args } => {
+                        log::warn!("unexpected KVM SMC exit: args={args:?}");
+                    }
                     VmExit::Unknown(reason) => return Ok(VcpuExit::Unknown(reason)),
                 }
             }

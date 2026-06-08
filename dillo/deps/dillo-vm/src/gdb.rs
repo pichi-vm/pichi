@@ -111,15 +111,6 @@ impl GdbTarget {
                     Some(SingleThreadStopReason::SwBreak(()))
                 }
             }
-            VcpuExit::Halted => {
-                // The guest issued HLT. With gdb attached we keep going
-                // on next "continue" — KVM resumes on the next interrupt.
-                if self.resume_continue {
-                    None // keep running on subsequent KVM_RUN
-                } else {
-                    Some(SingleThreadStopReason::Signal(Signal::SIGTRAP))
-                }
-            }
             VcpuExit::Shutdown => {
                 self.shutdown.store(true, Ordering::Release);
                 Some(SingleThreadStopReason::Exited(0))
@@ -135,7 +126,7 @@ impl GdbTarget {
                 }
                 None
             }
-            VcpuExit::Hvc { .. } | VcpuExit::Smc { .. } | VcpuExit::Interrupted => None,
+            VcpuExit::Interrupted => None,
             VcpuExit::Unknown(reason) => {
                 log::warn!("gdb: unknown KVM exit: {reason}");
                 Some(SingleThreadStopReason::Signal(Signal::SIGSEGV))
