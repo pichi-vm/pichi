@@ -29,6 +29,46 @@ use dillo_machine_backend::{IrqManager, IrqfdNotifier};
 use dillo_x86::IoApic;
 
 #[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub(crate) struct KvmMsixNotifier {
+    inner: Arc<IrqfdNotifier>,
+}
+
+#[cfg(target_os = "linux")]
+impl KvmMsixNotifier {
+    fn new(inner: Arc<IrqfdNotifier>) -> Self {
+        Self { inner }
+    }
+
+    #[cfg(feature = "process-isolation-spawn")]
+    pub(crate) fn eventfd_for_vector(&self, vector: u16) -> Option<dillo_machine_backend::EventFd> {
+        self.inner.eventfd_for_vector(vector)
+    }
+
+    #[cfg(not(feature = "process-isolation-spawn"))]
+    pub(crate) fn interrupt_for_vector(&self, vector: u16) -> Option<Interrupt> {
+        self.inner.interrupt_for_vector(vector)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl MsixNotifier for KvmMsixNotifier {
+    fn vector_updated(&self, vector: u16, entry: &dillo_pci::MsixTableEntry) {
+        self.inner.vector_updated(
+            vector,
+            entry.msg_addr_lo,
+            entry.msg_addr_hi,
+            entry.msg_data,
+            entry.vector_ctl & 1 != 0,
+        );
+    }
+
+    fn msix_enabled(&self, enabled: bool) {
+        self.inner.set_enabled(enabled);
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) struct Memslot {
     pub(crate) index: u32,
     pub(crate) gpa: u64,
@@ -144,7 +184,7 @@ impl BackendVm for dillo_machine_backend::Vm {
     type SerialIrq = (Arc<Mutex<IrqManager>>, u32);
     type SerialDevice = Ns16550;
     type WiredIrq = ();
-    type MsiNotifier = IrqfdNotifier;
+    type MsiNotifier = KvmMsixNotifier;
 
     fn new(opts: Self::Options) -> Result<Self, RunError> {
         let vm = dillo_machine_backend::Vm::new()?;
@@ -181,7 +221,10 @@ impl BackendVm for dillo_machine_backend::Vm {
         irq_manager: Self::InterruptState,
         count: u16,
     ) -> Arc<Self::MsiNotifier> {
-        Arc::new(IrqfdNotifier::new(irq_manager, count))
+        Arc::new(KvmMsixNotifier::new(Arc::new(IrqfdNotifier::new(
+            irq_manager,
+            count,
+        ))))
     }
 
     fn create_vcpu(

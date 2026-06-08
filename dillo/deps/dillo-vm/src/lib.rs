@@ -33,7 +33,7 @@ mod vhost_frontend;
 mod whp_devices;
 
 #[cfg(target_os = "linux")]
-pub use vhost_frontend::{VhostUserFrontend, spawn_backend};
+pub use vhost_frontend::spawn_backend;
 
 use std::fs::File;
 use std::io::Read;
@@ -1165,12 +1165,16 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
                 kind: "console",
                 source: source.into(),
             })?;
-        let frontend =
-            VhostUserFrontend::new(stream, child, notifier_for_frontend, guest_mem.clone())
-                .map_err(|source| RunError::DeviceBackend {
-                    kind: "console",
-                    source,
-                })?;
+        let frontend = vhost_frontend::VhostUserFrontend::new(
+            stream,
+            child,
+            notifier_for_frontend,
+            guest_mem.clone(),
+        )
+        .map_err(|source| RunError::DeviceBackend {
+            kind: "console",
+            source,
+        })?;
         log::info!("process-isolation: vhost-user console backend wired");
         Arc::new(std::sync::Mutex::new(Box::new(frontend)))
     };

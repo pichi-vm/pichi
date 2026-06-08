@@ -11,38 +11,51 @@
 
 use std::os::unix::net::UnixStream;
 use std::process::Child;
+#[cfg(feature = "process-isolation-spawn")]
 use std::sync::Arc;
 
+#[cfg(feature = "process-isolation-spawn")]
 use dillo_virtio::{ActivateError, VirtioActivate, VirtioDevice, VirtioDeviceHandle};
+#[cfg(feature = "process-isolation-spawn")]
 use vhost::vhost_user::message::{VhostUserConfigFlags, VhostUserProtocolFeatures};
+#[cfg(feature = "process-isolation-spawn")]
 use vhost::vhost_user::{Frontend, VhostUserFrontend as _};
+#[cfg(feature = "process-isolation-spawn")]
 use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
+#[cfg(feature = "process-isolation-spawn")]
 use vm_memory::{Address, GuestMemory, GuestMemoryMmap};
 
-use dillo_machine_backend::IrqfdNotifier;
+#[cfg(feature = "process-isolation-spawn")]
+use crate::backend::KvmMsixNotifier;
 
+#[cfg(feature = "process-isolation-spawn")]
 const VIRTIO_ID_CONSOLE: u32 = 3;
+#[cfg(feature = "process-isolation-spawn")]
 const QUEUE_MAX: u16 = 64;
+#[cfg(feature = "process-isolation-spawn")]
 const QUEUE_SIZES: [u16; 2] = [QUEUE_MAX, QUEUE_MAX];
 
 /// vhost-user "PROTOCOL_FEATURES supported" meta-bit. Must be acked
 /// in `set_features` but stripped before advertising to the guest.
+#[cfg(feature = "process-isolation-spawn")]
 const VHOST_USER_PROTOCOL_FEATURES_BIT: u64 = 0x4000_0000;
 
 /// VM-side handle to a forked vhost-user backend. Owns the parent
 /// half of the socketpair (wrapped inside the [`Frontend`]) + the
 /// Child handle so the backend can be shut down at VM teardown.
-pub struct VhostUserFrontend {
+#[cfg(feature = "process-isolation-spawn")]
+pub(crate) struct VhostUserFrontend {
     frontend: Frontend,
     child: Option<Child>,
     /// Feature bits probed from the backend at construction.
     backend_features: u64,
     /// Source of MSI-X→irqfd call eventfds at activate() time.
-    notifier: Arc<IrqfdNotifier>,
+    notifier: Arc<KvmMsixNotifier>,
     /// Linux vhost-user protocol memory export for `SET_MEM_TABLE`.
     guest_memory: GuestMemoryMmap,
 }
 
+#[cfg(feature = "process-isolation-spawn")]
 impl std::fmt::Debug for VhostUserFrontend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VhostUserFrontend")
@@ -51,6 +64,7 @@ impl std::fmt::Debug for VhostUserFrontend {
     }
 }
 
+#[cfg(feature = "process-isolation-spawn")]
 impl VhostUserFrontend {
     /// Wrap a connected vhost-user socket + child process, run the
     /// construction-time handshake (set_owner / get_features /
@@ -60,10 +74,10 @@ impl VhostUserFrontend {
     /// the guest's pre-DRIVER_OK config reads can dispatch to the
     /// backend via `get_config` — the frontend library refuses
     /// `get_config` unless PROTOCOL_FEATURES has been acked.
-    pub fn new(
+    pub(crate) fn new(
         socket: UnixStream,
         child: Child,
-        notifier: Arc<IrqfdNotifier>,
+        notifier: Arc<KvmMsixNotifier>,
         guest_memory: GuestMemoryMmap,
     ) -> Result<Self, anyhow::Error> {
         let mut frontend = Frontend::from_stream(socket, QUEUE_SIZES.len() as u64);
@@ -108,6 +122,7 @@ impl VhostUserFrontend {
     }
 }
 
+#[cfg(feature = "process-isolation-spawn")]
 impl Drop for VhostUserFrontend {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
@@ -116,6 +131,7 @@ impl Drop for VhostUserFrontend {
     }
 }
 
+#[cfg(feature = "process-isolation-spawn")]
 fn terminate_child(child: &mut Child) {
     match child.try_wait() {
         Ok(Some(_)) => return,
@@ -133,6 +149,7 @@ fn terminate_child(child: &mut Child) {
     }
 }
 
+#[cfg(feature = "process-isolation-spawn")]
 impl VirtioDevice for VhostUserFrontend {
     fn device_type(&self) -> u32 {
         VIRTIO_ID_CONSOLE

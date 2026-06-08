@@ -1,7 +1,7 @@
 #[cfg(target_os = "linux")]
 mod irq;
 #[cfg(target_os = "linux")]
-mod pci_irq;
+mod msi;
 
 #[cfg(target_os = "linux")]
 mod imp {
@@ -19,10 +19,10 @@ mod imp {
     use dillo_hypervisor::VmExit;
     pub use dillo_hypervisor::{Error, debug_flags, kvm_regs, kvm_sregs};
     use kvm_ioctls::{IoEventAddress, NoDatamatch};
-    use vmm_sys_util::eventfd::EventFd;
+    pub use vmm_sys_util::eventfd::EventFd;
 
     pub use crate::irq::{IrqError, IrqManager};
-    pub use crate::pci_irq::IrqfdNotifier;
+    pub use crate::msi::IrqfdNotifier;
 
     type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
     type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;

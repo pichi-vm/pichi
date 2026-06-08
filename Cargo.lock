@@ -454,7 +454,6 @@ dependencies = [
  "dillo-hypervisor",
  "dillo-machine",
  "dillo-mmio",
- "dillo-pci",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",

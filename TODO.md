@@ -903,6 +903,9 @@ Completed changes:
 - Moved KVM GSI routing, irqfd allocation, and MSI-X irqfd notification from
   `dillo-vm` into `dillo-machine-kvm`; `dillo-vm` no longer depends directly on
   `kvm-bindings`, `kvm-ioctls`, or `vmm-sys-util`.
+- Split the temporary PCI MSI-X adapter back out of `dillo-machine-kvm`; the
+  KVM backend now exposes generic MSI vector routing, while `dillo-vm` holds the
+  compatibility `MsixNotifier` wrapper until monolithic composition is removed.
 
 ## Stage 15 - Restore macOS CI
 

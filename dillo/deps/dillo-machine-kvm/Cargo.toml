@@ -10,7 +10,6 @@ description = "KVM machine backend crate for dillo."
 dillo-hypervisor.workspace = true
 dillo-machine.workspace = true
 dillo-mmio.workspace = true
-dillo-pci.workspace = true
 log.workspace = true
 pmi.workspace = true
 thiserror.workspace = true

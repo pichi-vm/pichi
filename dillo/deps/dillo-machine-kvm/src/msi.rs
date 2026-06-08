@@ -1,30 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! MSI-X → KVM irqfd bridge.
-//!
-//! Cherry-picked from the PoC's `dillo-vmm/src/pci.rs` (the
-//! `IrqfdNotifier` block at lines ~738–871). The PoC keeps it in
-//! the same module as the rest of the PCI bus / device-trait code,
-//! but in the rewrite the PCI dispatcher lives elsewhere (and is
-//! the topic of Phase 2 work) — keeping IrqfdNotifier in its own
-//! file isolates the irq.rs↔vm-pci dependency to one place.
+//! MSI message → KVM irqfd bridge.
 
 use std::sync::{Arc, Mutex};
 
 use dillo_mmio::Interrupt;
-use dillo_pci::{MsixNotifier, MsixTableEntry};
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::irq::IrqManager;
 
-/// MSI-X notifier that bridges vector updates to KVM irqfd via [`IrqManager`].
+/// MSI notifier that bridges message updates to KVM irqfd via [`IrqManager`].
 ///
-/// Each MSI-X vector maps to a KVM GSI with an irqfd. When the guest
-/// programs a vector's address/data via BAR2 (MSI-X table) writes,
-/// [`MsixNotifier::vector_updated`] is called. On first programming, a
-/// fresh irqfd is allocated via `IrqManager::allocate_irqfd`. On
-/// re-programming, the existing GSI route is updated to the new
-/// address/data.
+/// Each vector maps to a KVM GSI with an irqfd. On first programming, a fresh
+/// irqfd is allocated via `IrqManager::allocate_irqfd`. On re-programming, the
+/// existing GSI route is updated to the new address/data.
 ///
 /// At device-activate time, in-process devices use [`Self::interrupt_for_vector`].
 /// Linux vhost-user devices use [`Self::eventfd_for_vector`] because the
@@ -92,20 +81,15 @@ impl IrqfdNotifier {
             .filter_map(|slot| slot.as_ref().map(|(gsi, _)| *gsi))
             .collect()
     }
-}
 
-impl MsixNotifier for IrqfdNotifier {
-    fn vector_updated(&self, vector: u16, entry: &MsixTableEntry) {
+    pub fn vector_updated(&self, vector: u16, addr_lo: u32, addr_hi: u32, data: u32, masked: bool) {
         log::info!(
             "IrqfdNotifier::vector_updated: vector={vector} addr={:#x} data={:#x} ctl={:#x}",
-            entry.msg_addr_lo,
-            entry.msg_data,
-            entry.vector_ctl
+            addr_lo,
+            data,
+            if masked { 1 } else { 0 }
         );
-        // Bit 0 of vector_ctl is the per-vector mask. The PCIe spec
-        // says masked vectors should not deliver interrupts; we skip
-        // route allocation entirely until the guest unmasks.
-        if entry.vector_ctl & 1 != 0 {
+        if masked {
             return;
         }
 
@@ -125,24 +109,22 @@ impl MsixNotifier for IrqfdNotifier {
 
         if let Some((gsi, _)) = &vectors[idx] {
             let gsi = *gsi;
-            if let Err(e) =
-                mgr.update_route(gsi, entry.msg_addr_lo, entry.msg_addr_hi, entry.msg_data)
-            {
+            if let Err(e) = mgr.update_route(gsi, addr_lo, addr_hi, data) {
                 log::error!("IrqfdNotifier: failed to update route for vector {vector}: {e}");
             } else {
                 log::debug!(
                     "IrqfdNotifier: updated vector {vector} gsi={gsi} addr={:#x} data={:#x}",
-                    entry.msg_addr_lo,
-                    entry.msg_data
+                    addr_lo,
+                    data
                 );
             }
         } else {
-            match mgr.allocate_irqfd(entry.msg_addr_lo, entry.msg_addr_hi, entry.msg_data) {
+            match mgr.allocate_irqfd(addr_lo, addr_hi, data) {
                 Ok((gsi, fd)) => {
                     log::debug!(
                         "IrqfdNotifier: allocated vector {vector} gsi={gsi} addr={:#x} data={:#x}",
-                        entry.msg_addr_lo,
-                        entry.msg_data
+                        addr_lo,
+                        data
                     );
                     vectors[idx] = Some((gsi, fd));
                 }
@@ -153,7 +135,7 @@ impl MsixNotifier for IrqfdNotifier {
         }
     }
 
-    fn msix_enabled(&self, enabled: bool) {
-        log::info!("IrqfdNotifier: MSI-X enabled={enabled}");
+    pub fn set_enabled(&self, enabled: bool) {
+        log::info!("IrqfdNotifier: MSI enabled={enabled}");
     }
 }
