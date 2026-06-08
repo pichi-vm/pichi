@@ -910,6 +910,9 @@ Completed changes:
   `dillo-machine-kvm`, `dillo-machine-hvf`, or `dillo-machine-whp` directly
   through target dependencies while the remaining monolithic composition layer
   is dismantled.
+- Hid the KVM `VmFd` accessor inside `dillo-machine-kvm`; `dillo-vm` now asks
+  the backend crate to create its IRQ manager instead of deriving that state
+  from a raw backend handle.
 
 ## Stage 15 - Restore macOS CI
 

@@ -205,7 +205,7 @@ impl BackendVm for backend_machine::Vm {
     }
 
     fn interrupt_state(&self) -> Result<Self::InterruptState, RunError> {
-        let manager = IrqManager::new(self.vm_fd_arc()).map_err(|e| {
+        let manager = self.create_irq_manager().map_err(|e| {
             RunError::Kvm(backend_machine::Error::RunVcpu(
                 0,
                 std::io::Error::other(format!("irq manager: {e}")),

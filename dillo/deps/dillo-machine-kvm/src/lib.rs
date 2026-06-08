@@ -61,8 +61,12 @@ mod imp {
             })
         }
 
-        pub fn vm_fd_arc(&self) -> Arc<kvm_ioctls::VmFd> {
+        fn vm_fd_arc(&self) -> Arc<kvm_ioctls::VmFd> {
             self.inner.vm_fd_arc()
+        }
+
+        pub fn create_irq_manager(&self) -> Result<IrqManager, IrqError> {
+            IrqManager::new(self.vm_fd_arc())
         }
 
         pub fn create_queue_notifier(&self) -> KvmQueueNotifier {
