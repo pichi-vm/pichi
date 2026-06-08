@@ -433,6 +433,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dillo-mmio"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "dillo-platform"
 version = "0.1.0"
 dependencies = [
@@ -475,6 +482,7 @@ dependencies = [
  "anyhow",
  "devtree",
  "dillo-hypervisor",
+ "dillo-mmio",
  "dillo-platform",
  "dillo-pmi",
  "dillo-virtio-console",

@@ -5,28 +5,15 @@ use std::sync::Mutex;
 use virtio_pci::QueueNotifier;
 use vm_memory::GuestMemoryMmap;
 
+use dillo_mmio::{MmioBus, MmioDevice, MmioWindow};
+
 #[cfg(target_os = "macos")]
-use crate::{
-    RunError, hvf_devices,
-    mmio_bus::{MmioBus, MmioDevice, MmioWindow},
-    syscon, uart, virtio_mmio,
-};
+use crate::{RunError, hvf_devices, syscon, uart, virtio_mmio};
 #[cfg(target_os = "windows")]
-use crate::{
-    RunError,
-    ioapic::IoApic,
-    mmio_bus::{MmioBus, MmioDevice, MmioWindow},
-    syscon, uart,
-    whp_devices::WhpMsixNotifier,
-};
+use crate::{RunError, ioapic::IoApic, syscon, uart, whp_devices::WhpMsixNotifier};
 #[cfg(target_os = "linux")]
 use crate::{
-    RunError,
-    irq::IrqManager,
-    mmio_bus::{MmioBus, MmioDevice, MmioWindow},
-    pci_irq::IrqfdNotifier,
-    pci_notify::KvmQueueNotifier,
-    syscon, uart,
+    RunError, irq::IrqManager, pci_irq::IrqfdNotifier, pci_notify::KvmQueueNotifier, syscon, uart,
 };
 
 #[cfg(target_os = "linux")]

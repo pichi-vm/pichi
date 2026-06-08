@@ -131,7 +131,7 @@ Pushed commit:
 
 ## Stage 2 - Extract `dillo-mmio`
 
-Status: pending.
+Status: complete; CI pending for the implementation commit.
 
 Goal: create the first stable trait crate: MMIO windows, MMIO device
 requirements, interrupts, shared-memory capability traits, and `Attach<T>`.
@@ -150,6 +150,29 @@ Success criteria:
 - `MmioDevice` has no attach/init callback.
 - Existing MMIO bus tests still pass.
 - Default local verification and all three target checks pass.
+
+Completed changes:
+- Added `dillo/deps/dillo-mmio` as a workspace crate.
+- Moved `MmioWindow`, `MmioDevice`, `MmioBus`, `Attach<T>`, interrupt
+  requirement types, shared-memory requirement/capability types, and basic
+  interrupt delivery traits into `dillo-mmio`.
+- Switched `MmioDevice::windows()` to borrowed slice access.
+- Updated `dillo-vm` to depend on `dillo-mmio` and removed its private
+  `mmio_bus` module.
+- Updated `PciRoot` to cache ECAM plus BAR windows so the single root object
+  still owns all PCI MMIO addresses while exposing borrowed windows.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+CI verification:
+- Pending for this implementation commit; Stage 3 must not start until it
+  passes.
 
 ## Stage 3 - Extract `dillo-pci`
 

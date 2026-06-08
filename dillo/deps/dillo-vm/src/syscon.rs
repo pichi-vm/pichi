@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use crate::mmio_bus::{MmioDevice, MmioWindow};
+use dillo_mmio::{MmioDevice, MmioWindow};
 
 const WINDOW_SIZE: u64 = 0x1000;
 
@@ -112,8 +112,8 @@ impl SysconDevice {
 }
 
 impl MmioDevice for SysconDevice {
-    fn windows(&self) -> Vec<MmioWindow> {
-        vec![self.window]
+    fn windows(&self) -> &[MmioWindow] {
+        std::slice::from_ref(&self.window)
     }
 
     fn read(&self, _window: MmioWindow, _offset: u64, data: &mut [u8]) -> bool {

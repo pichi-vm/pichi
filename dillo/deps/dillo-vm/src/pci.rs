@@ -7,7 +7,7 @@
 
 use std::sync::Mutex;
 
-use crate::mmio_bus::{MmioDevice, MmioWindow};
+use dillo_mmio::{MmioDevice, MmioWindow};
 use vm_pci::PciConfiguration;
 
 /// One BAR exposed by a PCI device, in GPA terms — used by the MMIO
@@ -187,6 +187,7 @@ impl PciBus {
 /// accessor; it is not a second PCI fabric.
 pub(crate) struct PciRoot {
     window: MmioWindow,
+    windows: Vec<MmioWindow>,
     bus: PciBus,
 }
 
@@ -194,6 +195,7 @@ impl std::fmt::Debug for PciRoot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PciRoot")
             .field("window", &self.window)
+            .field("windows", &self.windows)
             .field("bus", &self.bus)
             .finish()
     }
@@ -203,12 +205,14 @@ impl PciRoot {
     pub(crate) fn new(window: MmioWindow) -> Self {
         Self {
             window,
+            windows: vec![window],
             bus: PciBus::new_with_host_bridge(),
         }
     }
 
     pub(crate) fn register(&mut self, slot: u8, device: Box<dyn PciDevice>) {
         self.bus.register(slot, device);
+        self.refresh_windows();
     }
 
     pub(crate) fn config_read(&self, bus: u8, device: u8, function: u8, reg_idx: usize) -> u32 {
@@ -254,6 +258,16 @@ impl PciRoot {
         }
     }
 
+    fn refresh_windows(&mut self) {
+        self.windows.clear();
+        self.windows.push(self.window);
+        self.windows.extend(
+            self.enumerate_bars()
+                .into_iter()
+                .map(|(slot, bar)| Self::bar_window(slot, &bar)),
+        );
+    }
+
     fn bar_route(&self, window: MmioWindow) -> Option<(u8, u8)> {
         self.enumerate_bars()
             .into_iter()
@@ -263,14 +277,8 @@ impl PciRoot {
 }
 
 impl MmioDevice for PciRoot {
-    fn windows(&self) -> Vec<MmioWindow> {
-        let mut windows = vec![self.window];
-        windows.extend(
-            self.enumerate_bars()
-                .into_iter()
-                .map(|(slot, bar)| Self::bar_window(slot, &bar)),
-        );
-        windows
+    fn windows(&self) -> &[MmioWindow] {
+        &self.windows
     }
 
     fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
@@ -548,7 +556,8 @@ mod tests {
         root.register(1, Box::new(BarDevice));
         let bar_window = root
             .windows()
-            .into_iter()
+            .iter()
+            .copied()
             .find(|w| w.base == 0x8000_0000)
             .expect("BAR window");
         let mut data = [0u8; 2];

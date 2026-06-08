@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::mmio_bus::{MmioDevice, MmioWindow};
+use dillo_mmio::{MmioDevice, MmioWindow};
 use virtio::queue::Queue;
 use virtio::{Kick, VirtioDevice};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
@@ -251,8 +251,8 @@ impl VirtioMmio {
 }
 
 impl MmioDevice for VirtioMmio {
-    fn windows(&self) -> Vec<MmioWindow> {
-        vec![self.window]
+    fn windows(&self) -> &[MmioWindow] {
+        std::slice::from_ref(&self.window)
     }
 
     fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {

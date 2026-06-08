@@ -41,7 +41,7 @@ use vmm_sys_util::eventfd::EventFd;
 #[cfg(target_os = "windows")]
 use {crate::ioapic::IoApic, dillo_hypervisor::InterruptController, std::sync::Arc};
 
-use crate::mmio_bus::{MmioDevice, MmioWindow};
+use dillo_mmio::{MmioDevice, MmioWindow};
 
 // 16550 register offsets and bits we post-process on top of vm-superio.
 // Offsets are pre-`reg_shift` register indices (0..=7).
@@ -208,8 +208,8 @@ impl Ns16550 {
 }
 
 impl MmioDevice for Ns16550 {
-    fn windows(&self) -> Vec<MmioWindow> {
-        vec![self.window]
+    fn windows(&self) -> &[MmioWindow] {
+        std::slice::from_ref(&self.window)
     }
 
     fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {

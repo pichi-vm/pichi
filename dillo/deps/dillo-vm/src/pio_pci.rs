@@ -112,7 +112,7 @@ pub(crate) fn pio_write(state: &Arc<LegacyPciState>, bus: &Arc<PciRoot>, port: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mmio_bus::{MmioDevice, MmioWindow};
+    use dillo_mmio::{MmioDevice, MmioWindow};
 
     #[test]
     fn decode_cf8_disable_bit_clear() {

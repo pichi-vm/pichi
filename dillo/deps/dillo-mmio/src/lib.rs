@@ -1,29 +1,200 @@
-//! Range-based MMIO dispatcher.
+//! MMIO device boundary for dillo.
 //!
-//! Each registered handler covers `[base, base+size)`. On a guest MMIO
-//! exit (`VmExit::MmioRead` / `VmExit::MmioWrite`), the bus picks the
-//! one matching range and forwards the access with its
-//! GPA-relative offset.
-//!
-//! No locking inside the dispatcher itself — the bus is built at
-//! startup and frozen for the VM's lifetime; handlers wrap whatever
-//! internal mutability they need.
+//! This crate owns the narrow device-facing MMIO traits and resource shapes.
+//! The current `MmioBus` remains a compatibility dispatcher while machine-owned
+//! routing is introduced in later stages.
 
 use std::sync::Arc;
 
 /// A guest-physical MMIO window owned by one device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MmioWindow {
+pub struct MmioWindow {
     pub name: &'static str,
     pub base: u64,
     pub size: u64,
 }
 
+/// A guest-physical address range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AddressRange {
+    pub base: u64,
+    pub size: u64,
+}
+
+/// Access allowed through a shared-memory capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedAccess {
+    ReadOnly,
+
+    WriteOnly,
+
+    ReadWrite,
+}
+
+/// One DTB-derived shared-memory aperture requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedMemoryRequirement {
+    pub range: AddressRange,
+    pub access: SharedAccess,
+}
+
+/// DTB-derived interrupt source for one wired interrupt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterruptSource {
+    pub controller: u32,
+    pub cells: [u32; 4],
+    pub cell_count: u8,
+}
+
+/// DTB-derived interrupt source for one message-interrupt domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageInterruptSource {
+    pub controller: u32,
+}
+
+/// One DTB-derived interrupt requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmioInterruptRequirement {
+    Line {
+        source: InterruptSource,
+    },
+
+    MessageDomain {
+        source: MessageInterruptSource,
+        vectors: u16,
+    },
+}
+
+/// Error returned by a routed MMIO device access.
+#[derive(Debug, thiserror::Error)]
+pub enum MmioError {
+    #[error("MMIO access is unsupported by the routed device")]
+    Unsupported,
+}
+
 /// A device with one or more guest-visible MMIO windows.
-pub(crate) trait MmioDevice: Send + Sync {
-    fn windows(&self) -> Vec<MmioWindow>;
+pub trait MmioDevice: Send + Sync {
+    fn windows(&self) -> &[MmioWindow];
+
+    fn interrupts(&self) -> &[MmioInterruptRequirement] {
+        &[]
+    }
+
+    fn shared_memory(&self) -> &[SharedMemoryRequirement] {
+        &[]
+    }
+
     fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> bool;
+
     fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> bool;
+}
+
+/// Generic registration into a constructed owner.
+pub trait Attach<T> {
+    type Error: std::error::Error + Send + Sync + 'static;
+    type Output;
+
+    fn attach(&mut self, item: T) -> Result<Self::Output, Self::Error>;
+}
+
+/// Runtime shared range requested by a device protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedRange {
+    pub gpa: u64,
+    pub size: u64,
+    pub access: SharedAccess,
+}
+
+/// Error from attachment-scoped shared-memory access.
+#[derive(Debug, thiserror::Error)]
+pub enum SharedMemoryError {
+    #[error("shared-memory range is outside the attached aperture")]
+    OutOfAperture,
+
+    #[error("shared-memory range is not currently shared")]
+    NotShared,
+
+    #[error("shared-memory access is unsupported")]
+    Unsupported,
+}
+
+/// Opaque shared-memory region handle.
+#[derive(Debug)]
+pub struct SharedRegion {
+    _priv: (),
+}
+
+impl SharedRegion {
+    pub fn read(&self, _offset: u64, _data: &mut [u8]) -> Result<(), SharedMemoryError> {
+        Err(SharedMemoryError::Unsupported)
+    }
+
+    pub fn write(&self, _offset: u64, _data: &[u8]) -> Result<(), SharedMemoryError> {
+        Err(SharedMemoryError::Unsupported)
+    }
+}
+
+/// Attachment-scoped shared-memory capability.
+pub trait SharedMemory: Send + Sync {
+    fn region(&self, range: SharedRange) -> Result<SharedRegion, SharedMemoryError>;
+}
+
+/// Resolved interrupt handle.
+#[derive(Clone)]
+pub struct Interrupt(Arc<dyn InterruptLine>);
+
+impl std::fmt::Debug for Interrupt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Interrupt").finish()
+    }
+}
+
+impl Interrupt {
+    pub fn new(line: Arc<dyn InterruptLine>) -> Self {
+        Self(line)
+    }
+
+    pub fn signal(&self) {
+        self.0.signal();
+    }
+
+    pub fn set_level(&self, level: bool) -> Result<(), InterruptError> {
+        self.0.set_level(level)
+    }
+}
+
+/// Backend-resolved line interrupt.
+pub trait InterruptLine: Send + Sync + std::fmt::Debug {
+    fn signal(&self);
+
+    fn set_level(&self, level: bool) -> Result<(), InterruptError>;
+}
+
+/// Error from interrupt delivery.
+#[derive(Debug, thiserror::Error)]
+pub enum InterruptError {
+    #[error("interrupt deassert is unsupported")]
+    UnsupportedDeassert,
+
+    #[error("interrupt delivery failed: {0}")]
+    Delivery(String),
+}
+
+/// Resolved message interrupt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageInterrupt {
+    pub address: u64,
+    pub data: u32,
+    pub masked: bool,
+}
+
+/// Backend-resolved message-interrupt domain.
+pub trait MessageInterruptDomain: Send + Sync {
+    fn update(&self, vector: u16, msg: MessageInterrupt) -> Result<(), InterruptError>;
+
+    fn enabled(&self, enabled: bool) -> Result<(), InterruptError>;
+
+    fn interrupt(&self, vector: u16) -> Option<Interrupt>;
 }
 
 struct Range {
@@ -31,10 +202,12 @@ struct Range {
     device: Arc<dyn MmioDevice>,
 }
 
-/// MMIO bus. Built at startup via [`MmioBus::register_device`]; queried per
-/// guest exit via [`MmioBus::read`] / [`MmioBus::write`].
+/// Compatibility MMIO bus.
+///
+/// Built at startup via [`MmioBus::register_device`] and queried per guest exit.
+/// Later machine crates will own this routing state behind `Attach`.
 #[derive(Default)]
-pub(crate) struct MmioBus {
+pub struct MmioBus {
     ranges: Vec<Range>,
 }
 
@@ -47,12 +220,12 @@ impl std::fmt::Debug for MmioBus {
 }
 
 impl MmioBus {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
     /// Register an MMIO device.
-    pub(crate) fn register_device<D>(&mut self, device: Arc<D>)
+    pub fn register_device<D>(&mut self, device: Arc<D>)
     where
         D: MmioDevice + 'static,
     {
@@ -82,24 +255,22 @@ impl MmioBus {
                 );
             }
             self.ranges.push(Range {
-                window,
+                window: *window,
                 device: Arc::clone(&device),
             });
         }
     }
 
-    /// Dispatch a guest MMIO read. Returns `true` if a registered
-    /// handler claimed the address (in which case `data` is filled).
-    pub(crate) fn read(&self, addr: u64, data: &mut [u8]) -> bool {
+    /// Dispatch a guest MMIO read.
+    pub fn read(&self, addr: u64, data: &mut [u8]) -> bool {
         if let Some(r) = self.find(addr, data.len() as u64) {
             return r.device.read(r.window, addr - r.window.base, data);
         }
         false
     }
 
-    /// Dispatch a guest MMIO write. Returns `true` if a registered
-    /// handler claimed the address.
-    pub(crate) fn write(&self, addr: u64, data: &[u8]) -> bool {
+    /// Dispatch a guest MMIO write.
+    pub fn write(&self, addr: u64, data: &[u8]) -> bool {
         if let Some(r) = self.find(addr, data.len() as u64) {
             return r.device.write(r.window, addr - r.window.base, data);
         }
@@ -120,22 +291,22 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     struct TestDevice {
-        window: MmioWindow,
+        window: [MmioWindow; 1],
         written: AtomicU64,
     }
 
     impl TestDevice {
         fn new(name: &'static str, base: u64, size: u64) -> Self {
             Self {
-                window: MmioWindow { name, base, size },
+                window: [MmioWindow { name, base, size }],
                 written: AtomicU64::new(0),
             }
         }
     }
 
     impl MmioDevice for TestDevice {
-        fn windows(&self) -> Vec<MmioWindow> {
-            vec![self.window]
+        fn windows(&self) -> &[MmioWindow] {
+            &self.window
         }
 
         fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {

@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use dillo_hypervisor::InterruptController;
 
-use crate::mmio_bus::{MmioDevice, MmioWindow};
+use dillo_mmio::{MmioDevice, MmioWindow};
 
 #[derive(Debug)]
 pub(crate) struct IoApic {
@@ -117,8 +117,8 @@ impl IoApic {
 }
 
 impl MmioDevice for IoApic {
-    fn windows(&self) -> Vec<MmioWindow> {
-        vec![self.window]
+    fn windows(&self) -> &[MmioWindow] {
+        std::slice::from_ref(&self.window)
     }
 
     fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
@@ -165,7 +165,7 @@ fn decode_route(entry: u64) -> Option<Route> {
 #[cfg(test)]
 mod tests {
     use super::{IoApic, Route, decode_route};
-    use crate::mmio_bus::{MmioDevice, MmioWindow};
+    use dillo_mmio::{MmioDevice, MmioWindow};
 
     fn ioapic() -> IoApic {
         IoApic::new(MmioWindow {

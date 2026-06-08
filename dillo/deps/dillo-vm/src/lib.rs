@@ -13,7 +13,6 @@ mod backend;
 mod cpu_id;
 mod error;
 mod fdt_writer;
-mod mmio_bus;
 mod overlay;
 mod pci;
 #[cfg(target_os = "linux")]
@@ -145,14 +144,14 @@ impl VcpuKicker {
 /// dillo-vm exits 0 cleanly within the §13.2 grace period.
 pub static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use crate::mmio_bus::{MmioBus, MmioWindow};
 #[cfg(target_os = "linux")]
 use crate::pci::{PciRoot, VirtioPciAdapter};
 #[cfg(target_os = "macos")]
 use crate::pci::{PciRoot, VirtioPciAdapter};
 #[cfg(target_os = "windows")]
 use crate::pci::{PciRoot, VirtioPciAdapter};
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use dillo_mmio::{MmioBus, MmioWindow};
 #[cfg(target_os = "windows")]
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
