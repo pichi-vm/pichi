@@ -9,6 +9,7 @@ description = "VM-side integration crate for dillo: DTBO synthesis, memfd setup,
 [dependencies]
 dillo-pmi.workspace = true
 dillo-platform.workspace = true
+dillo-machine.workspace = true
 dillo-machine-backend.workspace = true
 dillo-mmio.workspace = true
 dillo-mmio-uart.workspace = true

@@ -3,6 +3,7 @@ mod imp {
     use std::os::fd::{AsRawFd, RawFd};
     use std::sync::{Arc, Mutex};
 
+    use dillo_machine::VcpuStop;
     use dillo_mmio::{Attach, MmioAttachment, MmioBus, MmioDevice, MmioInterrupt, SharedMemory};
 
     use dillo_hypervisor::VmExit;
@@ -210,6 +211,30 @@ mod imp {
                         log::warn!("unexpected KVM SMC exit: args={args:?}");
                     }
                     VmExit::Unknown(reason) => return Err(Error::UnhandledExit(reason)),
+                }
+            }
+        }
+
+        pub fn run_until_stop<F>(&mut self, mut stop: F) -> Result<VcpuStop, Error>
+        where
+            F: FnMut() -> Option<VcpuStop>,
+        {
+            loop {
+                if let Some(stop) = stop() {
+                    return Ok(stop);
+                }
+                match self.run()? {
+                    VcpuExit::MmioWrite { .. } | VcpuExit::Interrupted => {
+                        if let Some(stop) = stop() {
+                            return Ok(stop);
+                        }
+                    }
+                    VcpuExit::Shutdown => {
+                        log::warn!(
+                            "guest shutdown via KVM_EXIT_SHUTDOWN; treating as guest poweroff"
+                        );
+                        return Ok(VcpuStop::GuestPoweroff);
+                    }
                 }
             }
         }

@@ -67,8 +67,10 @@ use anyhow::{Result, anyhow};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use backend::{BackendVm, VcpuSeed};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use dillo_machine_backend::VcpuExit;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use dillo_machine::VcpuStop;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use dillo_machine_backend::Vm;
+#[cfg(target_os = "macos")]
 use dillo_machine_backend::Vm;
 #[cfg(target_os = "macos")]
 use dillo_machine_backend::VmExit;
@@ -465,37 +467,22 @@ fn run_windows_vcpu_loop(
     shutdown: &Arc<AtomicBool>,
     syscon_state: &Arc<syscon::SysconState>,
 ) -> Result<RunOutcome> {
-    let mut exit_count = 0u64;
-    loop {
+    let index = vcpu.index();
+    let stop = vcpu.run_until_stop(|| {
         if shutdown.load(Ordering::Acquire) {
-            return Ok(RunOutcome::Exit(0));
+            return Some(VcpuStop::Stopped);
         }
         if let Some(action) = syscon_state.action() {
-            return Ok(action.run_outcome(shutdown));
+            return Some(action.vcpu_stop());
         }
         if SUPERVISOR_SHUTDOWN.load(Ordering::Acquire) {
-            log::info!("vCPU {}: supervisor shutdown observed", vcpu.index());
+            log::info!("vCPU {index}: supervisor shutdown observed");
             shutdown.store(true, Ordering::Release);
-            return Ok(RunOutcome::Exit(0));
+            return Some(VcpuStop::Stopped);
         }
-
-        let exit = vcpu.run()?;
-
-        exit_count += 1;
-        if exit_count <= 20 || exit_count % 1000 == 0 {
-            log::debug!("Windows/WHP vCPU exit #{}: {:?}", exit_count, exit);
-        }
-
-        match exit {
-            VcpuExit::MmioWrite { .. } => {}
-            VcpuExit::Interrupted => {}
-            VcpuExit::Shutdown => {
-                log::warn!("guest shutdown via WHP shutdown exit");
-                shutdown.store(true, Ordering::Release);
-                return Ok(RunOutcome::Exit(0));
-            }
-        }
-    }
+        None
+    })?;
+    Ok(vcpu_stop_outcome(stop, shutdown))
 }
 
 /// Top-level VM-child entry point (macOS / Hypervisor.framework).
@@ -836,20 +823,29 @@ enum RunOutcome {
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 impl syscon::SysconAction {
-    fn run_outcome(self, shutdown: &AtomicBool) -> RunOutcome {
+    fn vcpu_stop(self) -> VcpuStop {
         match self {
-            syscon::SysconAction::Poweroff => {
-                log::info!("guest syscon poweroff observed by run loop");
-                dillo_virtio_console::flush_output();
-                shutdown.store(true, Ordering::Release);
-                RunOutcome::Exit(0)
-            }
-            syscon::SysconAction::Reboot => {
-                log::warn!("guest syscon reboot observed; x86 warm reboot is not wired yet");
-                shutdown.store(true, Ordering::Release);
-                RunOutcome::Reboot
-            }
+            syscon::SysconAction::Poweroff => VcpuStop::GuestPoweroff,
+            syscon::SysconAction::Reboot => VcpuStop::GuestReset,
         }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn vcpu_stop_outcome(stop: VcpuStop, shutdown: &AtomicBool) -> RunOutcome {
+    match stop {
+        VcpuStop::GuestPoweroff => {
+            log::info!("guest poweroff observed by run loop");
+            dillo_virtio_console::flush_output();
+            shutdown.store(true, Ordering::Release);
+            RunOutcome::Exit(0)
+        }
+        VcpuStop::GuestReset => {
+            log::warn!("guest reboot observed; x86 warm reboot is not wired yet");
+            shutdown.store(true, Ordering::Release);
+            RunOutcome::Reboot
+        }
+        VcpuStop::Stopped => RunOutcome::Exit(0),
     }
 }
 
@@ -1712,38 +1708,23 @@ fn run_vcpu_loop(
     shutdown: &Arc<AtomicBool>,
     syscon_state: &Arc<syscon::SysconState>,
 ) -> Result<RunOutcome> {
-    let mut exit_count = 0u64;
-    loop {
+    let index = vcpu.index();
+    let stop = vcpu.run_until_stop(|| {
         if shutdown.load(Ordering::Acquire) {
-            return Ok(RunOutcome::Exit(0));
+            return Some(VcpuStop::Stopped);
         }
         if let Some(action) = syscon_state.action() {
-            return Ok(action.run_outcome(shutdown));
+            return Some(action.vcpu_stop());
         }
         // §13.3: supervisor requested orderly shutdown.
         if SUPERVISOR_SHUTDOWN.load(Ordering::Acquire) {
-            log::info!("vCPU {}: supervisor shutdown observed", vcpu.index());
+            log::info!("vCPU {index}: supervisor shutdown observed");
             shutdown.store(true, Ordering::Release);
-            return Ok(RunOutcome::Exit(0));
+            return Some(VcpuStop::Stopped);
         }
-        let exit = vcpu.run()?;
-        exit_count += 1;
-        if exit_count <= 20 || exit_count % 1000 == 0 {
-            log::debug!("vCPU exit #{}: {:?}", exit_count, exit);
-        }
-        match exit {
-            VcpuExit::MmioWrite { .. } => {}
-            VcpuExit::Shutdown => {
-                log::warn!(
-                    "guest shutdown via KVM_EXIT_SHUTDOWN (triple fault on x86, PSCI SYSTEM_OFF on aarch64) — \
-                     not a syscon-poweroff write. Attach gdb (DILLO_GDB=<port>) to inspect."
-                );
-                shutdown.store(true, Ordering::Release);
-                return Ok(RunOutcome::Exit(0));
-            }
-            VcpuExit::Interrupted => {}
-        }
-    }
+        None
+    })?;
+    Ok(vcpu_stop_outcome(stop, shutdown))
 }
 
 fn read_section<'a>(bytes: &'a [u8], offset: u64, size: u64) -> &'a [u8] {
