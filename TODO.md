@@ -222,7 +222,7 @@ Pushed commit:
 
 ## Stage 4 - Extract virtio traits and transports
 
-Status: complete; CI pending for the implementation commit.
+Status: complete.
 
 Goal: separate transport-neutral virtio devices from MMIO and PCI transports.
 
@@ -267,12 +267,14 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
 
 CI verification:
-- Pending for this implementation commit; Stage 5 must not start until it
-  passes.
+- `27138094866` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+
+Pushed commit:
+- `0463e2a refactor: extract dillo virtio transports`
 
 ## Stage 5 - Move concrete devices behind final crate boundaries
 
-Status: pending.
+Status: complete; CI pending for the implementation commit.
 
 Goal: move concrete device implementations into their final leaf crates.
 
@@ -289,6 +291,28 @@ Success criteria:
 - `dillo` owns all `FromDevTree` implementations for concrete devices.
 - UART and virtio tests pass after the move.
 - Default local verification and all target checks pass.
+
+Completed changes:
+- Added `dillo-mmio-uart` as the backend-neutral ns16550a MMIO device crate.
+- Moved UART register emulation and tests out of `dillo-vm`.
+- Made `Ns16550<T>` generic over its interrupt trigger so backend-specific
+  IRQ plumbing stays in `dillo-vm`.
+- Kept the Windows/WHP IOAPIC trigger in `dillo-vm`; the UART crate imports no
+  KVM, HVF, WHP, PMI, DTB, or machine backend code.
+- Confirmed `dillo-virtio-console` was already the concrete virtio console
+  device crate.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+
+CI verification:
+- Pending for this implementation commit; Stage 6 must not start until it
+  passes.
 
 ## Stage 6 - Create `dillo-machine`
 

@@ -1,0 +1,18 @@
+[package]
+name = "dillo-mmio-uart"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "MMIO ns16550a UART device for dillo."
+
+[dependencies]
+dillo-mmio.workspace = true
+vm-superio.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+vmm-sys-util.workspace = true
+
+[lints]
+workspace = true

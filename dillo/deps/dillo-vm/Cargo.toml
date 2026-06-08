@@ -11,6 +11,7 @@ dillo-pmi.workspace = true
 dillo-platform.workspace = true
 dillo-hypervisor.workspace = true
 dillo-mmio.workspace = true
+dillo-mmio-uart.workspace = true
 dillo-mmio-virtio.workspace = true
 dillo-pci.workspace = true
 dillo-pci-virtio.workspace = true
@@ -24,7 +25,6 @@ dillo-virtio-console.workspace = true
 thiserror.workspace = true
 log.workspace = true
 anyhow.workspace = true
-vm-superio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix.workspace = true

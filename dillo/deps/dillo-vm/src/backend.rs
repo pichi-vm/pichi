@@ -2,6 +2,7 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
 
+use dillo_mmio_uart::Ns16550;
 use dillo_pci::MsixNotifier;
 use dillo_pci_virtio::QueueNotifier;
 use vm_memory::GuestMemoryMmap;
@@ -9,12 +10,12 @@ use vm_memory::GuestMemoryMmap;
 use dillo_mmio::{MmioBus, MmioDevice, MmioWindow};
 
 #[cfg(target_os = "macos")]
-use crate::{RunError, hvf_devices, syscon, uart};
+use crate::{RunError, hvf_devices, syscon};
 #[cfg(target_os = "windows")]
 use crate::{RunError, ioapic::IoApic, syscon, uart, whp_devices::WhpMsixNotifier};
 #[cfg(target_os = "linux")]
 use crate::{
-    RunError, irq::IrqManager, pci_irq::IrqfdNotifier, pci_notify::KvmQueueNotifier, syscon, uart,
+    RunError, irq::IrqManager, pci_irq::IrqfdNotifier, pci_notify::KvmQueueNotifier, syscon,
 };
 
 #[cfg(target_os = "linux")]
@@ -48,6 +49,7 @@ pub(crate) trait BackendVm {
     type Vcpu;
     type InterruptState: Clone;
     type SerialIrq;
+    type SerialDevice: MmioDevice + 'static;
     type WiredIrq;
     type MsiNotifier: MsixNotifier + 'static;
 
@@ -94,7 +96,7 @@ pub(crate) trait BackendVm {
         reg_shift: u32,
         irq: Self::SerialIrq,
         out: Box<dyn std::io::Write + Send>,
-    ) -> Result<uart::Ns16550, RunError>;
+    ) -> Result<Self::SerialDevice, RunError>;
 
     fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError>;
 
@@ -123,6 +125,7 @@ impl BackendVm for dillo_hypervisor::Vm {
     type Vcpu = dillo_hypervisor::Vcpu;
     type InterruptState = Arc<Mutex<IrqManager>>;
     type SerialIrq = (Arc<Mutex<IrqManager>>, u32);
+    type SerialDevice = Ns16550<dillo_mmio_uart::EventFdTrigger>;
     type WiredIrq = ();
     type MsiNotifier = IrqfdNotifier;
 
@@ -235,7 +238,7 @@ impl BackendVm for dillo_hypervisor::Vm {
         reg_shift: u32,
         irq: Self::SerialIrq,
         out: Box<dyn std::io::Write + Send>,
-    ) -> Result<uart::Ns16550, RunError> {
+    ) -> Result<Self::SerialDevice, RunError> {
         let (irq_manager, gsi) = irq;
         let eventfd = {
             let mut manager = irq_manager.lock().expect("irq mgr poisoned");
@@ -245,7 +248,12 @@ impl BackendVm for dillo_hypervisor::Vm {
                     source: anyhow::anyhow!("irqfd for serial GSI {gsi}: {e}"),
                 })?
         };
-        Ok(uart::Ns16550::new_irqfd(window, reg_shift, eventfd, out))
+        Ok(Ns16550::new(
+            window,
+            reg_shift,
+            dillo_mmio_uart::EventFdTrigger::new(eventfd),
+            out,
+        ))
     }
 
     fn guest_memory(&self) -> Result<GuestMemoryMmap, RunError> {
@@ -277,6 +285,7 @@ impl BackendVm for dillo_hypervisor::Vm {
     type Vcpu = dillo_hypervisor::Vcpu;
     type InterruptState = ();
     type SerialIrq = ();
+    type SerialDevice = Ns16550<dillo_mmio_uart::NoopTrigger>;
     type WiredIrq = dillo_mmio_virtio::WiredIrq;
     type MsiNotifier = hvf_devices::HvfMsixNotifier;
 
@@ -365,8 +374,13 @@ impl BackendVm for dillo_hypervisor::Vm {
         reg_shift: u32,
         _irq: Self::SerialIrq,
         out: Box<dyn std::io::Write + Send>,
-    ) -> Result<uart::Ns16550, RunError> {
-        Ok(uart::Ns16550::new_polled(window, reg_shift, out))
+    ) -> Result<Self::SerialDevice, RunError> {
+        Ok(Ns16550::new(
+            window,
+            reg_shift,
+            dillo_mmio_uart::NoopTrigger,
+            out,
+        ))
     }
 
     fn wired_irq(&self, intid: u32) -> Self::WiredIrq {
@@ -393,6 +407,7 @@ impl BackendVm for dillo_hypervisor::Vm {
     type Vcpu = dillo_hypervisor::Vcpu;
     type InterruptState = ();
     type SerialIrq = (Arc<IoApic>, u32);
+    type SerialDevice = Ns16550<uart::WhpTrigger>;
     type WiredIrq = ();
     type MsiNotifier = WhpMsixNotifier;
 
@@ -490,14 +505,12 @@ impl BackendVm for dillo_hypervisor::Vm {
         reg_shift: u32,
         irq: Self::SerialIrq,
         out: Box<dyn std::io::Write + Send>,
-    ) -> Result<uart::Ns16550, RunError> {
+    ) -> Result<Self::SerialDevice, RunError> {
         let (ioapic, gsi) = irq;
-        Ok(uart::Ns16550::new_whp(
+        Ok(Ns16550::new(
             window,
             reg_shift,
-            self.interrupt_controller(),
-            ioapic,
-            gsi,
+            uart::WhpTrigger::new(self.interrupt_controller(), ioapic, gsi),
             out,
         ))
     }

@@ -440,6 +440,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dillo-mmio-uart"
+version = "0.1.0"
+dependencies = [
+ "dillo-mmio",
+ "libc",
+ "vm-superio",
+ "vmm-sys-util",
+]
+
+[[package]]
 name = "dillo-mmio-virtio"
 version = "0.1.0"
 dependencies = [
@@ -524,6 +534,7 @@ dependencies = [
  "devtree",
  "dillo-hypervisor",
  "dillo-mmio",
+ "dillo-mmio-uart",
  "dillo-mmio-virtio",
  "dillo-pci",
  "dillo-pci-virtio",
@@ -542,7 +553,6 @@ dependencies = [
  "thiserror",
  "vhost",
  "vm-memory",
- "vm-superio",
  "vmm-sys-util",
 ]
 

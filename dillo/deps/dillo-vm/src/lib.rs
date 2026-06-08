@@ -20,6 +20,7 @@ mod placement;
 #[allow(dead_code)]
 mod syscon;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 mod uart;
 
 // Userspace PSCI handling is the HVF/aarch64 path (KVM handles PSCI in-kernel).
@@ -703,13 +704,14 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
             );
             vm.attach_mmio(
                 &mut mmio_bus,
-                Arc::new(uart::Ns16550::new_polled(
+                Arc::new(dillo_mmio_uart::Ns16550::new(
                     MmioWindow {
                         name: "ns16550a",
                         base: uart.base,
                         size: uart.size,
                     },
                     uart.reg_shift,
+                    dillo_mmio_uart::NoopTrigger,
                     Box::new(std::io::stderr()),
                 )),
             );
@@ -1229,13 +1231,14 @@ mod macos_tests {
 
         let serial_base = 0x0A11_0000u64;
         let mut mmio_bus = MmioBus::new();
-        mmio_bus.register_device(Arc::new(uart::Ns16550::new_polled(
+        mmio_bus.register_device(Arc::new(dillo_mmio_uart::Ns16550::new(
             MmioWindow {
                 name: "ns16550a",
                 base: serial_base,
                 size: 0x1000,
             },
             0,
+            dillo_mmio_uart::NoopTrigger,
             Box::new(std::io::stderr()),
         )));
 
