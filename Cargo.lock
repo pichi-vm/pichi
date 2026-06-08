@@ -569,6 +569,7 @@ dependencies = [
 name = "dillo-virtio-console"
 version = "0.1.0"
 dependencies = [
+ "dillo-mmio",
  "dillo-virtio",
  "extrasafe",
  "libc",

@@ -21,5 +21,8 @@ vhost = { workspace = true }
 virtio-queue = { workspace = true }
 extrasafe = { workspace = true }
 
+[dev-dependencies]
+dillo-mmio.workspace = true
+
 [lints]
 workspace = true

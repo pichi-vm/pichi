@@ -724,12 +724,13 @@ Completed changes:
   claim attachment-scoped shared-memory regions.
 - Added an activation-scoped queue-memory handle that selects shared-memory
   queue metadata access when the backend supplies shared-memory capabilities.
+- Converted the in-process virtio-console RX/TX queue metadata path to use the
+  activation-scoped queue-memory handle.
 
 Remaining divergence:
 - `VirtioActivate` still carries `GuestMemoryMmap`; current queue and vhost-user
   paths still use whole guest memory.
-- Virtio devices still pass `GuestMemoryMmap` to queue operations instead of the
-  activation-scoped queue-memory handle.
+- vhost-user devices still use their backend-specific whole-memory path.
 - Machine attachments still return no shared-memory capabilities because no
   DTB-derived virtio DMA aperture is currently consumed; they now reject
   non-empty shared-memory requirements instead of silently ignoring them.
