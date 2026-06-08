@@ -936,6 +936,11 @@ Completed changes:
   the monolithic VM layer: CPU compatible lookup, FDT overlay writing, DTBO
   synthesis, and memory placement. These are now available to the future direct
   `dillo` runner without introducing target cfg outside machine selection.
+- Added `dillo::launch::LaunchPlan::read`, a target-neutral PMI preflight that
+  reads and parses PMI, validates `cpu:profile` against an explicit PMI
+  `HostArch`, surveys the merged DTB, cross-checks loads against DTB-declared
+  regions, and computes memory placement. The selected machine will provide the
+  host architecture later; `dillo::launch` contains no OS/arch cfg.
 
 CI verification:
 - `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
