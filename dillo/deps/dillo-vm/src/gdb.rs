@@ -125,7 +125,7 @@ impl GdbTarget {
                 Some(SingleThreadStopReason::Exited(0))
             }
             DebugExit::MmioWrite { addr, data, size } => {
-                if crate::syscon::SysconDevice::matches_poweroff(
+                if dillo_x86::syscon::SysconDevice::matches_poweroff(
                     self.poweroff,
                     addr,
                     &data[..size as usize],

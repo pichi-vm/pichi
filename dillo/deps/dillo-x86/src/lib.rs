@@ -1,6 +1,7 @@
 //! x86 architecture substrate for dillo.
 
 pub mod pio_pci;
+pub mod syscon;
 
 use std::sync::Mutex;
 

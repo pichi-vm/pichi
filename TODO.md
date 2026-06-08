@@ -891,14 +891,10 @@ Success criteria:
 - Default local verification and all target checks pass.
 
 Completed changes:
-- Moved `QueueNotifier` out of `dillo-pci-virtio` and into `dillo-mmio`, with
-  `dillo-virtio::Kick` implementing the backend-neutral notify-event trait.
-  PCI virtio still accepts a notifier, but machine-facing code no longer has to
-  import a PCI transport trait just to expose backend MMIO notification
-  acceleration.
-- Moved the KVM ioeventfd `QueueNotifier` implementation out of `dillo-vm` and
-  into `dillo-machine-kvm`, so Linux-specific MMIO notification registration is
-  owned by the KVM backend crate.
+- Removed the leaked eventfd-shaped queue-notifier API from portable virtio
+  crates. `dillo-virtio::Kick` is now one target-neutral blocking counter, and
+  `dillo-pci-virtio` always records queue kicks and signals workers from its
+  MMIO notify write path.
 - Added `dillo-x86` and moved the x86 IOAPIC MMIO register model out of
   `dillo-vm`; the remaining WHP-specific trigger glue now injects decoded
   IOAPIC routes instead of owning the register model.
@@ -906,8 +902,7 @@ Completed changes:
   types with an optional backend-resolved `dillo-mmio::Interrupt`; KVM and WHP
   now provide their interrupt-line implementations from machine backend crates.
 - Removed stale Linux-only dependencies from `dillo-pci-virtio`; the PCI virtio
-  transport no longer depends on `vmm-sys-util` or `libc` after queue notifier
-  ownership moved to machine backends.
+  transport no longer depends on `vmm-sys-util` or `libc`.
 - Moved ordinary virtio call interrupts from `dillo-virtio` to backend-neutral
   `dillo-mmio::Interrupt`; Linux vhost-user now obtains raw KVM eventfds
   directly from the KVM notifier because that protocol is explicitly fd-based.
@@ -963,10 +958,6 @@ Completed changes:
 - Moved x86 CF8/CFC PCI configuration PIO decoding from `dillo-vm` into
   `dillo-x86::pio_pci`; `dillo-vm` now consumes that architecture substrate
   instead of owning the decoder. The CF8/CFC tests now run under `dillo-x86`.
-- Removed the leaked eventfd-shaped queue-notifier API from portable virtio
-  crates. `dillo-virtio::Kick` is now one target-neutral blocking counter, and
-  `dillo-pci-virtio` always records queue kicks and signals workers from its
-  MMIO notify write path.
 - Removed `dillo-mmio::MmioNotifyEvent` and `QueueNotifier` plus the KVM
   ioeventfd notifier implementation that depended on exposing Linux eventfds
   through portable transport APIs.
@@ -976,6 +967,9 @@ Completed changes:
 - Tightened `dillo/tests/architecture_cfg.rs` so the no-target-cfg guard covers
   `dillo/src` plus the portable MMIO, PCI, and virtio core crates, not just
   the top-level launcher sources.
+- Moved x86 syscon power/reboot MMIO devices from `dillo-vm` into
+  `dillo-x86::syscon`; the remaining compatibility runner now consumes that
+  architecture substrate instead of owning the device implementation.
 
 CI verification:
 - `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
@@ -990,6 +984,8 @@ CI verification:
   `1ca55d1 refactor: pass launch plan into vm runner`.
 - `27173202552` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `5583a7e refactor: move x86 pci pio into substrate`.
+- `27173807545` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `908a2e3 refactor: remove portable virtio target cfg`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

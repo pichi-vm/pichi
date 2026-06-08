@@ -9,6 +9,7 @@ description = "x86 architecture substrate devices and helpers for dillo."
 [dependencies]
 dillo-mmio.workspace = true
 dillo-pci.workspace = true
+dillo-platform.workspace = true
 log.workspace = true
 
 [lints]

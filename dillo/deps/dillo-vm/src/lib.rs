@@ -17,8 +17,6 @@ mod error;
 mod fdt_writer;
 mod overlay;
 mod placement;
-#[allow(dead_code)]
-mod syscon;
 // HVF MSI-X notifier + guest-memory builder (KVM uses memfd + irqfd instead).
 #[cfg(target_os = "macos")]
 mod hvf_devices;
@@ -62,6 +60,8 @@ use dillo_pmi::{Action as PmiAction, FillKind, VcpuState};
 use dillo_pmi::{Action as PmiAction, FillKind, VcpuState};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use dillo_x86::pio_pci;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use dillo_x86::syscon;
 
 pub use error::RunError;
 
@@ -714,7 +714,12 @@ enum RunOutcome {
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-impl syscon::SysconAction {
+trait SysconActionExt {
+    fn vcpu_stop(self) -> VcpuStop;
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl SysconActionExt for syscon::SysconAction {
     fn vcpu_stop(self) -> VcpuStop {
         match self {
             syscon::SysconAction::Poweroff => VcpuStop::GuestPoweroff,

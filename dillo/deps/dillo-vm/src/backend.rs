@@ -17,18 +17,19 @@ pub(crate) type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 
+#[cfg(target_os = "linux")]
+use crate::RunError;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use crate::backend_select::machine as backend_machine;
 #[cfg(target_os = "macos")]
-use crate::{RunError, hvf_devices, syscon};
-#[cfg(target_os = "linux")]
-use crate::{RunError, syscon};
+use crate::{RunError, hvf_devices};
 #[cfg(target_os = "windows")]
-use crate::{RunError, syscon, whp_devices::WhpMsixNotifier};
+use crate::{RunError, whp_devices::WhpMsixNotifier};
 #[cfg(target_os = "linux")]
 use backend_machine::{IrqManager, IrqfdNotifier};
 #[cfg(target_os = "windows")]
 use dillo_x86::IoApic;
+use dillo_x86::syscon;
 
 #[cfg(target_os = "linux")]
 #[derive(Debug)]

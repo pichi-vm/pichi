@@ -4,6 +4,7 @@
 //! value to the declared register and the run loop observes the resulting
 //! structured action.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use dillo_mmio::{MmioDevice, MmioWindow};
@@ -11,7 +12,7 @@ use dillo_mmio::{MmioDevice, MmioWindow};
 const WINDOW_SIZE: u64 = 0x1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SysconAction {
+pub enum SysconAction {
     Poweroff,
     Reboot,
 }
@@ -34,38 +35,38 @@ impl SysconAction {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct SysconState {
+pub struct SysconState {
     action: AtomicU8,
 }
 
 impl SysconState {
-    pub(crate) fn request(&self, action: SysconAction) {
+    pub fn request(&self, action: SysconAction) {
         let _ = self
             .action
             .compare_exchange(0, action.code(), Ordering::AcqRel, Ordering::Acquire);
     }
 
-    pub(crate) fn action(&self) -> Option<SysconAction> {
+    pub fn action(&self) -> Option<SysconAction> {
         SysconAction::from_code(self.action.load(Ordering::Acquire))
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct SysconDevice {
+pub struct SysconDevice {
     window: MmioWindow,
     offset: u64,
     value: u32,
     mask: u32,
     action: SysconAction,
-    state: std::sync::Arc<SysconState>,
+    state: Arc<SysconState>,
 }
 
 impl SysconDevice {
-    pub(crate) fn new(
+    pub fn new(
         name: &'static str,
         syscon: dillo_platform::Syscon,
         action: SysconAction,
-        state: std::sync::Arc<SysconState>,
+        state: Arc<SysconState>,
     ) -> Self {
         Self {
             window: MmioWindow {
@@ -94,17 +95,12 @@ impl SysconDevice {
         (value & self.mask) == (self.value & self.mask)
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) fn matches_poweroff(
-        poweroff: dillo_platform::Syscon,
-        addr: u64,
-        data: &[u8],
-    ) -> bool {
+    pub fn matches_poweroff(poweroff: dillo_platform::Syscon, addr: u64, data: &[u8]) -> bool {
         let device = Self::new(
             "syscon-poweroff",
             poweroff,
             SysconAction::Poweroff,
-            std::sync::Arc::new(SysconState::default()),
+            Arc::new(SysconState::default()),
         );
         addr.checked_sub(poweroff.base)
             .is_some_and(|offset| device.matches(offset, data))
@@ -145,12 +141,12 @@ mod tests {
 
     #[test]
     fn matching_write_records_action() {
-        let state = std::sync::Arc::new(SysconState::default());
+        let state = Arc::new(SysconState::default());
         let device = SysconDevice::new(
             "syscon-poweroff",
             syscon(),
             SysconAction::Poweroff,
-            std::sync::Arc::clone(&state),
+            Arc::clone(&state),
         );
         let window = device.windows()[0];
 
@@ -161,12 +157,12 @@ mod tests {
 
     #[test]
     fn non_matching_write_is_claimed_without_action() {
-        let state = std::sync::Arc::new(SysconState::default());
+        let state = Arc::new(SysconState::default());
         let device = SysconDevice::new(
             "syscon-reboot",
             syscon(),
             SysconAction::Reboot,
-            std::sync::Arc::clone(&state),
+            Arc::clone(&state),
         );
         let window = device.windows()[0];
 
