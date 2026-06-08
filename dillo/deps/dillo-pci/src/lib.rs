@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 pub use dillo_mmio::{
-    MmioAttachment, MmioDeviceHandle, MmioDeviceHost, MmioJoinError, MmioSpawnError,
+    MmioAttachment, MmioDeviceHandle, MmioDeviceHost, MmioJoinError, MmioProcessHost,
+    MmioSpawnError,
 };
 use dillo_mmio::{MmioDevice, MmioWindow};
 pub use vm_pci::{

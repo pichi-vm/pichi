@@ -11,7 +11,7 @@
 
 use std::os::unix::net::UnixStream;
 use std::process::Child;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use dillo_virtio::{ActivateError, VirtioActivate, VirtioDevice, VirtioDeviceHandle};
 use vhost::vhost_user::message::{VhostUserConfigFlags, VhostUserProtocolFeatures};
@@ -156,7 +156,7 @@ impl VirtioDevice for VhostUserFrontend {
             mem,
             queues,
             queue_evts,
-            host: _,
+            host,
         } = activation;
         // Re-intersect with backend_features as a safety net (the value
         // passed in is the driver-negotiated subset of what we advertised).
@@ -251,30 +251,7 @@ impl VirtioDevice for VhostUserFrontend {
         let Some(child) = self.child.take() else {
             return Ok(VirtioDeviceHandle::noop());
         };
-        let child = Arc::new(Mutex::new(Some(child)));
-        let shutdown_child = Arc::clone(&child);
-        let join_child = Arc::clone(&child);
-        Ok(VirtioDeviceHandle::new(
-            move || {
-                if let Some(child) = shutdown_child
-                    .lock()
-                    .expect("vhost-user child lock poisoned")
-                    .as_mut()
-                {
-                    terminate_child(child);
-                }
-            },
-            move || {
-                if let Some(mut child) = join_child
-                    .lock()
-                    .expect("vhost-user child lock poisoned")
-                    .take()
-                {
-                    terminate_child(&mut child);
-                }
-                Ok(())
-            },
-        ))
+        host.adopt_process(child)
     }
 
     fn read_config(&self, offset: u64, data: &mut [u8]) {

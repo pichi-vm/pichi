@@ -6,11 +6,12 @@
 //! capabilities, common config BAR, MSI-X, device status FSM, feature
 //! negotiation, and ioeventfd-based notification.
 
+use std::process::Child;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dillo_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, PciConfiguration};
-use dillo_pci::{MmioDeviceHost, MmioJoinError, PciDeviceHost};
+use dillo_pci::{MmioDeviceHost, MmioJoinError, MmioProcessHost, PciDeviceHost};
 use dillo_virtio::Kick;
 use dillo_virtio::queue::Queue;
 use dillo_virtio::{
@@ -801,6 +802,39 @@ impl VirtioDeviceHost for PciVirtioHost {
             },
             move || {
                 if let Some(handle) = join_handle.lock().expect("virtio handle poisoned").take() {
+                    handle
+                        .join()
+                        .map_err(|e| DeviceJoinError::Worker(e.to_string()))?;
+                }
+                Ok(())
+            },
+        ))
+    }
+
+    fn adopt_process(&self, child: Child) -> Result<VirtioDeviceHandle, ActivateError> {
+        let handle = self
+            .host
+            .spawn(MmioDeviceHost::process(MmioProcessHost::from_child(child)))
+            .map_err(|e| ActivateError::InvalidConfig(format!("adopt virtio process: {e}")))?;
+        let handle = Arc::new(Mutex::new(Some(handle)));
+        let shutdown_handle = Arc::clone(&handle);
+        let join_handle = Arc::clone(&handle);
+        Ok(VirtioDeviceHandle::new(
+            move || {
+                if let Some(handle) = shutdown_handle
+                    .lock()
+                    .expect("virtio process handle poisoned")
+                    .as_ref()
+                {
+                    let _ = handle.shutdown();
+                }
+            },
+            move || {
+                if let Some(handle) = join_handle
+                    .lock()
+                    .expect("virtio process handle poisoned")
+                    .take()
+                {
                     handle
                         .join()
                         .map_err(|e| DeviceJoinError::Worker(e.to_string()))?;

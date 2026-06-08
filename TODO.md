@@ -565,6 +565,7 @@ CI verification:
 - `27150535316` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27150863901` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27151569414` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27152061240` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
@@ -665,11 +666,13 @@ Completed changes:
   `MmioAttachment`.
 - Wired virtio-pci activation through the PCI root host instead of the
   compatibility thread host when the root is attached.
+- Added adopted-process host support and routed the current vhost-user child
+  process through the activation host after the vhost setup handshake.
 
 Remaining divergence:
 - The virtio-console stdin reader is still a detached local thread.
-- Process-host support is represented in the API but not wired to current
-  vhost-user behavior yet.
+- The vhost-user process still starts before activation because config-space
+  reads need the vhost handshake before guest `DRIVER_OK`.
 
 ## Stage 12 - Implement CC-first shared-memory capabilities
 

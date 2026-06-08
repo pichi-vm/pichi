@@ -87,7 +87,7 @@ mod imp {
             self: Arc<Self>,
             host: MmioDeviceHost,
         ) -> Result<MmioDeviceHandle, MmioSpawnError> {
-            host.spawn_thread_model()
+            host.spawn_supervisor_model()
         }
     }
 
