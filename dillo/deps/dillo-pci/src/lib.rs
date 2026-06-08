@@ -5,8 +5,12 @@
 //! "single-function devices only, no hot-plug, no multi-function,
 //! no PCIe-PM, no AER."
 
+use std::sync::Arc;
 use std::sync::Mutex;
 
+pub use dillo_mmio::{
+    MmioAttachment, MmioDeviceHandle, MmioDeviceHost, MmioJoinError, MmioSpawnError,
+};
 use dillo_mmio::{MmioDevice, MmioWindow};
 pub use vm_pci::{
     CAP_ID_MSIX, CAP_ID_VENDOR, MsixNotifier, MsixTable, MsixTableEntry, NoopNotifier,
@@ -50,6 +54,14 @@ pub trait PciDevice: Send + Sync + std::fmt::Debug {
     fn bar_write(&self, _bar_idx: u8, _offset: u64, _data: &[u8]) -> bool {
         false
     }
+
+    /// Attach this endpoint to the root's backend-owned host service.
+    fn set_host(&self, _host: Arc<dyn PciDeviceHost>) {}
+}
+
+/// Backend-owned host service inherited from the attached PCI root.
+pub trait PciDeviceHost: Send + Sync + std::fmt::Debug {
+    fn spawn(&self, host: MmioDeviceHost) -> Result<MmioDeviceHandle, MmioSpawnError>;
 }
 
 /// Number of slots on the single PCI bus. PCIe spec allows 32 device
@@ -105,6 +117,12 @@ impl PciBus {
         );
         log::info!("PCI: registered '{}' at 00:{:02x}.0", device.name(), slot);
         self.slots[slot as usize] = Some(device);
+    }
+
+    pub fn set_host(&self, host: Arc<dyn PciDeviceHost>) {
+        for device in self.slots.iter().flatten() {
+            device.set_host(Arc::clone(&host));
+        }
     }
 
     /// Read a config register. Single-bus, single-function only:
@@ -207,6 +225,10 @@ impl PciRoot {
         self.refresh_windows();
     }
 
+    pub fn set_attachment(&self, attachment: Arc<dyn MmioAttachment>) {
+        self.bus.set_host(Arc::new(PciRootHost { attachment }));
+    }
+
     pub fn config_read(&self, bus: u8, device: u8, function: u8, reg_idx: usize) -> u32 {
         self.bus.config_read(bus, device, function, reg_idx)
     }
@@ -265,6 +287,17 @@ impl PciRoot {
             .into_iter()
             .find(|(_, bar)| bar.base_gpa == window.base && bar.size == window.size)
             .map(|(slot, bar)| (slot, bar.bar_idx))
+    }
+}
+
+#[derive(Debug)]
+struct PciRootHost {
+    attachment: Arc<dyn MmioAttachment>,
+}
+
+impl PciDeviceHost for PciRootHost {
+    fn spawn(&self, host: MmioDeviceHost) -> Result<MmioDeviceHandle, MmioSpawnError> {
+        Arc::clone(&self.attachment).spawn(host)
     }
 }
 
@@ -359,6 +392,7 @@ impl PciDevice for HostBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     const BAR_REGIONS: [BarRegion; 1] = [BarRegion {
         bar_idx: 2,
@@ -515,5 +549,71 @@ mod tests {
         assert!(root.read(bar_window, 0x42, &mut data));
 
         assert_eq!(data, [2, 0x42]);
+    }
+
+    #[test]
+    fn pci_root_attachment_reaches_endpoints() {
+        #[derive(Debug)]
+        struct FakeAttachment;
+
+        impl MmioAttachment for FakeAttachment {
+            fn interrupts(&self) -> &[dillo_mmio::MmioInterrupt] {
+                &[]
+            }
+
+            fn shared_memory(&self) -> &[Arc<dyn dillo_mmio::SharedMemory>] {
+                &[]
+            }
+
+            fn spawn(
+                self: Arc<Self>,
+                _host: MmioDeviceHost,
+            ) -> Result<MmioDeviceHandle, MmioSpawnError> {
+                Ok(MmioDeviceHandle::noop())
+            }
+        }
+
+        struct HostAwareDevice {
+            observed_host: Arc<AtomicBool>,
+        }
+
+        impl std::fmt::Debug for HostAwareDevice {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("HostAwareDevice").finish()
+            }
+        }
+
+        impl PciDevice for HostAwareDevice {
+            fn config_read(&self, _reg_idx: usize) -> u32 {
+                0
+            }
+
+            fn config_write(&self, _reg_idx: usize, _offset: u64, _data: &[u8]) {}
+
+            fn name(&self) -> &str {
+                "host-aware-device"
+            }
+
+            fn set_host(&self, _host: Arc<dyn PciDeviceHost>) {
+                self.observed_host.store(true, Ordering::Release);
+            }
+        }
+
+        let observed_host = Arc::new(AtomicBool::new(false));
+        let mut root = PciRoot::new(MmioWindow {
+            name: "pcie-ecam",
+            base: 0x3000_0000,
+            size: 0x1000_0000,
+        });
+        root.register(
+            1,
+            Box::new(HostAwareDevice {
+                observed_host: Arc::clone(&observed_host),
+            }),
+        );
+
+        root.set_attachment(Arc::new(FakeAttachment));
+
+        assert!(observed_host.load(Ordering::Acquire));
     }
 }

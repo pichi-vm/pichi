@@ -564,6 +564,7 @@ CI verification:
 - `27149884240` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27150535316` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 - `27150863901` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
+- `27151569414` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
 
 ## Stage 10 - Implement vCPU stop control
 
@@ -660,10 +661,12 @@ Completed changes:
   returned by `attach_mmio`.
 - Updated virtio-console TX/RX workers to spawn through the activation host
   instead of calling `std::thread::spawn` directly.
+- Added a PCI root host fan-out path so endpoints inherit the root
+  `MmioAttachment`.
+- Wired virtio-pci activation through the PCI root host instead of the
+  compatibility thread host when the root is attached.
 
 Remaining divergence:
-- PCI virtio activation still uses the compatibility host path; `PciRoot` needs
-  a root-mediated host path before PCI devices can use `MmioAttachment::spawn`.
 - The virtio-console stdin reader is still a detached local thread.
 - Process-host support is represented in the API but not wired to current
   vhost-user behavior yet.

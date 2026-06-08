@@ -41,7 +41,9 @@ pub use transport::{QueueNotifier, VirtioPciDevice};
 
 use std::sync::Mutex;
 
-use dillo_pci::{BarRegion, PciDevice};
+use dillo_pci::{BarRegion, PciDevice, PciDeviceHost};
+
+use crate::transport::PciVirtioHost;
 
 /// Adapter wrapping a [`VirtioPciDevice`] as a [`PciDevice`].
 pub struct VirtioPciAdapter {
@@ -110,5 +112,12 @@ impl PciDevice for VirtioPciAdapter {
             .lock()
             .expect("virtio PCI transport poisoned")
             .bar_write(bar_idx, offset, data)
+    }
+
+    fn set_host(&self, host: std::sync::Arc<dyn PciDeviceHost>) {
+        self.inner
+            .lock()
+            .expect("virtio PCI transport poisoned")
+            .set_host(std::sync::Arc::new(PciVirtioHost::new(host)));
     }
 }

@@ -292,7 +292,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     }
     vm.attach_x86_syscon_devices(poweroff, machine.reboot, Arc::clone(&syscon_state))?;
     vm.attach_mmio(ioapic)?;
-    vm.attach_mmio(Arc::clone(&pci_root))?;
+    let attachment = vm.attach_mmio(Arc::clone(&pci_root))?;
+    pci_root.set_attachment(attachment);
 
     let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
     for idx in 0..vcpus {
@@ -623,7 +624,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
         });
         pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
         let pci_root = Arc::new(pci_root);
-        vm.attach_mmio(Arc::clone(&pci_root))?;
+        let attachment = vm.attach_mmio(Arc::clone(&pci_root))?;
+        pci_root.set_attachment(attachment);
     } // end: if platform.has_pcie (microVM with --pci-slots 0 skips PCI fabric)
 
     // 7c. virtio-mmio (F6): bind a virtio-console to the first transport slot
@@ -1231,7 +1233,8 @@ pub fn run(pmi_path: &Path, memory_mib: u32, vcpus: u32) -> Result<i32, RunError
     });
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
-    vm.attach_mmio(Arc::clone(&pci_root))?;
+    let attachment = vm.attach_mmio(Arc::clone(&pci_root))?;
+    pci_root.set_attachment(attachment);
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
     // ── 9. create vCPUs + set boot vCPU state ──────────────────────

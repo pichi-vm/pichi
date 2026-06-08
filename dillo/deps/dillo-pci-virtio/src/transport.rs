@@ -10,9 +10,13 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dillo_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, PciConfiguration};
+use dillo_pci::{MmioDeviceHost, MmioJoinError, PciDeviceHost};
 use dillo_virtio::Kick;
 use dillo_virtio::queue::Queue;
-use dillo_virtio::{VIRTIO_F_VERSION_1, VirtioActivate, VirtioDevice, VirtioDeviceHandle};
+use dillo_virtio::{
+    ActivateError, DeviceJoinError, ThreadDeviceHost, VIRTIO_F_VERSION_1, VirtioActivate,
+    VirtioDevice, VirtioDeviceHandle, VirtioDeviceHost, VirtioRunToken,
+};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 use crate::capabilities::{add_virtio_cap, add_virtio_notify_cap};
@@ -144,6 +148,7 @@ pub struct VirtioPciDevice {
     // Activation state.
     activated: bool,
     activation: Option<VirtioDeviceHandle>,
+    host: Arc<dyn VirtioDeviceHost>,
 
     // Guest memory for Queue operations during activation.
     mem: Option<GuestMemoryMmap>,
@@ -307,6 +312,7 @@ impl VirtioPciDevice {
             bar2_gpa,
             activated: false,
             activation: None,
+            host: Arc::new(ThreadDeviceHost),
             mem: None,
             notifier,
             queue_notifier: None,
@@ -329,6 +335,11 @@ impl VirtioPciDevice {
     /// to a minimal placeholder.
     pub fn set_mem(&mut self, mem: GuestMemoryMmap) {
         self.mem = Some(mem);
+    }
+
+    /// Set the host service inherited from the attached PCI root.
+    pub fn set_host(&mut self, host: Arc<dyn VirtioDeviceHost>) {
+        self.host = host;
     }
 
     /// Return a clone of the inner `Arc<Mutex<Box<dyn VirtioDevice>>>`.
@@ -681,18 +692,23 @@ impl VirtioPciDevice {
             })
         };
 
-        let handle = match self
-            .device
-            .lock()
-            .expect("device mutex")
-            .activate(VirtioActivate::new(mem, queues, kicks))
-        {
-            Ok(handle) => handle,
-            Err(e) => {
-                log::error!("virtio-pci: device activation failed: {e}");
-                return;
-            }
-        };
+        let handle =
+            match self
+                .device
+                .lock()
+                .expect("device mutex")
+                .activate(VirtioActivate::with_host(
+                    mem,
+                    queues,
+                    kicks,
+                    Arc::clone(&self.host),
+                )) {
+                Ok(handle) => handle,
+                Err(e) => {
+                    log::error!("virtio-pci: device activation failed: {e}");
+                    return;
+                }
+            };
 
         self.activation = Some(handle);
         self.activated = true;
@@ -742,6 +758,56 @@ impl VirtioPciDevice {
                 log::warn!("virtio-pci: failed to signal kick for queue {queue_idx}: {e}");
             }
         }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PciVirtioHost {
+    host: Arc<dyn PciDeviceHost>,
+}
+
+impl PciVirtioHost {
+    pub(crate) fn new(host: Arc<dyn PciDeviceHost>) -> Self {
+        Self { host }
+    }
+}
+
+impl VirtioDeviceHost for PciVirtioHost {
+    fn spawn(
+        &self,
+        run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,
+    ) -> Result<VirtioDeviceHandle, ActivateError> {
+        let handle = self
+            .host
+            .spawn(MmioDeviceHost::thread(move |token| {
+                run(VirtioRunToken::from_fn(move || {
+                    token.is_shutdown_requested()
+                }))
+                .map_err(|e| MmioJoinError::Host(e.to_string()))
+            }))
+            .map_err(|e| ActivateError::InvalidConfig(format!("spawn virtio worker: {e}")))?;
+        let handle = Arc::new(Mutex::new(Some(handle)));
+        let shutdown_handle = Arc::clone(&handle);
+        let join_handle = Arc::clone(&handle);
+        Ok(VirtioDeviceHandle::new(
+            move || {
+                if let Some(handle) = shutdown_handle
+                    .lock()
+                    .expect("virtio handle poisoned")
+                    .as_ref()
+                {
+                    let _ = handle.shutdown();
+                }
+            },
+            move || {
+                if let Some(handle) = join_handle.lock().expect("virtio handle poisoned").take() {
+                    handle
+                        .join()
+                        .map_err(|e| DeviceJoinError::Worker(e.to_string()))?;
+                }
+                Ok(())
+            },
+        ))
     }
 }
 
