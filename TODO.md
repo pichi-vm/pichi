@@ -908,6 +908,15 @@ Completed changes:
   `dillo-machine-kvm`, `dillo-machine-hvf`, or `dillo-machine-whp` directly
   through target dependencies while the remaining monolithic composition layer
   is dismantled.
+- Removed the private `dillo-vm::backend::BackendVm` compatibility trait and
+  its `VmOptions`, `VcpuSeed`, and Linux `Memslot` argument wrappers. The
+  remaining compatibility runner now calls the selected `dillo-machine-*`
+  constructors, memory registration, vCPU creation, MMIO `Attach`, and
+  interrupt primitives directly.
+- Kept the KVM PCI/MSI-X wrapper in `dillo-vm` intentionally: moving that type
+  into `dillo-machine-kvm` would make the KVM backend depend on PCI, which
+  violates the target crate graph. It must disappear when `dillo` owns final
+  composition.
 - Hid the KVM `VmFd` accessor inside `dillo-machine-kvm`; `dillo-vm` now asks
   the backend crate to create its IRQ manager instead of deriving that state
   from a raw backend handle.
@@ -1019,8 +1028,13 @@ CI verification:
   `dee901a refactor: simplify mmio worker attachment`.
 - `27176083149` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `88846c4 ci: preserve hvf signing for boot tests`.
+- `27176313907` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `e0f8301 test: sign dillo in macos boot fixture`.
 
 Latest local verification:
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `git diff --check`
 - `grep -R "target_os\|target_arch\|target_env\|MmioNotifyEvent\|QueueNotifier\|as_eventfd" -n dillo/deps/dillo-pci-virtio dillo/deps/virtio dillo/deps/dillo-mmio dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-mmio-uart --include='*.rs' --include='Cargo.toml'`

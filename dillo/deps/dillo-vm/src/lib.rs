@@ -8,7 +8,7 @@
 
 #![allow(clippy::needless_lifetimes)]
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 mod backend;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod backend_select;
@@ -30,6 +30,8 @@ mod whp_devices;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::atomic::Ordering;
@@ -37,16 +39,16 @@ use std::sync::atomic::Ordering;
 use std::thread;
 
 use anyhow::Result;
-#[cfg(target_os = "macos")]
-use backend::BackendVm;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use backend::{BackendVm, VcpuSeed};
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use backend_machine::Vm;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use backend_select::machine as backend_machine;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_machine::VcpuStop;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use dillo_mmio::Attach;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use dillo_mmio::Interrupt;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::MsixNotifier;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -210,10 +212,8 @@ pub fn run(
     let guest_mem: GuestMemoryMmap = GuestMemoryMmap::from_ranges(&ranges)
         .map_err(|e| RunError::MemfdSetup(anyhow::anyhow!("GuestMemoryMmap: {e}")))?;
 
-    let mut vm = <backend_machine::Vm as BackendVm>::new(backend::VmOptions {
-        vcpus,
-        guest_memory: guest_mem.clone(),
-    })?;
+    let mut vm = backend_machine::Vm::new_x86_64_with_local_apic_count(vcpus)?;
+    vm.set_memory(guest_mem.clone())?;
     vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
         guest_mem.clone(),
         SharedAccess::ReadWrite,
@@ -237,7 +237,10 @@ pub fn run(
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
     let msix_vectors: u16 = 3;
-    let notifier = vm.msix_notifier((), msix_vectors);
+    let notifier = Arc::new(whp_devices::WhpMsixNotifier::new(
+        vm.fixed_interrupt_requester(),
+        msix_vectors,
+    ));
     let lookup_notifier = Arc::clone(&notifier);
     let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
         std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
@@ -273,17 +276,20 @@ pub fn run(
     let syscon_state = Arc::new(syscon::SysconState::default());
     match &machine.uart {
         Some(uart) => {
-            let serial = vm.ns16550(
+            let serial = dillo_mmio_uart::Ns16550::new(
                 MmioWindow {
                     name: "ns16550a",
                     base: uart.base,
                     size: uart.size,
                 },
                 uart.reg_shift,
-                (Arc::clone(&ioapic), uart.irq),
+                Some(Interrupt::new(Arc::new(vm.create_ioapic_interrupt_line(
+                    Arc::clone(&ioapic),
+                    uart.irq,
+                )))),
                 Box::new(std::io::stderr()),
-            )?;
-            vm.attach_mmio(Arc::new(serial))?;
+            );
+            Attach::attach(&mut vm, Arc::new(serial))?;
             log::info!(
                 "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
                 uart.base,
@@ -294,18 +300,32 @@ pub fn run(
         }
         None => log::warn!("no UART in Machine — guest console output will be dropped"),
     }
-    vm.attach_x86_syscon_devices(poweroff, machine.reboot, Arc::clone(&syscon_state))?;
-    vm.attach_mmio(ioapic)?;
-    let attachment = vm.attach_mmio(Arc::clone(&pci_root))?;
+    Attach::attach(
+        &mut vm,
+        Arc::new(syscon::SysconDevice::new(
+            "syscon-poweroff",
+            poweroff,
+            syscon::SysconAction::Poweroff,
+            Arc::clone(&syscon_state),
+        )),
+    )?;
+    if let Some(reboot) = machine.reboot {
+        Attach::attach(
+            &mut vm,
+            Arc::new(syscon::SysconDevice::new(
+                "syscon-reboot",
+                reboot,
+                syscon::SysconAction::Reboot,
+                Arc::clone(&syscon_state),
+            )),
+        )?;
+    }
+    Attach::attach(&mut vm, ioapic)?;
+    let attachment = Attach::attach(&mut vm, Arc::clone(&pci_root))?;
     pci_root.set_attachment(attachment);
 
     let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
     for idx in 0..vcpus {
-        let seed = if idx == 0 {
-            VcpuSeed::X86_64Boot(boot_state)
-        } else {
-            VcpuSeed::X86_64Secondary
-        };
         let legacy_for_read = Arc::clone(&legacy_pci);
         let pci_for_read = Arc::clone(&pci_root);
         let pio_read = Arc::new(move |port, size| {
@@ -326,14 +346,11 @@ pub fn run(
                 pio_pci::pio_write(&legacy_for_write, &pci_for_write, port, data);
             }
         });
-        vcpu_handles.push(BackendVm::create_vcpu(
-            &vm,
-            idx,
-            cpu_profile,
-            seed,
-            pio_read,
-            pio_write,
-        )?);
+        let mut vcpu = vm.create_vcpu_with_pio(idx, cpu_profile, pio_read, pio_write)?;
+        if idx == 0 {
+            vcpu.set_x86_64_state(boot_state)?;
+        }
+        vcpu_handles.push(vcpu);
     }
     log::info!(
         "WHP created {} vCPU(s); boot vCPU state programmed",
@@ -495,21 +512,25 @@ pub fn run(
         msi_intid_base: gic.spi_base,
         msi_intid_count: gic.spi_count,
     };
-    let memory_regions = plan
-        .memslots
-        .iter()
-        .map(|r| backend::MemoryRegion {
-            gpa: r.gpa,
-            size: r.size,
-        })
-        .collect();
-    let mut vm = <Vm as BackendVm>::new(backend::VmOptions {
-        gic_params,
-        min_addr_space_bits: machine.min_addr_space_bits(),
-        vcpus,
-        memory_regions,
-    })?;
-    let guest_mem = vm.guest_memory()?;
+    let mut vm = backend_machine::Vm::new(&gic_params, machine.min_addr_space_bits())?;
+    let max_vcpus = vm.max_vcpus()?;
+    if vcpus > max_vcpus {
+        return Err(RunError::TooManyVcpus {
+            requested: vcpus,
+            max: max_vcpus,
+        });
+    }
+    for r in &plan.memslots {
+        log::info!(
+            "mapping HVF RAM [{:#x}..{:#x}) ({} bytes)",
+            r.gpa,
+            r.gpa + r.size,
+            r.size
+        );
+        vm.add_memory(r.gpa, r.size)?;
+    }
+    let guest_mem =
+        hvf_devices::build_guest_memory(&vm.region_mappings()).map_err(RunError::MemfdSetup)?;
     vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
         guest_mem.clone(),
         SharedAccess::ReadWrite,
@@ -527,16 +548,19 @@ pub fn run(
                 uart.size,
                 uart.reg_shift
             );
-            vm.attach_mmio(Arc::new(dillo_mmio_uart::Ns16550::new(
-                MmioWindow {
-                    name: "ns16550a",
-                    base: uart.base,
-                    size: uart.size,
-                },
-                uart.reg_shift,
-                None,
-                Box::new(std::io::stderr()),
-            )))?;
+            Attach::attach(
+                &mut vm,
+                Arc::new(dillo_mmio_uart::Ns16550::new(
+                    MmioWindow {
+                        name: "ns16550a",
+                        base: uart.base,
+                        size: uart.size,
+                    },
+                    uart.reg_shift,
+                    None,
+                    Box::new(std::io::stderr()),
+                )),
+            )?;
         }
         None => log::warn!("no UART in Machine — guest console output will be dropped"),
     }
@@ -547,7 +571,7 @@ pub fn run(
     //     notifier. ECAM + each BAR register on the MMIO bus.
     if machine.has_pcie {
         let msix_vectors: u16 = 3; // 2 queues (rx/tx) + config-change vector
-        let notifier = vm.msix_notifier((), msix_vectors);
+        let notifier = Arc::new(hvf_devices::HvfMsixNotifier::new(msix_vectors));
         let lookup_notifier = Arc::clone(&notifier);
         let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
             std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
@@ -571,7 +595,7 @@ pub fn run(
         });
         pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
         let pci_root = Arc::new(pci_root);
-        let attachment = vm.attach_mmio(Arc::clone(&pci_root))?;
+        let attachment = Attach::attach(&mut vm, Arc::clone(&pci_root))?;
         pci_root.set_attachment(attachment);
     } // end: if platform.has_pcie (microVM with --pci-slots 0 skips PCI fabric)
 
@@ -581,7 +605,14 @@ pub fn run(
     //     The wired GIC SPI is injected through a backend-owned IRQ capability.
     if let Some(slot) = machine.virtio_mmio.first() {
         let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let irq = vm.wired_irq(slot.irq);
+        let irq = dillo_mmio_virtio::WiredIrq::new(
+            slot.irq,
+            Arc::new(|intid, level| {
+                if let Err(e) = backend_machine::set_spi(intid, level) {
+                    log::warn!("HVF wired IRQ set SPI {intid}={level} failed: {e}");
+                }
+            }),
+        );
         let interrupt_irq = irq.clone();
         let is = Arc::clone(&int_status);
         let console: Box<dyn dillo_virtio::VirtioDevice> = Box::new(
@@ -602,7 +633,7 @@ pub fn run(
             Arc::clone(&int_status),
             irq.clone(),
         ));
-        let attachment = vm.attach_mmio(Arc::clone(&transport))?;
+        let attachment = Attach::attach(&mut vm, Arc::clone(&transport))?;
         transport.set_attachment(attachment);
         log::info!(
             "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
@@ -921,7 +952,7 @@ pub fn run(
     }
 
     // ── 8. create KVM VM + memslots ────────────────────────────────
-    let mut memslots = Vec::with_capacity(plan.memslots.len());
+    let mut vm = backend_machine::Vm::new()?;
     for (slot_idx, r) in plan.memslots.iter().enumerate() {
         let host_addr = gpa_map
             .lookup(r.gpa)
@@ -930,12 +961,14 @@ pub fn run(
                 gpa: r.gpa,
                 source: anyhow::anyhow!("no host mapping for GPA {:#x}", r.gpa),
             })?;
-        memslots.push(backend::Memslot {
-            index: slot_idx as u32,
-            gpa: r.gpa,
-            host_addr,
-            size: r.size,
-        });
+        log::info!(
+            "registering KVM memslot {}: [{:#x}..{:#x}) host={:#x}",
+            slot_idx,
+            r.gpa,
+            r.gpa + r.size,
+            host_addr
+        );
+        vm.add_memslot(slot_idx as u32, r.gpa, host_addr, r.size)?;
     }
     let region_tuples: Vec<(u64, u64, u64)> = plan
         .memslots
@@ -947,7 +980,6 @@ pub fn run(
         .collect();
     let guest_mem =
         memory::build_guest_memory(&memfd, &region_tuples).map_err(RunError::MemfdSetup)?;
-    let mut vm = <Vm as BackendVm>::new(backend::VmOptions { memslots })?;
     vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
         guest_mem.clone(),
         SharedAccess::ReadWrite,
@@ -966,10 +998,34 @@ pub fn run(
     // a fresh backend interrupt route is allocated. Queue completions are then
     // backend-direct — no VMM relay.
     let syscon_state = Arc::new(syscon::SysconState::default());
-    vm.attach_x86_syscon_devices(poweroff, machine.reboot, Arc::clone(&syscon_state))?;
+    Attach::attach(
+        &mut vm,
+        Arc::new(syscon::SysconDevice::new(
+            "syscon-poweroff",
+            poweroff,
+            syscon::SysconAction::Poweroff,
+            Arc::clone(&syscon_state),
+        )),
+    )?;
+    if let Some(reboot) = machine.reboot {
+        Attach::attach(
+            &mut vm,
+            Arc::new(syscon::SysconDevice::new(
+                "syscon-reboot",
+                reboot,
+                syscon::SysconAction::Reboot,
+                Arc::clone(&syscon_state),
+            )),
+        )?;
+    }
 
     // Build the device → adapter → bus chain.
-    let irq_mgr = vm.interrupt_state()?;
+    let irq_mgr = Arc::new(Mutex::new(vm.create_irq_manager().map_err(|e| {
+        RunError::Kvm(backend_machine::Error::RunVcpu(
+            0,
+            std::io::Error::other(format!("irq manager: {e}")),
+        ))
+    })?));
 
     // Machine-driven UART attach (device-model §"Serial port"): the serial
     // port is an MMIO ns16550a. If the Machine declares one, attach it with a
@@ -977,17 +1033,27 @@ pub fn run(
     // bus. Absent → no UART emulation at all.
     match machine.uart {
         Some(uart) => {
-            let serial = vm.ns16550(
+            let eventfd = {
+                let mut manager = irq_mgr.lock().expect("IRQ manager lock poisoned");
+                manager
+                    .register_irqfd_at_gsi(uart.irq)
+                    .map_err(|e| RunError::SerialInit {
+                        source: anyhow::anyhow!("irqfd for serial GSI {}: {e}", uart.irq),
+                    })?
+            };
+            let serial = dillo_mmio_uart::Ns16550::new(
                 MmioWindow {
                     name: "ns16550a",
                     base: uart.base,
                     size: uart.size,
                 },
                 uart.reg_shift,
-                (Arc::clone(&irq_mgr), uart.irq),
+                Some(Interrupt::new(Arc::new(
+                    backend_machine::EventFdInterruptLine::new(eventfd),
+                ))),
                 Box::new(std::io::stdout()),
-            )?;
-            vm.attach_mmio(Arc::new(serial))?;
+            );
+            Attach::attach(&mut vm, Arc::new(serial))?;
             log::info!(
                 "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
                 uart.base,
@@ -1001,7 +1067,9 @@ pub fn run(
 
     // num_queues + 1 vector for config-change. Console has 2 queues.
     let msix_vectors: u16 = 3;
-    let irqfd_notifier = vm.msix_notifier(Arc::clone(&irq_mgr), msix_vectors);
+    let irqfd_notifier = Arc::new(backend::KvmMsixNotifier::new(Arc::new(
+        backend_machine::IrqfdNotifier::new(Arc::clone(&irq_mgr), msix_vectors),
+    )));
 
     let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = {
         let call_lookup_notifier = Arc::clone(&irqfd_notifier);
@@ -1032,7 +1100,7 @@ pub fn run(
     });
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
-    let attachment = vm.attach_mmio(Arc::clone(&pci_root))?;
+    let attachment = Attach::attach(&mut vm, Arc::clone(&pci_root))?;
     pci_root.set_attachment(attachment);
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
@@ -1046,11 +1114,6 @@ pub fn run(
         }
     };
     for idx in 0..vcpus {
-        let seed = if idx == 0 {
-            VcpuSeed::X86_64Boot(boot_state)
-        } else {
-            VcpuSeed::X86_64Secondary
-        };
         let legacy_for_read = Arc::clone(&legacy_pci);
         let pci_for_read = Arc::clone(&pci_root);
         let pio_read = Arc::new(move |port, size| {
@@ -1071,7 +1134,10 @@ pub fn run(
                 pio_pci::pio_write(&legacy_for_write, &pci_for_write, port, data);
             }
         });
-        let vcpu = BackendVm::create_vcpu(&vm, idx, cpu_profile, seed, pio_read, pio_write)?;
+        let mut vcpu = vm.create_vcpu_with_pio(idx, cpu_profile, pio_read, pio_write)?;
+        if idx == 0 {
+            vcpu.set_x86_64_state(boot_state)?;
+        }
         vcpu_handles.push(vcpu);
     }
 
