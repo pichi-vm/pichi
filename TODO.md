@@ -516,15 +516,13 @@ Process:
 - Superseded by Stage 22: x86 CF8/CFC config ports must fail guest probing so
   Linux uses ECAM for all PCI config access.
 - Keep WFI/HLT backend-internal.
-- Decide and implement the target gdb/debug story: either an explicit
-  debug-capable runner or removal from the final design.
+- Remove the gdb/debug extension from the active target design.
 
 Success criteria:
 - `dillo` and device crates do not see backend exit enums.
 - `VcpuStop` contains only guest/supervisor lifecycle outcomes.
 - PSCI poweroff/reset and CPU_ON tests pass.
-- Existing debug behavior is either preserved through an explicit API or
-  intentionally removed with tests/docs updated.
+- Existing debug behavior is intentionally removed with tests/docs updated.
 - Default local verification and all target checks pass.
 
 Completed changes:
@@ -534,12 +532,11 @@ Completed changes:
 - Kept PCI CF8/CFC decoding in `dillo-vm` temporarily, but `Vcpu::run()` no
   longer returned those PIO writes to the supervisor loop on KVM/WHP. Stage 22
   removes the decoder entirely.
-- Added KVM/WHP `VcpuExit` facade enums so normal `dillo-vm` and Linux gdb
-  callers no longer see raw PIO read/write exits from `dillo-hypervisor`.
+- Added KVM/WHP `VcpuExit` facade enums so normal `dillo-vm` callers no longer
+  see raw PIO read/write exits from `dillo-hypervisor`.
 - Moved x86 HLT and unexpected HVC/SMC handling inside the KVM/WHP facades
   instead of exposing those raw exits to `dillo-vm`.
-- Split Linux gdb onto an explicit KVM `DebugExit` runner so normal KVM/WHP
-  supervisor execution no longer sees debug exits.
+- Removed the Linux gdb/debug extension from the active target.
 - Mapped unknown KVM/WHP exits to backend errors instead of normal supervisor
   `VcpuExit` variants.
 - Moved normal x86 KVM/WHP supervisor execution to `VcpuStop` via backend
@@ -551,8 +548,7 @@ Completed changes:
   `dillo-machine-hvf`.
 
 Remaining divergence:
-- Linux gdb intentionally imports the explicit KVM `DebugExit` runner. Normal
-  supervisor paths no longer import or match backend vCPU exit enums.
+- None for the active gdb/debug target: it is removed for now.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
@@ -1678,7 +1674,8 @@ Local verification note:
 
 ## Stage 22 - Final acceptance audit
 
-Status: in progress; MMIO interrupt attachment inversion local-verified, CI pending.
+Status: in progress; MMIO interrupt attachment inversion local-verified after
+fixing x86 boot regression, CI pending.
 
 Goal: prove the implementation satisfies `DILLO-CRATE-SPLIT.md` or that all
 remaining divergence has been recorded for human review after three conformance
@@ -1826,8 +1823,7 @@ Audit fix 4 - KVM-owned guest-memory backing:
 - Added `dillo-machine-kvm::memory::MappedMemory` as the single backend-owned
   standard-VM guest-memory backing object. `dillo` now asks the KVM backend for
   mapped guest memory, attaches each returned mapped region as a KVM memory
-  input, and uses the backend-owned GPA map only for launch writes and the
-  explicit KVM gdb runner.
+  input, and uses the backend-owned GPA map only for launch writes.
 - Removed stale `nix` and `vm-memory` dependencies from the top-level `dillo`
   crate; those implementation dependencies now live in `dillo-machine-kvm`.
 
@@ -2004,10 +2000,22 @@ Audit fix 13 - resolve MMIO interrupts during machine attach:
 - Added a PCI-virtio MSI-X interrupt lookup cell so dillo can construct the
   console without asking the selected machine for an MSI domain.
 - Removed stale runner errors from the retired direct backend setup path.
+- CI run `27217909684` caught an x86-only boot regression: PCI console
+  attachment incorrectly required a DTB `pcie msi-parent`. x86 DTBs currently
+  have no MSI-parent property, while aarch64 keeps GICv2m MSI-parent
+  provenance.
+- Changed `MmioInterruptRequirement::MessageDomain` to carry an optional
+  DTB-derived source. The PCI root now preserves MSI-parent provenance when it
+  exists and still attaches on x86 when the DTB has no message-interrupt parent.
+- Removed the GDB/debug extension from the active target design; source,
+  manifests, and lockfile contain no active `gdbstub`, `DILLO_GDB`,
+  `GdbTarget`, `DebugExit`, or `debug_flags` references.
 
 Evidence:
 - `grep -RIn "create_line_interrupt\|create_message_interrupt_domain" dillo/src dillo/deps/dillo-machine/src --include='*.rs'`
   reports no common-trait or dillo call sites.
+- `grep -RIn "gdbstub\|GdbTarget\|DILLO_GDB\|debug_flags\|DebugExit" Cargo.toml Cargo.lock dillo --include='*.rs' --include='Cargo.toml' --include='Cargo.lock'`
+  reports no matches.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
@@ -2019,5 +2027,16 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-devtree -p dillo-mmio-uart -p dillo-mmio-virtio -p dillo-pci -p dillo-pci-virtio -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp -p dillo`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-devtree -p dillo-mmio-uart -p dillo-mmio-virtio -p dillo-pci -p dillo-pci-virtio -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`

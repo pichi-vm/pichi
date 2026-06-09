@@ -131,7 +131,7 @@ pub enum MmioInterruptRequirement {
     },
 
     MessageDomain {
-        source: MessageInterruptSource,
+        source: Option<MessageInterruptSource>,
         vectors: u16,
     },
 }

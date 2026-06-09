@@ -583,9 +583,8 @@ SMC, debug, halt, shutdown, and MMIO exits above the hypervisor wrapper. In the
 target design, PSCI handling, including secondary CPU bring-up from `CPU_ON`,
 lives in the backend or architecture substrate and coordinates with
 machine-owned vCPU parking/wakeup state. WFI/HLT stays backend-internal. The
-existing `DILLO_GDB` debug path cannot be smuggled through `VcpuStop::Debug`; it
-must either be dropped from the target or reintroduced as an explicit
-debug-capable machine runner.
+existing `DILLO_GDB` debug path is out of scope for this refactor and must not
+be smuggled through `VcpuStop::Debug`.
 
 `Machine::request_vcpu_exit` is not cancellation of arbitrary Rust work, reset
 control, or device shutdown. It is the backend's VM-wide vCPU run-exit
@@ -1195,8 +1194,8 @@ The current tree does not yet meet this design:
   for `Attach<Arc<dyn MmioDevice>>` to populate it.
 - Non-MMIO exits currently cross the hypervisor boundary. PSCI/HVC, including
   `CPU_ON` secondary bring-up, must move into backend or architecture-substrate
-  code. WFI/HLT should remain backend-internal. The existing gdb/debug path
-  needs an explicit target design or must be declared out of scope.
+  code. WFI/HLT should remain backend-internal. The existing gdb/debug path is
+  out of scope.
 - Confidential-computing memory is greenfield: guest-private memory, shared page
   conversion, shared aperture tracking, and restricted device DMA must be added
   rather than moved.

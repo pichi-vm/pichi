@@ -157,10 +157,23 @@ fn line_requirement(interrupt: &WiredInterrupt) -> MmioInterruptRequirement {
 
 fn message_requirement(msi: &MsiParentage, vectors: u16) -> MmioInterruptRequirement {
     MmioInterruptRequirement::MessageDomain {
-        source: MessageInterruptSource {
+        source: Some(MessageInterruptSource {
             controller: msi.controller.phandle,
-        },
+        }),
         vectors,
+    }
+}
+
+fn optional_message_requirement(
+    msi: Option<&MsiParentage>,
+    vectors: u16,
+) -> MmioInterruptRequirement {
+    match msi {
+        Some(msi) => message_requirement(msi, vectors),
+        None => MmioInterruptRequirement::MessageDomain {
+            source: None,
+            vectors,
+        },
     }
 }
 
@@ -195,10 +208,10 @@ where
         base: platform.pcie.ecam_base,
         size: platform.pcie.ecam_size,
     };
-    let Some(msi) = platform.pcie.msi.as_ref() else {
-        return Err(RunError::MissingRequiredDevice("pcie msi-parent"));
-    };
-    let mut pci_root = PciRoot::with_interrupt_requirement(ecam, message_requirement(msi, vectors));
+    let mut pci_root = PciRoot::with_interrupt_requirement(
+        ecam,
+        optional_message_requirement(platform.pcie.msi.as_ref(), vectors),
+    );
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
     let attachment = Attach::attach(vm, Arc::clone(&pci_root)).map_err(RunError::machine)?;
