@@ -10,8 +10,8 @@
  *   - x86_64: the full legacy low-memory map packs to fixed offsets purely
  *     by size — guard@0, stack (fills to the 640K barrier), the DTB
  *     buffers, the boot CPU tables at PGT_BASE==0x98000, the scan-window
- *     pads, ACPI filling [640K,960K), the rompad, then code at the 1 MiB
- *     floor. The compile-time `assert!`s in `sections.rs` pin those
+ *     pads, ACPI filling [640K,960K), DMI at 960K, the rompad, then code at
+ *     the 1 MiB floor. The compile-time `assert!`s in `sections.rs` pin those
  *     boundaries.
  *   - aarch64: the x86-only sections (guard/pgt/gdt/scanpad/acpi/rompad,
  *     and `.tatu.reset.x86_64`) have no `#[cfg(aarch64)]` static, so their
@@ -46,6 +46,7 @@ PHDRS {
     gdt_ph      PT_LOAD;
     scanpad_ph  PT_LOAD;
     acpi_ph     PT_LOAD;
+    dmi_ph      PT_LOAD;
     rompad_ph   PT_LOAD;
     rodata_ph   PT_LOAD;
     text_ph     PT_LOAD;
@@ -73,7 +74,8 @@ SECTIONS {
     .tatu.scanpad (NOLOAD) : ALIGN(4K) { KEEP(*(.tatu.scanpad)) } :scanpad_ph
     .tatu.acpi    (NOLOAD) : ALIGN(4K) { KEEP(*(.tatu.acpi)) }    :acpi_ph
 
-    /* --- x86-only rompad: pushes code to the 1 MiB floor --- */
+    /* --- x86-only SMBIOS/DMI scan-window payload + rompad --- */
+    .tatu.dmi : ALIGN(4K) { KEEP(*(.tatu.dmi)) } :dmi_ph
     .tatu.rompad (NOLOAD) : ALIGN(4K) { KEEP(*(.tatu.rompad)) } :rompad_ph
 
     /* --- code (PROGBITS) --- */

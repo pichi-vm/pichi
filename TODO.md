@@ -1567,6 +1567,8 @@ Process:
 - Run Linux, Windows, and macOS local/CI verification.
 - This stage may touch `dtb2acpi`: ECAM-only x86 operation requires ACPI to
   reserve the DTB-declared ECAM window as a motherboard resource.
+- This stage may touch `tatu`: Linux also requires usable DMI/SMBIOS metadata
+  for high-address MCFG allocations, and the current x86 ECAM is above 4 GiB.
 
 Success criteria:
 - `dillo` is the only composition point that knows PMI, devtree, concrete
@@ -1616,8 +1618,17 @@ Audit fix 2 - ECAM-only x86 PCI config:
 - Removed remaining backend references to PCI MSI-X semantics; backend crates
   speak in generic message-interrupt terms, while MSI-X table behavior remains
   in `dillo-pci`.
+- CI run `27205154504` proved the first ECAM-only patch was incomplete:
+  Ubuntu x86 booted far enough to power off, but Linux did not enumerate the
+  virtio PCI console, so every x86 boot test failed with no snuffler report.
+- Added a minimal x86-only SMBIOS/DMI payload in `tatu` at `0xF0000` with BIOS
+  release date `01/01/2020`, then shrank the zero ROM pad by the same 4 KiB so
+  code still starts above the 1 MiB floor.
 - Evidence: `grep -RInE "legacy_pio|parse_cf8|LegacyPciState|0xCF8|0xCFC" dillo/src dillo/deps/dillo-pci/src dillo/deps/dillo-machine-*`
   reports no active decoder.
+- Evidence: `objdump -h target/x86_64-unknown-none/debug/tatu` reports
+  `.tatu.dmi` as DATA at `0x000f0000`, `.tatu.rompad` as BSS at `0x000f1000`,
+  and `.tatu.text` at `0x00105000`.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
@@ -1631,3 +1642,8 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p tatu --target x86_64-unknown-none`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo build -p tatu --target x86_64-unknown-none`
+- `objdump -h target/x86_64-unknown-none/debug/tatu | grep -E '\\.tatu\\.(dmi|rompad|acpi|text)'`
+- `objdump -s -j .tatu.dmi target/x86_64-unknown-none/debug/tatu | head -24`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p arma`

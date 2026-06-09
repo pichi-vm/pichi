@@ -87,13 +87,123 @@ pub static GUARD: PageCell<Paged<[u8; 4 * 1024]>> = PageCell::new(Paged([0; 4 * 
 #[unsafe(link_section = ".tatu.scanpad")]
 pub static SCANPAD: PageCell<Paged<[u8; 4 * 1024]>> = PageCell::new(Paged([0; 4 * 1024]));
 
-/// `.tatu.rompad` — covers the [0xF0000,1M) MP+DMI scan window and pushes
-/// the code sections up to the 1 MiB floor.
+#[cfg(target_arch = "x86_64")]
+mod smbios {
+    pub const IMAGE_SIZE: usize = 4 * 1024;
+    const ENTRY_OFFSET: usize = 0;
+    const TABLE_OFFSET: usize = 0x20;
+    const TABLE_GPA: u32 = 0xF0000 + TABLE_OFFSET as u32;
+    const TABLE_LEN: u16 = 47;
+    const STRUCT_COUNT: u16 = 2;
+    const MAX_STRUCT_SIZE: u16 = 41;
+
+    pub const IMAGE: [u8; IMAGE_SIZE] = image();
+
+    const fn image() -> [u8; IMAGE_SIZE] {
+        let mut out = [0u8; IMAGE_SIZE];
+        write_entry(&mut out);
+        write_table(&mut out);
+        out[ENTRY_OFFSET + 0x04] = checksum(&out, ENTRY_OFFSET, 0x1f);
+        out[ENTRY_OFFSET + 0x15] = checksum(&out, ENTRY_OFFSET + 0x10, 0x0f);
+        out
+    }
+
+    const fn write_entry(out: &mut [u8; IMAGE_SIZE]) {
+        out[0x00] = b'_';
+        out[0x01] = b'S';
+        out[0x02] = b'M';
+        out[0x03] = b'_';
+        out[0x05] = 0x1f;
+        out[0x06] = 2;
+        out[0x07] = 8;
+        write_u16(out, 0x08, MAX_STRUCT_SIZE);
+        out[0x0a] = 0;
+        out[0x10] = b'_';
+        out[0x11] = b'D';
+        out[0x12] = b'M';
+        out[0x13] = b'I';
+        out[0x14] = b'_';
+        write_u16(out, 0x16, TABLE_LEN);
+        write_u32(out, 0x18, TABLE_GPA);
+        write_u16(out, 0x1c, STRUCT_COUNT);
+        out[0x1e] = 0x28;
+    }
+
+    const fn write_table(out: &mut [u8; IMAGE_SIZE]) {
+        let mut p = TABLE_OFFSET;
+
+        out[p] = 0;
+        out[p + 1] = 0x12;
+        write_u16(out, p + 2, 0);
+        out[p + 4] = 1;
+        out[p + 5] = 2;
+        write_u16(out, p + 6, 0);
+        out[p + 8] = 3;
+        out[p + 9] = 0;
+        p += 0x12;
+
+        p = write_str(out, p, b"TATU");
+        p = write_str(out, p, b"Pichi");
+        p = write_str(out, p, b"01/01/2020");
+        out[p] = 0;
+        p += 1;
+
+        out[p] = 127;
+        out[p + 1] = 4;
+        write_u16(out, p + 2, 0x7f00);
+        out[p + 4] = 0;
+        out[p + 5] = 0;
+    }
+
+    const fn write_str(out: &mut [u8; IMAGE_SIZE], mut p: usize, s: &[u8]) -> usize {
+        let mut i = 0;
+        while i < s.len() {
+            out[p] = s[i];
+            p += 1;
+            i += 1;
+        }
+        out[p] = 0;
+        p + 1
+    }
+
+    const fn write_u16(out: &mut [u8; IMAGE_SIZE], p: usize, v: u16) {
+        out[p] = v as u8;
+        out[p + 1] = (v >> 8) as u8;
+    }
+
+    const fn write_u32(out: &mut [u8; IMAGE_SIZE], p: usize, v: u32) {
+        out[p] = v as u8;
+        out[p + 1] = (v >> 8) as u8;
+        out[p + 2] = (v >> 16) as u8;
+        out[p + 3] = (v >> 24) as u8;
+    }
+
+    const fn checksum(out: &[u8; IMAGE_SIZE], start: usize, len: usize) -> u8 {
+        let mut sum = 0u8;
+        let mut i = 0;
+        while i < len {
+            sum = sum.wrapping_add(out[start + i]);
+            i += 1;
+        }
+        0u8.wrapping_sub(sum)
+    }
+}
+
+/// `.tatu.dmi` — SMBIOS entry point + table in the [0xF0000,1M) DMI scan
+/// window. Linux uses the BIOS release date to validate high ECAM windows.
+#[cfg(target_arch = "x86_64")]
+#[used]
+#[allow(dead_code)]
+#[unsafe(link_section = ".tatu.dmi")]
+pub static DMI: PageCell<Paged<[u8; smbios::IMAGE_SIZE]>> = PageCell::new(Paged(smbios::IMAGE));
+
+/// `.tatu.rompad` — covers the rest of the [0xF0000,1M) MP/DMI scan window
+/// and pushes the code sections up to the 1 MiB floor.
 #[cfg(target_arch = "x86_64")]
 #[used]
 #[allow(dead_code)]
 #[unsafe(link_section = ".tatu.rompad")]
-pub static ROMPAD: PageCell<Paged<[u8; 64 * 1024]>> = PageCell::new(Paged([0; 64 * 1024]));
+pub static ROMPAD: PageCell<Paged<[u8; 60 * 1024]>> = PageCell::new(Paged([0; 60 * 1024]));
 
 /// `.tatu.reset.x86_64.pad` — 0xFF0 zero bytes that position the 16-byte
 /// reset stub at the architectural reset vector 0xFFFFFFF0 (the stub
@@ -162,6 +272,12 @@ pub const PGT_BASE: u64 = (size_of_val(&GUARD)
 const _: () = {
     // Boot CPU tables land at PGT_BASE; the self-pointers depend on it.
     assert!(PGT_BASE == 0x9_8000);
-    // ACPI fills [640K,960K); the rompad fills [960K,1M); code floor = 1 MiB.
-    assert!(CONV_TOP + crate::arch_x86_64::ACPI_WORKSPACE_SIZE + size_of_val(&ROMPAD) == 0x10_0000);
+    // ACPI fills [640K,960K); DMI + rompad fill [960K,1M); code floor = 1 MiB.
+    assert!(
+        CONV_TOP
+            + crate::arch_x86_64::ACPI_WORKSPACE_SIZE
+            + size_of_val(&DMI)
+            + size_of_val(&ROMPAD)
+            == 0x10_0000
+    );
 };
