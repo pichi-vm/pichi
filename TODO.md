@@ -2230,3 +2230,14 @@ Local verification:
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+
+CI verification:
+- `27226665722` still timed out on Ubuntu/x86 in the same boot case. Windows,
+  linux-arm64, and local/apollo Linux/x86 passed, so the remaining evidence gap
+  is the dillo child output from the GitHub Ubuntu timeout.
+
+Audit fix 20 - preserve boot timeout output:
+- Changed the boot-test timeout path to read the dillo child stdout/stderr
+  files after killing the child and include them in the panic. The next
+  Ubuntu/x86 CI failure will distinguish "guest never reported" from "guest
+  reported but dillo did not exit".

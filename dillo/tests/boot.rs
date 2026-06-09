@@ -158,7 +158,9 @@ fn boot(pmi: &Path, mem_mib: u32, cpus: u32, dir: &Path) -> String {
     {
         let _ = child.kill();
         let _ = child.wait();
-        panic!("dillo boot timed out");
+        let mut s = std::fs::read_to_string(&out_path).unwrap_or_default();
+        s.push_str(&std::fs::read_to_string(&err_path).unwrap_or_default());
+        panic!("dillo boot timed out:\n{s}");
     }
     let mut s = std::fs::read_to_string(&out_path).unwrap_or_default();
     s.push_str(&std::fs::read_to_string(&err_path).unwrap_or_default());
