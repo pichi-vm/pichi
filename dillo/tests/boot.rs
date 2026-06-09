@@ -64,6 +64,51 @@ fn hypervisor_available() -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn sign_dillo_for_hvf() {
+    static SIGN: std::sync::Once = std::sync::Once::new();
+
+    SIGN.call_once(|| {
+        let entitlements = std::env::temp_dir().join(format!(
+            "dillo-hvf-entitlements-{}.plist",
+            std::process::id()
+        ));
+        std::fs::write(
+            &entitlements,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.hypervisor</key>
+  <true/>
+</dict>
+</plist>
+"#,
+        )
+        .expect("write HVF entitlements");
+
+        let output = Command::new("codesign")
+            .arg("--force")
+            .arg("--sign")
+            .arg("-")
+            .arg("--entitlements")
+            .arg(&entitlements)
+            .arg(env!("CARGO_BIN_EXE_dillo"))
+            .output()
+            .expect("spawn codesign");
+        let _ = std::fs::remove_file(&entitlements);
+        assert!(
+            output.status.success(),
+            "codesign dillo for HVF failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sign_dillo_for_hvf() {}
+
 /// Build a PMI: Alpine host kernel + snuffler initrd.
 fn build_pmi(dir: &Path, cmdline: &str, serial: bool) -> PathBuf {
     let kernel = burrow::fetch(&kernel_url()).expect("fetch kernel");
@@ -93,6 +138,8 @@ fn build_pmi(dir: &Path, cmdline: &str, serial: bool) -> PathBuf {
 /// child is killed if it overruns the timeout. Cross-platform (no `timeout`
 /// coreutil).
 fn boot(pmi: &Path, mem_mib: u32, cpus: u32, dir: &Path) -> String {
+    sign_dillo_for_hvf();
+
     let out_path = dir.join("console.out");
     let err_path = dir.join("console.err");
     let mut child = Command::new(env!("CARGO_BIN_EXE_dillo"))

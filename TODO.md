@@ -988,12 +988,11 @@ Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 
 Boot verification note:
-- Running `cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
-  after signing can relink `target/debug/dillo` and strip the local ad hoc HVF
-  entitlement. The verified local macOS flow is to build with `--no-run`, sign
-  `target/debug/dillo`, then run the already-built `target/debug/deps/boot-*`
-  harness directly.
-- That direct signed-harness flow passed all 5 local macOS/HVF boot tests.
+- macOS boot fixtures now sign `env!("CARGO_BIN_EXE_dillo")` with
+  `com.apple.security.hypervisor` after Cargo finishes building and immediately
+  before spawning the launcher.
+- Plain `cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
+  now passed all 5 local macOS/HVF boot tests.
 
 CI verification:
 - `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
@@ -1018,6 +1017,8 @@ CI verification:
   `b7ba725 refactor: implement machine traits in backends`.
 - `27175898656` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `dee901a refactor: simplify mmio worker attachment`.
+- `27176083149` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `88846c4 ci: preserve hvf signing for boot tests`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
@@ -1028,9 +1029,6 @@ Latest local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --no-run`
-- local codesign of `target/debug/dillo`, `target/debug/deps/dillo-*`, and
-  `target/debug/deps/boot-*` with `com.apple.security.hypervisor`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
 
 ## Stage 15 - Restore macOS CI

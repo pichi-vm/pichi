@@ -108,31 +108,6 @@ jobs:
         run: |
           cargo test --workspace --exclude snuffler
 
-      - name: Sign dillo for HVF (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        env:
-          CARGO_BUILD_RUSTFLAGS: "-D warnings"
-        run: |
-          cargo test -p dillo --features vm-tests --no-run
-          cat > "$RUNNER_TEMP/hypervisor.entitlements" <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>com.apple.security.hypervisor</key>
-            <true/>
-          </dict>
-          </plist>
-          EOF
-          for bin in target/debug/dillo target/debug/deps/dillo-*; do
-            [ -f "$bin" ] || continue
-            [ -x "$bin" ] || continue
-            file "$bin" | grep -q 'Mach-O' || continue
-            codesign --force --sign - --entitlements "$RUNNER_TEMP/hypervisor.entitlements" "$bin"
-            codesign --display --entitlements :- "$bin"
-          done
-
       - name: Reserve hugepages for guest RAM (Linux/KVM)
         if: runner.os == 'Linux'
         run: |
@@ -140,28 +115,12 @@ jobs:
           grep -i huge /proc/meminfo
 
       # Real guest boot on every currently scheduled platform. dillo builds its
-      # per-OS backend (KVM on Linux, WHP on Windows) and boots an Alpine
-      # same-arch guest; the test asserts the guest's self-report.
-      - name: Boot tests (KVM / WHP)
-        if: runner.os != 'macOS'
+      # per-OS backend (KVM on Linux, WHP on Windows; HVF on macOS once the
+      # runner is restored) and boots an Alpine same-arch guest; the test
+      # asserts the guest's self-report.
+      - name: Boot tests (KVM / WHP / HVF)
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
           cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture
-
-      # Cargo may relink `target/debug/dillo` when invoked after signing, which
-      # strips the ad hoc Hypervisor.framework entitlement. The macOS boot lane
-      # therefore runs the already-built integration-test harness directly after
-      # the signing step. Restore the macOS/HVF matrix entry before final
-      # acceptance.
-      - name: Boot tests (HVF)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          boot_bin="$(find target/debug/deps -maxdepth 1 -type f -name 'boot-*' -perm -111 | head -n1)"
-          if [ -z "$boot_bin" ]; then
-            echo "boot test binary not found" >&2
-            exit 1
-          fi
-          "$boot_bin" --test-threads=1 --nocapture
