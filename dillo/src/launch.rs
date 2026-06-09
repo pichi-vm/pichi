@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+use dillo_devtree::platform::{Arch, Machine as PlatformMachine, SurveyError};
 use dillo_machine::HostArchitecture;
 use thiserror::Error;
 
@@ -16,7 +17,7 @@ pub struct LaunchPlan {
     pub bytes: Vec<u8>,
     pub parsed: crate::pmi_parse::ParsedPmi,
     pub merged_dtb: Vec<u8>,
-    pub platform: crate::platform::Machine,
+    pub platform: PlatformMachine,
     pub memory: MemoryPlan,
     pub guest_writes: Vec<GuestWrite>,
 }
@@ -35,6 +36,7 @@ impl LaunchPlan {
     pub fn read(
         pmi_path: &Path,
         host_arch: HostArchitecture,
+        platform: impl FnOnce(&[u8]) -> Result<PlatformMachine, SurveyError>,
         memory_mib: u32,
         vcpus: u32,
     ) -> Result<Self, LaunchError> {
@@ -61,8 +63,7 @@ impl LaunchPlan {
         validate_cpu_profile(parsed.cpu_profile.as_str(), pmi_arch)?;
 
         let dtb = merged_dtb(&bytes, &parsed)?.to_vec();
-        let platform = crate::platform::Machine::survey(&dtb, platform_arch(host_arch))
-            .map_err(LaunchError::Coverage)?;
+        let platform = platform(&dtb).map_err(LaunchError::Coverage)?;
 
         let load_ranges: Vec<(String, u64, u64)> = parsed
             .sections
@@ -81,7 +82,7 @@ impl LaunchPlan {
             .collect();
         let memory =
             placement::plan_around_regions(&must_cover, memory_mib, platform.placement_regions())?;
-        let guest_writes = guest_writes(&bytes, &parsed, &memory, platform_arch(host_arch), vcpus)?;
+        let guest_writes = guest_writes(&bytes, &parsed, &memory, platform.arch, vcpus)?;
 
         Ok(Self {
             bytes,
@@ -98,13 +99,6 @@ fn pmi_arch(host_arch: HostArchitecture) -> HostArch {
     match host_arch {
         HostArchitecture::X86_64 => HostArch::X86_64,
         HostArchitecture::Aarch64 => HostArch::Aarch64,
-    }
-}
-
-fn platform_arch(host_arch: HostArchitecture) -> crate::platform::Arch {
-    match host_arch {
-        HostArchitecture::X86_64 => crate::platform::Arch::X86_64,
-        HostArchitecture::Aarch64 => crate::platform::Arch::Aarch64,
     }
 }
 
@@ -125,10 +119,10 @@ pub enum LaunchError {
     MissingMergedDtb,
 
     #[error("base DTB coverage: {0}")]
-    Coverage(crate::platform::SurveyError),
+    Coverage(SurveyError),
 
     #[error("base DTB / PE cross-validation: {0}")]
-    DtbCrossValidate(crate::platform::SurveyError),
+    DtbCrossValidate(SurveyError),
 
     #[error("merged_dtb section lies outside the PMI file")]
     MalformedMergedDtb,
@@ -168,7 +162,7 @@ fn guest_writes(
     bytes: &[u8],
     parsed: &crate::pmi_parse::ParsedPmi,
     memory: &MemoryPlan,
-    arch: crate::platform::Arch,
+    arch: Arch,
     vcpus: u32,
 ) -> Result<Vec<GuestWrite>, LaunchError> {
     let mut writes = Vec::new();

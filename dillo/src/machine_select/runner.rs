@@ -36,6 +36,8 @@ use dillo::pmi_parse::VcpuState;
 #[cfg(target_os = "windows")]
 use dillo::pmi_parse::VcpuState;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use dillo_devtree::platform::Machine as PlatformMachine;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_machine::VcpuStop;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_mmio::Attach;
@@ -92,7 +94,7 @@ struct RunMemoryPlan {
 #[derive(Debug)]
 pub(crate) struct Preflight {
     parsed: dillo::pmi_parse::ParsedPmi,
-    platform: dillo::platform::Machine,
+    platform: PlatformMachine,
     dtb: Vec<u8>,
     memslots: Vec<RunRegion>,
     memory_nodes: Vec<RunRegion>,
@@ -103,7 +105,7 @@ pub(crate) struct Preflight {
     all(target_os = "linux", target_arch = "x86_64"),
     target_os = "windows"
 ))]
-fn syscon_register(syscon: dillo::platform::Syscon) -> syscon::SysconRegister {
+fn syscon_register(syscon: dillo_devtree::platform::Syscon) -> syscon::SysconRegister {
     syscon::SysconRegister {
         base: syscon.base,
         offset: syscon.offset,
@@ -125,7 +127,7 @@ fn no_pio_callbacks() -> (backend_machine::PioRead, backend_machine::PioWrite) {
 impl Preflight {
     pub(crate) fn new(
         parsed: dillo::pmi_parse::ParsedPmi,
-        platform: dillo::platform::Machine,
+        platform: PlatformMachine,
         dtb: Vec<u8>,
         memslots: impl IntoIterator<Item = RunRegion>,
         memory_nodes: impl IntoIterator<Item = RunRegion>,
@@ -145,7 +147,7 @@ impl Preflight {
         self,
     ) -> (
         dillo::pmi_parse::ParsedPmi,
-        dillo::platform::Machine,
+        PlatformMachine,
         Vec<u8>,
         RunMemoryPlan,
         Vec<RunWrite>,
@@ -171,7 +173,7 @@ impl Preflight {
 ))]
 fn attach_pci_console<M, E>(
     vm: &mut M,
-    machine: &dillo::platform::Machine,
+    machine: &PlatformMachine,
 ) -> Result<Option<Arc<PciRoot>>, RunError>
 where
     E: std::error::Error + Send + Sync + 'static,
@@ -215,7 +217,7 @@ where
 #[cfg(any(all(target_os = "linux", target_arch = "aarch64"), target_os = "macos"))]
 fn attach_first_virtio_mmio_console<M, E>(
     vm: &mut M,
-    machine: &dillo::platform::Machine,
+    machine: &PlatformMachine,
 ) -> Result<(), RunError>
 where
     E: std::error::Error + Send + Sync + 'static,

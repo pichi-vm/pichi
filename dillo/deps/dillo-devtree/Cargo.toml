@@ -8,6 +8,7 @@ description = "Shared devtree consumption traits for dillo crates."
 
 [dependencies]
 devtree = { workspace = true, features = ["alloc"] }
+thiserror.workspace = true
 
 [lints]
 workspace = true

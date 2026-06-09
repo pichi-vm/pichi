@@ -1345,6 +1345,46 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+Audit fix 7 - move platform DTB survey out of `dillo`:
+- Moved the drain-to-empty platform survey, survey errors, resource plan, and
+  DTB-derived platform fact types from `dillo::platform` into
+  `dillo-devtree::platform`.
+- Removed the `dillo::platform` module entirely. Production dillo code now
+  carries `dillo-devtree::platform` types directly where it needs the surveyed
+  result.
+- Added `platform(dtb)` hooks to `dillo-machine-kvm`, `dillo-machine-hvf`, and
+  `dillo-machine-whp`. The selected machine crate now chooses the platform
+  architecture for DTB survey; dillo passes that hook into launch preflight
+  instead of deriving platform architecture itself.
+- Retired the old `Platform` extractor and converted remaining adversarial DTB
+  tests to the drain-to-empty survey path.
+- Tightened `/cpus` rejection so PMI base-DTB CPU-subtree violations fail
+  before arch-specific missing-substrate errors.
+
+Remaining divergence:
+- `dillo` still owns PMI parsing, overlay synthesis, memory placement, and
+  device attachment orchestration. That is intentional for now, but further
+  conformance work should continue shrinking `dillo` toward a thin tie-together
+  crate and moving any backend-specific decisions behind `dillo-machine-*`.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp -p dillo --tests`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-devtree -p dillo --lib platform`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test platform_adversarial`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+CI verification:
+- Pending for this code slice.
 - `ssh -A nathaniel@ares.local 'cd /tmp/pichi-stage18 && PATH=... RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
 
 Local verification note:

@@ -1,25 +1,101 @@
 //! Coverage-framework survey of the base DTB (the `merged` model).
 //!
-//! Where [`crate::extract`] reads the nodes it knows and ignores the rest,
 //! `Machine::survey` proves **total coverage**: it materializes the base DTB
 //! into an owned, drainable tree and runs a fixed **specific → general**
 //! sequence of self-routing device constructors. Each `from_tree` finds its
 //! own node(s), removes the properties it models, and removes the node once it
-//! is empty. There is no router handing nodes out — all routing knowledge lives
+//! is empty. There is no router handing nodes out; all routing knowledge lives
 //! in the device. When every constructor has run, the tree must be empty; a
 //! non-empty residual is an uncovered node/property and fails the launch
 //! ([`SurveyError::Uncovered`]). Every guest-visible region is declared *from* a
 //! claimed property ([`ResourcePlan::declare_from`]), so no constant can reach
 //! the resource plan.
-//!
-//! aarch64 only for now; x86 still goes through [`crate::extract`] until it is
-//! ported (see `TODO.md`). This module is additive — `extract`/`Platform` stay
-//! until dillo migrates fully onto the public `Machine` traits.
 
 use devtree::{OwnedNode, OwnedProperty, OwnedTree, Tree};
 use thiserror::Error;
 
-use super::{Arch, MmioRegion, Pcie, Psci, PsciMethod, Syscon, Uart, VirtioMmio};
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    X86_64,
+    Aarch64,
+}
+
+impl Arch {
+    pub fn cpu_enable_method(self) -> Option<&'static str> {
+        match self {
+            Arch::Aarch64 => Some("psci"),
+            Arch::X86_64 => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pcie {
+    pub ecam_base: u64,
+    pub ecam_size: u64,
+    pub bus_min: u8,
+    pub bus_max: u8,
+    pub mmio_base: u64,
+    pub mmio_size: u64,
+}
+
+impl Pcie {
+    /// Sentinel for a microVM with no PCIe bridge (`has_pcie == false`).
+    pub const ZEROED: Pcie = Pcie {
+        ecam_base: 0,
+        ecam_size: 0,
+        bus_min: 0,
+        bus_max: 0,
+        mmio_base: 0,
+        mmio_size: 0,
+    };
+}
+
+/// A virtio-mmio transport slot: a fixed MMIO window and its wired IRQ.
+#[derive(Debug, Clone, Copy)]
+pub struct VirtioMmio {
+    pub base: u64,
+    pub size: u64,
+    /// GIC SPI number from `interrupts = <0 spi flags>` (aarch64), or the
+    /// IO-APIC pin (x86). The VMM injects this when the slot's device signals.
+    pub irq: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MmioRegion {
+    pub base: u64,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Syscon {
+    pub base: u64,
+    pub offset: u64,
+    pub value: u32,
+    pub mask: u32,
+}
+
+/// The device-model serial: an `ns16550a` (16550) over MMIO.
+#[derive(Debug, Clone, Copy)]
+pub struct Uart {
+    pub base: u64,
+    pub size: u64,
+    /// `reg-shift`: the register stride is `1 << reg_shift` bytes.
+    pub reg_shift: u32,
+    /// x86 IO-APIC pin or aarch64 GIC interrupt cell consumed from DTB.
+    pub irq: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Psci {
+    pub method: PsciMethod,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PsciMethod {
+    Hvc,
+    Smc,
+}
 
 /// Failures surveying the base DTB into a [`Machine`].
 #[derive(Debug, Error)]
@@ -141,7 +217,7 @@ pub struct DeclaredRegion {
     pub origin: Origin,
 }
 
-/// The typed, origin-tracked replacement for `Platform.device_regions`.
+/// The typed, origin-tracked list of DTB-declared address regions.
 ///
 /// Every region is created through [`Self::declare_from`], which requires a
 /// reference to the claimed [`OwnedProperty`]. That is the only constructor, so
@@ -446,9 +522,7 @@ pub struct Machine {
     pub arch: Arch,
     /// The PCIe host bridge. Valid only when [`has_pcie`](Self::has_pcie) is
     /// true; a `--pci-slots 0` microVM declares no bridge, in which case this
-    /// is a zeroed sentinel ([`Pcie::ZEROED`]) the VMM must not install. This
-    /// mirrors [`crate::Platform`]'s `pcie`/`has_pcie` pair so the types stay
-    /// consistent across both paths.
+    /// is a zeroed sentinel ([`Pcie::ZEROED`]) the VMM must not install.
     pub pcie: Pcie,
     /// Whether the base declares a PCIe host bridge (false ⇒ virtio-mmio-only
     /// microVM; skip all PCI fabric).
@@ -469,6 +543,9 @@ impl Machine {
     pub fn survey(dtb: &[u8], arch: Arch) -> Result<Machine, SurveyError> {
         let tree: Tree<'_> = Tree::parse(dtb).map_err(SurveyError::Parse)?;
         let mut t = OwnedTree::materialize(&tree);
+        if t.root().child("cpus").is_some() {
+            return Err(SurveyError::BaseHasCpus);
+        }
         let mut plan = ResourcePlan::default();
         let mut topology = Topology::default();
         let mut poweroff = None;
@@ -993,7 +1070,7 @@ impl X86Syscon {
 /// Claim a standalone `syscon-{poweroff,reboot}` action node (matched by
 /// name-prefix, verified by compatible), declaring its own `reg` as MMIO. The
 /// trigger is a write of `value` at the node's reg (offset 0), masking the low
-/// byte — mirroring [`crate::Platform`]'s `read_syscon_action`.
+/// byte.
 fn syscon_action(
     root: &mut OwnedNode,
     prefix: &str,

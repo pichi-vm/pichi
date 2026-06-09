@@ -76,6 +76,16 @@ mod imp {
     #[cfg(target_arch = "aarch64")]
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::Aarch64;
 
+    pub fn platform(
+        dtb: &[u8],
+    ) -> Result<dillo_devtree::platform::Machine, dillo_devtree::platform::SurveyError> {
+        #[cfg(target_arch = "x86_64")]
+        let arch = dillo_devtree::platform::Arch::X86_64;
+        #[cfg(target_arch = "aarch64")]
+        let arch = dillo_devtree::platform::Arch::Aarch64;
+        dillo_devtree::platform::Machine::survey(dtb, arch)
+    }
+
     pub type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
     pub type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 

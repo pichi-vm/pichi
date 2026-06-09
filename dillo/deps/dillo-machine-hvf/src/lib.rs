@@ -46,6 +46,12 @@ mod imp {
 
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::Aarch64;
 
+    pub fn platform(
+        dtb: &[u8],
+    ) -> Result<dillo_devtree::platform::Machine, dillo_devtree::platform::SurveyError> {
+        dillo_devtree::platform::Machine::survey(dtb, dillo_devtree::platform::Arch::Aarch64)
+    }
+
     pub fn install_signal_watchers(_supervisor_shutdown: &'static AtomicBool) {}
 
     static ORIGINAL_TERMIOS: OnceLock<libc::termios> = OnceLock::new();

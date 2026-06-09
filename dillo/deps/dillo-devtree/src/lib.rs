@@ -6,6 +6,8 @@
 
 pub use devtree;
 
+pub mod platform;
+
 /// Construct one object by consuming its DTB-owned facts from a mutable tree.
 pub trait FromDevTree: Sized {
     type Error;

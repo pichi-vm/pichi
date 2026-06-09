@@ -43,6 +43,12 @@ mod imp {
 
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::X86_64;
 
+    pub fn platform(
+        dtb: &[u8],
+    ) -> Result<dillo_devtree::platform::Machine, dillo_devtree::platform::SurveyError> {
+        dillo_devtree::platform::Machine::survey(dtb, dillo_devtree::platform::Arch::X86_64)
+    }
+
     pub type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
     pub type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 

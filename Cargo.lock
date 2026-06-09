@@ -367,6 +367,7 @@ dependencies = [
  "burrow",
  "ciborium",
  "devtree",
+ "dillo-devtree",
  "dillo-machine",
  "dillo-machine-hvf",
  "dillo-machine-kvm",
@@ -399,6 +400,7 @@ name = "dillo-devtree"
 version = "0.1.0"
 dependencies = [
  "devtree",
+ "thiserror",
 ]
 
 [[package]]

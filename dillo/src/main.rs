@@ -48,7 +48,13 @@ fn main() {
     let memory = args.memory;
     let cpus = args.cpus;
 
-    let launch = match dillo::launch::LaunchPlan::read(&pmi, machine::HOST_ARCH, memory, cpus) {
+    let launch = match dillo::launch::LaunchPlan::read(
+        &pmi,
+        machine::HOST_ARCH,
+        machine::platform,
+        memory,
+        cpus,
+    ) {
         Ok(plan) => plan,
         Err(e) => {
             eprintln!("dillo: {e}");
