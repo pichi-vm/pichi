@@ -12,11 +12,7 @@
 mod backend;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod backend_select;
-mod cpu_id;
 mod error;
-mod fdt_writer;
-mod overlay;
-mod placement;
 // HVF MSI-X notifier + guest-memory builder (KVM uses memfd + irqfd instead).
 #[cfg(target_os = "macos")]
 mod hvf_devices;
@@ -52,9 +48,9 @@ use dillo_mmio::Interrupt;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::MsixNotifier;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use dillo_pmi::{Action as PmiAction, FillKind, VcpuState};
+use dillo_pmi::VcpuState;
 #[cfg(target_os = "windows")]
-use dillo_pmi::{Action as PmiAction, FillKind, VcpuState};
+use dillo_pmi::VcpuState;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use dillo_x86::pio_pci;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -69,69 +65,68 @@ pub struct RunRegion {
     pub size: u64,
 }
 
-/// Target-neutral launch facts already derived by `dillo`.
-///
-/// This is a compatibility handoff while the old runner is removed. It keeps
-/// PMI parsing, DTB coverage, load cross-validation, and memory placement owned
-/// by the top-level launcher instead of duplicating those decisions here.
+/// One launch-time write into guest RAM, already derived by `dillo`.
 #[derive(Debug)]
-pub struct Preflight {
-    bytes: Vec<u8>,
-    parsed: dillo_pmi::ParsedPmi,
-    platform: dillo_platform::Machine,
+pub struct RunWrite {
+    pub section: String,
+    pub gpa: u64,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct RunMemoryPlan {
     memslots: Vec<RunRegion>,
     memory_nodes: Vec<RunRegion>,
 }
 
+/// Target-neutral launch facts already derived by `dillo`.
+///
+/// This is a compatibility handoff while the old runner is removed. It keeps
+/// PMI parsing, DTB coverage, load cross-validation, memory placement, and
+/// guest launch writes owned by the top-level launcher instead of duplicating
+/// those decisions here.
+#[derive(Debug)]
+pub struct Preflight {
+    parsed: dillo_pmi::ParsedPmi,
+    platform: dillo_platform::Machine,
+    memslots: Vec<RunRegion>,
+    memory_nodes: Vec<RunRegion>,
+    guest_writes: Vec<RunWrite>,
+}
+
 impl Preflight {
     pub fn new(
-        bytes: Vec<u8>,
         parsed: dillo_pmi::ParsedPmi,
         platform: dillo_platform::Machine,
         memslots: impl IntoIterator<Item = RunRegion>,
         memory_nodes: impl IntoIterator<Item = RunRegion>,
+        guest_writes: impl IntoIterator<Item = RunWrite>,
     ) -> Self {
         Self {
-            bytes,
             parsed,
             platform,
             memslots: memslots.into_iter().collect(),
             memory_nodes: memory_nodes.into_iter().collect(),
+            guest_writes: guest_writes.into_iter().collect(),
         }
     }
 
     fn into_parts(
         self,
     ) -> (
-        Vec<u8>,
         dillo_pmi::ParsedPmi,
         dillo_platform::Machine,
-        placement::MemoryPlan,
+        RunMemoryPlan,
+        Vec<RunWrite>,
     ) {
-        let memslots = self
-            .memslots
-            .into_iter()
-            .map(|r| placement::Region {
-                gpa: r.gpa,
-                size: r.size,
-            })
-            .collect();
-        let memory_nodes = self
-            .memory_nodes
-            .into_iter()
-            .map(|r| placement::Region {
-                gpa: r.gpa,
-                size: r.size,
-            })
-            .collect();
         (
-            self.bytes,
             self.parsed,
             self.platform,
-            placement::MemoryPlan {
-                memslots,
-                memory_nodes,
+            RunMemoryPlan {
+                memslots: self.memslots,
+                memory_nodes: self.memory_nodes,
             },
+            self.guest_writes,
         )
     }
 }
@@ -157,7 +152,7 @@ pub fn run(
     vcpus: u32,
     supervisor_shutdown: &'static AtomicBool,
 ) -> Result<i32, RunError> {
-    let (bytes, parsed, machine, plan) = preflight.into_parts();
+    let (parsed, machine, plan, guest_writes) = preflight.into_parts();
     log::info!(
         "WHP coverage: base DTB fully claimed — {} declared region(s), pcie={}",
         machine.plan.regions().len(),
@@ -219,15 +214,7 @@ pub fn run(
         SharedAccess::ReadWrite,
     ))]);
 
-    apply_load_sections(
-        &mut vm,
-        &parsed,
-        &bytes,
-        machine.arch,
-        machine.psci.is_some(),
-        &plan,
-        vcpus,
-    )?;
+    apply_load_sections(&mut vm, &guest_writes)?;
 
     let cpu_profile = parsed.cpu_profile.as_str();
     let boot_state = match &parsed.vcpu {
@@ -457,7 +444,7 @@ pub fn run(
     vcpus: u32,
     _supervisor_shutdown: &'static AtomicBool,
 ) -> Result<i32, RunError> {
-    let (bytes, parsed, machine, plan) = preflight.into_parts();
+    let (parsed, machine, plan, guest_writes) = preflight.into_parts();
     log::info!(
         "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
         parsed.arch,
@@ -485,6 +472,18 @@ pub fn run(
         plan.memslots.len(),
         total_backed
     );
+    log::info!(
+        "HVF DTBO /memory nodes: {} region(s)",
+        plan.memory_nodes.len()
+    );
+    for r in &plan.memory_nodes {
+        log::info!(
+            "  DTB memory node [{:#x}..{:#x}) ({} bytes)",
+            r.gpa,
+            r.gpa + r.size,
+            r.size
+        );
+    }
 
     // 5. host-RAM pre-flight.
     let host_ram = host_total_ram_bytes().unwrap_or(u64::MAX);
@@ -655,15 +654,7 @@ pub fn run(
     //    boot image (Phase 2 in-VM restart); SYSTEM_OFF exits. `vm` (and its
     //    memory mappings) lives across the whole loop on this thread.
     loop {
-        apply_load_sections(
-            &mut vm,
-            &parsed,
-            &bytes,
-            machine.arch,
-            machine.psci.is_some(),
-            &plan,
-            vcpus,
-        )?;
+        apply_load_sections(&mut vm, &guest_writes)?;
         log::info!(
             "macOS/HVF: {} memslot(s) mapped, load sections + DTBO written; boot vCPU0 pc={:#x}, launching {} vCPU(s)",
             plan.memslots.len(),
@@ -686,45 +677,13 @@ pub fn run(
     }
 }
 
-/// (Re-)apply the PMI load plan into guest RAM: copy every `Load` section and
-/// synthesize + write the merged DTBO. Idempotent — re-running it refreshes the
-/// boot image for a warm reboot without zeroing the rest of RAM.
+/// (Re-)apply the launch-time guest writes into guest RAM. Idempotent —
+/// re-running it refreshes the boot image for a warm reboot without zeroing the
+/// rest of RAM.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn apply_load_sections(
-    vm: &mut Vm,
-    parsed: &dillo_pmi::ParsedPmi,
-    bytes: &[u8],
-    arch: dillo_platform::Arch,
-    psci_present: bool,
-    plan: &placement::MemoryPlan,
-    vcpus: u32,
-) -> Result<(), RunError> {
-    for action in &parsed.actions {
-        match action {
-            PmiAction::Load { section } => {
-                let s = &parsed.sections[section];
-                if s.file_size == 0 {
-                    continue;
-                }
-                let src = read_section(bytes, s.file_offset, s.file_size);
-                vm.write_guest(s.gpa, src)?;
-            }
-            PmiAction::Fill {
-                section,
-                kind: FillKind::MergedDtbo,
-            } => {
-                let s = &parsed.sections[section];
-                let overlay_bytes = overlay::synthesize_dtbo(
-                    &plan.memory_nodes,
-                    vcpus,
-                    psci_present.then_some("psci"),
-                    cpu_id::host_cpu_compatible(arch),
-                    s.virtual_size,
-                )
-                .map_err(RunError::DtboSynth)?;
-                vm.write_guest(s.gpa, &overlay_bytes)?;
-            }
-        }
+fn apply_load_sections(vm: &mut Vm, guest_writes: &[RunWrite]) -> Result<(), RunError> {
+    for write in guest_writes {
+        vm.write_guest(write.gpa, &write.data)?;
     }
     Ok(())
 }
@@ -848,7 +807,7 @@ pub fn run(
     vcpus: u32,
     supervisor_shutdown: &'static AtomicBool,
 ) -> Result<i32, RunError> {
-    let (bytes, parsed, machine, plan) = preflight.into_parts();
+    let (parsed, machine, plan, guest_writes) = preflight.into_parts();
     log::info!(
         "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
         parsed.arch,
@@ -908,45 +867,15 @@ pub fn run(
         host_base += r.size;
     }
 
-    // ── 7. copy load sections + write DTBO ─────────────────────────
-    for action in &parsed.actions {
-        match action {
-            PmiAction::Load { section } => {
-                let s = &parsed.sections[section];
-                if s.file_size == 0 {
-                    continue; // Zero shape — already zeroed by memfd ftruncate
-                }
-                let src = read_section(&bytes, s.file_offset, s.file_size);
-                gpa_map
-                    .write(s.gpa, src)
-                    .map_err(|source| RunError::SectionWrite {
-                        section: section.clone(),
-                        gpa: s.gpa,
-                        source,
-                    })?;
-            }
-            PmiAction::Fill {
-                section,
-                kind: FillKind::MergedDtbo,
-            } => {
-                let s = &parsed.sections[section];
-                let overlay_bytes = overlay::synthesize_dtbo(
-                    &plan.memory_nodes,
-                    vcpus,
-                    machine.psci.is_some().then_some("psci"),
-                    cpu_id::host_cpu_compatible(machine.arch),
-                    s.virtual_size,
-                )
-                .map_err(RunError::DtboSynth)?;
-                gpa_map
-                    .write(s.gpa, &overlay_bytes)
-                    .map_err(|source| RunError::DtboWrite {
-                        section: section.clone(),
-                        gpa: s.gpa,
-                        source,
-                    })?;
-            }
-        }
+    // ── 7. copy launch-time guest writes ───────────────────────────
+    for write in &guest_writes {
+        gpa_map
+            .write(write.gpa, &write.data)
+            .map_err(|source| RunError::SectionWrite {
+                section: write.section.clone(),
+                gpa: write.gpa,
+                source,
+            })?;
     }
 
     // ── 8. create KVM VM + memslots ────────────────────────────────
@@ -1243,12 +1172,6 @@ fn run_vcpu_loop(
         None
     })?;
     Ok(vcpu_stop_outcome(stop, shutdown))
-}
-
-fn read_section<'a>(bytes: &'a [u8], offset: u64, size: u64) -> &'a [u8] {
-    let s = offset as usize;
-    let e = s + size as usize;
-    &bytes[s..e]
 }
 
 #[cfg(target_os = "linux")]

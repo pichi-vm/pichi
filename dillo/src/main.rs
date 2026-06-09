@@ -47,7 +47,7 @@ fn main() {
     let memory = args.memory;
     let cpus = args.cpus;
 
-    let launch = match dillo::launch::LaunchPlan::read(&pmi, machine::HOST_ARCH, memory) {
+    let launch = match dillo::launch::LaunchPlan::read(&pmi, machine::HOST_ARCH, memory, cpus) {
         Ok(plan) => plan,
         Err(e) => {
             eprintln!("dillo: {e}");
@@ -55,13 +55,13 @@ fn main() {
         }
     };
     let dillo::launch::LaunchPlan {
-        bytes,
         parsed,
         platform,
         memory: memory_plan,
+        guest_writes,
+        ..
     } = launch;
     let preflight = dillo_vm::Preflight::new(
-        bytes,
         parsed,
         platform,
         memory_plan.memslots.iter().map(|r| dillo_vm::RunRegion {
@@ -75,6 +75,11 @@ fn main() {
                 gpa: r.gpa,
                 size: r.size,
             }),
+        guest_writes.into_iter().map(|w| dillo_vm::RunWrite {
+            section: w.section,
+            gpa: w.gpa,
+            data: w.data,
+        }),
     );
 
     // Per ARCH §13.5: if stdin is a TTY, enter raw mode for the

@@ -105,7 +105,7 @@ object = { version = "0.36", default-features = false, features = ["read_core", 
 serde = { version = "1", features = ["derive"] }
 ciborium = "0.2"
 
-# (FDT writer is hand-rolled in dillo-vm/src/fdt_writer.rs because
+# (FDT writer is hand-rolled in dillo/src/fdt_writer.rs because
 # upstream vm-fdt rejects the literal `__overlay__` child-node name
 # that DT overlay fragments require. See ARCH §7.1.)
 

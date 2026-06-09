@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::Path;
 
 use dillo_machine::HostArchitecture;
-use dillo_pmi::{HostArch, ParseOptions};
+use dillo_pmi::{Action as PmiAction, FillKind, HostArch, ParseOptions};
 use thiserror::Error;
 
 use crate::placement::{self, MemoryPlan};
@@ -17,6 +17,15 @@ pub struct LaunchPlan {
     pub parsed: dillo_pmi::ParsedPmi,
     pub platform: dillo_platform::Machine,
     pub memory: MemoryPlan,
+    pub guest_writes: Vec<GuestWrite>,
+}
+
+/// One launch-time write into guest RAM.
+#[derive(Debug)]
+pub struct GuestWrite {
+    pub section: String,
+    pub gpa: u64,
+    pub data: Vec<u8>,
 }
 
 impl LaunchPlan {
@@ -26,6 +35,7 @@ impl LaunchPlan {
         pmi_path: &Path,
         host_arch: HostArchitecture,
         memory_mib: u32,
+        vcpus: u32,
     ) -> Result<Self, LaunchError> {
         let mut bytes = Vec::new();
         File::open(pmi_path)
@@ -70,12 +80,21 @@ impl LaunchPlan {
             .collect();
         let memory =
             placement::plan_around_regions(&must_cover, memory_mib, platform.placement_regions())?;
+        let guest_writes = guest_writes(
+            &bytes,
+            &parsed,
+            &platform,
+            &memory,
+            platform_arch(host_arch),
+            vcpus,
+        )?;
 
         Ok(Self {
             bytes,
             parsed,
             platform,
             memory,
+            guest_writes,
         })
     }
 }
@@ -124,6 +143,12 @@ pub enum LaunchError {
 
     #[error("unrecognized cpu:profile {0:?} for {1:?}")]
     UnknownCpuProfile(String, HostArch),
+
+    #[error("load section `{0}` lies outside the PMI file")]
+    MalformedLoadSection(String),
+
+    #[error("synthesize host DTBO: {0}")]
+    DtboSynth(#[source] anyhow::Error),
 }
 
 impl LaunchError {
@@ -135,11 +160,62 @@ impl LaunchError {
             Self::MissingMergedDtb
             | Self::Coverage(_)
             | Self::DtbCrossValidate(_)
-            | Self::MalformedMergedDtb => 11,
+            | Self::MalformedMergedDtb
+            | Self::MalformedLoadSection(_)
+            | Self::DtboSynth(_) => 11,
             Self::Placement(_) => 13,
             Self::UnknownCpuProfile(_, _) => 12,
         }
     }
+}
+
+fn guest_writes(
+    bytes: &[u8],
+    parsed: &dillo_pmi::ParsedPmi,
+    platform: &dillo_platform::Machine,
+    memory: &MemoryPlan,
+    arch: dillo_platform::Arch,
+    vcpus: u32,
+) -> Result<Vec<GuestWrite>, LaunchError> {
+    let mut writes = Vec::new();
+    for action in &parsed.actions {
+        match action {
+            PmiAction::Load { section } => {
+                let s = &parsed.sections[section];
+                if s.file_size == 0 {
+                    continue;
+                }
+                let data = read_section(bytes, s.file_offset, s.file_size)
+                    .ok_or_else(|| LaunchError::MalformedLoadSection(section.clone()))?
+                    .to_vec();
+                writes.push(GuestWrite {
+                    section: section.clone(),
+                    gpa: s.gpa,
+                    data,
+                });
+            }
+            PmiAction::Fill {
+                section,
+                kind: FillKind::MergedDtbo,
+            } => {
+                let s = &parsed.sections[section];
+                let data = crate::overlay::synthesize_dtbo(
+                    &memory.memory_nodes,
+                    vcpus,
+                    platform.psci.is_some().then_some("psci"),
+                    crate::cpu_id::host_cpu_compatible(arch),
+                    s.virtual_size,
+                )
+                .map_err(LaunchError::DtboSynth)?;
+                writes.push(GuestWrite {
+                    section: section.clone(),
+                    gpa: s.gpa,
+                    data,
+                });
+            }
+        }
+    }
+    Ok(writes)
 }
 
 fn merged_dtb<'a>(bytes: &'a [u8], parsed: &dillo_pmi::ParsedPmi) -> Result<&'a [u8], LaunchError> {

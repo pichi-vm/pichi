@@ -956,6 +956,13 @@ Completed changes:
   memslots, and `/memory@*` nodes into the remaining runner. `dillo-vm` no
   longer reads/parses PMI, selects host architecture, surveys the DTB, validates
   `cpu:profile`, cross-validates load regions, or computes memory placement.
+- Moved launch-time guest-write materialization into `dillo::launch`.
+  `dillo-vm` now receives already-derived guest writes, including the merged
+  DTBO bytes, and no longer interprets PMI `Load`/`Fill` actions or synthesizes
+  host DTBO overlays.
+- Removed duplicated `cpu_id`, `fdt_writer`, `overlay`, and `placement` modules
+  from `dillo-vm`; those launch decisions now exist only in the top-level
+  `dillo` launch path.
 - Removed the obsolete memory-placement algorithm from `dillo-vm`; placement
   is now computed only by `dillo::launch`.
 - Moved the supervisor shutdown flag out of `dillo-vm` and into the top-level
@@ -1037,6 +1044,8 @@ CI verification:
   `e0f8301 test: sign dillo in macos boot fixture`.
 - `27176737608` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `6cfc53f refactor: remove private backend vm facade`.
+- `27177095641` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `04c750c refactor: route hvf interrupts through machine`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target x86_64-unknown-linux-gnu`
