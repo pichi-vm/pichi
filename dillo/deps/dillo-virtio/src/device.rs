@@ -281,7 +281,7 @@ impl Drop for VirtioDeviceHandle {
 /// Transport-agnostic virtio device contract.
 ///
 /// Implementors define device-specific behaviour; the transport layer
-/// (virtio-pci or virtio-mmio) handles capability layout, feature
+/// handles capability layout, feature
 /// negotiation, and queue setup before calling [`activate`](Self::activate).
 pub trait VirtioDevice: Send {
     /// Virtio device type identifier (e.g. 1 = net, 2 = block, 3 = console).

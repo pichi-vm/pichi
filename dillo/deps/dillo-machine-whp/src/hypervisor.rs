@@ -26,19 +26,19 @@ use crate::cpuid_x86;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("WHP capability HypervisorPresent query failed: {0}")]
-    Capability(HResult),
+    Capability(String),
 
     #[error("WHP hypervisor is not present")]
     HypervisorNotPresent,
 
     #[error("WHP create partition failed: {0}")]
-    CreatePartition(HResult),
+    CreatePartition(String),
 
     #[error("WHP set partition processor count failed: {0}")]
-    SetProcessorCount(HResult),
+    SetProcessorCount(String),
 
     #[error("WHP set local APIC emulation mode failed: {0}")]
-    SetLocalApicEmulation(HResult),
+    SetLocalApicEmulation(String),
 
     #[error("parse DTB for WHP platform substrate: {0:?}")]
     ParseDtb(dillo_devtree::devtree::Error),
@@ -54,34 +54,34 @@ pub enum Error {
     },
 
     #[error("WHP set CPUID result list failed: {0}")]
-    SetCpuidResults(HResult),
+    SetCpuidResults(String),
 
     #[error("WHP configure Hyper-V enlightenments failed: {0}")]
-    SetHypervEnlightenments(HResult),
+    SetHypervEnlightenments(String),
 
     #[error("WHP setup partition failed: {0}")]
-    SetupPartition(HResult),
+    SetupPartition(String),
 
     #[error("WHP create vCPU {idx} failed: {hr}")]
-    CreateVcpu { idx: u32, hr: HResult },
+    CreateVcpu { idx: u32, hr: String },
 
     #[error("WHP delete vCPU {idx} failed: {hr}")]
-    DeleteVcpu { idx: u32, hr: HResult },
+    DeleteVcpu { idx: u32, hr: String },
 
     #[error("WHP set vCPU {idx} registers failed: {hr}")]
-    SetRegisters { idx: u32, hr: HResult },
+    SetRegisters { idx: u32, hr: String },
 
     #[error("WHP run vCPU {idx} failed: {hr}")]
-    RunVcpu { idx: u32, hr: HResult },
+    RunVcpu { idx: u32, hr: String },
 
     #[error("unhandled WHP vCPU exit: {0}")]
     UnhandledExit(String),
 
     #[error("WHP cancel vCPU {idx} failed: {hr}")]
-    CancelVcpu { idx: u32, hr: HResult },
+    CancelVcpu { idx: u32, hr: String },
 
     #[error("WHP request interrupt failed: {0}")]
-    RequestInterrupt(HResult),
+    RequestInterrupt(String),
 
     #[error("cpu:profile {profile:?} not recognized by dillo")]
     UnknownCpuProfile { profile: String },
@@ -107,7 +107,7 @@ pub enum Error {
     CreateGuestMemory(String),
 
     #[error("WHP map GPA range [{gpa:#x}..{end:#x}) failed: {hr}")]
-    MapGpa { gpa: u64, end: u64, hr: HResult },
+    MapGpa { gpa: u64, end: u64, hr: String },
 
     #[error("WHP guest address {0:#x} is not in any mapped region")]
     UnmappedGuestAddr(u64),
@@ -126,12 +126,16 @@ pub enum Error {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HResult(i32);
+pub(crate) struct HResult(i32);
 
 impl std::fmt::Display for HResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "0x{:08X}", self.0 as u32)
     }
+}
+
+fn status(hr: HResult) -> String {
+    hr.to_string()
 }
 
 #[derive(Debug)]
@@ -163,7 +167,7 @@ impl Vm {
     fn new_with_options(options: PartitionOptions) -> Result<Self, Error> {
         ensure_hypervisor_present()?;
 
-        let partition = raw::create_partition().map_err(Error::CreatePartition)?;
+        let partition = raw::create_partition().map_err(|hr| Error::CreatePartition(status(hr)))?;
 
         let inner = VmInner { partition };
         if options.processor_count == 0 {
@@ -217,7 +221,11 @@ impl Vm {
             {
                 let end = base.saturating_add(size);
                 self.regions.clear();
-                return Err(Error::MapGpa { gpa: base, end, hr });
+                return Err(Error::MapGpa {
+                    gpa: base,
+                    end,
+                    hr: status(hr),
+                });
             }
             self.regions.push(Region {
                 base,
@@ -261,8 +269,12 @@ impl Vm {
 
     pub(crate) fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<Vcpu, Error> {
         validate_cpu_profile(cpu_profile)?;
-        raw::create_virtual_processor(self.inner.partition, idx)
-            .map_err(|hr| Error::CreateVcpu { idx, hr })?;
+        raw::create_virtual_processor(self.inner.partition, idx).map_err(|hr| {
+            Error::CreateVcpu {
+                idx,
+                hr: status(hr),
+            }
+        })?;
         Ok(Vcpu {
             partition: Arc::clone(&self.inner),
             idx,
@@ -319,7 +331,7 @@ impl InterruptController {
         vector: u8,
     ) -> Result<(), Error> {
         raw::request_fixed_interrupt(self.inner.partition, destination, vector)
-            .map_err(Error::RequestInterrupt)
+            .map_err(|hr| Error::RequestInterrupt(status(hr)))
     }
 }
 
@@ -338,11 +350,13 @@ impl Drop for Region {
 
 impl VmInner {
     fn set_processor_count(&self, count: u32) -> Result<(), Error> {
-        raw::set_processor_count(self.partition, count).map_err(Error::SetProcessorCount)
+        raw::set_processor_count(self.partition, count)
+            .map_err(|hr| Error::SetProcessorCount(status(hr)))
     }
 
     fn set_local_apic_emulation(&self) -> Result<(), Error> {
-        raw::set_local_apic_emulation(self.partition).map_err(Error::SetLocalApicEmulation)
+        raw::set_local_apic_emulation(self.partition)
+            .map_err(|hr| Error::SetLocalApicEmulation(status(hr)))
     }
 
     fn set_hyperv_cpuid_results(&self) -> Result<(), Error> {
@@ -350,16 +364,19 @@ impl VmInner {
         if results.common.is_empty() {
             return Ok(());
         }
-        raw::set_cpuid_results(self.partition, &results.common).map_err(Error::SetCpuidResults)?;
-        raw::set_cpuid_exit_list(self.partition, &[1]).map_err(Error::SetCpuidResults)
+        raw::set_cpuid_results(self.partition, &results.common)
+            .map_err(|hr| Error::SetCpuidResults(status(hr)))?;
+        raw::set_cpuid_exit_list(self.partition, &[1])
+            .map_err(|hr| Error::SetCpuidResults(status(hr)))
     }
 
     fn set_hyperv_enlightenments(&self) -> Result<(), Error> {
-        raw::set_hyperv_enlightenments(self.partition).map_err(Error::SetHypervEnlightenments)
+        raw::set_hyperv_enlightenments(self.partition)
+            .map_err(|hr| Error::SetHypervEnlightenments(status(hr)))
     }
 
     fn setup(&self) -> Result<(), Error> {
-        raw::setup_partition(self.partition).map_err(Error::SetupPartition)
+        raw::setup_partition(self.partition).map_err(|hr| Error::SetupPartition(status(hr)))
     }
 }
 
@@ -498,7 +515,10 @@ impl Vcpu {
 
         let (names, values): (Vec<_>, Vec<_>) = registers.into_iter().unzip();
         raw::set_virtual_processor_registers(self.partition.partition, self.idx, &names, &values)
-            .map_err(|hr| Error::SetRegisters { idx: self.idx, hr })?;
+            .map_err(|hr| Error::SetRegisters {
+            idx: self.idx,
+            hr: status(hr),
+        })?;
         Ok(())
     }
 
@@ -509,7 +529,10 @@ impl Vcpu {
     ) -> Result<VmExit, Error> {
         let exit =
             raw::run_virtual_processor(self.partition.partition, self.idx, &pio_read, &mmio_read)
-                .map_err(|hr| Error::RunVcpu { idx: self.idx, hr })?;
+                .map_err(|hr| Error::RunVcpu {
+                idx: self.idx,
+                hr: status(hr),
+            })?;
         Ok(match exit {
             raw::RunExit::Halted => VmExit::Halted,
             raw::RunExit::PioRead { port, size } => VmExit::PioRead { port, size },
@@ -531,8 +554,12 @@ pub(crate) struct VcpuCancel {
 
 impl VcpuCancel {
     pub(crate) fn cancel(&self) -> Result<(), Error> {
-        raw::cancel_run_virtual_processor(self.partition.partition, self.idx)
-            .map_err(|hr| Error::CancelVcpu { idx: self.idx, hr })
+        raw::cancel_run_virtual_processor(self.partition.partition, self.idx).map_err(|hr| {
+            Error::CancelVcpu {
+                idx: self.idx,
+                hr: status(hr),
+            }
+        })
     }
 }
 
@@ -543,7 +570,7 @@ impl Drop for Vcpu {
 }
 
 fn ensure_hypervisor_present() -> Result<(), Error> {
-    let present = raw::hypervisor_present().map_err(Error::Capability)?;
+    let present = raw::hypervisor_present().map_err(|hr| Error::Capability(status(hr)))?;
     if present == 0 {
         return Err(Error::HypervisorNotPresent);
     }

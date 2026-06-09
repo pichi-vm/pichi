@@ -22,19 +22,19 @@ This design is derived from current code and primary specs.
 | KVM interrupt acceleration is also registration based: `KVM_IRQFD` lets an eventfd directly trigger a guest interrupt. | Linux KVM API `KVM_IRQFD` |
 | TDX VM initialization is a VM-specific operation that must occur before vCPU creation; TDX also has specific VM/vCPU/memory init commands and CPUID handling. | Linux KVM TDX API `KVM_TDX_INIT_VM`, `KVM_TDX_INIT_VCPU`, `KVM_TDX_INIT_MEM_REGION`, `KVM_TDX_GET_CPUID` |
 | SEV-ES/SNP initial CPU state is launch material with platform limits; unsupported initial-state fields must fail rather than be silently configured. | QEMU IGVM documentation, "Initial CPU state with VMSA" |
-| Current `dillo-vm` has one `BackendVm` trait but it still exposes backend-shaped associated state and lives inside the monolith. | `dillo/deps/dillo-vm/src/backend.rs:58` |
-| Current `MmioDevice` already supports multiple windows, which is required for `PciRoot` ECAM plus BAR windows. | `dillo/deps/dillo-vm/src/mmio_bus.rs:23` |
-| Current `PciRoot` already owns ECAM plus BAR windows and implements `MmioDevice`. | `dillo/deps/dillo-vm/src/pci.rs:188`, `dillo/deps/dillo-vm/src/pci.rs:265` |
+| Retired `dillo-vm` proved the original backend trait and MMIO bus shape, but exposed backend-shaped associated state from the monolith. | retired `dillo/deps/dillo-vm/src/backend.rs:58` |
+| Current `MmioDevice` supports multiple windows, which is required for `PciRoot` ECAM plus BAR windows. | `dillo/deps/dillo-mmio/src/lib.rs` |
+| Current `PciRoot` owns ECAM plus BAR windows and implements `MmioDevice`. | `dillo/deps/dillo-pci/src/lib.rs` |
 | Current `PciDevice`, `VirtioDevice`, and `MsixNotifier` are already separable traits. | `dillo/deps/dillo-pci/src/lib.rs`, `dillo/deps/dillo-virtio/src/device.rs`, `dillo/deps/dillo-pci/src/msix.rs` |
-| Current `BackendVm` exposes PCI-specific MSI-X notifier construction; the target split must remove that transport leak from the machine boundary. | `dillo/deps/dillo-vm/src/backend.rs:64`, `dillo/deps/dillo-vm/src/backend.rs:74` |
-| Current `dillo::platform::machine` already proves the drain-to-empty DTB survey pattern: materialize an `OwnedTree`, run self-routing `from_tree` constructors, and fail on residual nodes/properties. | `dillo/src/platform/machine.rs:1`, `dillo/src/platform/machine.rs:477`, `dillo/src/platform/machine.rs:521` |
-| Current `dillo::platform::machine` already tracks region provenance and distinguishes required properties from acknowledged pass-through properties. | `dillo/src/platform/machine.rs:121`, `dillo/src/platform/machine.rs:157`, `dillo/src/platform/machine.rs:1167`, `dillo/src/platform/machine.rs:1190` |
-| Current `dillo-pmi` already decodes `vm:vcpu` into an arch-erased parsed value; target `dillo-machine` must not invent a universal CPU-state struct. | `dillo/deps/dillo-vm/deps/dillo-pmi/src/parse.rs:47`, `dillo/deps/dillo-vm/deps/dillo-pmi/src/parse.rs:83` |
-| Current vCPU execution still routes MMIO through callbacks owned by `dillo-vm`; the target no-callback `Vcpu::run()` moves MMIO routing below the `Machine` boundary. | `dillo/deps/dillo-vm/src/lib.rs:1701`, `dillo/deps/dillo-vm/src/lib.rs:1713`, `dillo/deps/dillo-vm/src/mmio_bus.rs:49` |
+| Backend crates no longer expose PCI-specific MSI-X notifier construction; machine attachments expose generic message-interrupt domains and PCI translates MSI-X. | `dillo/deps/dillo-mmio/src/lib.rs`, `dillo/deps/dillo-pci/src/msix.rs` |
+| Current `dillo-devtree::platform` proves the drain-to-empty DTB survey pattern: materialize an `OwnedTree`, run self-routing `from_tree` constructors, and fail on residual nodes/properties. | `dillo/deps/dillo-devtree/src/platform/machine.rs` |
+| Current `dillo-devtree::platform` tracks region provenance and distinguishes required properties from acknowledged pass-through properties. | `dillo/deps/dillo-devtree/src/platform/machine.rs` |
+| Current PMI parsing decodes `vm:vcpu` into an arch-erased parsed value; target `dillo-machine` must not invent a universal CPU-state struct. | `dillo/src/pmi_parse.rs` |
+| Current vCPU execution runs through `Cpu::run()` with MMIO routing owned below the `Machine` boundary. | `dillo/deps/dillo-machine/src/lib.rs`, `dillo/deps/dillo-machine-kvm/src/lib.rs`, `dillo/deps/dillo-machine-hvf/src/lib.rs`, `dillo/deps/dillo-machine-whp/src/lib.rs` |
 | vCPU exits are now backend-local implementation details in the selected machine crate; remaining conformance work should ensure only lifecycle stops cross the `dillo-machine` trait boundary. | `dillo/deps/dillo-machine-kvm/src/lib.rs`, `dillo/deps/dillo-machine-hvf/src/lib.rs`, `dillo/deps/dillo-machine-whp/src/lib.rs` |
 | Current confidential-computing private-memory support is still incomplete; standard VM virtio activation now routes through shared-memory capabilities. | `dillo/deps/dillo-mmio/src/lib.rs`, `dillo/deps/dillo-virtio/src/device.rs`, `dillo/deps/dillo-virtio/src/memory.rs` |
 | Virtio PCI writes now use shared-reference `PciDevice` methods with interior mutability for config space, MSI-X state, and device state. | `dillo/deps/dillo-pci-virtio/src/transport.rs` |
-| Current UART interrupting is trigger-only; a level/deassert-capable interrupt line is new backend/device work. | `dillo/deps/dillo-vm/src/uart.rs:81`, `dillo/deps/dillo-vm/src/uart.rs:270` |
+| Current UART interrupting is trigger-only; a level/deassert-capable interrupt line is new backend/device work. | `dillo/deps/dillo-mmio-uart/src/lib.rs` |
 | CI's supported platform matrix is Linux x86-64/KVM, Windows x86-64/WHP, and macOS arm64/HVF, with warnings denied and real boot tests. | `.github/workflows/ci.yml:13`, `.github/workflows/ci.yml:92`, `.github/workflows/ci.yml:100`, `.github/workflows/ci.yml:108` |
 
 ## Name stability
@@ -49,12 +49,11 @@ Current crates are evidence and migration sources:
 - `dillo-hypervisor` has been retired; its former KVM, HVF, and WHP
   implementation modules now live in the owning `dillo-machine-*` crates.
 - `dillo-pmi` has been retired into `dillo::pmi_parse`.
-- `dillo-platform` has been retired into `dillo::platform`; its
-  `platform::machine::Machine` is today's DTB survey result, not the target
-  `dillo-machine::Machine` trait.
-- `dillo-device` is an older process/thread experiment, not the target boundary.
-- current `virtio`, `virtio-pci`, and `vm-pci` may be renamed, split,
-  absorbed, or upstreamed depending on the final rust-vmm alignment.
+- `dillo-platform` has been retired; DTB survey now lives in
+  `dillo-devtree::platform`.
+- `dillo-device` was an older process/thread experiment and is not a target
+  boundary.
+- `vm-pci` has been retired into `dillo-pci`.
 
 ## Target graph
 
@@ -190,10 +189,11 @@ requirements.
 Architecture-specific machinery belongs in the owning `dillo-machine-*` crate
 unless it is a portable device or protocol implementation. For example, WHP owns
 its userspace IOAPIC model, `dillo-mmio` owns the portable syscon MMIO device,
-and `dillo-pci` owns legacy PCI configuration-port decoding over `PciRoot`.
+and `dillo-pci` owns ECAM/BAR decoding over `PciRoot`. x86 legacy PCI
+configuration ports are intentionally not decoded so guests use ECAM.
 
 The DTB survey layer consumes base DTB and overlay rules and returns typed
-platform facts with provenance. This logic now lives in `dillo::platform`; it
+platform facts with provenance. This logic now lives in `dillo-devtree`; it
 does not know backend crates or concrete device implementations.
 
 `pmi` is the upstream PMI spec/data crate and must be consumed from
@@ -216,7 +216,7 @@ validation. That can become a `dillo` module unless reuse justifies a crate.
 6. Incrementally construct CPU, memory, MMIO, bus, transport, and device objects
    from the same mutable tree and attach each one to the machine.
 7. Fail if any DTB node/property remains after assembly.
-8. Run the attached vCPUs through the machine's `Vcpu` objects.
+8. Run the attached CPUs through the machine's `Cpu` objects.
 
 The merged devtree is therefore not drained up front into one large plan.
 Consumption is incremental: each constructed object drains only the nodes and
@@ -261,20 +261,20 @@ The concrete backend type above is selected by the target/backend alias. The
 pattern is the same for plain KVM, KVM+SEV, KVM+TDX, HVF, and WHP, but the
 machine model, CPU input type, and memory input type may differ.
 
-`attached_mmio` is handed to the selected device-host wrapper. The wrapper knows
-the concrete device protocol; the backend attachment knows the parallel
-execution model. The wrapper creates a device-host launch request compatible
-with the selected `Machine::DEVICE_MODEL`; the attachment consumes that request
-to start or connect the host. In both cases, the machine has already registered
-MMIO routing before vCPUs run.
+`attached_mmio` is handed to the selected transport or device wrapper. The
+wrapper knows the concrete device protocol; the backend attachment knows the
+parallel execution model. Portable wrappers pass a neutral `MmioDeviceRun`
+closure to `MmioAttachment::spawn`; the attachment decides whether that work is
+run in a thread, process, or backend-specific service. In all cases, the machine
+has already registered MMIO routing before vCPUs run.
 
-`run_supervisor` owns VM lifecycle. vCPU worker threads run synchronous
-`Vcpu::run()` calls and report `VcpuStop` outcomes to the supervisor over normal
+`run_supervisor` owns VM lifecycle. CPU worker threads run synchronous
+`Cpu::run()` calls and report `VcpuStop` outcomes to the supervisor over normal
 Rust channels. A guest poweroff is handled in this order:
 
 1. One vCPU worker reports `VcpuStop::GuestPoweroff`.
-2. The supervisor calls `Machine::request_vcpu_exit` to make every
-   still-running vCPU leave `Vcpu::run()`.
+2. The supervisor calls `Cpu::stop` on every still-running CPU to make each
+   `Cpu::run()` return.
 3. The supervisor joins all vCPU workers. At this point no guest CPU can issue
    new MMIO.
 4. The supervisor requests device-host shutdown through each `MmioDeviceHandle`.
@@ -325,7 +325,7 @@ device's constructor parameters: `reg` windows, interrupts, DMA/notification
 facts, and device-specific properties.
 
 This is a publicized/generalized form of today's
-`dillo::platform::machine::*::from_tree(&mut OwnedTree, &mut ResourcePlan, ...)`
+`dillo-devtree::platform::machine::*::from_tree(&mut OwnedTree, &mut ResourcePlan, ...)`
 pattern. That code already proves the important mechanics: self-routing
 constructors, `require` for properties that drive host setup, `ack` for claimed
 properties whose values do not drive host setup, `ensure_drained` for per-node
@@ -349,7 +349,7 @@ are implementation details until proven otherwise.
 
 - `Attach<T>`: generic registration into a constructed owner.
 - `Machine`: host-neutral VM contract implemented by backend crates.
-- `Vcpu`: synchronous vCPU execution contract.
+- `Cpu`: synchronous vCPU execution contract.
 - `MmioDevice`: device-advertised MMIO, interrupt, and shared-memory needs.
 - `PciDevice`: PCI endpoint contract consumed only by `PciRoot`.
 - `SharedMemory`: attachment-scoped shared-memory capability.
@@ -403,21 +403,19 @@ Owned by `dillo-machine`. Implemented by `dillo-machine-kvm`,
 `dillo-machine-hvf`, and `dillo-machine-whp`. Consumed by `dillo`.
 
 ```rust
-pub enum DeviceModel {
-    Thread,
-
-    Process,
-}
-
-pub trait Machine: Sized + Send + Sync + 'static {
+pub trait Machine: Sized + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
-    type Vcpu: Vcpu<Error = Self::Error>;
-    type Cpu: Send + 'static;
-    type Memory: Send + 'static;
+    type Cpu: Cpu<Error = Self::Error> + Send;
+    type CpuState: CpuState<Error = Self::Error>;
+    type Memory: Memory<Error = Self::Error>;
 
-    const DEVICE_MODEL: DeviceModel;
+    fn from_launch_config(config: LaunchConfig) -> Result<Self, Self::Error>;
 
-    fn request_vcpu_exit(&self) -> Result<(), Self::Error>;
+    fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Self::Error>;
+
+    fn prepare_vcpu_run(&mut self) -> Result<(), Self::Error>;
+
+    fn reset_for_reboot(&mut self) -> Result<(), Self::Error>;
 }
 ```
 
@@ -434,9 +432,9 @@ where
         Output = (),
     >,
     M: Attach<
-        <M as Machine>::Cpu,
+        <M as Machine>::CpuState,
         Error = <M as Machine>::Error,
-        Output = <M as Machine>::Vcpu,
+        Output = Arc<<M as Machine>::Cpu>,
     >,
     M: Attach<
         Arc<dyn MmioDevice>,
@@ -445,18 +443,12 @@ where
     >,
 ```
 
-`Machine` has no trait constructor and no `launch()` API. Each backend crate
-exposes small inherent constructors on concrete machine and machine-input types.
-`dillo` owns local `FromDevTree` glue for the selected backend associated input
-types because `dillo` is the composition point with PMI, devtree, placement, and
-device policy. The backend crate owns the concrete input type and its inherent
-validation/constructor policy. For example:
+`Machine` has no `launch()` API. `dillo` constructs the selected machine through
+the common trait API using only backend-neutral launch facts, then attaches typed
+memory, CPU-state, and MMIO objects. The backend crate owns the concrete input
+type and its validation policy. For example:
 
 ```rust
-impl KvmTdxMachine {
-    pub fn new(model: KvmTdxModel) -> Result<Self, KvmTdxError>;
-}
-
 impl KvmTdxCpu {
     pub fn new(model: KvmTdxCpuModel) -> Result<Self, KvmTdxError>;
 }
@@ -470,9 +462,9 @@ impl Attach<KvmTdxMemory> for KvmTdxMachine {
     type Output = ();
 }
 
-impl Attach<KvmTdxCpu> for KvmTdxMachine {
+impl Attach<KvmTdxCpuState> for KvmTdxMachine {
     type Error = KvmTdxError;
-    type Output = KvmTdxVcpu;
+    type Output = Arc<KvmTdxCpu>;
 }
 
 impl Attach<Arc<dyn MmioDevice>> for KvmTdxMachine {
@@ -503,9 +495,9 @@ Attaching `Machine::Memory` grants memory ownership to the machine but does not
 grant devices access to guest memory. Attaching `Arc<dyn MmioDevice>` validates
 the device's DTB-derived windows, realizes interrupts, creates only the declared
 shared-memory capabilities for that device, and returns a backend-implemented
-`MmioAttachment`. Attaching `Machine::Cpu` returns a runnable `Vcpu`; the CPU
-input type carries whatever non-CC or CC-specific construction material that
-machine family requires.
+`MmioAttachment`. Attaching `Machine::CpuState` returns a runnable
+`Arc<Machine::Cpu>`; the CPU-state input type carries whatever non-CC or
+CC-specific construction material that machine family requires.
 
 `Machine` must stay device-model neutral. It must not expose PCI, MSI-X, UART,
 IOAPIC, GIC, KVM irqfd, WHP vector, or HVF-specific concepts in its public
@@ -519,23 +511,22 @@ obligated to resolve those requirements for the backend, fail if it cannot, and
 return the resulting handles through its backend-specific `MmioAttachment`
 implementation.
 
-`DEVICE_MODEL` records process vs thread device-host policy. Backend crates own
-the mechanics of launching or connecting the device host for their model, but
-they must not depend on virtio, UART, PCI endpoint, or other concrete device
-crates. The device-host wrapper supplies a backend-neutral host launch request
-for the selected device model; the backend-implemented `MmioAttachment` consumes
-that request to run a thread, connect to a process, or use a backend-specific
-service.
+Device execution policy is owned by backend attachments. Portable MMIO and
+virtio crates expose only neutral run closures, shutdown tokens, and join
+handles; the backend-implemented `MmioAttachment` decides whether those workers
+run in threads, processes, or another backend-specific service.
 
-### `Vcpu`
+### `Cpu`
 
 Owned by `dillo-machine`. Implemented by backend crates.
 
 ```rust
-pub trait Vcpu: Send + 'static {
+pub trait Cpu: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn run(&mut self) -> Result<VcpuStop, Self::Error>;
+    fn run(&self) -> Result<VcpuStop, Self::Error>;
+
+    fn stop(&self) -> Result<(), Self::Error>;
 }
 
 pub enum VcpuStop {
@@ -547,7 +538,7 @@ pub enum VcpuStop {
 }
 ```
 
-`Vcpu::run` hides KVM `VcpuExit`, HVF syndrome decoding, and WHP emulator
+`Cpu::run` hides KVM `VcpuExit`, HVF syndrome decoding, and WHP emulator
 callbacks from dillo and devices. The only guest I/O exit that participates in
 the shared machine/device boundary is MMIO, and even that is routed inside the
 machine after `Attach<Arc<dyn MmioDevice>>`. PIO, hypercalls, CPUID leaves,
@@ -555,7 +546,7 @@ PSCI calls, WFI/HLT, debug exits, and backend-specific emulation exits are
 backend or architecture-substrate internals and must not become dillo/device
 APIs.
 
-`Vcpu::run` has no external MMIO callback argument.
+`Cpu::run` has no external MMIO callback argument.
 `Attach<Arc<dyn MmioDevice>>` registers the device's MMIO windows in
 machine-owned routing state, and vCPUs created by that machine carry whatever
 handle they need to route unresolved MMIO exits internally. On Linux/KVM,
@@ -569,8 +560,8 @@ Architecture-specific shutdown triggers such as PSCI system-off, syscon
 poweroff, ACPI power button, or guest reset are decoded inside backend or
 architecture-substrate code and surfaced as `VcpuStop`. Backend failures are
 returned as `Err(Self::Error)`. The supervisor owns the fan-out. It calls
-`Machine::request_vcpu_exit` to make outstanding
-synchronous `Vcpu::run()` calls return, then joins every vCPU worker before
+`Cpu::stop` on the still-running CPUs to make outstanding synchronous
+`Cpu::run()` calls return, then joins every CPU worker before
 shutting down device hosts. This keeps shutdown policy out of devices and out of
 backend-specific vCPU exit types.
 
@@ -578,25 +569,19 @@ Fatal execution failures use `Err(Self::Error)`, not a second `VcpuStop`
 variant. `VcpuStop` is reserved for guest or supervisor lifecycle outcomes where
 the supervisor may make a policy decision after a successful `run()` return.
 
-This is a real inversion from the current code. Today `dillo-vm` sees PIO, HVC,
-SMC, debug, halt, shutdown, and MMIO exits above the hypervisor wrapper. In the
-target design, PSCI handling, including secondary CPU bring-up from `CPU_ON`,
-lives in the backend or architecture substrate and coordinates with
-machine-owned vCPU parking/wakeup state. WFI/HLT stays backend-internal. The
-existing `DILLO_GDB` debug path is out of scope for this refactor and must not
-be smuggled through `VcpuStop::Debug`.
+PSCI/HVC/SMC handling, including secondary CPU bring-up from `CPU_ON`, lives in
+the backend or architecture substrate and coordinates with machine-owned CPU
+parking/wakeup state. WFI/HLT stays backend-internal. The old `DILLO_GDB` debug
+path is out of scope for this refactor and must not be smuggled through
+`VcpuStop::Debug`.
 
-`Machine::request_vcpu_exit` is not cancellation of arbitrary Rust work, reset
-control, or device shutdown. It is the backend's VM-wide vCPU run-exit
-mechanism. Its only contract is: after it succeeds, every currently running
-`Vcpu::run()` call for that machine will return promptly. If a backend cannot
-make a blocked vCPU leave `run()`, it cannot implement reliable guest poweroff
-for this model. There is no separate run-control object because the supervisor
-already owns the machine lifecycle, and the run-exit state is backend-internal
-machine state.
+`Cpu::stop` is not cancellation of arbitrary Rust work, reset control, or device
+shutdown. It is the backend's per-CPU run-exit mechanism. Its only contract is:
+after it succeeds, a currently running `Cpu::run()` call for that CPU will
+return promptly. If a backend cannot make a blocked CPU leave `run()`, it cannot
+implement reliable guest poweroff for this model.
 
-For Linux/KVM, `Machine::request_vcpu_exit` is implemented by making each vCPU
-thread's
+For Linux/KVM, `Cpu::stop` is implemented by making that CPU thread's
 `KVM_RUN` ioctl return `-EINTR`. KVM documents two relevant facts:
 
 - `KVM_RUN` returns `EINTR` when an unblocked signal is pending for the vCPU
@@ -605,31 +590,25 @@ thread's
   nonzero before `KVM_RUN`, the next run exits immediately with `EINTR`, and a
   signal handler can set it to keep a kicked vCPU from re-entering the guest.
 
-Therefore the KVM backend must keep per-vCPU run records in the shared machine
-run-control state. When a vCPU worker thread enters `Vcpu::run()`, the KVM
-`Vcpu` records the current Linux thread identity and the mmap'd `kvm_run`
-pointer in that state. `Machine::request_vcpu_exit` sets a VM-wide stop flag,
-marks each recorded vCPU's `immediate_exit`, and sends a thread-directed signal
-such as `pthread_kill` or `tgkill` to each recorded vCPU thread. The signal is
-sent to vCPU worker threads, not to an arbitrary process PID. When `KVM_RUN`
-returns `EINTR`, `Vcpu::run()` checks the stop flag and returns
+Therefore the KVM backend keeps per-CPU run records. When a CPU worker thread
+enters `Cpu::run()`, the KVM CPU records the current Linux thread identity and
+the mmap'd `kvm_run` pointer. `Cpu::stop` sets the stop flag, marks that CPU's
+`immediate_exit`, and sends a thread-directed signal such as `pthread_kill` or
+`tgkill` to that CPU worker thread. The signal is sent to the vCPU worker
+thread, not to an arbitrary process PID. When `KVM_RUN` returns `EINTR`,
+`Cpu::run()` checks the stop flag and returns
 `VcpuStop::Stopped` instead of re-entering KVM.
 
-For macOS/HVF, the run-control state stores each vCPU's `hv_vcpus_exit` handle.
-The current local HVF wrapper already exposes this shape as
-`force_vcpus_exit(handles: &[VcpuHandle])`, and each vCPU exposes `handle()` as
-a sendable handle usable from another thread only to force it out of `run()`.
-`Machine::request_vcpu_exit` sets the VM-wide stop flag and calls the HVF exit
-helper with all recorded handles. When `hv_vcpu_run` returns,
-`Vcpu::run()` checks the stop flag and returns `VcpuStop::Stopped`.
+For macOS/HVF, each CPU owns the run-exit handle needed by the local HVF
+wrapper. `Cpu::stop` sets the CPU stop flag and calls the HVF exit helper for
+that CPU. When `hv_vcpu_run` returns, `Cpu::run()` checks the stop flag and
+returns `VcpuStop::Stopped`.
 
 For Windows/WHP, the backend must store the partition handle and each virtual
-processor index in the run-control state. `Machine::request_vcpu_exit` sets the
-VM-wide stop flag and calls `WHvCancelRunVirtualProcessor(partition, vp_index,
-0)` for each still-running virtual processor. `WHvRunVirtualProcessor` then
-returns with `WHvRunVpExitReasonCanceled`; the local WHP code already imports
-that exit reason, but the target implementation must add the cancel binding and
-translate that exit to `VcpuStop::Stopped` when the stop flag is set.
+processor index in the CPU object. `Cpu::stop` sets the CPU stop flag and calls
+`WHvCancelRunVirtualProcessor(partition, vp_index, 0)`. `WHvRunVirtualProcessor`
+then returns with `WHvRunVpExitReasonCanceled`, which the backend translates to
+`VcpuStop::Stopped` when the stop flag is set.
 
 ### `MmioDevice`
 
@@ -723,10 +702,9 @@ pub trait PciDevice: Send + Sync + std::fmt::Debug {
 and `PciRoot` is itself an `MmioDevice` whose MMIO callbacks take `&self`.
 Mutable endpoint state therefore lives behind endpoint-owned synchronization or
 interior mutability. BAR declarations are borrowed fixed constructor state, just
-like `MmioDevice` windows. This is a real migration from today's
-`virtio-pci::VirtioPciDevice`, where config and BAR writes take `&mut self`;
-config space, MSI-X state, transport state, and device access must be made
-internally synchronized before this trait can be implemented safely.
+like `MmioDevice` windows. Virtio PCI transport state, MSI-X state, config
+space, and device access must stay internally synchronized so this shared
+reference trait remains safe.
 
 ### `PciRoot`
 
@@ -831,7 +809,7 @@ a hugetlb memfd mapped into userspace and registered with
 device activation plumbing:
 
 - shared/private page state is backend-owned machine state;
-- guest-driven conversion exits or hypercalls are handled below `Vcpu::run()`,
+- guest-driven conversion exits or hypercalls are handled below `Cpu::run()`,
   update the backend's tracked shared set, and call the host API such as KVM
   memory attributes where required;
 - supported DMA restrictions must come from DTB-consumed device resources. If a
@@ -852,12 +830,6 @@ pub enum MmioInterrupt {
     MessageDomain(Arc<dyn MessageInterruptDomain>),
 }
 
-pub enum MmioDeviceHost {
-    Thread(MmioThreadHost),
-
-    Process(MmioProcessHost),
-}
-
 pub struct MmioDeviceHandle {
     // opaque
 }
@@ -866,14 +838,6 @@ impl MmioDeviceHandle {
     pub fn shutdown(&self) -> Result<(), MmioShutdownError>;
 
     pub fn join(self) -> Result<(), MmioJoinError>;
-}
-
-pub struct MmioThreadHost {
-    // opaque
-}
-
-pub struct MmioProcessHost {
-    // opaque
 }
 
 pub struct MmioSpawnError {
@@ -888,16 +852,6 @@ pub struct MmioJoinError {
     // opaque
 }
 
-impl MmioDeviceHost {
-    pub fn thread(
-        run: impl FnOnce(MmioRunToken) -> Result<(), MmioJoinError> + Send + 'static,
-    ) -> Self;
-
-    pub fn process(spec: MmioProcessHost) -> Self;
-
-    pub fn model(&self) -> DeviceModel;
-}
-
 pub struct MmioRunToken {
     // opaque
 }
@@ -906,20 +860,15 @@ impl MmioRunToken {
     pub fn is_shutdown_requested(&self) -> bool;
 }
 
-pub trait MmioAttachment: Send + Sync {
+pub type MmioDeviceRun =
+    Box<dyn FnOnce(MmioRunToken) -> Result<(), MmioJoinError> + Send + 'static>;
+
+pub trait MmioAttachment: Send + Sync + std::fmt::Debug {
     fn interrupts(&self) -> &[MmioInterrupt];
 
     fn shared_memory(&self) -> &[Arc<dyn SharedMemory>];
 
-    fn register_notify(
-        &self,
-        event: MmioNotifyEvent,
-    ) -> Result<MmioNotifyRegistration, MmioNotifyError>;
-
-    fn spawn(
-        self: Arc<Self>,
-        host: MmioDeviceHost,
-    ) -> Result<MmioDeviceHandle, MmioSpawnError>;
+    fn spawn(self: Arc<Self>, run: MmioDeviceRun) -> Result<MmioDeviceHandle, MmioSpawnError>;
 }
 ```
 
@@ -928,10 +877,6 @@ pub trait MmioAttachment: Send + Sync {
 `MmioDevice::interrupts`. `shared_memory()` likewise preserves the order exposed
 by `MmioDevice::shared_memory`.
 
-KVM implements notify registration with ioeventfd so supported MMIO writes wake a
-device host without returning through the vCPU thread. HVF/WHP can return
-`Unsupported`, and the machine falls back to its internal MMIO routing state for
-ordinary MMIO exits. Notify registration is an optional acceleration path.
 Interrupt requirements and shared-memory requirements come from
 `MmioDevice::interrupts` and `MmioDevice::shared_memory` and must already have
 been drained from the DTB by the device constructor.
@@ -947,20 +892,10 @@ channels or direct interrupt handles. Those details are opaque behind the
 `dillo-mmio` trait; device crates and `dillo` can use only the trait methods.
 
 `spawn` is on `MmioAttachment` because only the backend attachment knows whether
-the selected machine model runs an in-process thread, connects to an
-out-of-process host, or uses a backend-specific service. The `self: Arc<Self>`
-receiver consumes the attachment handle returned by `Machine::attach`; callers
-must extract or clone any resolved interrupt/shared-memory/notify services the
-host needs before calling `spawn`.
-
-`MmioDeviceHost` is not the MMIO device and not the backend attachment. It is the
-device-host wrapper's launch request for an already-attached device. A thread
-host contains a long-lived run loop over the concrete device and attachment
-services. A process host cannot be a closure; it describes or connects to an
-external long-lived device host using backend-neutral process/channel material.
-The wrapper chooses the host variant from `Machine::DEVICE_MODEL`. The selected
-backend validates that the variant matches what it supports and fails closed
-otherwise.
+the selected machine runs an in-process thread, connects to an out-of-process
+host, or uses a backend-specific service. Portable devices and transports pass a
+neutral `MmioDeviceRun` closure; the backend attachment owns the execution
+policy.
 
 `spawn` starts the host and returns immediately with an `MmioDeviceHandle`.
 Device hosts are expected to run until VM teardown, device removal, backend
@@ -1035,9 +970,8 @@ pub trait MessageInterruptDomain: Send + Sync {
 
 PCI MSI/MSI-X is one producer of message interrupts, not a machine trait
 concept. `dillo-pci` owns the adapter from PCI table/config writes to
-`MessageInterruptDomain`. Today the implementation shape is exposed through
-`vm-pci::MsixNotifier`; the target design confines that name to PCI helper code
-or upstreamed PCI code.
+`MessageInterruptDomain`. Backend crates speak only in terms of generic message
+interrupt domains.
 
 ## Process vs thread model
 
@@ -1046,7 +980,8 @@ The design constraints are:
 - process/thread hosting must not make backend crates depend on virtio or
   concrete devices;
 - concrete devices must not branch on `target_os`;
-- `dillo` may select a host wrapper based on `Machine::DEVICE_MODEL`;
+- `dillo` must not select a process/thread model directly; it passes portable
+  run closures to backend-owned attachments;
 - Linux/KVM should remain able to use a process/vhost-user model;
 - HVF/WHP should remain able to use an in-process thread model;
 - event/interrupt acceleration such as KVM ioeventfd/irqfd belongs to
@@ -1084,10 +1019,9 @@ but it must not use architecture cfg to decide what guest hardware exists.
 
 Current workspace evidence:
 
-- `vm-pci` contains Firecracker-derived code and may be a candidate for cleanup
-  or upstream discussion.
-- `virtio`, `virtio-pci`, and `vm-pci` were migrated from an earlier local
-  dillo tree.
+- the local PCI and virtio crates contain code migrated from earlier local
+  dillo/rust-vmm-derived work and may be candidates for cleanup or upstream
+  discussion.
 - the workspace uses rust-vmm crates such as `vm-memory`, `vmm-sys-util`,
   `kvm-ioctls`, and `kvm-bindings`.
 
@@ -1111,11 +1045,11 @@ This design is satisfied only when all of the following can be verified:
    both machine backends and `dillo-pci::PciRoot`.
 5. `Machine` exposes no PCI, MSI-X, UART, IOAPIC, GIC, KVM irqfd, WHP vector,
    HVF, raw host handles, or hypervisor API objects.
-6. `Machine` has no trait constructor; backend crates expose inherent
-   constructors on concrete machine types.
-7. `Machine` has no universal `VcpuConfig` or CPU-state type; `Machine::Cpu` and
-   `Machine::Memory` are associated per machine family and are produced by
-   dillo-owned devtree consumption/context glue for the selected concrete
+6. `Machine` construction is through the common trait API and exposes only
+   backend-neutral launch facts.
+7. `Machine` has no universal `CpuConfig` or concrete CPU-state struct;
+   `Machine::CpuState` and `Machine::Memory` are associated per machine family
+   and are produced from PMI/DTB-derived launch facts for the selected concrete
    backend. Unsupported PMI/DTB CPU or memory requests fail closed.
 8. `Machine` exposes no whole-guest-memory accessor; guest memory is accessible
    only through attachment-scoped `SharedRegion` handles minted by successful
@@ -1134,8 +1068,8 @@ This design is satisfied only when all of the following can be verified:
 14. Routed MMIO and PCI endpoint accesses return typed errors; boolean
    "unhandled after routing" is not part of the target device API.
 15. Shared memory is exposed only as attachment-scoped capabilities whose
-   runtime regions must be inside a DTB-derived aperture and currently tracked
-   shared by the backend.
+   runtime regions must satisfy backend capability limits and be currently
+   tracked shared by the backend.
 16. `dillo` owns devtree consumption glue, including local `FromDevTree` impls
    for all concrete devices and transports over `&mut devtree::OwnedTree` plus
    launch context. `Ok(None)` consumes nothing and means the relevant node is
@@ -1154,7 +1088,7 @@ This design is satisfied only when all of the following can be verified:
 
 The target design should build on code that already exists:
 
-- `dillo::platform::machine` already demonstrates the drain-to-empty survey,
+- `dillo-devtree::platform::machine` already demonstrates the drain-to-empty survey,
   self-routing `from_tree` constructors, `require` vs `ack`, per-node
   `ensure_drained`, origin-tracked region declarations, and residual-tree
   failure.
@@ -1165,48 +1099,15 @@ The target design should build on code that already exists:
   behind an arch-erased value. Target backend associated CPU input types should
   consume the matching arm; `dillo-machine` should not add another generic CPU
   state model.
-- Current `PciRoot`, `QueueNotifier`, `MsixNotifier`, and closure-backed
-  interrupt helpers are close to the target interrupt/notify abstractions, but
-  live in the wrong crates and expose transport/backend names at the wrong
-  layer.
+- Current `PciRoot`, queue notification hooks, message-interrupt domains, and
+  closure-backed interrupt helpers are the active target abstractions and live
+  in `dillo-pci`, `dillo-mmio`, and transport crates.
 
-## Migration work
+## Remaining divergence
 
-The current tree does not yet meet this design:
-
-- `dillo-vm` is still a monolith containing launch orchestration, backend
-  adapters, MMIO bus, PCI root, UART, syscon, IOAPIC, PSCI, and backend device
-  glue.
-- `dillo-hypervisor` is one cfg-selected crate rather than separate
-  `dillo-machine-kvm`, `dillo-machine-hvf`, and `dillo-machine-whp` crates.
-- `MmioDevice` and `PciDevice` are `pub(crate)` inside `dillo-vm`.
-- `PciDevice` is not yet in a standalone `dillo-pci` crate.
-- `VirtioPciDevice` still lives in `virtio-pci`; final naming and upstreaming
-  need to decide whether that crate becomes `dillo-pci-virtio` or remains a
-  rust-vmm-style transport crate with a different boundary.
-- `virtio-pci::QueueNotifier` is transport-owned and virtio-shaped today; the
-  final design needs backend-neutral I/O event registration in `dillo-mmio`.
-- `dillo-vm` and current virtio activation paths still pass whole guest-memory
-  handles; the target design must replace those with attachment-scoped
-  `SharedRegion` handles.
-- `MmioBus` is owned and dispatched above the backend today. The target
-  callback-free `Vcpu::run()` requires machine backends to own MMIO routing and
-  for `Attach<Arc<dyn MmioDevice>>` to populate it.
-- Non-MMIO exits currently cross the hypervisor boundary. PSCI/HVC, including
-  `CPU_ON` secondary bring-up, must move into backend or architecture-substrate
-  code. WFI/HLT should remain backend-internal. The existing gdb/debug path is
-  out of scope.
-- Confidential-computing memory is greenfield: guest-private memory, shared page
-  conversion, shared aperture tracking, and restricted device DMA must be added
-  rather than moved.
-- `PciDevice` shared-reference methods require interior mutability for current
-  virtio PCI config/MSI-X/device state.
-- `InterruptLine::set_level(false)` requires backend decisions and device work;
-  the current UART path can trigger but not deassert.
-- `dillo-device` contains an older process/thread abstraction that is not yet
-  the active `VirtioDevice` activation contract.
-
-These gaps are evidence that the target design is not merely a crate move. The
-split requires the trait surfaces above and the run-loop/memory inversions
-before crates can be separated without preserving backend knowledge in the wrong
-layer.
+The current tree is close to this split, but final conformance depends on the
+remaining divergences recorded in `TODO.md` Stage 22. The most important open
+area is confidential-computing memory: standard VM paths use attachment-scoped
+shared-memory capabilities, but true guest-private backing, guest-driven
+shared/private conversion, and backend-specific private-memory APIs remain
+future backend work.

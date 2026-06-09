@@ -84,8 +84,8 @@ fn mmap_range(memfd: &Memfd, fd_offset: u64, size: u64) -> Result<u64> {
 /// the raw pointers — the underlying mmap is owned by `mmap_range`'s
 /// leaked allocation, alive for the VM's lifetime.
 ///
-/// Used by virtio-pci to drive queues and by any device backend that needs
-/// typed guest-memory access.
+/// Used by virtio transports and device backends that need typed
+/// guest-memory access.
 fn build_guest_memory(
     memfd: &Memfd,
     regions: &[(u64, u64, u64)], // (gpa, host_addr, size) — same shape GpaMap takes

@@ -2332,3 +2332,42 @@ Local verification:
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `ssh -A nathaniel@apollo 'cd /tmp/pichi-codex.8KFGgg && CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
   in a fresh `/tmp` checkout; Linux/x86 boot suite passed 5/5.
+
+CI verification:
+- `27232290210` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
+
+Audit fix 26 - hide remaining backend implementation error types:
+- Made KVM `IrqError` crate-private and mapped it to the public backend
+  `Error::Irq(String)` at the machine boundary.
+- Made WHP `HResult` crate-private and converted public WHP error variants to
+  carry display strings rather than the raw HRESULT wrapper.
+- Updated `DILLO-CRATE-SPLIT.md` to describe the current `Cpu::run/stop` and
+  `MmioAttachment::spawn(MmioDeviceRun)` model instead of the retired
+  `Vcpu`/`Machine::DEVICE_MODEL` sketches.
+
+Evidence:
+- `grep -RInE "pub (struct|enum|trait|type|fn)|pub use" dillo/deps/dillo-machine-kvm/src dillo/deps/dillo-machine-hvf/src dillo/deps/dillo-machine-whp/src --include='*.rs'`
+  reports only the expected backend public types: `Error`, `RawStdio`, `Vm`,
+  `Memory`, `CpuState`, `Cpu`, and `pub use imp::*`.
+- `grep -RInE "HResult|IrqError" dillo/src dillo/tests dillo/deps/dillo-machine/src --include='*.rs'`
+  reports no references.
+
+Local verification:
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- `cargo check -p dillo-machine-kvm -p dillo-machine-whp -p dillo-pci -p dillo-virtio`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-mmio -p dillo-virtio -p dillo-virtio-console -p dillo-mmio-virtio -p dillo-pci -p dillo-pci-virtio`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- First local macOS boot run hit HVF `operation not allowed by the system` after
+  one successful boot; immediate isolated rerun of the same command passed all
+  boot tests.
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+- `ssh -A nathaniel@apollo 'cd /tmp/pichi-codex.1781036605 && CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
+  in a fresh `/tmp` copy; Linux/x86 boot suite passed 5/5.

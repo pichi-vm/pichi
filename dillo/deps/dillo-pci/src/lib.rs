@@ -1,9 +1,7 @@
 //! PCI root complex and endpoint trait.
 //!
-//! Slimmed from the PoC's `dillo-vmm/src/pci.rs` — no hotplug, no
-//! secondary-bus / root-port, no multi-function. Per ARCH §11.2 MVP
-//! "single-function devices only, no hot-plug, no multi-function,
-//! no PCIe-PM, no AER."
+//! Minimal root complex: no hotplug, no secondary-bus / root-port, and no
+//! multi-function endpoints.
 
 use std::sync::Arc;
 use std::sync::Mutex;

@@ -6,7 +6,7 @@
 //! the foundation of the dillo virtio stack. Device implementations
 //! (virtio-blk, virtio-console, virtio-vsock) depend on this crate for the
 //! [`VirtioDevice`] trait and [`Queue`]/[`DescriptorChain`] types. Transport
-//! layers (virtio-pci) consume [`VirtioDevice`] to present devices on a bus.
+//! layers consume [`VirtioDevice`] to present devices on a bus.
 //!
 //! # Key types
 //!
@@ -19,8 +19,8 @@
 //! - [`features`]: Common feature bit constants (`VIRTIO_F_VERSION_1`,
 //!   `VIRTIO_F_RING_EVENT_IDX`) and device type codes.
 //!
-//! Device crates are transport-agnostic by design: they never import
-//! `virtio-pci` or `dillo-vmm`.
+//! Device crates are transport-agnostic by design: they never import transport
+//! or machine backend crates.
 
 pub mod device;
 pub mod features;

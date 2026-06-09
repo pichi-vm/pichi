@@ -18,11 +18,8 @@ use libc;
 use thiserror::Error;
 
 /// Errors from IRQ routing and irqfd management.
-///
-/// Lifted from the PoC's `dillo-vmm/src/error.rs` so this module is
-/// drop-in self-contained.
 #[derive(Error, Debug)]
-pub enum IrqError {
+pub(crate) enum IrqError {
     #[error("Failed to allocate GSI routing table")]
     RoutingAllocation,
     #[error("KVM irqfd ioctl failed: {0}")]

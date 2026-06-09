@@ -422,7 +422,8 @@ mod imp {
                     .irq_manager
                     .lock()
                     .expect("KVM IRQ manager lock poisoned")
-                    .register_irqfd_at_gsi(source)?;
+                    .register_irqfd_at_gsi(source)
+                    .map_err(|e| Error::Irq(e.to_string()))?;
                 Ok(dillo_mmio::Interrupt::new(Arc::new(
                     EventFdInterruptLine::new(eventfd),
                 )))
@@ -483,7 +484,9 @@ mod imp {
                 crate::hypervisor::Vm::new_with_gic(&substrate)?
             };
             #[cfg(target_arch = "x86_64")]
-            let irq_manager = Arc::new(Mutex::new(IrqManager::new(inner.vm_fd_arc())?));
+            let irq_manager = Arc::new(Mutex::new(
+                IrqManager::new(inner.vm_fd_arc()).map_err(|e| Error::Irq(e.to_string()))?,
+            ));
             Ok(Self {
                 inner,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
