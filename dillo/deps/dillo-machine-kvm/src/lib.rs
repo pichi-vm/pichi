@@ -51,10 +51,11 @@ mod imp {
     };
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
-        Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
-        MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
-        SharedMemory,
+        Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
+        MmioDeviceHandle, MmioInterrupt, MmioSpawnError, SharedMemory,
     };
+    #[cfg(target_arch = "aarch64")]
+    use dillo_mmio::{Interrupt, MessageInterrupt, MessageInterruptDomain};
 
     #[cfg(target_arch = "x86_64")]
     use crate::{kvm_regs, kvm_sregs};
