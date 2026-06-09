@@ -30,7 +30,9 @@ mod imp {
         FromDevTree,
         devtree::{NodeView, OwnedTree, PropertyView, Tree},
     };
-    use dillo_machine::{BootVcpuState, LaunchConfig, RamRange, RunControl, VcpuStop};
+    use dillo_machine::{
+        BootVcpuState, Host, HostArchitecture, LaunchConfig, RamRange, RunControl, VcpuStop,
+    };
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
@@ -44,15 +46,7 @@ mod imp {
     pub use crate::hypervisor::Error;
     use crate::hypervisor::force_vcpus_exit;
 
-    pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::Aarch64;
-
-    pub fn platform(
-        dtb: &[u8],
-    ) -> Result<dillo_devtree::platform::Machine, dillo_devtree::platform::SurveyError> {
-        dillo_devtree::platform::Machine::survey(dtb, dillo_devtree::platform::Arch::Aarch64)
-    }
-
-    pub fn install_signal_watchers(_supervisor_shutdown: &'static AtomicBool) {}
+    fn install_signal_watchers(_supervisor_shutdown: &'static AtomicBool) {}
 
     static ORIGINAL_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
 
@@ -62,7 +56,7 @@ mod imp {
     }
 
     impl RawStdio {
-        pub fn enter_if_tty() -> Self {
+        fn enter_if_tty() -> Self {
             use std::os::fd::{AsFd, AsRawFd};
             let stdin = std::io::stdin();
             let fd = stdin.as_fd().as_raw_fd();
@@ -121,7 +115,7 @@ mod imp {
         restore_termios();
     }
 
-    pub fn install_panic_terminal_restore() {
+    fn install_panic_terminal_restore() {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             restore_termios();
@@ -208,6 +202,24 @@ mod imp {
             }
             GuestMemoryMmap::from_regions(built)
                 .map_err(|e| Error::Hv(format!("GuestMemoryMmap: {e:?}")))
+        }
+    }
+
+    impl Host for Vm {
+        type RawStdioGuard = RawStdio;
+
+        const ARCH: HostArchitecture = HostArchitecture::Aarch64;
+
+        fn enter_raw_stdio_if_tty() -> Self::RawStdioGuard {
+            RawStdio::enter_if_tty()
+        }
+
+        fn install_panic_terminal_restore() {
+            install_panic_terminal_restore();
+        }
+
+        fn install_signal_watchers(supervisor_shutdown: &'static AtomicBool) {
+            install_signal_watchers(supervisor_shutdown);
         }
     }
 

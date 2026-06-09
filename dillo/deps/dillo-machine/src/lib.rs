@@ -5,6 +5,7 @@
 //! implement the attachment set that the top-level `dillo` launcher uses.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use dillo_mmio::{Interrupt, MessageInterruptDomain};
 
@@ -63,6 +64,19 @@ pub enum DeviceModel {
     Thread,
 
     Process,
+}
+
+/// Host-level services exposed by the selected machine backend.
+pub trait Host {
+    type RawStdioGuard: 'static;
+
+    const ARCH: HostArchitecture;
+
+    fn enter_raw_stdio_if_tty() -> Self::RawStdioGuard;
+
+    fn install_panic_terminal_restore();
+
+    fn install_signal_watchers(supervisor_shutdown: &'static AtomicBool);
 }
 
 /// A constructed VM capable of accepting DTB-derived resources and vCPUs.

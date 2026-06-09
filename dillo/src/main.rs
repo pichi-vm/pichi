@@ -7,6 +7,7 @@ mod machine_select;
 use std::sync::atomic::AtomicBool;
 
 use argh::FromArgs;
+use dillo_machine::Host;
 use machine_select::machine;
 use machine_select::runner;
 
@@ -48,19 +49,14 @@ fn main() {
     let memory = args.memory;
     let cpus = args.cpus;
 
-    let launch = match dillo::launch::LaunchPlan::read(
-        &pmi,
-        machine::HOST_ARCH,
-        machine::platform,
-        memory,
-        cpus,
-    ) {
-        Ok(plan) => plan,
-        Err(e) => {
-            eprintln!("dillo: {e}");
-            std::process::exit(e.exit_code());
-        }
-    };
+    let launch =
+        match dillo::launch::LaunchPlan::read(&pmi, <machine::Vm as Host>::ARCH, memory, cpus) {
+            Ok(plan) => plan,
+            Err(e) => {
+                eprintln!("dillo: {e}");
+                std::process::exit(e.exit_code());
+            }
+        };
     let dillo::launch::LaunchPlan {
         parsed,
         platform,
@@ -92,8 +88,8 @@ fn main() {
     // session. A Drop guard restores cooked mode at exit; a custom
     // panic hook restores it before printing the panic message so
     // the user's terminal isn't left mangled after a crash.
-    let _raw_guard = machine::RawStdio::enter_if_tty();
-    machine::install_panic_terminal_restore();
+    let _raw_guard = <machine::Vm as Host>::enter_raw_stdio_if_tty();
+    <machine::Vm as Host>::install_panic_terminal_restore();
 
     // Per ARCH §13.2: 1st SIGINT/SIGTERM asks for graceful guest
     // shutdown with a ~5s grace; 2nd SIGINT or SIGQUIT hard-kills.
@@ -101,7 +97,7 @@ fn main() {
     // signals aren't silently dropped during boot. SIGWINCH is also
     // blocked so the watcher can forward terminal-resize events to
     // the (future Phase 3) console child.
-    machine::install_signal_watchers(&SUPERVISOR_SHUTDOWN);
+    <machine::Vm as Host>::install_signal_watchers(&SUPERVISOR_SHUTDOWN);
 
     log::info!(
         "dillo starting: pmi={} memory={}MiB cpus={} console={}",

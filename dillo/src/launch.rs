@@ -36,7 +36,6 @@ impl LaunchPlan {
     pub fn read(
         pmi_path: &Path,
         host_arch: HostArchitecture,
-        platform: impl FnOnce(&[u8]) -> Result<PlatformMachine, SurveyError>,
         memory_mib: u32,
         vcpus: u32,
     ) -> Result<Self, LaunchError> {
@@ -63,7 +62,8 @@ impl LaunchPlan {
         validate_cpu_profile(parsed.cpu_profile.as_str(), pmi_arch)?;
 
         let dtb = merged_dtb(&bytes, &parsed)?.to_vec();
-        let platform = platform(&dtb).map_err(LaunchError::Coverage)?;
+        let platform = PlatformMachine::survey(&dtb, platform_arch(host_arch))
+            .map_err(LaunchError::Coverage)?;
 
         let load_ranges: Vec<(String, u64, u64)> = parsed
             .sections
@@ -99,6 +99,13 @@ fn pmi_arch(host_arch: HostArchitecture) -> HostArch {
     match host_arch {
         HostArchitecture::X86_64 => HostArch::X86_64,
         HostArchitecture::Aarch64 => HostArch::Aarch64,
+    }
+}
+
+fn platform_arch(host_arch: HostArchitecture) -> Arch {
+    match host_arch {
+        HostArchitecture::X86_64 => Arch::X86_64,
+        HostArchitecture::Aarch64 => Arch::Aarch64,
     }
 }
 

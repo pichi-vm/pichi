@@ -36,7 +36,9 @@ mod imp {
         FromDevTree,
         devtree::{NodeView, OwnedTree, PropertyView, Tree},
     };
-    use dillo_machine::{BootVcpuState, LaunchConfig, RamRange, RunControl, VcpuStop};
+    use dillo_machine::{
+        BootVcpuState, Host, HostArchitecture, LaunchConfig, RamRange, RunControl, VcpuStop,
+    };
     use dillo_mmio::{
         Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
         MmioDeviceHandle, MmioInterrupt, MmioSpawnError, SharedMemory,
@@ -55,21 +57,6 @@ mod imp {
     #[cfg(target_arch = "x86_64")]
     use crate::msi::KvmMessageInterruptDomain;
 
-    #[cfg(target_arch = "x86_64")]
-    pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::X86_64;
-    #[cfg(target_arch = "aarch64")]
-    pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::Aarch64;
-
-    pub fn platform(
-        dtb: &[u8],
-    ) -> Result<dillo_devtree::platform::Machine, dillo_devtree::platform::SurveyError> {
-        #[cfg(target_arch = "x86_64")]
-        let arch = dillo_devtree::platform::Arch::X86_64;
-        #[cfg(target_arch = "aarch64")]
-        let arch = dillo_devtree::platform::Arch::Aarch64;
-        dillo_devtree::platform::Machine::survey(dtb, arch)
-    }
-
     pub type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
     pub type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 
@@ -78,7 +65,7 @@ mod imp {
     extern "C" fn vcpu_kick_signal_handler(_: libc::c_int) {}
 
     /// Install KVM/Linux host signal handling for the dillo supervisor.
-    pub fn install_signal_watchers(supervisor_shutdown: &'static AtomicBool) {
+    fn install_signal_watchers(supervisor_shutdown: &'static AtomicBool) {
         use nix::sys::signal::{SigSet, Signal};
         use nix::sys::signalfd::{SfdFlags, SignalFd};
 
@@ -149,7 +136,7 @@ mod imp {
     }
 
     impl RawStdio {
-        pub fn enter_if_tty() -> Self {
+        fn enter_if_tty() -> Self {
             use std::os::fd::{AsFd, AsRawFd};
             let stdin = std::io::stdin();
             let fd = stdin.as_fd().as_raw_fd();
@@ -208,7 +195,7 @@ mod imp {
         restore_termios();
     }
 
-    pub fn install_panic_terminal_restore() {
+    fn install_panic_terminal_restore() {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             restore_termios();
@@ -240,6 +227,27 @@ mod imp {
                     &cfg!(target_arch = "x86_64").then_some("<backend-owned>"),
                 )
                 .finish()
+        }
+    }
+
+    impl Host for Vm {
+        type RawStdioGuard = RawStdio;
+
+        #[cfg(target_arch = "x86_64")]
+        const ARCH: HostArchitecture = HostArchitecture::X86_64;
+        #[cfg(target_arch = "aarch64")]
+        const ARCH: HostArchitecture = HostArchitecture::Aarch64;
+
+        fn enter_raw_stdio_if_tty() -> Self::RawStdioGuard {
+            RawStdio::enter_if_tty()
+        }
+
+        fn install_panic_terminal_restore() {
+            install_panic_terminal_restore();
+        }
+
+        fn install_signal_watchers(supervisor_shutdown: &'static AtomicBool) {
+            install_signal_watchers(supervisor_shutdown);
         }
     }
 
