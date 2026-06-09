@@ -13,10 +13,26 @@ pub use dillo_mmio::{
     MmioJoinError, MmioSpawnError, SharedMemory,
 };
 use dillo_mmio::{MmioDevice, MmioWindow};
-pub use vm_pci::{
-    CAP_ID_MSIX, CAP_ID_VENDOR, MsixNotifier, MsixTable, MsixTableEntry, NoopNotifier,
-    PciConfiguration,
-};
+
+/// CF8/CFC legacy PIO and ECAM MMIO address decoding.
+pub mod address;
+/// BAR type definitions and decoding.
+pub mod bar;
+/// PCI Bus/Device/Function address encoding.
+pub mod bdf;
+/// Standard PCI capability IDs.
+pub mod capability;
+/// 256-byte Type 0 PCI configuration space.
+pub mod configuration;
+/// MSI-X table, capability, and notifier trait.
+pub mod msix;
+
+pub use address::{parse_cf8, parse_ecam_offset};
+pub use bar::BarType;
+pub use bdf::PciBdf;
+pub use capability::{CAP_ID_MSIX, CAP_ID_PCIE, CAP_ID_PM, CAP_ID_VENDOR};
+pub use configuration::PciConfiguration;
+pub use msix::{MsixCap, MsixNotifier, MsixTable, MsixTableEntry, NoopNotifier};
 
 /// One BAR exposed by a PCI device, in GPA terms — used by the MMIO
 /// bus to wire the BAR's range to the device's `bar_read`/`bar_write`.
@@ -306,7 +322,7 @@ impl PciRoot {
     }
 
     fn decode_ecam(offset: u64) -> (u8, u8, u8, usize, usize) {
-        let (bus, device, function, register) = vm_pci::parse_ecam_offset(offset);
+        let (bus, device, function, register) = parse_ecam_offset(offset);
         let reg_byte = register as usize;
         (bus, device, function, reg_byte >> 2, reg_byte & 0x3)
     }

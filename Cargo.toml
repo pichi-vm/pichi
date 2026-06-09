@@ -16,7 +16,6 @@ members = [
     "dillo/deps/dillo-hypervisor",
     "dillo/deps/dillo-platform",
     "dillo/deps/dillo-pmi",
-    "dillo/deps/vm-pci",
     "dillo/deps/dillo-machine",
     "dillo/deps/dillo-machine-hvf",
     "dillo/deps/dillo-machine-kvm",
@@ -89,7 +88,6 @@ dillo-pci-virtio = { path = "dillo/deps/dillo-pci-virtio" }
 dillo-virtio = { path = "dillo/deps/virtio" }
 dillo-virtio-console = { path = "dillo/deps/dillo-virtio-console" }
 dillo-x86 = { path = "dillo/deps/dillo-x86" }
-vm-pci = { path = "dillo/deps/vm-pci" }
 
 # Error handling
 anyhow = "1"

@@ -1020,6 +1020,11 @@ Completed changes:
 - Kept the `dillo-machine` trait crate generic: the trait still exposes only
   associated CPU/memory input types, while each backend crate owns the concrete
   constructor fields needed by that target.
+- Retired the standalone `vm-pci` helper crate by moving its PCI address, BAR,
+  BDF, config-space, capability, and MSI-X modules into `dillo-pci`, which now
+  owns those PCI helper types directly.
+- Removed `vm-pci` from the workspace members, workspace dependencies, and disk
+  layout.
 
 Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 cargo check -p dillo-mmio -p dillo-pci -p dillo-virtio -p dillo-mmio-virtio -p dillo-pci-virtio -p dillo-machine`
@@ -1034,6 +1039,10 @@ Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `grep -R "\.add_memslot\|\.add_memory\|\.set_memory\|create_vcpu_with_pio\|set_x86_64_state(boot_state" -n dillo/src dillo/deps/dillo-machine* --include='*.rs'`
+- `grep -R "vm-pci\|vm_pci" -n Cargo.toml dillo --include='Cargo.toml' --include='*.rs' --include='*.md'`
+- `find dillo/deps -maxdepth 2 -name vm-pci -print`
+- `RUSTC_BOOTSTRAP=1 cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name' | grep '^vm-pci$'`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-pci`
 
 Boot verification note:
 - macOS boot fixtures now sign `env!("CARGO_BIN_EXE_dillo")` with

@@ -9,7 +9,6 @@ description = "PCI root complex and endpoint traits for dillo."
 [dependencies]
 dillo-mmio.workspace = true
 log.workspace = true
-vm-pci.workspace = true
 
 [lints]
 workspace = true

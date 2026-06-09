@@ -493,7 +493,6 @@ version = "0.1.0"
 dependencies = [
  "dillo-mmio",
  "log",
- "vm-pci",
 ]
 
 [[package]]
@@ -1830,10 +1829,6 @@ dependencies = [
  "thiserror",
  "winapi",
 ]
-
-[[package]]
-name = "vm-pci"
-version = "0.1.0"
 
 [[package]]
 name = "vm-superio"

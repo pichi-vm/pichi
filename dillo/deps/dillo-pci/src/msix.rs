@@ -94,7 +94,7 @@ impl MsixTableEntry {
 
 /// VMM-agnostic callback trait for MSI-X notifications.
 ///
-/// vm-pci never touches KVM directly. Instead, the VMM implements this trait
+/// dillo-pci never touches a machine backend directly. Instead, the VMM implements this trait
 /// to receive notifications when vectors change or MSI-X enable state changes.
 pub trait MsixNotifier: Send + Sync {
     /// Called when a vector's address/data/mask is updated by the guest.
