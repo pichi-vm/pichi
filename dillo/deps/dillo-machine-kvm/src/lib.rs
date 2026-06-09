@@ -811,7 +811,7 @@ mod imp {
 
     #[cfg(target_arch = "aarch64")]
     #[derive(Debug)]
-    pub struct SpiInterruptLine {
+    struct SpiInterruptLine {
         vm: Arc<kvm_ioctls::VmFd>,
         spi: u32,
     }
@@ -849,7 +849,7 @@ mod imp {
 
     #[cfg(target_arch = "aarch64")]
     #[derive(Debug)]
-    pub struct KvmMessageInterruptDomain {
+    struct KvmMessageInterruptDomain {
         vm: Arc<kvm_ioctls::VmFd>,
         vectors: Mutex<Vec<MessageInterrupt>>,
         enabled: AtomicBool,

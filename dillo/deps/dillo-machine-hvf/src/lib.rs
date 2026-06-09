@@ -2,7 +2,7 @@
 mod hypervisor;
 
 #[cfg(target_os = "macos")]
-pub use applevisor::prelude::VcpuHandle;
+use applevisor::prelude::VcpuHandle;
 
 /// Reasons an HVF vCPU run returned to backend code.
 #[cfg(target_os = "macos")]
@@ -409,7 +409,7 @@ mod imp {
     }
 
     #[derive(Debug)]
-    pub struct SpiInterruptLine {
+    struct SpiInterruptLine {
         intid: u32,
     }
 
@@ -427,7 +427,7 @@ mod imp {
     }
 
     #[derive(Debug)]
-    pub struct GicMessageInterruptDomain {
+    struct GicMessageInterruptDomain {
         inner: Arc<GicMessageInterruptDomainInner>,
     }
 

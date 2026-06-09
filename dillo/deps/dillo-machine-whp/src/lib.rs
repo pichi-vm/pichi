@@ -625,7 +625,7 @@ mod imp {
     }
 
     #[derive(Debug)]
-    pub struct IoApicInterruptLine {
+    struct IoApicInterruptLine {
         interrupt_controller: InterruptController,
         ioapic: Arc<IoApic>,
         gsi: u32,
