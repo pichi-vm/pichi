@@ -1678,7 +1678,7 @@ Local verification note:
 
 ## Stage 22 - Final acceptance audit
 
-Status: in progress; host CPU discovery move local-verified, CI pending.
+Status: in progress; MMIO interrupt attachment inversion local-verified, CI pending.
 
 Goal: prove the implementation satisfies `DILLO-CRATE-SPLIT.md` or that all
 remaining divergence has been recorded for human review after three conformance
@@ -1988,5 +1988,36 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+Audit fix 13 - resolve MMIO interrupts during machine attach:
+- Preserved DTB-derived wired interrupt and MSI-parent provenance in the
+  platform survey output for UART, virtio-mmio, and PCIe.
+- Changed UART, virtio-mmio, and PCI root devices to declare interrupt
+  requirements through `MmioDevice::interrupts()`.
+- Changed KVM, HVF, and WHP MMIO attachment to inspect device requirements,
+  resolve backend-owned line/message interrupts, and return them through
+  `MmioAttachment`.
+- Removed line/message interrupt constructors from the common `Machine` trait;
+  interrupt setup is now backend-private attach plumbing.
+- Added a PCI-virtio MSI-X interrupt lookup cell so dillo can construct the
+  console without asking the selected machine for an MSI domain.
+- Removed stale runner errors from the retired direct backend setup path.
+
+Evidence:
+- `grep -RIn "create_line_interrupt\|create_message_interrupt_domain" dillo/src dillo/deps/dillo-machine/src --include='*.rs'`
+  reports no common-trait or dillo call sites.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp -p dillo`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-devtree -p dillo-mmio-uart -p dillo-mmio-virtio -p dillo-pci -p dillo-pci-virtio -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`

@@ -9,12 +9,12 @@
 //! queues are handed to `activate`; a `QueueNotify` write kicks the matching
 //! queue's [`Kick`].
 
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 use dillo_mmio::{
-    Interrupt, MmioAttachment, MmioDevice, MmioError, MmioJoinError, MmioWindow, SharedMemory,
+    Interrupt, MmioAttachment, MmioDevice, MmioError, MmioInterrupt, MmioInterruptRequirement,
+    MmioJoinError, MmioWindow, SharedMemory,
 };
 use dillo_virtio::queue::Queue;
 use dillo_virtio::{
@@ -57,7 +57,7 @@ const INT_VRING: u32 = 0x1;
 #[derive(Clone)]
 pub struct WiredIrq {
     intid: u32,
-    interrupt: Interrupt,
+    interrupt: Arc<RwLock<Option<Interrupt>>>,
 }
 
 impl std::fmt::Debug for WiredIrq {
@@ -70,15 +70,38 @@ impl std::fmt::Debug for WiredIrq {
 
 impl WiredIrq {
     pub fn new(intid: u32, interrupt: Interrupt) -> Self {
-        Self { intid, interrupt }
+        Self {
+            intid,
+            interrupt: Arc::new(RwLock::new(Some(interrupt))),
+        }
+    }
+
+    pub fn unresolved(intid: u32) -> Self {
+        Self {
+            intid,
+            interrupt: Arc::new(RwLock::new(None)),
+        }
     }
 
     pub fn intid(&self) -> u32 {
         self.intid
     }
 
+    pub fn set_interrupt(&self, interrupt: Interrupt) {
+        *self
+            .interrupt
+            .write()
+            .expect("virtio-mmio IRQ lock poisoned") = Some(interrupt);
+    }
+
     fn set(&self, level: bool) {
-        if let Err(e) = self.interrupt.set_level(level) {
+        if let Some(interrupt) = self
+            .interrupt
+            .read()
+            .expect("virtio-mmio IRQ lock poisoned")
+            .as_ref()
+            && let Err(e) = interrupt.set_level(level)
+        {
             log::warn!(
                 "virtio-mmio wired IRQ {} set_level({level}) failed: {e}",
                 self.intid
@@ -116,6 +139,7 @@ struct Inner {
 /// A single virtio-mmio transport slot bound to one [`VirtioDevice`].
 pub struct VirtioMmio {
     window: MmioWindow,
+    interrupts: Vec<MmioInterruptRequirement>,
     inner: Mutex<Inner>,
     /// Shared with the device's interrupt closure (raised on the worker thread,
     /// read here on `INTERRUPT_STATUS`).
@@ -141,6 +165,26 @@ impl VirtioMmio {
         int_status: std::sync::Arc<AtomicU32>,
         irq: WiredIrq,
     ) -> Self {
+        Self::with_interrupt_requirements(window, device, int_status, irq, Vec::new())
+    }
+
+    pub fn with_interrupt_requirement(
+        window: MmioWindow,
+        device: Box<dyn VirtioDevice>,
+        int_status: std::sync::Arc<AtomicU32>,
+        irq: WiredIrq,
+        interrupt: MmioInterruptRequirement,
+    ) -> Self {
+        Self::with_interrupt_requirements(window, device, int_status, irq, vec![interrupt])
+    }
+
+    fn with_interrupt_requirements(
+        window: MmioWindow,
+        device: Box<dyn VirtioDevice>,
+        int_status: std::sync::Arc<AtomicU32>,
+        irq: WiredIrq,
+        interrupts: Vec<MmioInterruptRequirement>,
+    ) -> Self {
         let device_id = device.device_type();
         let device_features = device.features();
         let maxs = device.queue_max_sizes().to_vec();
@@ -154,6 +198,7 @@ impl VirtioMmio {
             .collect();
         Self {
             window,
+            interrupts,
             inner: Mutex::new(Inner {
                 device,
                 device_id,
@@ -174,6 +219,9 @@ impl VirtioMmio {
     }
 
     pub fn set_attachment(&self, attachment: Arc<dyn MmioAttachment>) {
+        if let Some(MmioInterrupt::Line(interrupt)) = attachment.interrupts().first() {
+            self.irq.set_interrupt(interrupt.clone());
+        }
         self.inner
             .lock()
             .expect("virtio-mmio poisoned")
@@ -301,6 +349,10 @@ impl Drop for VirtioMmio {
 impl MmioDevice for VirtioMmio {
     fn windows(&self) -> &[MmioWindow] {
         std::slice::from_ref(&self.window)
+    }
+
+    fn interrupts(&self) -> &[MmioInterruptRequirement] {
+        &self.interrupts
     }
 
     fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError> {

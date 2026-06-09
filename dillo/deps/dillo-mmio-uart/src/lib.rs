@@ -30,13 +30,15 @@
 //! fully usable console rather than an early-boot-only channel.
 
 use std::io::{self, Write};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 
 use vm_superio::Serial;
 use vm_superio::Trigger;
 use vm_superio::serial::NoEvents;
 
-use dillo_mmio::{Interrupt, MmioDevice, MmioError, MmioWindow};
+use dillo_mmio::{
+    Interrupt, MmioDevice, MmioError, MmioInterrupt, MmioInterruptRequirement, MmioWindow,
+};
 
 // 16550 register offsets and bits we post-process on top of vm-superio.
 // Offsets are pre-`reg_shift` register indices (0..=7).
@@ -62,11 +64,11 @@ const LCR_DLAB: u8 = 0b1000_0000;
 /// `vm-superio` trigger backed by an optional backend-resolved interrupt.
 #[derive(Clone, Debug)]
 struct InterruptTrigger {
-    interrupt: Option<Interrupt>,
+    interrupt: Arc<RwLock<Option<Interrupt>>>,
 }
 
 impl InterruptTrigger {
-    fn new(interrupt: Option<Interrupt>) -> Self {
+    fn new(interrupt: Arc<RwLock<Option<Interrupt>>>) -> Self {
         Self { interrupt }
     }
 }
@@ -75,7 +77,12 @@ impl Trigger for InterruptTrigger {
     type E = io::Error;
 
     fn trigger(&self) -> io::Result<()> {
-        if let Some(interrupt) = &self.interrupt {
+        if let Some(interrupt) = self
+            .interrupt
+            .read()
+            .expect("UART interrupt lock poisoned")
+            .as_ref()
+        {
             interrupt.signal();
         }
         Ok(())
@@ -88,6 +95,8 @@ type Mmio16550 = Serial<InterruptTrigger, NoEvents, Box<dyn Write + Send>>;
 /// emulation it lacks (see module docs).
 pub struct Ns16550 {
     window: MmioWindow,
+    interrupts: Vec<MmioInterruptRequirement>,
+    interrupt: Arc<RwLock<Option<Interrupt>>>,
     state: Mutex<Ns16550State>,
 }
 
@@ -106,16 +115,56 @@ impl Ns16550 {
         interrupt: Option<Interrupt>,
         out: Box<dyn Write + Send>,
     ) -> Self {
+        let interrupt = Arc::new(RwLock::new(interrupt));
         Self::with_serial(
             window,
+            Vec::new(),
+            Arc::clone(&interrupt),
             reg_shift,
             Serial::new(InterruptTrigger::new(interrupt), out),
         )
     }
 
-    fn with_serial(window: MmioWindow, reg_shift: u32, serial: Mmio16550) -> Self {
+    pub fn with_interrupt_requirement(
+        window: MmioWindow,
+        reg_shift: u32,
+        interrupt: MmioInterruptRequirement,
+        out: Box<dyn Write + Send>,
+    ) -> Self {
+        let interrupt_state = Arc::new(RwLock::new(None));
+        Self::with_serial(
+            window,
+            vec![interrupt],
+            Arc::clone(&interrupt_state),
+            reg_shift,
+            Serial::new(InterruptTrigger::new(interrupt_state), out),
+        )
+    }
+
+    pub fn set_attachment(&self, attachment: &dyn dillo_mmio::MmioAttachment) {
+        if let Some(MmioInterrupt::Line(interrupt)) = attachment.interrupts().first() {
+            self.set_interrupt(Some(interrupt.clone()));
+        }
+    }
+
+    pub fn set_interrupt(&self, interrupt: Option<Interrupt>) {
+        *self
+            .interrupt
+            .write()
+            .expect("UART interrupt lock poisoned") = interrupt;
+    }
+
+    fn with_serial(
+        window: MmioWindow,
+        interrupts: Vec<MmioInterruptRequirement>,
+        interrupt: Arc<RwLock<Option<Interrupt>>>,
+        reg_shift: u32,
+        serial: Mmio16550,
+    ) -> Self {
         Self {
             window,
+            interrupts,
+            interrupt,
             state: Mutex::new(Ns16550State::new(reg_shift, serial)),
         }
     }
@@ -124,6 +173,10 @@ impl Ns16550 {
 impl MmioDevice for Ns16550 {
     fn windows(&self) -> &[MmioWindow] {
         std::slice::from_ref(&self.window)
+    }
+
+    fn interrupts(&self) -> &[MmioInterruptRequirement] {
+        &self.interrupts
     }
 
     fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError> {
@@ -250,10 +303,8 @@ mod tests {
     fn harness() -> (Ns16550State, Arc<CountLine>) {
         let line = Arc::new(CountLine::new());
         let out: Box<dyn Write + Send> = Box::new(io::sink());
-        let serial = Serial::new(
-            InterruptTrigger::new(Some(Interrupt::new(line.clone()))),
-            out,
-        );
+        let interrupt = Arc::new(RwLock::new(Some(Interrupt::new(line.clone()))));
+        let serial = Serial::new(InterruptTrigger::new(interrupt), out);
         (Ns16550State::new(0, serial), line)
     }
 

@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 pub use dillo_mmio::{
     MessageInterrupt, MessageInterruptDomain, MmioAttachment, MmioDeviceHandle, MmioDeviceRun,
-    MmioJoinError, MmioSpawnError, SharedMemory,
+    MmioInterrupt, MmioInterruptRequirement, MmioJoinError, MmioSpawnError, SharedMemory,
 };
 use dillo_mmio::{MmioDevice, MmioError, MmioWindow};
 
@@ -95,6 +95,10 @@ pub trait PciDevice: Send + Sync + std::fmt::Debug {
 pub trait PciDeviceHost: Send + Sync + std::fmt::Debug {
     fn shared_memory(&self) -> &[Arc<dyn SharedMemory>];
 
+    fn msix_notifier(&self) -> Option<Arc<dyn MsixNotifier>> {
+        None
+    }
+
     fn spawn(&self, run: MmioDeviceRun) -> Result<MmioDeviceHandle, MmioSpawnError>;
 }
 
@@ -139,6 +143,10 @@ impl MsixNotifier for MsixInterruptAdapter {
         if let Err(e) = self.domain.enabled(enabled) {
             log::warn!("PCI MSI-X enable={enabled} failed: {e}");
         }
+    }
+
+    fn interrupt_for(&self, vector: u16) -> Option<dillo_mmio::Interrupt> {
+        MsixInterruptAdapter::interrupt_for(self, vector)
     }
 }
 
@@ -287,6 +295,7 @@ impl PciBus {
 pub struct PciRoot {
     window: MmioWindow,
     windows: Vec<MmioWindow>,
+    interrupts: Vec<MmioInterruptRequirement>,
     bus: PciBus,
 }
 
@@ -305,6 +314,19 @@ impl PciRoot {
         Self {
             window,
             windows: vec![window],
+            interrupts: Vec::new(),
+            bus: PciBus::new_with_host_bridge(),
+        }
+    }
+
+    pub fn with_interrupt_requirement(
+        window: MmioWindow,
+        interrupt: MmioInterruptRequirement,
+    ) -> Self {
+        Self {
+            window,
+            windows: vec![window],
+            interrupts: vec![interrupt],
             bus: PciBus::new_with_host_bridge(),
         }
     }
@@ -400,6 +422,19 @@ impl PciDeviceHost for PciRootHost {
         self.attachment.shared_memory()
     }
 
+    fn msix_notifier(&self) -> Option<Arc<dyn MsixNotifier>> {
+        self.attachment
+            .interrupts()
+            .iter()
+            .find_map(|interrupt| match interrupt {
+                MmioInterrupt::MessageDomain(domain) => {
+                    Some(Arc::new(MsixInterruptAdapter::new(Arc::clone(domain)))
+                        as Arc<dyn MsixNotifier>)
+                }
+                MmioInterrupt::Line(_) => None,
+            })
+    }
+
     fn spawn(&self, run: MmioDeviceRun) -> Result<MmioDeviceHandle, MmioSpawnError> {
         Arc::clone(&self.attachment).spawn(run)
     }
@@ -408,6 +443,10 @@ impl PciDeviceHost for PciRootHost {
 impl MmioDevice for PciRoot {
     fn windows(&self) -> &[MmioWindow] {
         &self.windows
+    }
+
+    fn interrupts(&self) -> &[MmioInterruptRequirement] {
+        &self.interrupts
     }
 
     fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError> {

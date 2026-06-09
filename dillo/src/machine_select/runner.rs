@@ -10,10 +10,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::machine as selected_machine;
 use dillo_devtree::platform::Machine as PlatformMachine;
+use dillo_devtree::platform::{MsiParentage, WiredInterrupt};
 use dillo_machine::{BootVcpuState, LaunchConfig, Machine, RamRange, RunControl, VcpuStop};
 use dillo_mmio::syscon;
-use dillo_mmio::{Attach, MmioAttachment, MmioWindow};
-use dillo_pci::{MsixInterruptAdapter, MsixNotifier, PciRoot};
+use dillo_mmio::{
+    Attach, InterruptSource, MessageInterruptSource, MmioAttachment, MmioInterruptRequirement,
+    MmioWindow,
+};
+use dillo_pci::PciRoot;
 use dillo_pci_virtio::VirtioPciAdapter;
 
 pub(crate) use error::RunError;
@@ -133,6 +137,33 @@ fn syscon_register(syscon: dillo_devtree::platform::Syscon) -> syscon::SysconReg
     }
 }
 
+fn interrupt_source(interrupt: &WiredInterrupt) -> InterruptSource {
+    let mut cells = [0u32; 4];
+    for (dst, src) in cells.iter_mut().zip(interrupt.cells.iter().copied()) {
+        *dst = src;
+    }
+    InterruptSource {
+        controller: interrupt.controller.phandle,
+        cells,
+        cell_count: interrupt.cells.len().min(cells.len()) as u8,
+    }
+}
+
+fn line_requirement(interrupt: &WiredInterrupt) -> MmioInterruptRequirement {
+    MmioInterruptRequirement::Line {
+        source: interrupt_source(interrupt),
+    }
+}
+
+fn message_requirement(msi: &MsiParentage, vectors: u16) -> MmioInterruptRequirement {
+    MmioInterruptRequirement::MessageDomain {
+        source: MessageInterruptSource {
+            controller: msi.controller.phandle,
+        },
+        vectors,
+    }
+}
+
 fn attach_pci_console<M, E>(
     vm: &mut M,
     platform: &PlatformMachine,
@@ -147,27 +178,27 @@ where
     }
 
     let vectors: u16 = 3;
-    let notifier = Arc::new(MsixInterruptAdapter::new(
-        M::create_message_interrupt_domain(vm, vectors).map_err(RunError::machine)?,
-    ));
-    let lookup_notifier = Arc::clone(&notifier);
-    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
-        std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
-            Arc::new(move |vector| lookup_notifier.interrupt_for(vector)),
-        ))),
-    );
+    let interrupt_lookup = Arc::new(dillo_pci_virtio::MsixInterruptLookup::new());
+    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> =
+        Arc::new(std::sync::Mutex::new(Box::new(
+            dillo_virtio_console::VirtioConsole::new(interrupt_lookup.lookup_fn()),
+        )));
 
-    let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
+    let mut virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
         console,
         vectors,
         platform.pcie.mmio_base,
         platform.pcie.mmio_base + 0x1000,
-        Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
     );
-    let mut pci_root = PciRoot::new(MmioWindow {
+    virtio_pci_dev.set_interrupt_lookup(interrupt_lookup);
+    let ecam = MmioWindow {
         base: platform.pcie.ecam_base,
         size: platform.pcie.ecam_size,
-    });
+    };
+    let Some(msi) = platform.pcie.msi.as_ref() else {
+        return Err(RunError::MissingRequiredDevice("pcie msi-parent"));
+    };
+    let mut pci_root = PciRoot::with_interrupt_requirement(ecam, message_requirement(msi, vectors));
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
     let attachment = Attach::attach(vm, Arc::clone(&pci_root)).map_err(RunError::machine)?;
@@ -189,28 +220,25 @@ where
     };
 
     let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let irq = dillo_mmio_virtio::WiredIrq::new(
-        slot.irq,
-        M::create_line_interrupt(vm, slot.irq).map_err(RunError::machine)?,
-    );
+    let irq = dillo_mmio_virtio::WiredIrq::unresolved(slot.irq);
     let interrupt_irq = irq.clone();
-    let is = Arc::clone(&int_status);
-    let console: Box<dyn dillo_virtio::VirtioDevice> = Box::new(
-        dillo_virtio_console::VirtioConsole::new(Arc::new(move |_vector| {
-            Some(dillo_mmio_virtio::VirtioMmio::interrupt(
-                Arc::clone(&is),
-                interrupt_irq.clone(),
-            ))
-        })),
-    );
-    let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::new(
+    let interrupt_status = Arc::clone(&int_status);
+    let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::with_interrupt_requirement(
         MmioWindow {
             base: slot.base,
             size: slot.size,
         },
-        console,
+        Box::new(dillo_virtio_console::VirtioConsole::new(Arc::new(
+            move |_vector| {
+                Some(dillo_mmio_virtio::VirtioMmio::interrupt(
+                    Arc::clone(&interrupt_status),
+                    interrupt_irq.clone(),
+                ))
+            },
+        ))),
         Arc::clone(&int_status),
         irq.clone(),
+        line_requirement(&slot.interrupt),
     ));
     let attachment = Attach::attach(vm, Arc::clone(&transport)).map_err(RunError::machine)?;
     transport.set_attachment(attachment);
@@ -227,23 +255,23 @@ fn attach_uart<M, E>(vm: &mut M, platform: &PlatformMachine) -> Result<(), RunEr
 where
     E: std::error::Error + Send + Sync + 'static,
     M: Machine<Error = E>,
-    M: Attach<Arc<dillo_mmio_uart::Ns16550>, Error = E>,
+    M: Attach<Arc<dillo_mmio_uart::Ns16550>, Error = E, Output = Arc<dyn MmioAttachment>>,
 {
-    let Some(uart) = platform.uart else {
+    let Some(uart) = platform.uart.as_ref() else {
         log::warn!("no UART in Machine - guest console output will be dropped");
         return Ok(());
     };
-    let interrupt = M::create_line_interrupt(vm, uart.irq).map_err(RunError::machine)?;
-    let serial = dillo_mmio_uart::Ns16550::new(
+    let serial = Arc::new(dillo_mmio_uart::Ns16550::with_interrupt_requirement(
         MmioWindow {
             base: uart.base,
             size: uart.size,
         },
         uart.reg_shift,
-        Some(interrupt),
+        line_requirement(&uart.interrupt),
         Box::new(std::io::stderr()),
-    );
-    Attach::attach(vm, Arc::new(serial)).map_err(RunError::machine)?;
+    ));
+    let attachment = Attach::attach(vm, Arc::clone(&serial)).map_err(RunError::machine)?;
+    serial.set_attachment(attachment.as_ref());
     log::info!(
         "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, IRQ {})",
         uart.base,
@@ -314,7 +342,7 @@ where
     M: Machine<Error = E>,
     M: Attach<Arc<PciRoot>, Error = E, Output = Arc<dyn MmioAttachment>>,
     M: Attach<Arc<dillo_mmio_virtio::VirtioMmio>, Error = E, Output = Arc<dyn MmioAttachment>>,
-    M: Attach<Arc<dillo_mmio_uart::Ns16550>, Error = E>,
+    M: Attach<Arc<dillo_mmio_uart::Ns16550>, Error = E, Output = Arc<dyn MmioAttachment>>,
     M: Attach<Arc<syscon::SysconDevice>, Error = E>,
 {
     let (parsed, platform, dtb, plan, guest_writes) = preflight.into_parts();

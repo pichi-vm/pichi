@@ -29,7 +29,7 @@ impl Arch {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Pcie {
     pub ecam_base: u64,
     pub ecam_size: u64,
@@ -37,6 +37,7 @@ pub struct Pcie {
     pub bus_max: u8,
     pub mmio_base: u64,
     pub mmio_size: u64,
+    pub msi: Option<MsiParentage>,
 }
 
 impl Pcie {
@@ -48,17 +49,19 @@ impl Pcie {
         bus_max: 0,
         mmio_base: 0,
         mmio_size: 0,
+        msi: None,
     };
 }
 
 /// A virtio-mmio transport slot: a fixed MMIO window and its wired IRQ.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct VirtioMmio {
     pub base: u64,
     pub size: u64,
     /// GIC SPI number from `interrupts = <0 spi flags>` (aarch64), or the
     /// IO-APIC pin (x86). The VMM injects this when the slot's device signals.
     pub irq: u32,
+    pub interrupt: WiredInterrupt,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -76,7 +79,7 @@ pub struct Syscon {
 }
 
 /// The device-model serial: an `ns16550a` (16550) over MMIO.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Uart {
     pub base: u64,
     pub size: u64,
@@ -84,6 +87,7 @@ pub struct Uart {
     pub reg_shift: u32,
     /// x86 IO-APIC pin or aarch64 GIC interrupt cell consumed from DTB.
     pub irq: u32,
+    pub interrupt: WiredInterrupt,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -817,6 +821,7 @@ impl Uart {
             size,
             reg_shift,
             irq,
+            interrupt,
         }))
     }
 }
@@ -852,7 +857,12 @@ impl VirtioMmioSlots {
             )?;
             let irq = interrupt.irq;
             node.ensure_drained()?;
-            slots.push(VirtioMmio { base, size, irq });
+            slots.push(VirtioMmio {
+                base,
+                size,
+                irq,
+                interrupt,
+            });
         }
         slots.sort_by_key(|slot| slot.base);
         Ok(slots)
@@ -919,7 +929,7 @@ impl Pcie {
         pci.ack("#size-cells");
         pci.ack("dma-coherent");
         pci.reject("dma-ranges", "/pcie")?;
-        let _ = topology.claim_msi_parent(&mut pci, "/pcie", ControllerKind::GicV2mFrame)?;
+        let msi = topology.claim_msi_parent(&mut pci, "/pcie", ControllerKind::GicV2mFrame)?;
         pci.ensure_drained()?;
 
         Ok(Some(Pcie {
@@ -929,6 +939,7 @@ impl Pcie {
             bus_max: bus_cells[1] as u8,
             mmio_base,
             mmio_size,
+            msi,
         }))
     }
 }
@@ -1406,7 +1417,7 @@ mod tests {
     fn base_drains_to_empty_and_binds_devices() {
         let m = Machine::survey(&dtb(base_root()), Arch::Aarch64).expect("survey ok");
 
-        let uart = m.uart.expect("uart present");
+        let uart = m.uart.as_ref().expect("uart present");
         assert_eq!(uart.base, SERIAL_BASE);
         assert_eq!(uart.size, 0x1000);
         assert_eq!(uart.reg_shift, 2);

@@ -7,10 +7,10 @@
 //! negotiation, and queue notification.
 
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
-use dillo_mmio::SharedMemory;
-use dillo_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, PciConfiguration};
+use dillo_mmio::{Interrupt, SharedMemory};
+use dillo_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, NoopNotifier, PciConfiguration};
 use dillo_pci::{MmioJoinError, PciDeviceHost};
 use dillo_virtio::Kick;
 use dillo_virtio::queue::Queue;
@@ -59,6 +59,49 @@ const CC_QUEUE_USED_HI: u64 = 0x34;
 // Device status bits.
 const STATUS_FEATURES_OK: u8 = 8;
 const STATUS_DRIVER_OK: u8 = 4;
+
+pub struct MsixInterruptLookup {
+    notifier: RwLock<Arc<dyn MsixNotifier>>,
+}
+
+impl std::fmt::Debug for MsixInterruptLookup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MsixInterruptLookup")
+            .finish_non_exhaustive()
+    }
+}
+
+impl MsixInterruptLookup {
+    pub fn new() -> Self {
+        Self {
+            notifier: RwLock::new(Arc::new(NoopNotifier)),
+        }
+    }
+
+    pub fn lookup_fn(self: &Arc<Self>) -> Arc<dyn Fn(u16) -> Option<Interrupt> + Send + Sync> {
+        let lookup = Arc::clone(self);
+        Arc::new(move |vector| {
+            lookup
+                .notifier
+                .read()
+                .expect("MSI-X interrupt lookup lock poisoned")
+                .interrupt_for(vector)
+        })
+    }
+
+    fn set_notifier(&self, notifier: Arc<dyn MsixNotifier>) {
+        *self
+            .notifier
+            .write()
+            .expect("MSI-X interrupt lookup lock poisoned") = notifier;
+    }
+}
+
+impl Default for MsixInterruptLookup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Per-queue state tracked by the transport layer.
 #[derive(Debug)]
@@ -143,6 +186,7 @@ pub struct VirtioPciDevice {
 
     // MSI-X notifier (VMM provides real implementation, tests use NoopNotifier).
     notifier: Arc<dyn MsixNotifier>,
+    interrupt_lookup: Option<Arc<MsixInterruptLookup>>,
 
     // Retained kick clones so the MMIO notify path can signal queue workers.
     queue_kicks: Vec<Kick>,
@@ -183,6 +227,21 @@ impl VirtioPciDevice {
     /// `bar0_gpa`: guest physical address for BAR 0 (virtio config, 4KB).
     /// `bar2_gpa`: guest physical address for BAR 2 (MSI-X table + PBA, 4KB).
     pub fn new(
+        device: Arc<Mutex<Box<dyn VirtioDevice>>>,
+        msix_vectors: u16,
+        bar0_gpa: u64,
+        bar2_gpa: u64,
+    ) -> Self {
+        Self::new_with_notifier(
+            device,
+            msix_vectors,
+            bar0_gpa,
+            bar2_gpa,
+            Arc::new(NoopNotifier),
+        )
+    }
+
+    pub fn new_with_notifier(
         device: Arc<Mutex<Box<dyn VirtioDevice>>>,
         msix_vectors: u16,
         bar0_gpa: u64,
@@ -295,15 +354,28 @@ impl VirtioPciDevice {
             activation: None,
             host: Arc::new(ThreadDeviceHost),
             notifier,
+            interrupt_lookup: None,
             queue_kicks: Vec::new(),
             device_features,
             num_queues: num_queues as u16,
         }
     }
 
+    pub fn set_interrupt_lookup(&mut self, lookup: Arc<MsixInterruptLookup>) {
+        lookup.set_notifier(Arc::clone(&self.notifier));
+        self.interrupt_lookup = Some(lookup);
+    }
+
     /// Set the host service inherited from the attached PCI root.
     pub fn set_host(&mut self, host: Arc<dyn VirtioDeviceHost>) {
         self.host = host;
+    }
+
+    pub fn set_notifier(&mut self, notifier: Arc<dyn MsixNotifier>) {
+        if let Some(lookup) = &self.interrupt_lookup {
+            lookup.set_notifier(Arc::clone(&notifier));
+        }
+        self.notifier = notifier;
     }
 
     /// Return a clone of the inner `Arc<Mutex<Box<dyn VirtioDevice>>>`.
@@ -828,13 +900,7 @@ mod tests {
         let mock = MockVirtioDevice::new(3, num_queues, features); // console device
         let device = Arc::new(Mutex::new(Box::new(mock) as Box<dyn VirtioDevice>));
         let msix_vectors = num_queues as u16 + 1; // one per queue + config
-        VirtioPciDevice::new(
-            device,
-            msix_vectors,
-            BAR0_GPA,
-            BAR2_GPA,
-            Arc::new(dillo_pci::NoopNotifier),
-        )
+        VirtioPciDevice::new(device, msix_vectors, BAR0_GPA, BAR2_GPA)
     }
 
     // Helper to read a u16 from BAR 0

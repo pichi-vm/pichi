@@ -47,12 +47,6 @@ pub(crate) enum RunError {
     },
 
     // ── exit 12 — Hypervisor init failed ───────────────────────────
-    #[error("memfd setup: {0}")]
-    MemfdSetup(#[source] anyhow::Error),
-
-    #[error("mmap memfd range: {0}")]
-    Mmap(#[source] anyhow::Error),
-
     #[error("machine: {0}")]
     Machine(String),
 
@@ -63,19 +57,6 @@ pub(crate) enum RunError {
         #[source]
         source: anyhow::Error,
     },
-
-    #[error("vm:vcpu variant does not match host architecture")]
-    ArchMismatch,
-
-    /// macOS/HVF run path: a stage past memory setup is not yet wired.
-    #[error("macOS/HVF run path: {0} not yet implemented")]
-    Unimplemented(&'static str),
-
-    #[error("requested {requested} vCPUs but the host hypervisor supports at most {max}")]
-    TooManyVcpus { requested: u32, max: u32 },
-
-    #[error("unrecognized cpu:profile {0:?} for this architecture")]
-    UnknownCpuProfile(String),
 
     // ── exit 13 — Host RAM check ───────────────────────────────────
     #[error(
@@ -112,14 +93,7 @@ impl RunError {
             | Self::MissingRequiredDevice(_)
             | Self::DtboSynth(_)
             | Self::DtboWrite { .. } => 11,
-            Self::MemfdSetup(_)
-            | Self::Mmap(_)
-            | Self::Machine(_)
-            | Self::SectionWrite { .. }
-            | Self::ArchMismatch
-            | Self::Unimplemented(_)
-            | Self::TooManyVcpus { .. }
-            | Self::UnknownCpuProfile(_) => 12,
+            Self::Machine(_) | Self::SectionWrite { .. } => 12,
             Self::HostRam { .. } => 13,
             Self::Placement { .. } => 13,
         }

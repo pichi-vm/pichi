@@ -41,7 +41,7 @@ mod imp {
     };
     use dillo_mmio::{
         Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
-        MmioDeviceHandle, MmioInterrupt, MmioSpawnError, SharedMemory,
+        MmioDeviceHandle, MmioInterrupt, MmioInterruptRequirement, MmioSpawnError, SharedMemory,
     };
     #[cfg(target_arch = "aarch64")]
     use dillo_mmio::{Interrupt, MessageInterrupt, MessageInterruptDomain};
@@ -358,6 +358,87 @@ mod imp {
 
         fn exit_requester(&self) -> VcpuExitRequester {
             self.exit_requester.clone()
+        }
+
+        fn resolve_interrupts(
+            &self,
+            requirements: &[MmioInterruptRequirement],
+        ) -> Result<Vec<MmioInterrupt>, Error> {
+            requirements
+                .iter()
+                .map(|requirement| match requirement {
+                    MmioInterruptRequirement::Line { source } => {
+                        let irq = Self::wired_irq_from_cells(&source.cells, source.cell_count)?;
+                        self.create_line_interrupt(irq).map(MmioInterrupt::Line)
+                    }
+                    MmioInterruptRequirement::MessageDomain { vectors, .. } => self
+                        .create_message_interrupt_domain(*vectors)
+                        .map(MmioInterrupt::MessageDomain),
+                })
+                .collect()
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        fn wired_irq_from_cells(cells: &[u32; 4], cell_count: u8) -> Result<u32, Error> {
+            if cell_count >= 2 {
+                Ok(cells[1])
+            } else {
+                Err(Error::UnhandledExit(
+                    "wired interrupt source has too few GIC cells".to_string(),
+                ))
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        fn wired_irq_from_cells(cells: &[u32; 4], cell_count: u8) -> Result<u32, Error> {
+            if cell_count >= 1 {
+                Ok(cells[0])
+            } else {
+                Err(Error::UnhandledExit(
+                    "wired interrupt source has too few IOAPIC cells".to_string(),
+                ))
+            }
+        }
+
+        fn create_line_interrupt(&self, source: u32) -> Result<dillo_mmio::Interrupt, Error> {
+            #[cfg(target_arch = "aarch64")]
+            {
+                return Ok(dillo_mmio::Interrupt::new(Arc::new(SpiInterruptLine::new(
+                    self.inner.vm_fd_arc(),
+                    source,
+                ))));
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                let eventfd = self
+                    .irq_manager
+                    .lock()
+                    .expect("KVM IRQ manager lock poisoned")
+                    .register_irqfd_at_gsi(source)?;
+                Ok(dillo_mmio::Interrupt::new(Arc::new(
+                    EventFdInterruptLine::new(eventfd),
+                )))
+            }
+        }
+
+        fn create_message_interrupt_domain(
+            &self,
+            vectors: u16,
+        ) -> Result<Arc<dyn dillo_mmio::MessageInterruptDomain>, Error> {
+            #[cfg(target_arch = "aarch64")]
+            {
+                return Ok(Arc::new(KvmMessageInterruptDomain::new(
+                    self.inner.vm_fd_arc(),
+                    vectors,
+                )));
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                Ok(Arc::new(KvmMessageInterruptDomain::new(
+                    Arc::clone(&self.irq_manager),
+                    vectors,
+                )))
+            }
         }
     }
 
@@ -701,47 +782,6 @@ mod imp {
             }
             Ok(())
         }
-
-        fn create_line_interrupt(&self, source: u32) -> Result<dillo_mmio::Interrupt, Self::Error> {
-            #[cfg(target_arch = "aarch64")]
-            {
-                return Ok(dillo_mmio::Interrupt::new(Arc::new(SpiInterruptLine::new(
-                    self.inner.vm_fd_arc(),
-                    source,
-                ))));
-            }
-            #[cfg(target_arch = "x86_64")]
-            {
-                let eventfd = self
-                    .irq_manager
-                    .lock()
-                    .expect("KVM IRQ manager lock poisoned")
-                    .register_irqfd_at_gsi(source)?;
-                Ok(dillo_mmio::Interrupt::new(Arc::new(
-                    EventFdInterruptLine::new(eventfd),
-                )))
-            }
-        }
-
-        fn create_message_interrupt_domain(
-            &self,
-            vectors: u16,
-        ) -> Result<Arc<dyn dillo_mmio::MessageInterruptDomain>, Self::Error> {
-            #[cfg(target_arch = "aarch64")]
-            {
-                return Ok(Arc::new(KvmMessageInterruptDomain::new(
-                    self.inner.vm_fd_arc(),
-                    vectors,
-                )));
-            }
-            #[cfg(target_arch = "x86_64")]
-            {
-                Ok(Arc::new(KvmMessageInterruptDomain::new(
-                    Arc::clone(&self.irq_manager),
-                    vectors,
-                )))
-            }
-        }
     }
 
     /// One KVM memslot backed by host memory that dillo derived from the
@@ -985,23 +1025,27 @@ mod imp {
                     item.shared_memory().len()
                 )));
             }
+            let interrupts = self.resolve_interrupts(item.interrupts())?;
             self.mmio_bus
                 .lock()
                 .expect("MMIO bus lock poisoned")
                 .register_device(item);
             Ok(Arc::new(MachineMmioAttachment {
+                interrupts,
                 shared_memory: self.shared_memory.clone(),
             }))
         }
     }
 
     struct MachineMmioAttachment {
+        interrupts: Vec<MmioInterrupt>,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
     }
 
     impl std::fmt::Debug for MachineMmioAttachment {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("MachineMmioAttachment")
+                .field("interrupts", &self.interrupts.len())
                 .field("shared_memory", &self.shared_memory.len())
                 .finish()
         }
@@ -1009,7 +1053,7 @@ mod imp {
 
     impl MmioAttachment for MachineMmioAttachment {
         fn interrupts(&self) -> &[MmioInterrupt] {
-            &[]
+            &self.interrupts
         }
 
         fn shared_memory(&self) -> &[Arc<dyn SharedMemory>] {

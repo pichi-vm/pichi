@@ -33,8 +33,8 @@ mod imp {
     };
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
-        MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
-        MmioWindow, SharedMemory,
+        MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt,
+        MmioInterruptRequirement, MmioSpawnError, MmioWindow, SharedMemory,
     };
     use vm_memory::{GuestAddress, GuestMemoryMmap};
 
@@ -155,6 +155,56 @@ mod imp {
 
         fn guest_memory(&self) -> Result<GuestMemoryMmap, Error> {
             self.inner.guest_memory()
+        }
+
+        fn resolve_interrupts(
+            &self,
+            requirements: &[MmioInterruptRequirement],
+        ) -> Result<Vec<MmioInterrupt>, Error> {
+            requirements
+                .iter()
+                .map(|requirement| match requirement {
+                    MmioInterruptRequirement::Line { source } => {
+                        let irq = Self::wired_irq_from_cells(&source.cells, source.cell_count)?;
+                        self.create_line_interrupt(irq).map(MmioInterrupt::Line)
+                    }
+                    MmioInterruptRequirement::MessageDomain { vectors, .. } => self
+                        .create_message_interrupt_domain(*vectors)
+                        .map(MmioInterrupt::MessageDomain),
+                })
+                .collect()
+        }
+
+        fn wired_irq_from_cells(cells: &[u32; 4], cell_count: u8) -> Result<u32, Error> {
+            if cell_count >= 1 {
+                Ok(cells[0])
+            } else {
+                Err(Error::UnhandledExit(
+                    "wired interrupt source has too few IOAPIC cells".to_string(),
+                ))
+            }
+        }
+
+        fn create_line_interrupt(&self, source: u32) -> Result<Interrupt, Error> {
+            let ioapic = self
+                .ioapic
+                .as_ref()
+                .ok_or(Error::MissingSubstrate("/ioapic"))?;
+            Ok(Interrupt::new(Arc::new(IoApicInterruptLine::new(
+                self.inner.interrupt_controller(),
+                Arc::clone(ioapic),
+                source,
+            ))))
+        }
+
+        fn create_message_interrupt_domain(
+            &self,
+            vectors: u16,
+        ) -> Result<Arc<dyn MessageInterruptDomain>, Error> {
+            Ok(Arc::new(FixedMessageInterruptDomain::new(
+                self.fixed_interrupt_requester(),
+                vectors,
+            )))
         }
     }
 
@@ -296,28 +346,6 @@ mod imp {
 
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Vm::request_vcpu_exit(self)
-        }
-
-        fn create_line_interrupt(&self, source: u32) -> Result<Interrupt, Self::Error> {
-            let ioapic = self
-                .ioapic
-                .as_ref()
-                .ok_or(Error::MissingSubstrate("/ioapic"))?;
-            Ok(Interrupt::new(Arc::new(IoApicInterruptLine::new(
-                self.inner.interrupt_controller(),
-                Arc::clone(ioapic),
-                source,
-            ))))
-        }
-
-        fn create_message_interrupt_domain(
-            &self,
-            vectors: u16,
-        ) -> Result<Arc<dyn MessageInterruptDomain>, Self::Error> {
-            Ok(Arc::new(FixedMessageInterruptDomain::new(
-                self.fixed_interrupt_requester(),
-                vectors,
-            )))
         }
     }
 
@@ -523,11 +551,13 @@ mod imp {
                     item.shared_memory().len()
                 )));
             }
+            let interrupts = self.resolve_interrupts(item.interrupts())?;
             self.mmio_bus
                 .lock()
                 .expect("MMIO bus lock poisoned")
                 .register_device(item);
             Ok(Arc::new(MachineMmioAttachment {
+                interrupts,
                 shared_memory: self.shared_memory.clone(),
             }))
         }
@@ -719,12 +749,14 @@ mod imp {
     }
 
     struct MachineMmioAttachment {
+        interrupts: Vec<MmioInterrupt>,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
     }
 
     impl std::fmt::Debug for MachineMmioAttachment {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("MachineMmioAttachment")
+                .field("interrupts", &self.interrupts.len())
                 .field("shared_memory", &self.shared_memory.len())
                 .finish()
         }
@@ -732,7 +764,7 @@ mod imp {
 
     impl MmioAttachment for MachineMmioAttachment {
         fn interrupts(&self) -> &[MmioInterrupt] {
-            &[]
+            &self.interrupts
         }
 
         fn shared_memory(&self) -> &[Arc<dyn SharedMemory>] {

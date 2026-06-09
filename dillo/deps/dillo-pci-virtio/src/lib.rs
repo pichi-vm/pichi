@@ -35,7 +35,7 @@ pub(crate) mod capabilities;
 /// PCI transport implementation: device status FSM, feature negotiation, BAR I/O.
 pub mod transport;
 
-pub use transport::VirtioPciDevice;
+pub use transport::{MsixInterruptLookup, VirtioPciDevice};
 
 use std::sync::Mutex;
 
@@ -118,9 +118,10 @@ impl PciDevice for VirtioPciAdapter {
     }
 
     fn set_host(&self, host: std::sync::Arc<dyn PciDeviceHost>) {
-        self.inner
-            .lock()
-            .expect("virtio PCI transport poisoned")
-            .set_host(std::sync::Arc::new(PciVirtioHost::new(host)));
+        let mut inner = self.inner.lock().expect("virtio PCI transport poisoned");
+        if let Some(notifier) = host.msix_notifier() {
+            inner.set_notifier(notifier);
+        }
+        inner.set_host(std::sync::Arc::new(PciVirtioHost::new(host)));
     }
 }

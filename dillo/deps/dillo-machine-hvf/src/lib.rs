@@ -35,8 +35,8 @@ mod imp {
     };
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
-        MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
-        SharedMemory,
+        MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt,
+        MmioInterruptRequirement, MmioSpawnError, SharedMemory,
     };
     use vm_memory::mmap::MmapRegionBuilder;
     use vm_memory::{GuestAddress, GuestMemoryMmap, GuestRegionMmap};
@@ -187,6 +187,45 @@ mod imp {
             }
             GuestMemoryMmap::from_regions(built)
                 .map_err(|e| Error::Hv(format!("GuestMemoryMmap: {e:?}")))
+        }
+
+        fn resolve_interrupts(
+            &self,
+            requirements: &[MmioInterruptRequirement],
+        ) -> Result<Vec<MmioInterrupt>, Error> {
+            requirements
+                .iter()
+                .map(|requirement| match requirement {
+                    MmioInterruptRequirement::Line { source } => {
+                        let irq = Self::wired_irq_from_cells(&source.cells, source.cell_count)?;
+                        self.create_line_interrupt(irq).map(MmioInterrupt::Line)
+                    }
+                    MmioInterruptRequirement::MessageDomain { vectors, .. } => self
+                        .create_message_interrupt_domain(*vectors)
+                        .map(MmioInterrupt::MessageDomain),
+                })
+                .collect()
+        }
+
+        fn wired_irq_from_cells(cells: &[u32; 4], cell_count: u8) -> Result<u32, Error> {
+            if cell_count >= 2 {
+                Ok(cells[1])
+            } else {
+                Err(Error::Hv(
+                    "wired interrupt source has too few GIC cells".to_string(),
+                ))
+            }
+        }
+
+        fn create_line_interrupt(&self, source: u32) -> Result<Interrupt, Error> {
+            Ok(Interrupt::new(Arc::new(SpiInterruptLine { intid: source })))
+        }
+
+        fn create_message_interrupt_domain(
+            &self,
+            vectors: u16,
+        ) -> Result<Arc<dyn MessageInterruptDomain>, Error> {
+            Ok(Arc::new(GicMessageInterruptDomain::new(vectors)))
         }
     }
 
@@ -519,17 +558,6 @@ mod imp {
         fn reset_for_reboot(&mut self) -> Result<(), Self::Error> {
             self.inner.reset_gic()
         }
-
-        fn create_line_interrupt(&self, source: u32) -> Result<Interrupt, Self::Error> {
-            Ok(Interrupt::new(Arc::new(SpiInterruptLine { intid: source })))
-        }
-
-        fn create_message_interrupt_domain(
-            &self,
-            vectors: u16,
-        ) -> Result<Arc<dyn MessageInterruptDomain>, Self::Error> {
-            Ok(Arc::new(GicMessageInterruptDomain::new(vectors)))
-        }
     }
 
     /// HVF RAM range selected by dillo from the merged DTB memory plan.
@@ -568,23 +596,27 @@ mod imp {
                     item.shared_memory().len()
                 )));
             }
+            let interrupts = self.resolve_interrupts(item.interrupts())?;
             self.mmio_bus
                 .lock()
                 .expect("MMIO bus lock poisoned")
                 .register_device(item);
             Ok(Arc::new(MachineMmioAttachment {
+                interrupts,
                 shared_memory: self.shared_memory.clone(),
             }))
         }
     }
 
     struct MachineMmioAttachment {
+        interrupts: Vec<MmioInterrupt>,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
     }
 
     impl std::fmt::Debug for MachineMmioAttachment {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("MachineMmioAttachment")
+                .field("interrupts", &self.interrupts.len())
                 .field("shared_memory", &self.shared_memory.len())
                 .finish()
         }
@@ -592,7 +624,7 @@ mod imp {
 
     impl MmioAttachment for MachineMmioAttachment {
         fn interrupts(&self) -> &[MmioInterrupt] {
-            &[]
+            &self.interrupts
         }
 
         fn shared_memory(&self) -> &[Arc<dyn SharedMemory>] {

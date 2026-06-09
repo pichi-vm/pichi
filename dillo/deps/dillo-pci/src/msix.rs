@@ -104,6 +104,12 @@ pub trait MsixNotifier: Send + Sync {
     ///
     /// `enabled` is true when MSI-X is enabled AND function mask is clear.
     fn msix_enabled(&self, enabled: bool);
+
+    /// Interrupt handle for a device completion on `vector`, when the backend
+    /// can currently deliver that MSI-X vector.
+    fn interrupt_for(&self, _vector: u16) -> Option<Interrupt> {
+        None
+    }
 }
 
 /// No-op notifier for testing and devices that don't need callbacks yet.
@@ -735,3 +741,4 @@ mod tests {
         assert!(!table.bar_read(1, 0, &mut buf));
     }
 }
+use dillo_mmio::Interrupt;
