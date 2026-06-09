@@ -963,6 +963,14 @@ Completed changes:
 - Removed duplicated `cpu_id`, `fdt_writer`, `overlay`, and `placement` modules
   from `dillo-vm`; those launch decisions now exist only in the top-level
   `dillo` launch path.
+- Added `dillo-pci::MsixInterruptAdapter`, a portable PCI MSI-X adapter over a
+  backend-owned `dillo-mmio::MessageInterruptDomain`.
+- Made KVM irqfd MSI routing implement `MessageInterruptDomain` directly.
+- Moved WHP MSI-X fixed-interrupt decoding/state into `dillo-machine-whp` as a
+  backend-owned message-interrupt domain.
+- Removed the KVM, HVF, and WHP MSI-X compatibility wrappers from `dillo-vm`;
+  the remaining runner now uses the same PCI adapter for all three backends.
+- Hid WHP fixed-interrupt request handles behind the backend message domain.
 - Removed the obsolete memory-placement algorithm from `dillo-vm`; placement
   is now computed only by `dillo::launch`.
 - Moved the supervisor shutdown flag out of `dillo-vm` and into the top-level
@@ -1046,15 +1054,21 @@ CI verification:
   `6cfc53f refactor: remove private backend vm facade`.
 - `27177095641` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `04c750c refactor: route hvf interrupts through machine`.
+- `27180045748` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `0d6054f refactor: materialize guest writes in dillo`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-hvf --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-mmio-virtio`
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-pci`
 - `grep -R "send_msi\|set_spi" -n dillo/deps/dillo-vm/src dillo/src dillo/deps/dillo-mmio-virtio/src || true`
 - `grep -R "target_os\|target_arch\|target_env\|MmioNotifyEvent\|QueueNotifier\|as_eventfd" -n dillo/deps/dillo-pci-virtio dillo/deps/virtio dillo/deps/dillo-mmio dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-mmio-uart --include='*.rs' --include='Cargo.toml'`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`

@@ -8,12 +8,10 @@
 
 #![allow(clippy::needless_lifetimes)]
 
-#[cfg(target_os = "linux")]
-mod backend;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod backend_select;
 mod error;
-// HVF MSI-X notifier + guest-memory builder (KVM uses memfd + irqfd instead).
+// HVF guest-memory builder (KVM uses memfd, WHP uses GuestMemoryMmap).
 #[cfg(target_os = "macos")]
 mod hvf_devices;
 // KVM/Linux-only submodules (memfd setup, gdb stub).
@@ -21,8 +19,6 @@ mod hvf_devices;
 mod gdb;
 #[cfg(target_os = "linux")]
 mod memory;
-#[cfg(target_os = "windows")]
-mod whp_devices;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
@@ -46,7 +42,7 @@ use dillo_mmio::Attach;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_mmio::Interrupt;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use dillo_pci::MsixNotifier;
+use dillo_pci::{MsixInterruptAdapter, MsixNotifier};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use dillo_pmi::VcpuState;
 #[cfg(target_os = "windows")]
@@ -224,9 +220,8 @@ pub fn run(
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
     let msix_vectors: u16 = 3;
-    let notifier = Arc::new(whp_devices::WhpMsixNotifier::new(
-        vm.fixed_interrupt_requester(),
-        msix_vectors,
+    let notifier = Arc::new(MsixInterruptAdapter::new(
+        vm.create_message_interrupt_domain(msix_vectors),
     ));
     let lookup_notifier = Arc::clone(&notifier);
     let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
@@ -570,7 +565,7 @@ pub fn run(
     //     notifier. ECAM + each BAR register on the MMIO bus.
     if machine.has_pcie {
         let msix_vectors: u16 = 3; // 2 queues (rx/tx) + config-change vector
-        let notifier = Arc::new(hvf_devices::HvfMsixNotifier::new(
+        let notifier = Arc::new(MsixInterruptAdapter::new(
             vm.create_message_interrupt_domain(msix_vectors),
         ));
         let lookup_notifier = Arc::clone(&notifier);
@@ -994,15 +989,16 @@ pub fn run(
 
     // num_queues + 1 vector for config-change. Console has 2 queues.
     let msix_vectors: u16 = 3;
-    let irqfd_notifier = Arc::new(backend::KvmMsixNotifier::new(Arc::new(
+    let irqfd_domain: Arc<dyn dillo_mmio::MessageInterruptDomain> = Arc::new(
         backend_machine::IrqfdNotifier::new(Arc::clone(&irq_mgr), msix_vectors),
-    )));
+    );
+    let irqfd_notifier = Arc::new(MsixInterruptAdapter::new(Arc::clone(&irqfd_domain)));
 
     let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = {
         let call_lookup_notifier = Arc::clone(&irqfd_notifier);
         Arc::new(std::sync::Mutex::new(Box::new(
             dillo_virtio_console::VirtioConsole::new(Arc::new(move |vector| {
-                call_lookup_notifier.interrupt_for_vector(vector)
+                call_lookup_notifier.interrupt_for(vector)
             })),
         )))
     };

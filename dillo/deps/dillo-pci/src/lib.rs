@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 pub use dillo_mmio::{
-    MmioAttachment, MmioDeviceHandle, MmioDeviceRun, MmioJoinError, MmioSpawnError, SharedMemory,
+    MessageInterrupt, MessageInterruptDomain, MmioAttachment, MmioDeviceHandle, MmioDeviceRun,
+    MmioJoinError, MmioSpawnError, SharedMemory,
 };
 use dillo_mmio::{MmioDevice, MmioWindow};
 pub use vm_pci::{
@@ -64,6 +65,50 @@ pub trait PciDeviceHost: Send + Sync + std::fmt::Debug {
     fn shared_memory(&self) -> &[Arc<dyn SharedMemory>];
 
     fn spawn(&self, run: MmioDeviceRun) -> Result<MmioDeviceHandle, MmioSpawnError>;
+}
+
+/// PCI MSI-X table adapter backed by a machine-owned message-interrupt domain.
+pub struct MsixInterruptAdapter {
+    domain: Arc<dyn MessageInterruptDomain>,
+}
+
+impl std::fmt::Debug for MsixInterruptAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MsixInterruptAdapter")
+            .finish_non_exhaustive()
+    }
+}
+
+impl MsixInterruptAdapter {
+    pub fn new(domain: Arc<dyn MessageInterruptDomain>) -> Self {
+        Self { domain }
+    }
+
+    /// Interrupt for a device completion on `vector`.
+    pub fn interrupt_for(&self, vector: u16) -> Option<dillo_mmio::Interrupt> {
+        self.domain.interrupt(vector)
+    }
+}
+
+impl MsixNotifier for MsixInterruptAdapter {
+    fn vector_updated(&self, vector: u16, entry: &MsixTableEntry) {
+        if let Err(e) = self.domain.update(
+            vector,
+            MessageInterrupt {
+                address: (u64::from(entry.msg_addr_hi) << 32) | u64::from(entry.msg_addr_lo),
+                data: entry.msg_data,
+                masked: entry.is_masked(),
+            },
+        ) {
+            log::warn!("PCI MSI-X vector {vector} update failed: {e}");
+        }
+    }
+
+    fn msix_enabled(&self, enabled: bool) {
+        if let Err(e) = self.domain.enabled(enabled) {
+            log::warn!("PCI MSI-X enable={enabled} failed: {e}");
+        }
+    }
 }
 
 /// Number of slots on the single PCI bus. PCIe spec allows 32 device
@@ -621,5 +666,70 @@ mod tests {
         root.set_attachment(Arc::new(FakeAttachment));
 
         assert!(observed_host.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn msix_adapter_updates_message_domain() {
+        struct FakeDomain {
+            updates: Mutex<Vec<(u16, MessageInterrupt)>>,
+            enabled: AtomicBool,
+        }
+
+        impl MessageInterruptDomain for FakeDomain {
+            fn update(
+                &self,
+                vector: u16,
+                msg: MessageInterrupt,
+            ) -> Result<(), dillo_mmio::InterruptError> {
+                self.updates
+                    .lock()
+                    .expect("updates lock poisoned")
+                    .push((vector, msg));
+                Ok(())
+            }
+
+            fn enabled(&self, enabled: bool) -> Result<(), dillo_mmio::InterruptError> {
+                self.enabled.store(enabled, Ordering::Release);
+                Ok(())
+            }
+
+            fn interrupt(&self, _vector: u16) -> Option<dillo_mmio::Interrupt> {
+                None
+            }
+        }
+
+        let domain = Arc::new(FakeDomain {
+            updates: Mutex::new(Vec::new()),
+            enabled: AtomicBool::new(false),
+        });
+        let adapter = MsixInterruptAdapter::new(domain.clone());
+
+        adapter.vector_updated(
+            2,
+            &MsixTableEntry {
+                msg_addr_lo: 0xFEE0_1000,
+                msg_addr_hi: 0,
+                msg_data: 0x45,
+                vector_ctl: 1,
+            },
+        );
+        adapter.msix_enabled(true);
+
+        assert_eq!(
+            domain
+                .updates
+                .lock()
+                .expect("updates lock poisoned")
+                .as_slice(),
+            &[(
+                2,
+                MessageInterrupt {
+                    address: 0xFEE0_1000,
+                    data: 0x45,
+                    masked: true,
+                }
+            )]
+        );
+        assert!(domain.enabled.load(Ordering::Acquire));
     }
 }

@@ -5,8 +5,9 @@ mod imp {
 
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
-        Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
-        MmioDeviceHandle, MmioInterrupt, MmioSpawnError, SharedMemory,
+        Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
+        MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
+        SharedMemory,
     };
     use dillo_x86::IoApic;
     use vm_memory::GuestMemoryMmap;
@@ -113,16 +114,20 @@ mod imp {
             }
         }
 
-        pub fn request_fixed_interrupt(&self, destination: u32, vector: u8) -> Result<(), Error> {
-            self.inner
-                .interrupt_controller()
-                .request_fixed_interrupt(destination, vector)
-        }
-
-        pub fn fixed_interrupt_requester(&self) -> FixedInterruptRequester {
+        fn fixed_interrupt_requester(&self) -> FixedInterruptRequester {
             FixedInterruptRequester {
                 interrupt_controller: self.inner.interrupt_controller(),
             }
+        }
+
+        pub fn create_message_interrupt_domain(
+            &self,
+            count: u16,
+        ) -> Arc<dyn MessageInterruptDomain> {
+            Arc::new(FixedMessageInterruptDomain::new(
+                self.fixed_interrupt_requester(),
+                count,
+            ))
         }
 
         pub fn create_ioapic_interrupt_line(
@@ -176,16 +181,145 @@ mod imp {
         }
     }
 
-    #[derive(Debug)]
-    pub struct FixedInterruptRequester {
+    #[derive(Clone, Debug)]
+    struct FixedInterruptRequester {
         interrupt_controller: InterruptController,
     }
 
     impl FixedInterruptRequester {
-        pub fn request_fixed_interrupt(&self, destination: u32, vector: u8) -> Result<(), Error> {
+        fn request_fixed_interrupt(&self, destination: u32, vector: u8) -> Result<(), Error> {
             self.interrupt_controller
                 .request_fixed_interrupt(destination, vector)
         }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct FixedMessage {
+        address: u64,
+        data: u32,
+        masked: bool,
+    }
+
+    #[derive(Debug)]
+    struct FixedMessageInterruptDomain {
+        inner: Arc<FixedMessageInterruptDomainInner>,
+    }
+
+    #[derive(Debug)]
+    struct FixedMessageInterruptDomainInner {
+        fixed_interrupts: FixedInterruptRequester,
+        vectors: Mutex<Vec<FixedMessage>>,
+        enabled: AtomicBool,
+    }
+
+    impl FixedMessageInterruptDomain {
+        fn new(fixed_interrupts: FixedInterruptRequester, count: u16) -> Self {
+            Self {
+                inner: Arc::new(FixedMessageInterruptDomainInner {
+                    fixed_interrupts,
+                    vectors: Mutex::new(vec![FixedMessage::default(); count as usize]),
+                    enabled: AtomicBool::new(false),
+                }),
+            }
+        }
+    }
+
+    impl FixedMessageInterruptDomainInner {
+        fn message_for(&self, vector: u16) -> Option<FixedMsi> {
+            if !self.enabled.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            let vectors = self.vectors.lock().expect("message table poisoned");
+            let message = *vectors.get(vector as usize)?;
+            if message.masked {
+                return None;
+            }
+            decode_fixed_msi(message)
+        }
+    }
+
+    impl MessageInterruptDomain for FixedMessageInterruptDomain {
+        fn update(&self, vector: u16, msg: MessageInterrupt) -> Result<(), InterruptError> {
+            let mut vectors = self.inner.vectors.lock().expect("message table poisoned");
+            if let Some(slot) = vectors.get_mut(vector as usize) {
+                *slot = FixedMessage {
+                    address: msg.address,
+                    data: msg.data,
+                    masked: msg.masked,
+                };
+            }
+            Ok(())
+        }
+
+        fn enabled(&self, enabled: bool) -> Result<(), InterruptError> {
+            self.inner
+                .enabled
+                .store(enabled, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn interrupt(&self, vector: u16) -> Option<Interrupt> {
+            let domain = Arc::clone(&self.inner);
+            Some(Interrupt::from_fn(move || {
+                let Some(msi) = domain.message_for(vector) else {
+                    return;
+                };
+                if let Err(e) = domain
+                    .fixed_interrupts
+                    .request_fixed_interrupt(msi.destination, msi.vector)
+                {
+                    log::warn!(
+                        "WHP MSI inject failed for table vector {vector}, APIC destination {}, vector {:#x}: {e}",
+                        msi.destination,
+                        msi.vector,
+                    );
+                }
+            }))
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct FixedMsi {
+        destination: u32,
+        vector: u8,
+    }
+
+    fn decode_fixed_msi(message: FixedMessage) -> Option<FixedMsi> {
+        const MSI_ADDR_BASE_MASK: u64 = 0xFFF0_0000;
+        const MSI_ADDR_BASE: u64 = 0xFEE0_0000;
+        const MSI_ADDR_DEST_SHIFT: u64 = 12;
+        const MSI_ADDR_DEST_MASK: u64 = 0xFF;
+        const MSI_DATA_VECTOR_MASK: u32 = 0xFF;
+        const MSI_DATA_DELIVERY_MODE_MASK: u32 = 0x700;
+        const MSI_DATA_LEVEL_ASSERT: u32 = 1 << 14;
+        const MSI_DATA_TRIGGER_LEVEL: u32 = 1 << 15;
+
+        if (message.address & MSI_ADDR_BASE_MASK) != MSI_ADDR_BASE {
+            log::warn!(
+                "WHP MSI entry has non-local-APIC address {:#x}",
+                message.address
+            );
+            return None;
+        }
+        if message.data & MSI_DATA_DELIVERY_MODE_MASK != 0 {
+            log::warn!(
+                "WHP MSI entry uses unsupported delivery mode data={:#x}",
+                message.data
+            );
+            return None;
+        }
+        if message.data & (MSI_DATA_LEVEL_ASSERT | MSI_DATA_TRIGGER_LEVEL) != 0 {
+            log::warn!(
+                "WHP MSI entry uses unsupported level/trigger data={:#x}",
+                message.data
+            );
+            return None;
+        }
+
+        Some(FixedMsi {
+            destination: ((message.address >> MSI_ADDR_DEST_SHIFT) & MSI_ADDR_DEST_MASK) as u32,
+            vector: (message.data & MSI_DATA_VECTOR_MASK) as u8,
+        })
     }
 
     #[derive(Debug)]
@@ -405,6 +539,38 @@ mod imp {
 
         fn run(&mut self) -> Result<VcpuStop, Self::Error> {
             self.run_until_stop(|| None)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{FixedMessage, FixedMsi, decode_fixed_msi};
+
+        #[test]
+        fn decodes_fixed_physical_msi() {
+            assert_eq!(
+                decode_fixed_msi(FixedMessage {
+                    address: 0xFEE0_3000,
+                    data: 0x45,
+                    masked: false,
+                }),
+                Some(FixedMsi {
+                    destination: 3,
+                    vector: 0x45,
+                })
+            );
+        }
+
+        #[test]
+        fn rejects_non_lapic_msi_address() {
+            assert!(
+                decode_fixed_msi(FixedMessage {
+                    address: 0xDEAD_0000,
+                    data: 0x45,
+                    masked: false,
+                })
+                .is_none()
+            );
         }
     }
 }

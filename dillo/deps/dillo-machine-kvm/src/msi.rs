@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use dillo_mmio::Interrupt;
+use dillo_mmio::{Interrupt, InterruptError, MessageInterrupt, MessageInterruptDomain};
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::irq::IrqManager;
@@ -132,5 +132,27 @@ impl IrqfdNotifier {
 
     pub fn set_enabled(&self, enabled: bool) {
         log::info!("IrqfdNotifier: MSI enabled={enabled}");
+    }
+}
+
+impl MessageInterruptDomain for IrqfdNotifier {
+    fn update(&self, vector: u16, msg: MessageInterrupt) -> Result<(), InterruptError> {
+        self.vector_updated(
+            vector,
+            msg.address as u32,
+            (msg.address >> 32) as u32,
+            msg.data,
+            msg.masked,
+        );
+        Ok(())
+    }
+
+    fn enabled(&self, enabled: bool) -> Result<(), InterruptError> {
+        self.set_enabled(enabled);
+        Ok(())
+    }
+
+    fn interrupt(&self, vector: u16) -> Option<Interrupt> {
+        self.interrupt_for_vector(vector)
     }
 }

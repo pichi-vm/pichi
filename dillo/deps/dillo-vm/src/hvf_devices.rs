@@ -1,58 +1,11 @@
-//! macOS/HVF device glue for virtio-console over virtio-pci.
+//! macOS/HVF guest-memory glue.
 //!
-//! Two pieces the Linux path provides differently:
-//!   - [`HvfMsixNotifier`] — adapts PCI MSI-X table writes onto a backend-owned
-//!     message-interrupt domain.
-//!   - [`build_guest_memory`] — a `vm-memory` view over HVF-mapped guest RAM,
-//!     built from host pointers (no memfd).
-
-use std::sync::Arc;
+//! [`build_guest_memory`] creates a `vm-memory` view over HVF-mapped guest RAM,
+//! built from host pointers rather than a memfd.
 
 use anyhow::{Result, anyhow};
-use dillo_mmio::{Interrupt, MessageInterrupt, MessageInterruptDomain};
-use dillo_pci::{MsixNotifier, MsixTableEntry};
 use vm_memory::mmap::MmapRegionBuilder;
 use vm_memory::{GuestAddress, GuestMemoryMmap, GuestRegionMmap};
-
-/// MSI-X notifier for the HVF path: converts PCI MSI-X table changes into the
-/// backend-neutral message-interrupt domain that `dillo-machine-hvf` owns.
-pub(crate) struct HvfMsixNotifier {
-    domain: Arc<dyn MessageInterruptDomain>,
-}
-
-impl HvfMsixNotifier {
-    pub(crate) fn new(domain: Arc<dyn MessageInterruptDomain>) -> Self {
-        Self { domain }
-    }
-
-    /// An [`Interrupt`] that injects the MSI currently programmed for `vector`.
-    /// The table is read at *signal* time, so a vector reprogrammed after the
-    /// device is activated is still honored.
-    pub(crate) fn interrupt_for(self: &Arc<Self>, vector: u16) -> Option<Interrupt> {
-        self.domain.interrupt(vector)
-    }
-}
-
-impl MsixNotifier for HvfMsixNotifier {
-    fn vector_updated(&self, vector: u16, entry: &MsixTableEntry) {
-        if let Err(e) = self.domain.update(
-            vector,
-            MessageInterrupt {
-                address: (u64::from(entry.msg_addr_hi) << 32) | u64::from(entry.msg_addr_lo),
-                data: entry.msg_data,
-                masked: entry.is_masked(),
-            },
-        ) {
-            log::warn!("HVF MSI-X vector {vector} update failed: {e}");
-        }
-    }
-
-    fn msix_enabled(&self, enabled: bool) {
-        if let Err(e) = self.domain.enabled(enabled) {
-            log::warn!("HVF MSI-X enable={enabled} failed: {e}");
-        }
-    }
-}
 
 /// Build a `vm-memory` view over HVF-mapped guest RAM. `regions` are
 /// `(gpa, host_addr, size)` from `Vm::region_mappings()`. The host pointers are
