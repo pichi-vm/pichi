@@ -57,9 +57,6 @@ mod imp {
     #[cfg(target_arch = "x86_64")]
     use crate::msi::KvmMessageInterruptDomain;
 
-    pub type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
-    pub type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
-
     const VCPU_KICK_SIGNAL: nix::sys::signal::Signal = nix::sys::signal::Signal::SIGUSR1;
 
     extern "C" fn vcpu_kick_signal_handler(_: libc::c_int) {}
@@ -335,18 +332,10 @@ mod imp {
             self.inner.add_memslot(slot, gpa, host_addr, size)
         }
 
-        fn create_vcpu_with_pio(
-            &self,
-            idx: u32,
-            cpu_profile: &str,
-            pio_read: PioRead,
-            pio_write: PioWrite,
-        ) -> Result<Vcpu, Error> {
+        fn create_vcpu_inner(&self, idx: u32, cpu_profile: &str) -> Result<Vcpu, Error> {
             Ok(Vcpu {
                 inner: self.inner.create_vcpu(idx, cpu_profile)?,
                 mmio_bus: Arc::clone(&self.mmio_bus),
-                pio_read,
-                pio_write,
                 exit_requester: self.exit_requester(),
                 registered_thread: AtomicBool::new(false),
             })
@@ -673,18 +662,7 @@ mod imp {
             cpu_profile: &str,
             boot_state: Option<&dyn BootVcpuState>,
         ) -> Result<Self::Vcpu, Self::Error> {
-            let mut vcpu = self.create_vcpu_with_pio(
-                index,
-                cpu_profile,
-                #[cfg(target_arch = "x86_64")]
-                Arc::new(|_port, _size| u32::MAX),
-                #[cfg(target_arch = "x86_64")]
-                Arc::new(|_port, _data: &[u8]| {}),
-                #[cfg(target_arch = "aarch64")]
-                Arc::new(|_, _| 0),
-                #[cfg(target_arch = "aarch64")]
-                Arc::new(|_, _| {}),
-            )?;
+            let mut vcpu = self.create_vcpu_inner(index, cpu_profile)?;
             #[cfg(target_arch = "x86_64")]
             if let Some(boot_state) = boot_state {
                 let state = boot_state
@@ -784,88 +762,16 @@ mod imp {
         }
     }
 
-    /// One KVM memslot backed by host memory that dillo derived from the
-    /// merged DTB and launch plan.
-    #[derive(Debug, Clone, Copy)]
+    /// KVM memory input marker. RAM is attached through `Machine::attach_ram`.
+    #[derive(Debug)]
     pub struct Memory {
-        slot: u32,
-        gpa: u64,
-        host_addr: u64,
-        size: u64,
+        _private: (),
     }
 
-    impl Memory {
-        pub fn new(slot: u32, gpa: u64, host_addr: u64, size: u64) -> Self {
-            Self {
-                slot,
-                gpa,
-                host_addr,
-                size,
-            }
-        }
-    }
-
-    impl Attach<Memory> for Vm {
-        type Error = Error;
-        type Output = ();
-
-        fn attach(&mut self, item: Memory) -> Result<Self::Output, Self::Error> {
-            self.add_memslot(item.slot, item.gpa, item.host_addr, item.size)
-        }
-    }
-
-    /// One KVM vCPU creation request. Backend-specific setup stays inside KVM;
-    /// dillo supplies only the launch facts it derived from PMI/DTB.
+    /// KVM CPU input marker. vCPUs are created through `Machine::create_vcpu`.
+    #[derive(Debug)]
     pub struct Cpu {
-        pub idx: u32,
-        pub cpu_profile: String,
-        #[cfg(target_arch = "x86_64")]
-        pub pio_read: PioRead,
-        #[cfg(target_arch = "x86_64")]
-        pub pio_write: PioWrite,
-        #[cfg(target_arch = "x86_64")]
-        pub state: Option<pmi::vm::vcpu::x86_64::CpuState>,
-        #[cfg(target_arch = "aarch64")]
-        pub state: Option<pmi::vm::vcpu::aarch64::CpuState>,
-    }
-
-    impl std::fmt::Debug for Cpu {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            let mut debug = f.debug_struct("Cpu");
-            debug.field("idx", &self.idx);
-            debug.field("cpu_profile", &self.cpu_profile);
-            debug.field("has_state", &self.state.is_some());
-            debug.finish_non_exhaustive()
-        }
-    }
-
-    impl Attach<Cpu> for Vm {
-        type Error = Error;
-        type Output = Vcpu;
-
-        fn attach(&mut self, item: Cpu) -> Result<Self::Output, Self::Error> {
-            let mut vcpu = self.create_vcpu_with_pio(
-                item.idx,
-                &item.cpu_profile,
-                #[cfg(target_arch = "x86_64")]
-                item.pio_read,
-                #[cfg(target_arch = "x86_64")]
-                item.pio_write,
-                #[cfg(target_arch = "aarch64")]
-                Arc::new(|_, _| 0),
-                #[cfg(target_arch = "aarch64")]
-                Arc::new(|_, _| {}),
-            )?;
-            #[cfg(target_arch = "x86_64")]
-            if let Some(state) = item.state {
-                vcpu.set_x86_64_state(&state)?;
-            }
-            #[cfg(target_arch = "aarch64")]
-            if let Some(state) = item.state {
-                vcpu.set_aarch64_state(&state)?;
-            }
-            Ok(vcpu)
-        }
+        _private: (),
     }
 
     #[derive(Debug)]
@@ -1071,8 +977,6 @@ mod imp {
     pub struct Vcpu {
         inner: crate::hypervisor::Vcpu,
         mmio_bus: Arc<Mutex<MmioBus>>,
-        pio_read: PioRead,
-        pio_write: PioWrite,
         exit_requester: VcpuExitRequester,
         registered_thread: AtomicBool,
     }
@@ -1141,7 +1045,7 @@ mod imp {
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum VcpuExit {
+    enum VcpuExit {
         MmioWrite { addr: u64, data: [u8; 8], size: u8 },
 
         Interrupted,
@@ -1182,9 +1086,8 @@ mod imp {
         fn run(&mut self) -> Result<VcpuExit, Error> {
             loop {
                 let bus = Arc::clone(&self.mmio_bus);
-                let pio_read = Arc::clone(&self.pio_read);
                 let exit = self.inner.run(
-                    move |port, size| pio_read(port, size),
+                    |_port, _size| u32::MAX,
                     move |addr, data| {
                         let handled = bus.lock().expect("MMIO bus lock poisoned").read(addr, data);
                         if !handled {
@@ -1207,7 +1110,7 @@ mod imp {
                         continue;
                     }
                     VmExit::PioWrite { port, data, size } => {
-                        (self.pio_write)(port, &data[..size as usize]);
+                        let _ = (port, data, size);
                     }
                     VmExit::MmioWrite { addr, data, size } => {
                         if !self

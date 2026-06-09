@@ -43,9 +43,6 @@ mod imp {
     pub use crate::hypervisor::{Error, VcpuCancel};
     use crate::ioapic::IoApic;
 
-    pub type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
-    pub type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
-
     fn install_signal_watchers(_supervisor_shutdown: &'static AtomicBool) {}
 
     fn install_panic_terminal_restore() {}
@@ -117,13 +114,7 @@ mod imp {
             self.inner.set_memory(memory)
         }
 
-        fn create_vcpu_with_pio(
-            &self,
-            idx: u32,
-            cpu_profile: &str,
-            pio_read: PioRead,
-            pio_write: PioWrite,
-        ) -> Result<Vcpu, Error> {
+        fn create_vcpu_inner(&self, idx: u32, cpu_profile: &str) -> Result<Vcpu, Error> {
             let inner = self.inner.create_vcpu(idx, cpu_profile)?;
             self.vcpu_cancels
                 .lock()
@@ -132,8 +123,6 @@ mod imp {
             Ok(Vcpu {
                 inner,
                 mmio_bus: Arc::clone(&self.mmio_bus),
-                pio_read,
-                pio_write,
             })
         }
 
@@ -242,8 +231,9 @@ mod imp {
         }
 
         fn attach_ram(&mut self, ranges: &[RamRange]) -> Result<(), Self::Error> {
-            let memory = Memory::from_ranges(ranges.iter().map(|range| (range.gpa, range.size)))?;
-            self.set_memory(memory.guest_memory)?;
+            let memory =
+                guest_memory_from_ranges(ranges.iter().map(|range| (range.gpa, range.size)))?;
+            self.set_memory(memory)?;
             let guest_mem = self.guest_memory()?;
             self.shared_memory = vec![Arc::new(dillo_mmio::MappedSharedMemory::for_guest_memory(
                 guest_mem,
@@ -262,12 +252,7 @@ mod imp {
             cpu_profile: &str,
             boot_state: Option<&dyn BootVcpuState>,
         ) -> Result<Self::Vcpu, Self::Error> {
-            let mut vcpu = self.create_vcpu_with_pio(
-                index,
-                cpu_profile,
-                Arc::new(|_port, _size| u32::MAX),
-                Arc::new(|_port, _data: &[u8]| {}),
-            )?;
+            let mut vcpu = self.create_vcpu_inner(index, cpu_profile)?;
             if let Some(boot_state) = boot_state {
                 let state = boot_state
                     .x86_64()
@@ -463,78 +448,26 @@ mod imp {
         ))
     }
 
-    /// WHP guest RAM mapping selected by dillo from the merged DTB memory plan.
-    #[derive(Clone)]
+    /// WHP memory input marker. RAM is attached through `Machine::attach_ram`.
+    #[derive(Debug)]
     pub struct Memory {
-        guest_memory: GuestMemoryMmap,
+        _private: (),
     }
 
-    impl std::fmt::Debug for Memory {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("Memory").finish_non_exhaustive()
-        }
-    }
-
-    impl Memory {
-        pub fn new(guest_memory: GuestMemoryMmap) -> Self {
-            Self { guest_memory }
-        }
-
-        pub fn from_ranges(ranges: impl IntoIterator<Item = (u64, u64)>) -> Result<Self, Error> {
-            let ranges: Vec<(GuestAddress, usize)> = ranges
-                .into_iter()
-                .map(|(gpa, size)| (GuestAddress(gpa), size as usize))
-                .collect();
-            let guest_memory = GuestMemoryMmap::from_ranges(&ranges)
-                .map_err(|e| Error::CreateGuestMemory(format!("{e}")))?;
-            Ok(Self { guest_memory })
-        }
-    }
-
-    impl Attach<Memory> for Vm {
-        type Error = Error;
-        type Output = ();
-
-        fn attach(&mut self, item: Memory) -> Result<Self::Output, Self::Error> {
-            self.set_memory(item.guest_memory)
-        }
-    }
-
-    /// One WHP x86 vCPU creation request.
+    /// WHP CPU input marker. vCPUs are created through `Machine::create_vcpu`.
+    #[derive(Debug)]
     pub struct Cpu {
-        pub idx: u32,
-        pub cpu_profile: String,
-        pub pio_read: PioRead,
-        pub pio_write: PioWrite,
-        pub state: Option<pmi::vm::vcpu::x86_64::CpuState>,
+        _private: (),
     }
 
-    impl std::fmt::Debug for Cpu {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("Cpu")
-                .field("idx", &self.idx)
-                .field("cpu_profile", &self.cpu_profile)
-                .field("has_state", &self.state.is_some())
-                .finish_non_exhaustive()
-        }
-    }
-
-    impl Attach<Cpu> for Vm {
-        type Error = Error;
-        type Output = Vcpu;
-
-        fn attach(&mut self, item: Cpu) -> Result<Self::Output, Self::Error> {
-            let mut vcpu = self.create_vcpu_with_pio(
-                item.idx,
-                &item.cpu_profile,
-                item.pio_read,
-                item.pio_write,
-            )?;
-            if let Some(state) = item.state {
-                vcpu.set_x86_64_state(&state)?;
-            }
-            Ok(vcpu)
-        }
+    fn guest_memory_from_ranges(
+        ranges: impl IntoIterator<Item = (u64, u64)>,
+    ) -> Result<GuestMemoryMmap, Error> {
+        let ranges: Vec<(GuestAddress, usize)> = ranges
+            .into_iter()
+            .map(|(gpa, size)| (GuestAddress(gpa), size as usize))
+            .collect();
+        GuestMemoryMmap::from_ranges(&ranges).map_err(|e| Error::CreateGuestMemory(format!("{e}")))
     }
 
     impl<D> Attach<Arc<D>> for Vm
@@ -807,12 +740,10 @@ mod imp {
     pub struct Vcpu {
         inner: crate::hypervisor::Vcpu,
         mmio_bus: Arc<Mutex<MmioBus>>,
-        pio_read: PioRead,
-        pio_write: PioWrite,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum VcpuExit {
+    enum VcpuExit {
         MmioWrite { addr: u64, data: [u8; 8], size: u8 },
 
         Interrupted,
@@ -844,9 +775,8 @@ mod imp {
         fn run(&mut self) -> Result<VcpuExit, Error> {
             loop {
                 let bus = Arc::clone(&self.mmio_bus);
-                let pio_read = Arc::clone(&self.pio_read);
                 let exit = self.inner.run(
-                    move |port, size| pio_read(port, size),
+                    |_port, _size| u32::MAX,
                     move |addr, data| {
                         let handled = bus.lock().expect("MMIO bus lock poisoned").read(addr, data);
                         if !handled {
@@ -869,7 +799,7 @@ mod imp {
                         continue;
                     }
                     VmExit::PioWrite { port, data, size } => {
-                        (self.pio_write)(port, &data[..size as usize]);
+                        let _ = (port, data, size);
                     }
                     VmExit::MmioWrite { addr, data, size } => {
                         if !self
