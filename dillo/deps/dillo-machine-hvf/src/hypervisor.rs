@@ -31,7 +31,7 @@ const INSN_LEN: u64 = 4;
 /// (`/intc`+`/v2m`) and handed to [`Vm::new`]. The hypervisor never hardcodes
 /// these — addresses are the image's to assign (device-model §4); F7a.
 #[derive(Debug, Clone, Copy)]
-pub struct GicParams {
+pub(crate) struct GicParams {
     pub dist_base: u64,
     pub redist_base: u64,
     pub msi_base: u64,
@@ -43,6 +43,16 @@ pub struct GicParams {
 pub enum Error {
     #[error("hvf: {0}")]
     Hv(String),
+    #[error("hvf: parse DTB: {0}")]
+    ParseDtb(dillo_devtree::devtree::Error),
+    #[error("hvf: missing required DTB substrate {0}")]
+    MissingSubstrate(&'static str),
+    #[error("hvf: bad DTB substrate property {node}:{prop}: {reason}")]
+    BadSubstrateProperty {
+        node: &'static str,
+        prop: &'static str,
+        reason: &'static str,
+    },
     #[error("hvf: VM not initialized")]
     NoVm,
     #[error("hvf: guest address {0:#x} not in any mapped region")]

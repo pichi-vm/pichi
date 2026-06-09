@@ -6,6 +6,8 @@
 
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
+#[cfg(target_arch = "aarch64")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_arch = "x86_64")]
 use kvm_bindings::kvm_guest_debug;
@@ -52,6 +54,22 @@ pub enum Error {
 
     #[error("configure VGIC: {0}")]
     ConfigureVgic(std::io::Error),
+
+    #[cfg(target_arch = "aarch64")]
+    #[error("parse DTB for KVM platform substrate: {0:?}")]
+    ParseDtb(dillo_devtree::devtree::Error),
+
+    #[cfg(target_arch = "aarch64")]
+    #[error("DTB missing KVM platform substrate node `{0}`")]
+    MissingSubstrate(&'static str),
+
+    #[cfg(target_arch = "aarch64")]
+    #[error("DTB property `{prop}` on `{node}` is malformed ({reason})")]
+    BadSubstrateProperty {
+        node: &'static str,
+        prop: &'static str,
+        reason: &'static str,
+    },
 
     #[error("set TSS address: {0}")]
     SetTss(std::io::Error),
@@ -107,6 +125,8 @@ struct VmInner {
     vm: std::sync::Arc<VmFd>,
     #[cfg(target_arch = "aarch64")]
     _vgic: Option<DeviceFd>,
+    #[cfg(target_arch = "aarch64")]
+    vgic_initialized: AtomicBool,
 }
 
 impl Vm {
@@ -152,12 +172,14 @@ impl Vm {
                 vm: std::sync::Arc::new(vm),
                 #[cfg(target_arch = "aarch64")]
                 _vgic: None,
+                #[cfg(target_arch = "aarch64")]
+                vgic_initialized: AtomicBool::new(false),
             }),
         })
     }
 
     #[cfg(target_arch = "aarch64")]
-    pub(crate) fn new_with_gic(gic: &crate::imp::GicParams) -> Result<Self, Error> {
+    pub(crate) fn new_with_gic(gic: &crate::imp::Aarch64Substrate) -> Result<Self, Error> {
         let kvm = Kvm::new().map_err(io).map_err(Error::OpenKvm)?;
         let api = kvm.get_api_version();
         if api != 12 {
@@ -170,8 +192,21 @@ impl Vm {
                 _kvm: kvm,
                 vm: std::sync::Arc::new(vm),
                 _vgic: Some(vgic),
+                vgic_initialized: AtomicBool::new(false),
             }),
         })
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn init_gic(&self) -> Result<(), Error> {
+        if self.inner.vgic_initialized.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(vgic) = self.inner._vgic.as_ref() {
+            init_vgic(vgic)?;
+            self.inner.vgic_initialized.store(true, Ordering::Release);
+        }
+        Ok(())
     }
 
     /// Register a userspace memory region.
@@ -532,7 +567,7 @@ impl AsRawFd for Vcpu {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn create_vgic(vm: &VmFd, gic: &crate::imp::GicParams) -> Result<DeviceFd, Error> {
+fn create_vgic(vm: &VmFd, gic: &crate::imp::Aarch64Substrate) -> Result<DeviceFd, Error> {
     let mut device = kvm_create_device {
         type_: kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3,
         fd: 0,
@@ -554,6 +589,11 @@ fn create_vgic(vm: &VmFd, gic: &crate::imp::GicParams) -> Result<DeviceFd, Error
     vgic.set_device_attr(&nr_irqs_attr)
         .map_err(io)
         .map_err(Error::ConfigureVgic)?;
+    Ok(vgic)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn init_vgic(vgic: &DeviceFd) -> Result<(), Error> {
     let init_attr = kvm_device_attr {
         group: KVM_DEV_ARM_VGIC_GRP_CTRL,
         attr: u64::from(KVM_DEV_ARM_VGIC_CTRL_INIT),
@@ -562,8 +602,7 @@ fn create_vgic(vm: &VmFd, gic: &crate::imp::GicParams) -> Result<DeviceFd, Error
     };
     vgic.set_device_attr(&init_attr)
         .map_err(io)
-        .map_err(Error::ConfigureVgic)?;
-    Ok(vgic)
+        .map_err(Error::ConfigureVgic)
 }
 
 #[cfg(target_arch = "aarch64")]

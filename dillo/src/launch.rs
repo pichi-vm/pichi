@@ -15,6 +15,7 @@ use crate::pmi_parse::{Action as PmiAction, FillKind, HostArch, ParseOptions};
 pub struct LaunchPlan {
     pub bytes: Vec<u8>,
     pub parsed: crate::pmi_parse::ParsedPmi,
+    pub merged_dtb: Vec<u8>,
     pub platform: crate::platform::Machine,
     pub memory: MemoryPlan,
     pub guest_writes: Vec<GuestWrite>,
@@ -59,8 +60,8 @@ impl LaunchPlan {
         )?;
         validate_cpu_profile(parsed.cpu_profile.as_str(), pmi_arch)?;
 
-        let dtb = merged_dtb(&bytes, &parsed)?;
-        let platform = crate::platform::Machine::survey(dtb, platform_arch(host_arch))
+        let dtb = merged_dtb(&bytes, &parsed)?.to_vec();
+        let platform = crate::platform::Machine::survey(&dtb, platform_arch(host_arch))
             .map_err(LaunchError::Coverage)?;
 
         let load_ranges: Vec<(String, u64, u64)> = parsed
@@ -92,6 +93,7 @@ impl LaunchPlan {
         Ok(Self {
             bytes,
             parsed,
+            merged_dtb: dtb,
             platform,
             memory,
             guest_writes,

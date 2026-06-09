@@ -1,0 +1,13 @@
+[package]
+name = "dillo-devtree"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Shared devtree consumption traits for dillo crates."
+
+[dependencies]
+devtree = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

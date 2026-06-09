@@ -8,6 +8,7 @@ description = "HVF machine backend crate for dillo."
 
 [dependencies]
 dillo-machine.workspace = true
+dillo-devtree.workspace = true
 dillo-mmio.workspace = true
 pmi.workspace = true
 log.workspace = true

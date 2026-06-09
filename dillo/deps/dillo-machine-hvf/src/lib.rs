@@ -26,6 +26,10 @@ mod imp {
     };
     use std::thread;
 
+    use dillo_devtree::{
+        FromDevTree,
+        devtree::{NodeView, OwnedTree, PropertyView, Tree},
+    };
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
@@ -35,8 +39,8 @@ mod imp {
 
     use crate::VcpuHandle;
     use crate::VmExit;
+    pub use crate::hypervisor::Error;
     use crate::hypervisor::force_vcpus_exit;
-    pub use crate::hypervisor::{Error, GicParams};
 
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::Aarch64;
 
@@ -134,7 +138,10 @@ mod imp {
     }
 
     impl Vm {
-        pub fn new(gic: &GicParams, min_addr_space_bits: u32) -> Result<Self, Error> {
+        fn new(
+            gic: &crate::hypervisor::GicParams,
+            min_addr_space_bits: u32,
+        ) -> Result<Self, Error> {
             Ok(Self {
                 inner: crate::hypervisor::Vm::new(gic, min_addr_space_bits)?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
@@ -183,6 +190,162 @@ mod imp {
         ) {
             self.shared_memory = shared_memory;
         }
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct Config {
+        pub dtb: Vec<u8>,
+        pub min_addr_space_bits: u32,
+    }
+
+    impl TryFrom<Config> for Vm {
+        type Error = Error;
+
+        fn try_from(config: Config) -> Result<Self, Self::Error> {
+            let parsed: Tree<'_> = Tree::parse(&config.dtb).map_err(Error::ParseDtb)?;
+            let mut tree = OwnedTree::materialize(&parsed);
+            let gic = crate::hypervisor::GicParams::from_devtree(&mut tree)?
+                .ok_or(Error::MissingSubstrate("/interrupt-controller@*"))?;
+            Self::new(&gic, config.min_addr_space_bits)
+        }
+    }
+
+    impl FromDevTree for crate::hypervisor::GicParams {
+        type Error = Error;
+
+        fn from_devtree(tree: &mut OwnedTree) -> Result<Option<Self>, Self::Error> {
+            let root = tree.root_mut();
+            let intc_name = root
+                .children()
+                .find(|node| {
+                    node.name().starts_with("interrupt-controller@")
+                        && compatible_contains(*node, "arm,gic-v3")
+                })
+                .map(|node| node.name().to_string())
+                .ok_or(Error::MissingSubstrate("/interrupt-controller@*"))?;
+            let mut intc = root
+                .remove_child(&intc_name)
+                .ok_or(Error::MissingSubstrate("/interrupt-controller@*"))?;
+            consume_compatible(&mut intc, "/interrupt-controller", "arm,gic-v3")?;
+            let reg = intc
+                .remove_property("reg")
+                .ok_or(Error::BadSubstrateProperty {
+                    node: "/interrupt-controller",
+                    prop: "reg",
+                    reason: "missing",
+                })?;
+            let (dist_base, _) = reg_pair(&reg, 0).ok_or(Error::BadSubstrateProperty {
+                node: "/interrupt-controller",
+                prop: "reg",
+                reason: "missing GICD pair",
+            })?;
+            let (redist_base, _) = reg_pair(&reg, 1).ok_or(Error::BadSubstrateProperty {
+                node: "/interrupt-controller",
+                prop: "reg",
+                reason: "missing GICR pair",
+            })?;
+            let _ = intc.remove_property("#interrupt-cells");
+            let _ = intc.remove_property("interrupt-controller");
+            let _ = intc.remove_property("phandle");
+
+            let v2m_name = root
+                .children()
+                .find(|node| {
+                    node.name().starts_with("msi-controller@")
+                        && compatible_contains(*node, "arm,gic-v2m-frame")
+                })
+                .map(|node| node.name().to_string())
+                .ok_or(Error::MissingSubstrate("/msi-controller@*"))?;
+            let mut v2m = root
+                .remove_child(&v2m_name)
+                .ok_or(Error::MissingSubstrate("/msi-controller@*"))?;
+            consume_compatible(&mut v2m, "/msi-controller", "arm,gic-v2m-frame")?;
+            let reg = v2m
+                .remove_property("reg")
+                .ok_or(Error::BadSubstrateProperty {
+                    node: "/msi-controller",
+                    prop: "reg",
+                    reason: "missing",
+                })?;
+            let (msi_base, _) = reg_pair(&reg, 0).ok_or(Error::BadSubstrateProperty {
+                node: "/msi-controller",
+                prop: "reg",
+                reason: "missing MSI frame pair",
+            })?;
+            let msi_intid_base = v2m
+                .remove_property("arm,msi-base-spi")
+                .and_then(|prop| prop.as_u32())
+                .ok_or(Error::BadSubstrateProperty {
+                    node: "/msi-controller",
+                    prop: "arm,msi-base-spi",
+                    reason: "missing or not a u32",
+                })?;
+            let msi_intid_count = v2m
+                .remove_property("arm,msi-num-spis")
+                .and_then(|prop| prop.as_u32())
+                .ok_or(Error::BadSubstrateProperty {
+                    node: "/msi-controller",
+                    prop: "arm,msi-num-spis",
+                    reason: "missing or not a u32",
+                })?;
+            let _ = v2m.remove_property("msi-controller");
+            let _ = v2m.remove_property("phandle");
+
+            Ok(Some(Self {
+                dist_base,
+                redist_base,
+                msi_base,
+                msi_intid_base,
+                msi_intid_count,
+            }))
+        }
+    }
+
+    fn compatible_contains<N: NodeView>(node: N, value: &str) -> bool {
+        let Some(prop) = node.property("compatible") else {
+            return false;
+        };
+        stringlist_contains(prop.as_ref(), value)
+    }
+
+    fn consume_compatible(
+        node: &mut dillo_devtree::devtree::OwnedNode,
+        node_name: &'static str,
+        value: &str,
+    ) -> Result<(), Error> {
+        let prop = node
+            .remove_property("compatible")
+            .ok_or(Error::BadSubstrateProperty {
+                node: node_name,
+                prop: "compatible",
+                reason: "missing",
+            })?;
+        if stringlist_contains(prop.as_ref(), value) {
+            Ok(())
+        } else {
+            Err(Error::BadSubstrateProperty {
+                node: node_name,
+                prop: "compatible",
+                reason: "unsupported compatible",
+            })
+        }
+    }
+
+    fn stringlist_contains(bytes: &[u8], value: &str) -> bool {
+        bytes
+            .split(|byte| *byte == 0)
+            .filter(|item| !item.is_empty())
+            .any(|item| item == value.as_bytes())
+    }
+
+    fn reg_pair<P: PropertyView>(prop: P, pair_index: usize) -> Option<(u64, u64)> {
+        let cells: Vec<u32> = prop.as_u32s()?.collect();
+        let base = cells.get(pair_index * 4..pair_index * 4 + 2)?;
+        let size = cells.get(pair_index * 4 + 2..pair_index * 4 + 4)?;
+        Some((
+            (u64::from(base[0]) << 32) | u64::from(base[1]),
+            (u64::from(size[0]) << 32) | u64::from(size[1]),
+        ))
     }
 
     #[derive(Debug)]
@@ -279,7 +442,7 @@ mod imp {
 
     impl dillo_machine::Machine for Vm {
         type Error = Error;
-        type Config = GicParams;
+        type Config = Config;
         type Vcpu = Vcpu;
         type Cpu = ();
         type Memory = Memory;

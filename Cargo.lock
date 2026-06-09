@@ -397,6 +397,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dillo-devtree"
+version = "0.1.0"
+dependencies = [
+ "devtree",
+]
+
+[[package]]
 name = "dillo-machine"
 version = "0.1.0"
 dependencies = [
@@ -409,6 +416,7 @@ version = "0.1.0"
 dependencies = [
  "applevisor",
  "applevisor-sys",
+ "dillo-devtree",
  "dillo-machine",
  "dillo-mmio",
  "libc",
@@ -421,6 +429,7 @@ dependencies = [
 name = "dillo-machine-kvm"
 version = "0.1.0"
 dependencies = [
+ "dillo-devtree",
  "dillo-machine",
  "dillo-mmio",
  "kvm-bindings",

@@ -58,6 +58,7 @@ fn main() {
     let dillo::launch::LaunchPlan {
         parsed,
         platform,
+        merged_dtb,
         memory: memory_plan,
         guest_writes,
         ..
@@ -65,6 +66,7 @@ fn main() {
     let preflight = runner::Preflight::new(
         parsed,
         platform,
+        merged_dtb,
         memory_plan.memslots.iter().map(|r| runner::RunRegion {
             gpa: r.gpa,
             size: r.size,

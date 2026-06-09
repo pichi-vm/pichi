@@ -99,6 +99,7 @@ struct RunMemoryPlan {
 pub(crate) struct Preflight {
     parsed: dillo::pmi_parse::ParsedPmi,
     platform: dillo::platform::Machine,
+    dtb: Vec<u8>,
     memslots: Vec<RunRegion>,
     memory_nodes: Vec<RunRegion>,
     guest_writes: Vec<RunWrite>,
@@ -121,6 +122,7 @@ impl Preflight {
     pub(crate) fn new(
         parsed: dillo::pmi_parse::ParsedPmi,
         platform: dillo::platform::Machine,
+        dtb: Vec<u8>,
         memslots: impl IntoIterator<Item = RunRegion>,
         memory_nodes: impl IntoIterator<Item = RunRegion>,
         guest_writes: impl IntoIterator<Item = RunWrite>,
@@ -128,6 +130,7 @@ impl Preflight {
         Self {
             parsed,
             platform,
+            dtb,
             memslots: memslots.into_iter().collect(),
             memory_nodes: memory_nodes.into_iter().collect(),
             guest_writes: guest_writes.into_iter().collect(),
@@ -139,12 +142,14 @@ impl Preflight {
     ) -> (
         dillo::pmi_parse::ParsedPmi,
         dillo::platform::Machine,
+        Vec<u8>,
         RunMemoryPlan,
         Vec<RunWrite>,
     ) {
         (
             self.parsed,
             self.platform,
+            self.dtb,
             RunMemoryPlan {
                 memslots: self.memslots,
                 memory_nodes: self.memory_nodes,
@@ -179,7 +184,7 @@ pub(crate) fn run(
     vcpus: u32,
     supervisor_shutdown: &'static AtomicBool,
 ) -> Result<i32, RunError> {
-    let (parsed, machine, plan, guest_writes) = preflight.into_parts();
+    let (parsed, machine, _dtb, plan, guest_writes) = preflight.into_parts();
     log::info!(
         "WHP coverage: base DTB fully claimed — {} declared region(s), pcie={}",
         machine.plan.regions().len(),
@@ -476,7 +481,7 @@ pub(crate) fn run(
     vcpus: u32,
     _supervisor_shutdown: &'static AtomicBool,
 ) -> Result<i32, RunError> {
-    let (parsed, machine, plan, guest_writes) = preflight.into_parts();
+    let (parsed, machine, dtb, plan, guest_writes) = preflight.into_parts();
     log::info!(
         "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
         parsed.arch,
@@ -490,13 +495,12 @@ pub(crate) fn run(
     );
     if machine.has_pcie {
         log::info!(
-            "machine: pcie ecam {:#x}, mmio {:#x}, gic={}",
+            "machine: pcie ecam {:#x}, mmio {:#x}",
             machine.pcie.ecam_base,
             machine.pcie.mmio_base,
-            machine.gic.is_some(),
         );
     } else {
-        log::info!("machine: no PCIe (microVM), gic={}", machine.gic.is_some());
+        log::info!("machine: no PCIe (microVM)");
     }
     let total_backed: u64 = plan.memslots.iter().map(|r| r.size).sum();
     log::info!(
@@ -532,18 +536,10 @@ pub(crate) fn run(
     //    GIC placement (F7a) and the address-space watermark X (F7) come from
     //    the machine — never hardcoded. 2^X = the BAR window's burned-buddy
     //    top when PCIe is present, else enough bits to cover the device island.
-    let gic = machine
-        .gic
-        .as_ref()
-        .ok_or_else(|| RunError::DtbExtract(dillo::platform::Error::MissingNode("GIC config")))?;
-    let gic_params = backend_machine::GicParams {
-        dist_base: gic.dist_base,
-        redist_base: gic.redist_base,
-        msi_base: gic.msi_frame_base,
-        msi_intid_base: gic.spi_base,
-        msi_intid_count: gic.spi_count,
-    };
-    let mut vm = backend_machine::Vm::new(&gic_params, machine.min_addr_space_bits())?;
+    let mut vm = backend_machine::Vm::try_from(backend_machine::Config {
+        dtb,
+        min_addr_space_bits: machine.min_addr_space_bits(),
+    })?;
     let max_vcpus = vm.max_vcpus()?;
     if vcpus > max_vcpus {
         return Err(RunError::TooManyVcpus {
@@ -779,14 +775,11 @@ mod macos_tests {
     #[test]
     #[ignore = "requires a codesigned binary with com.apple.security.hypervisor; run via the codesigned harness with --ignored"]
     fn run_loop_ns16550_write_then_psci_off() {
-        let gic = backend_machine::GicParams {
-            dist_base: 0x8000000,
-            redist_base: 0x8100000,
-            msi_base: 0xa100000,
-            msi_intid_base: 64,
-            msi_intid_count: 32,
-        };
-        let mut vm = Vm::new(&gic, 36).expect("vm");
+        let mut vm = Vm::try_from(backend_machine::Config {
+            dtb: test_gic_dtb(),
+            min_addr_space_bits: 36,
+        })
+        .expect("vm");
         let code_base = 0x4000_0000u64;
         Attach::attach(&mut vm, backend_machine::Memory::new(code_base, 0x1_0000)).expect("mem");
         // str w2,[x1] ; hvc #0
@@ -832,6 +825,47 @@ mod macos_tests {
             "PSCI SYSTEM_OFF -> GuestPoweroff"
         );
     }
+
+    fn test_gic_dtb() -> Vec<u8> {
+        use devtree::{OwnedNode, OwnedProperty, OwnedTree};
+
+        fn reg2(base: u64, size: u64) -> Vec<u32> {
+            vec![
+                (base >> 32) as u32,
+                base as u32,
+                (size >> 32) as u32,
+                size as u32,
+            ]
+        }
+
+        let mut intc_reg = reg2(0x0800_0000, 0x1_0000);
+        intc_reg.extend(reg2(0x0810_0000, 0x200_0000));
+
+        let root = OwnedNode::new("")
+            .with_property(OwnedProperty::new("#address-cells").with_u32(2))
+            .with_property(OwnedProperty::new("#size-cells").with_u32(2))
+            .with_child(
+                OwnedNode::new("interrupt-controller@8000000")
+                    .with_property(OwnedProperty::new("compatible").with_str("arm,gic-v3"))
+                    .with_property(OwnedProperty::new("#interrupt-cells").with_u32(3))
+                    .with_property(OwnedProperty::new("interrupt-controller"))
+                    .with_property(OwnedProperty::new("reg").with_u32s(&intc_reg))
+                    .with_property(OwnedProperty::new("phandle").with_u32(1)),
+            )
+            .with_child(
+                OwnedNode::new("msi-controller@a100000")
+                    .with_property(OwnedProperty::new("compatible").with_str("arm,gic-v2m-frame"))
+                    .with_property(OwnedProperty::new("msi-controller"))
+                    .with_property(
+                        OwnedProperty::new("reg").with_u32s(&reg2(0x0a10_0000, 0x1_0000)),
+                    )
+                    .with_property(OwnedProperty::new("arm,msi-base-spi").with_u32(64))
+                    .with_property(OwnedProperty::new("arm,msi-num-spis").with_u32(32))
+                    .with_property(OwnedProperty::new("phandle").with_u32(3)),
+            );
+
+        OwnedTree::new(root).encode().expect("test DTB")
+    }
 }
 
 /// Top-level VM-child entry point (Linux / KVM).
@@ -845,7 +879,7 @@ pub(crate) fn run(
     vcpus: u32,
     supervisor_shutdown: &'static AtomicBool,
 ) -> Result<i32, RunError> {
-    let (parsed, machine, plan, guest_writes) = preflight.into_parts();
+    let (parsed, machine, _dtb, plan, guest_writes) = preflight.into_parts();
     log::info!(
         "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
         parsed.arch,
@@ -1207,7 +1241,7 @@ pub(crate) fn run(
     vcpus: u32,
     supervisor_shutdown: &'static AtomicBool,
 ) -> Result<i32, RunError> {
-    let (parsed, machine, plan, guest_writes) = preflight.into_parts();
+    let (parsed, machine, dtb, plan, guest_writes) = preflight.into_parts();
     log::info!(
         "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
         parsed.arch,
@@ -1219,11 +1253,6 @@ pub(crate) fn run(
         machine.plan.regions().len(),
         machine.has_pcie
     );
-    let gic = machine
-        .gic
-        .as_ref()
-        .ok_or_else(|| RunError::DtbExtract(dillo::platform::Error::MissingNode("GIC config")))?;
-
     let total_backed: u64 = plan.memslots.iter().map(|r| r.size).sum();
     log::info!("/memory@N nodes: {} region(s)", plan.memory_nodes.len());
     for r in &plan.memory_nodes {
@@ -1257,13 +1286,7 @@ pub(crate) fn run(
             })?;
     }
 
-    let mut vm = backend_machine::Vm::try_from(backend_machine::Config {
-        gic: backend_machine::GicParams {
-            dist_base: gic.dist_base,
-            redist_base: gic.redist_base,
-            spi_count: gic.spi_count,
-        },
-    })?;
+    let mut vm = backend_machine::Vm::try_from(backend_machine::Config { dtb })?;
     for (slot_idx, r) in plan.memslots.iter().enumerate() {
         let host_addr = gpa_map
             .lookup(r.gpa)
@@ -1354,10 +1377,9 @@ pub(crate) fn run(
         VcpuState::X86_64(_) => return Err(RunError::ArchMismatch),
     };
     let cpu_profile = parsed.cpu_profile.as_str();
-    let mut joins = Vec::with_capacity(vcpus as usize);
-    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut created_vcpus = Vec::with_capacity(vcpus as usize);
     for idx in 0..vcpus {
-        let mut vcpu = Attach::attach(
+        let vcpu = Attach::attach(
             &mut vm,
             backend_machine::Cpu {
                 idx,
@@ -1365,6 +1387,13 @@ pub(crate) fn run(
                 state: (idx == 0).then(|| boot_state.clone()),
             },
         )?;
+        created_vcpus.push(vcpu);
+    }
+    vm.init_gic()?;
+
+    let mut joins = Vec::with_capacity(vcpus as usize);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    for mut vcpu in created_vcpus {
         let shutdown_c = Arc::clone(&shutdown);
         let exit_requester = vm.exit_requester();
         let join = std::thread::spawn(move || -> Result<RunOutcome> {
