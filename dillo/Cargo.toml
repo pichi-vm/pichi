@@ -26,7 +26,6 @@ dillo-pci.workspace = true
 dillo-pci-virtio.workspace = true
 dillo-virtio.workspace = true
 dillo-virtio-console.workspace = true
-vm-memory.workspace = true
 pmi.workspace = true
 devtree = { workspace = true, features = ["alloc"] }
 object.workspace = true
@@ -40,7 +39,6 @@ env_logger.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 dillo-machine-kvm.workspace = true
-nix.workspace = true
 libc = "0.2"
 gdbstub.workspace = true
 gdbstub_arch.workspace = true

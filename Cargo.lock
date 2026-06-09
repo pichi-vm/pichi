@@ -383,7 +383,6 @@ dependencies = [
  "gdbstub_arch",
  "libc",
  "log",
- "nix",
  "object",
  "pmi",
  "rstest",
@@ -392,7 +391,6 @@ dependencies = [
  "snuffler",
  "tempfile",
  "thiserror",
- "vm-memory",
  "wait-timeout",
 ]
 
@@ -430,6 +428,7 @@ dependencies = [
 name = "dillo-machine-kvm"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "dillo-devtree",
  "dillo-machine",
  "dillo-mmio",
@@ -440,6 +439,7 @@ dependencies = [
  "nix",
  "pmi",
  "thiserror",
+ "vm-memory",
  "vmm-sys-util",
 ]
 

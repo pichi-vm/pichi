@@ -16,7 +16,7 @@ use vm_memory::{FileOffset, GuestAddress, GuestMemoryMmap, GuestRegionMmap};
 
 /// Owned memfd.
 #[derive(Debug)]
-pub(crate) struct Memfd {
+pub struct Memfd {
     fd: std::os::fd::OwnedFd,
 }
 
@@ -36,7 +36,7 @@ impl AsFd for Memfd {
 ///
 /// Host requirement: `vm.nr_hugepages` configured for enough 2 MiB
 /// pages to cover the request, or `memfd_create` fails with ENOMEM.
-pub(crate) fn create_and_size(total_bytes: u64) -> Result<Memfd> {
+fn create_and_size(total_bytes: u64) -> Result<Memfd> {
     let name = CString::new("dillo-guest").expect("static C string");
     let fd = memfd_create(
         name.as_c_str(),
@@ -55,7 +55,7 @@ pub(crate) fn create_and_size(total_bytes: u64) -> Result<Memfd> {
 
 /// mmap a contiguous range of the memfd into the process address space.
 /// Leaks the mapping for the VM's lifetime.
-pub(crate) fn mmap_range(memfd: &Memfd, fd_offset: u64, size: u64) -> Result<u64> {
+fn mmap_range(memfd: &Memfd, fd_offset: u64, size: u64) -> Result<u64> {
     if size == 0 {
         bail!("mmap_range: size = 0");
     }
@@ -86,7 +86,7 @@ pub(crate) fn mmap_range(memfd: &Memfd, fd_offset: u64, size: u64) -> Result<u64
 ///
 /// Used by virtio-pci to drive queues and by any device backend that needs
 /// typed guest-memory access.
-pub(crate) fn build_guest_memory(
+fn build_guest_memory(
     memfd: &Memfd,
     regions: &[(u64, u64, u64)], // (gpa, host_addr, size) — same shape GpaMap takes
 ) -> Result<GuestMemoryMmap> {
@@ -136,19 +136,93 @@ pub(crate) fn build_guest_memory(
 
 /// Maps GPA → (host_addr, size). Used to translate guest-physical
 /// writes (load-section copies, DTBO fill) into host-virtual writes.
-#[derive(Debug, Default)]
-pub(crate) struct GpaMap {
+#[derive(Debug)]
+pub struct MappedRegion {
+    gpa: u64,
+    host_addr: u64,
+    size: u64,
+}
+
+impl MappedRegion {
+    pub fn gpa(&self) -> u64 {
+        self.gpa
+    }
+
+    pub fn host_addr(&self) -> u64 {
+        self.host_addr
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+}
+
+/// KVM-owned standard-VM guest memory backing.
+#[derive(Debug)]
+pub struct MappedMemory {
+    _memfd: Memfd,
+    regions: Vec<MappedRegion>,
+    gpa_map: GpaMap,
+    guest_memory: GuestMemoryMmap,
+}
+
+impl MappedMemory {
+    pub fn new(regions: impl IntoIterator<Item = (u64, u64)>) -> Result<Self> {
+        let requested = regions.into_iter().collect::<Vec<_>>();
+        let total_bytes = requested.iter().map(|(_, size)| *size).sum();
+        let memfd = create_and_size(total_bytes)?;
+        let mut gpa_map = GpaMap::new();
+        let mut mapped = Vec::with_capacity(requested.len());
+        let mut host_base = 0;
+        for (gpa, size) in requested {
+            let host_addr = mmap_range(&memfd, host_base, size)?;
+            gpa_map.add(gpa, host_addr, size);
+            mapped.push(MappedRegion {
+                gpa,
+                host_addr,
+                size,
+            });
+            host_base += size;
+        }
+        let tuples = mapped
+            .iter()
+            .map(|region| (region.gpa, region.host_addr, region.size))
+            .collect::<Vec<_>>();
+        let guest_memory = build_guest_memory(&memfd, &tuples)?;
+        Ok(Self {
+            _memfd: memfd,
+            regions: mapped,
+            gpa_map,
+            guest_memory,
+        })
+    }
+
+    pub fn regions(&self) -> &[MappedRegion] {
+        &self.regions
+    }
+
+    pub fn gpa_map(&self) -> &GpaMap {
+        &self.gpa_map
+    }
+
+    pub fn guest_memory(&self) -> GuestMemoryMmap {
+        self.guest_memory.clone()
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct GpaMap {
     regions: Vec<(u64, u64, u64)>, // (gpa, host_addr, size)
 }
 
 impl GpaMap {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
-    pub(crate) fn add(&mut self, gpa: u64, host_addr: u64, size: u64) {
+    pub fn add(&mut self, gpa: u64, host_addr: u64, size: u64) {
         self.regions.push((gpa, host_addr, size));
     }
-    pub(crate) fn lookup(&self, gpa: u64) -> Option<u64> {
+    pub fn lookup(&self, gpa: u64) -> Option<u64> {
         for &(rg, ra, rs) in &self.regions {
             if gpa >= rg && gpa < rg + rs {
                 let off = gpa - rg;
@@ -161,7 +235,7 @@ impl GpaMap {
     /// number of bytes actually copied (which may be less than
     /// `dst.len()` if the request runs off the end of a region).
     #[cfg(target_arch = "x86_64")]
-    pub(crate) fn read(&self, gpa: u64, dst: &mut [u8]) -> usize {
+    pub fn read(&self, gpa: u64, dst: &mut [u8]) -> usize {
         for &(rg, ra, rs) in &self.regions {
             if gpa >= rg && gpa < rg + rs {
                 let off = gpa - rg;
@@ -183,7 +257,7 @@ impl GpaMap {
     }
     /// Copy `src` into guest memory starting at `gpa`. Errors if the
     /// destination range spans regions or falls outside any region.
-    pub(crate) fn write(&self, gpa: u64, src: &[u8]) -> Result<()> {
+    pub fn write(&self, gpa: u64, src: &[u8]) -> Result<()> {
         for &(rg, ra, rs) in &self.regions {
             if gpa >= rg && gpa < rg + rs {
                 let off = gpa - rg;

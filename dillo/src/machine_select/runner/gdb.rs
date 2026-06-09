@@ -46,7 +46,7 @@ use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::X86_64_SSE;
 use gdbstub_arch::x86::reg::X86_64CoreRegs;
 
-use super::memory::GpaMap;
+use super::backend_select::machine::memory::GpaMap;
 
 /// State shared between the gdb stub and the vCPU dispatch loop.
 pub(crate) struct GdbTarget {

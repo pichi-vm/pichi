@@ -4,6 +4,8 @@ mod cpuid_x86;
 mod hypervisor;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod irq;
+#[cfg(target_os = "linux")]
+pub mod memory;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod msi;
 

@@ -13,8 +13,10 @@ dillo-mmio.workspace = true
 log.workspace = true
 pmi.workspace = true
 thiserror.workspace = true
+vm-memory.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+anyhow.workspace = true
 kvm-bindings.workspace = true
 kvm-ioctls.workspace = true
 libc = "0.2"

@@ -14,8 +14,6 @@ mod error;
 // KVM/Linux-only submodules (memfd setup, gdb stub).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod gdb;
-#[cfg(target_os = "linux")]
-mod memory;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
@@ -889,19 +887,15 @@ pub(crate) fn run(
         });
     }
 
-    // ── 6. memfd + mmap ────────────────────────────────────────────
-    let memfd = memory::create_and_size(total_backed).map_err(RunError::MemfdSetup)?;
-    let mut gpa_map = memory::GpaMap::new();
-    let mut host_base: u64 = 0;
-    for r in &plan.memslots {
-        let host = memory::mmap_range(&memfd, host_base, r.size).map_err(RunError::Mmap)?;
-        gpa_map.add(r.gpa, host, r.size);
-        host_base += r.size;
-    }
+    // ── 6. KVM guest-memory backing ────────────────────────────────
+    let guest_memory =
+        backend_machine::memory::MappedMemory::new(plan.memslots.iter().map(|r| (r.gpa, r.size)))
+            .map_err(RunError::MemfdSetup)?;
 
     // ── 7. copy launch-time guest writes ───────────────────────────
     for write in &guest_writes {
-        gpa_map
+        guest_memory
+            .gpa_map()
             .write(write.gpa, &write.data)
             .map_err(|source| RunError::SectionWrite {
                 section: write.section.clone(),
@@ -912,36 +906,20 @@ pub(crate) fn run(
 
     // ── 8. create KVM VM + memslots ────────────────────────────────
     let mut vm = backend_machine::Vm::new()?;
-    for (slot_idx, r) in plan.memslots.iter().enumerate() {
-        let host_addr = gpa_map
-            .lookup(r.gpa)
-            .ok_or_else(|| RunError::SectionWrite {
-                section: format!("memslot[{slot_idx}]"),
-                gpa: r.gpa,
-                source: anyhow::anyhow!("no host mapping for GPA {:#x}", r.gpa),
-            })?;
+    for (slot_idx, r) in guest_memory.regions().iter().enumerate() {
         log::info!(
             "registering KVM memslot {}: [{:#x}..{:#x}) host={:#x}",
             slot_idx,
-            r.gpa,
-            r.gpa + r.size,
-            host_addr
+            r.gpa(),
+            r.gpa() + r.size(),
+            r.host_addr()
         );
         Attach::attach(
             &mut vm,
-            backend_machine::Memory::new(slot_idx as u32, r.gpa, host_addr, r.size),
+            backend_machine::Memory::new(slot_idx as u32, r.gpa(), r.host_addr(), r.size()),
         )?;
     }
-    let region_tuples: Vec<(u64, u64, u64)> = plan
-        .memslots
-        .iter()
-        .map(|r| {
-            let host = gpa_map.lookup(r.gpa).expect("memslot has host mapping");
-            (r.gpa, host, r.size)
-        })
-        .collect();
-    let guest_mem =
-        memory::build_guest_memory(&memfd, &region_tuples).map_err(RunError::MemfdSetup)?;
+    let guest_mem = guest_memory.guest_memory();
     vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
         guest_mem.clone(),
         SharedAccess::ReadWrite,
@@ -1053,7 +1031,7 @@ pub(crate) fn run(
             );
         }
         let stream = gdb::wait_for_gdb(port).map_err(|e| RunError::VcpuThread(e.to_string()))?;
-        let gpa_arc = Arc::new(gpa_map);
+        let gpa_arc = Arc::new(guest_memory.gpa_map().clone());
         let target = gdb::GdbTarget::new(
             vcpu0,
             gpa_arc,
@@ -1151,16 +1129,12 @@ pub(crate) fn run(
         });
     }
 
-    let memfd = memory::create_and_size(total_backed).map_err(RunError::MemfdSetup)?;
-    let mut gpa_map = memory::GpaMap::new();
-    let mut host_base: u64 = 0;
-    for r in &plan.memslots {
-        let host = memory::mmap_range(&memfd, host_base, r.size).map_err(RunError::Mmap)?;
-        gpa_map.add(r.gpa, host, r.size);
-        host_base += r.size;
-    }
+    let guest_memory =
+        backend_machine::memory::MappedMemory::new(plan.memslots.iter().map(|r| (r.gpa, r.size)))
+            .map_err(RunError::MemfdSetup)?;
     for write in &guest_writes {
-        gpa_map
+        guest_memory
+            .gpa_map()
             .write(write.gpa, &write.data)
             .map_err(|source| RunError::SectionWrite {
                 section: write.section.clone(),
@@ -1170,29 +1144,13 @@ pub(crate) fn run(
     }
 
     let mut vm = backend_machine::Vm::try_from(backend_machine::Config { dtb })?;
-    for (slot_idx, r) in plan.memslots.iter().enumerate() {
-        let host_addr = gpa_map
-            .lookup(r.gpa)
-            .ok_or_else(|| RunError::SectionWrite {
-                section: format!("memslot[{slot_idx}]"),
-                gpa: r.gpa,
-                source: anyhow::anyhow!("no host mapping for GPA {:#x}", r.gpa),
-            })?;
+    for (slot_idx, r) in guest_memory.regions().iter().enumerate() {
         Attach::attach(
             &mut vm,
-            backend_machine::Memory::new(slot_idx as u32, r.gpa, host_addr, r.size),
+            backend_machine::Memory::new(slot_idx as u32, r.gpa(), r.host_addr(), r.size()),
         )?;
     }
-    let region_tuples: Vec<(u64, u64, u64)> = plan
-        .memslots
-        .iter()
-        .map(|r| {
-            let host = gpa_map.lookup(r.gpa).expect("memslot has host mapping");
-            (r.gpa, host, r.size)
-        })
-        .collect();
-    let guest_mem =
-        memory::build_guest_memory(&memfd, &region_tuples).map_err(RunError::MemfdSetup)?;
+    let guest_mem = guest_memory.guest_memory();
     vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
         guest_mem.clone(),
         SharedAccess::ReadWrite,
