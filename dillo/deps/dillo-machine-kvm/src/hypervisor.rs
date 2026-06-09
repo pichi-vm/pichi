@@ -319,10 +319,6 @@ pub(crate) struct Vcpu {
 }
 
 impl Vcpu {
-    pub(crate) fn index(&self) -> u32 {
-        self.idx
-    }
-
     /// Apply boot-vCPU register state from a `pmi::vm::vcpu::x86_64::CpuState`.
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn set_x86_64_state(

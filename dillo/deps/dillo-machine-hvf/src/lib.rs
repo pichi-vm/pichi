@@ -22,17 +22,14 @@ mod imp {
     use std::sync::{Arc, Mutex};
     use std::sync::{
         Condvar,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, Ordering},
     };
-    use std::thread;
 
     use dillo_devtree::{
         FromDevTree,
         devtree::{NodeView, OwnedTree, PropertyView, Tree},
     };
-    use dillo_machine::{
-        BootVcpuState, Host, HostArchitecture, LaunchConfig, RamRange, RunControl, VcpuStop,
-    };
+    use dillo_machine::{BootVcpuState, Host, HostArchitecture, LaunchConfig, RamRange, VcpuStop};
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt,
@@ -126,6 +123,7 @@ mod imp {
     pub struct Vm {
         inner: crate::hypervisor::Vm,
         mmio_bus: Arc<Mutex<MmioBus>>,
+        cpu_runtime: Arc<CpuRuntime>,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
     }
 
@@ -143,10 +141,12 @@ mod imp {
         fn new(
             gic: &crate::hypervisor::GicParams,
             min_addr_space_bits: u32,
+            vcpus: u32,
         ) -> Result<Self, Error> {
             Ok(Self {
                 inner: crate::hypervisor::Vm::new(gic, min_addr_space_bits)?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
+                cpu_runtime: Arc::new(CpuRuntime::new(vcpus)),
                 shared_memory: Vec::new(),
             })
         }
@@ -161,6 +161,10 @@ mod imp {
 
         fn mmio_bus(&self) -> Arc<Mutex<MmioBus>> {
             Arc::clone(&self.mmio_bus)
+        }
+
+        fn cpu_runtime(&self) -> Arc<CpuRuntime> {
+            Arc::clone(&self.cpu_runtime)
         }
 
         /// Build a `vm-memory` view over HVF-mapped guest RAM.
@@ -250,6 +254,7 @@ mod imp {
     #[derive(Debug, Clone)]
     struct Config {
         dtb: Vec<u8>,
+        vcpus: u32,
         min_addr_space_bits: u32,
     }
 
@@ -261,7 +266,7 @@ mod imp {
             let mut tree = OwnedTree::materialize(&parsed);
             let gic = crate::hypervisor::GicParams::from_devtree(&mut tree)?
                 .ok_or(Error::MissingSubstrate("/interrupt-controller@*"))?;
-            Self::new(&gic, config.min_addr_space_bits)
+            Self::new(&gic, config.min_addr_space_bits, config.vcpus)
         }
     }
 
@@ -497,8 +502,8 @@ mod imp {
 
     impl dillo_machine::Machine for Vm {
         type Error = Error;
-        type Vcpu = Vcpu;
-        type Cpu = ();
+        type Cpu = Cpu;
+        type CpuState = CpuState;
         type Memory = Memory;
 
         const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
@@ -506,12 +511,41 @@ mod imp {
         fn from_launch_config(config: LaunchConfig) -> Result<Self, Self::Error> {
             Self::try_from(Config {
                 dtb: config.dtb,
+                vcpus: config.vcpus,
                 min_addr_space_bits: config.min_addr_space_bits,
             })
         }
 
-        fn attach_ram(&mut self, ranges: &[RamRange]) -> Result<(), Self::Error> {
-            for range in ranges {
+        fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Self::Error> {
+            self.inner.write_guest(gpa, data)
+        }
+
+        fn reset_for_reboot(&mut self) -> Result<(), Self::Error> {
+            self.inner.reset_gic()
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct Memory {
+        ranges: Vec<RamRange>,
+    }
+
+    impl dillo_machine::Memory for Memory {
+        type Error = Error;
+
+        fn from_ranges(ranges: &[RamRange]) -> Result<Self, Self::Error> {
+            Ok(Self {
+                ranges: ranges.to_vec(),
+            })
+        }
+    }
+
+    impl Attach<Memory> for Vm {
+        type Error = Error;
+        type Output = ();
+
+        fn attach(&mut self, item: Memory) -> Result<Self::Output, Self::Error> {
+            for range in item.ranges {
                 self.add_memory(range.gpa, range.size)?;
             }
             let guest_mem = self.guest_memory()?;
@@ -521,64 +555,69 @@ mod imp {
             ))];
             Ok(())
         }
-
-        fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Self::Error> {
-            self.inner.write_guest(gpa, data)
-        }
-
-        fn create_vcpu(
-            &mut self,
-            _index: u32,
-            _cpu_profile: &str,
-            _boot_state: Option<&dyn BootVcpuState>,
-        ) -> Result<Self::Vcpu, Self::Error> {
-            Err(Error::Hv(
-                "HVF creates vCPUs inside its backend-owned SMP runner".to_string(),
-            ))
-        }
-
-        fn run_vcpus(
-            &mut self,
-            count: u32,
-            _cpu_profile: &str,
-            boot_state: &dyn BootVcpuState,
-            _control: Arc<dyn RunControl>,
-        ) -> Result<VcpuStop, Self::Error> {
-            let state = boot_state
-                .aarch64()
-                .ok_or_else(|| Error::Hv("boot vCPU state is not aarch64".to_string()))?
-                .clone();
-            run_smp(count, state, self.mmio_bus())
-        }
-
-        fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
-            Ok(())
-        }
-
-        fn reset_for_reboot(&mut self) -> Result<(), Self::Error> {
-            self.inner.reset_gic()
-        }
     }
 
-    /// HVF RAM range selected by dillo from the merged DTB memory plan.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Memory {
-        base: u64,
-        size: u64,
+    #[derive(Debug)]
+    pub struct CpuState {
+        index: u32,
+        boot_state: Option<pmi::vm::vcpu::aarch64::CpuState>,
     }
 
-    impl Memory {
-        pub fn new(base: u64, size: u64) -> Self {
-            Self { base, size }
-        }
-    }
-
-    impl Attach<Memory> for Vm {
+    impl dillo_machine::CpuState for CpuState {
         type Error = Error;
-        type Output = ();
 
-        fn attach(&mut self, item: Memory) -> Result<Self::Output, Self::Error> {
-            self.add_memory(item.base, item.size)
+        fn new(
+            index: u32,
+            _cpu_profile: &str,
+            boot_state: Option<&dyn BootVcpuState>,
+        ) -> Result<Self, Self::Error> {
+            let boot_state = boot_state
+                .map(|state| {
+                    state
+                        .aarch64()
+                        .cloned()
+                        .ok_or_else(|| Error::Hv("boot vCPU state is not aarch64".to_string()))
+                })
+                .transpose()?;
+            Ok(Self { index, boot_state })
+        }
+    }
+
+    impl Attach<CpuState> for Vm {
+        type Error = Error;
+        type Output = Arc<Cpu>;
+
+        fn attach(&mut self, item: CpuState) -> Result<Self::Output, Self::Error> {
+            let boot_state = item
+                .boot_state
+                .ok_or_else(|| Error::Hv("boot vCPU state is not aarch64".to_string()))?;
+            Ok(Arc::new(Cpu {
+                index: item.index as usize,
+                boot_state,
+                mmio_bus: self.mmio_bus(),
+                runtime: self.cpu_runtime(),
+            }))
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Cpu {
+        index: usize,
+        boot_state: pmi::vm::vcpu::aarch64::CpuState,
+        mmio_bus: Arc<Mutex<MmioBus>>,
+        runtime: Arc<CpuRuntime>,
+    }
+
+    impl dillo_machine::Cpu for Cpu {
+        type Error = Error;
+
+        fn run(&self) -> Result<VcpuStop, Self::Error> {
+            self.runtime.run_cpu(self)
+        }
+
+        fn stop(&self) -> Result<(), Self::Error> {
+            self.runtime.request_exit();
+            Ok(())
         }
     }
 
@@ -712,185 +751,147 @@ mod imp {
         }
     }
 
-    impl dillo_machine::Vcpu for Vcpu {
-        type Error = Error;
+    #[derive(Debug)]
+    struct CpuRuntime {
+        shutdown: AtomicBool,
+        slots: Vec<CpuSlot>,
+        handles: Vec<Mutex<Option<VcpuHandle>>>,
+    }
 
-        fn run(&mut self) -> Result<VcpuStop, Self::Error> {
+    impl CpuRuntime {
+        fn new(vcpus: u32) -> Self {
+            let count = vcpus.max(1) as usize;
+            Self {
+                shutdown: AtomicBool::new(false),
+                slots: (0..count).map(|_| CpuSlot::new()).collect(),
+                handles: (0..count).map(|_| Mutex::new(None)).collect(),
+            }
+        }
+
+        fn run_cpu(&self, cpu: &Cpu) -> Result<VcpuStop, Error> {
+            let idx = cpu.index;
+            let init = if idx == 0 {
+                self.slots[0].started.store(true, Ordering::SeqCst);
+                cpu.boot_state.clone()
+            } else {
+                match self.slots[idx].wait(&self.shutdown) {
+                    Some((entry, context)) => secondary_state(entry, context, &cpu.boot_state),
+                    None => return Ok(VcpuStop::Stopped),
+                }
+            };
+            let vcpu = create_vcpu_current_thread(Arc::clone(&cpu.mmio_bus))?;
+            vcpu.set_mpidr(mpidr_for(idx))?;
+            vcpu.set_aarch64_state(&init)?;
+            *self.handles[idx].lock().expect("handle poisoned") = Some(vcpu.handle());
+            if idx != 0 {
+                log::info!("vCPU{idx} powered on: pc={:#x}", init.pc);
+            }
+
+            let result = self.run_vcpu_loop(idx, &vcpu, &cpu.boot_state);
+            self.shutdown.store(true, Ordering::SeqCst);
+            self.wake_waiters();
+            self.force_exit_live();
+            result
+        }
+
+        fn run_vcpu_loop(
+            &self,
+            idx: usize,
+            vcpu: &Vcpu,
+            boot_state: &pmi::vm::vcpu::aarch64::CpuState,
+        ) -> Result<VcpuStop, Error> {
             loop {
-                match Vcpu::run(self)? {
+                if self.shutdown.load(Ordering::SeqCst) {
+                    return Ok(VcpuStop::Stopped);
+                }
+                match vcpu.run()? {
+                    VmExit::MmioRead { .. } | VmExit::MmioWrite { .. } => {}
                     VmExit::Hvc { args } => match psci::dispatch(&args) {
-                        psci::PsciAction::SystemOff => return Ok(VcpuStop::GuestPoweroff),
-                        psci::PsciAction::SystemReset => return Ok(VcpuStop::GuestReset),
-                        psci::PsciAction::Return(value) => self.set_gpr(0, value)?,
-                        psci::PsciAction::CpuOff | psci::PsciAction::CpuOn { .. } => {}
+                        psci::PsciAction::SystemOff => {
+                            log::info!("guest issued PSCI SYSTEM_OFF (vCPU{idx})");
+                            return Ok(VcpuStop::GuestPoweroff);
+                        }
+                        psci::PsciAction::SystemReset => {
+                            log::info!("guest issued PSCI SYSTEM_RESET (vCPU{idx})");
+                            return Ok(VcpuStop::GuestReset);
+                        }
+                        psci::PsciAction::CpuOff => {
+                            log::info!("vCPU{idx} PSCI CPU_OFF; parking");
+                            self.slots[idx].started.store(false, Ordering::SeqCst);
+                            match self.slots[idx].wait(&self.shutdown) {
+                                Some((entry, context)) => {
+                                    let st = secondary_state(entry, context, boot_state);
+                                    vcpu.set_aarch64_state(&st)?;
+                                }
+                                None => return Ok(VcpuStop::Stopped),
+                            }
+                        }
+                        psci::PsciAction::CpuOn {
+                            target,
+                            entry,
+                            context,
+                        } => {
+                            let tgt = (target & 0x00ff_ffff) as usize;
+                            let code = if tgt >= self.slots.len() {
+                                log::warn!(
+                                    "vCPU{idx} CPU_ON target={target:#x} out of range (n={})",
+                                    self.slots.len()
+                                );
+                                psci::ret::INVALID_PARAMETERS
+                            } else if self.slots[tgt].started.swap(true, Ordering::SeqCst) {
+                                psci::ret::ALREADY_ON
+                            } else {
+                                log::info!("vCPU{idx} powers on vCPU{tgt} at pc={entry:#x}");
+                                self.slots[tgt].deposit(entry, context);
+                                psci::ret::SUCCESS
+                            };
+                            vcpu.set_gpr(0, code)?;
+                        }
+                        psci::PsciAction::Return(value) => {
+                            vcpu.set_gpr(0, value)?;
+                        }
                     },
                     VmExit::Smc { args } => {
                         log::warn!("unexpected SMC exit from HVF vCPU: args={args:?}");
                     }
-                    VmExit::MmioRead { .. } | VmExit::MmioWrite { .. } | VmExit::Halted => {}
+                    VmExit::Unknown(reason) if self.shutdown.load(Ordering::SeqCst) => {
+                        let _ = reason;
+                        return Ok(VcpuStop::Stopped);
+                    }
                     VmExit::Unknown(reason) => return Err(Error::Hv(reason)),
+                    other => {
+                        let (esr, elr, far) = vcpu.el1_exception_state();
+                        log::warn!(
+                            "vCPU{idx} unhandled exit: {other:?}; guest EL1 state at first \
+                             exception: ESR_EL1={esr:#x} (EC={:#x}) ELR_EL1={elr:#x} \
+                             FAR_EL1={far:#x}",
+                            esr >> 26
+                        );
+                        return Err(Error::Hv(format!("unhandled HVF exit: {other:?}")));
+                    }
                 }
             }
         }
-    }
 
-    const STOP_NONE: u8 = 0;
-    const STOP_POWEROFF: u8 = 1;
-    const STOP_RESET: u8 = 2;
-
-    /// Run one HVF AArch64 guest with one thread per vCPU.
-    ///
-    /// HVF exposes PSCI HVCs to userspace, so the backend owns the HVC decode,
-    /// secondary CPU parking, and raw-exit handling. The supervisor sees only a
-    /// lifecycle stop reason.
-    fn run_smp(
-        vcpus: u32,
-        boot_state: pmi::vm::vcpu::aarch64::CpuState,
-        mmio_bus: Arc<Mutex<MmioBus>>,
-    ) -> Result<VcpuStop, Error> {
-        let n = vcpus.max(1) as usize;
-        let shutdown = AtomicBool::new(false);
-        let stop = AtomicU8::new(STOP_NONE);
-        let slots: Vec<CpuSlot> = (0..n).map(|_| CpuSlot::new()).collect();
-        let handles: Vec<Mutex<Option<VcpuHandle>>> = (0..n).map(|_| Mutex::new(None)).collect();
-        let first_error = Mutex::new(None);
-
-        thread::scope(|scope| {
-            for idx in 0..n {
-                let mmio = Arc::clone(&mmio_bus);
-                let boot = boot_state.clone();
-                let slots = &slots;
-                let handles = &handles;
-                let shutdown = &shutdown;
-                let stop = &stop;
-                let first_error = &first_error;
-                scope.spawn(move || {
-                    if let Err(e) = vcpu_thread(idx, n, boot, mmio, slots, handles, shutdown, stop)
-                    {
-                        log::error!("vCPU{idx} thread error: {e}");
-                        let mut error = first_error.lock().expect("error lock poisoned");
-                        if error.is_none() {
-                            *error = Some(e.to_string());
-                        }
-                    }
-                    shutdown.store(true, Ordering::SeqCst);
-                    for s in slots {
-                        s.cv.notify_all();
-                    }
-                    let live: Vec<VcpuHandle> = handles
-                        .iter()
-                        .filter_map(|h| h.lock().expect("handle poisoned").clone())
-                        .collect();
-                    let _ = force_vcpus_exit(&live);
-                });
-            }
-        });
-
-        if let Some(error) = first_error.lock().expect("error lock poisoned").take() {
-            return Err(Error::Hv(error));
+        fn request_exit(&self) {
+            self.shutdown.store(true, Ordering::SeqCst);
+            self.wake_waiters();
+            self.force_exit_live();
         }
 
-        match stop.load(Ordering::SeqCst) {
-            STOP_POWEROFF => Ok(VcpuStop::GuestPoweroff),
-            STOP_RESET => Ok(VcpuStop::GuestReset),
-            _ => Ok(VcpuStop::Stopped),
-        }
-    }
-
-    fn set_stop(stop: &AtomicU8, value: u8) {
-        let _ = stop.compare_exchange(STOP_NONE, value, Ordering::SeqCst, Ordering::SeqCst);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn vcpu_thread(
-        idx: usize,
-        n: usize,
-        boot_state: pmi::vm::vcpu::aarch64::CpuState,
-        mmio_bus: Arc<Mutex<MmioBus>>,
-        slots: &[CpuSlot],
-        handles: &[Mutex<Option<VcpuHandle>>],
-        shutdown: &AtomicBool,
-        stop: &AtomicU8,
-    ) -> Result<(), Error> {
-        let init = if idx == 0 {
-            slots[0].started.store(true, Ordering::SeqCst);
-            boot_state.clone()
-        } else {
-            match slots[idx].wait(shutdown) {
-                Some((entry, context)) => secondary_state(entry, context, &boot_state),
-                None => return Ok(()),
+        fn wake_waiters(&self) {
+            for slot in &self.slots {
+                slot.cv.notify_all();
             }
-        };
-        let vcpu = create_vcpu_current_thread(mmio_bus)?;
-        vcpu.set_mpidr(mpidr_for(idx))?;
-        vcpu.set_aarch64_state(&init)?;
-        *handles[idx].lock().expect("handle poisoned") = Some(vcpu.handle());
-        if idx != 0 {
-            log::info!("vCPU{idx} powered on: pc={:#x}", init.pc);
         }
 
-        loop {
-            if shutdown.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-            match vcpu.run()? {
-                VmExit::MmioRead { .. } | VmExit::MmioWrite { .. } => {}
-                VmExit::Hvc { args } => match psci::dispatch(&args) {
-                    psci::PsciAction::SystemOff => {
-                        log::info!("guest issued PSCI SYSTEM_OFF (vCPU{idx})");
-                        set_stop(stop, STOP_POWEROFF);
-                        return Ok(());
-                    }
-                    psci::PsciAction::SystemReset => {
-                        log::info!("guest issued PSCI SYSTEM_RESET (vCPU{idx})");
-                        set_stop(stop, STOP_RESET);
-                        return Ok(());
-                    }
-                    psci::PsciAction::CpuOff => {
-                        log::info!("vCPU{idx} PSCI CPU_OFF; parking");
-                        slots[idx].started.store(false, Ordering::SeqCst);
-                        match slots[idx].wait(shutdown) {
-                            Some((entry, context)) => {
-                                let st = secondary_state(entry, context, &boot_state);
-                                vcpu.set_aarch64_state(&st)?;
-                            }
-                            None => return Ok(()),
-                        }
-                    }
-                    psci::PsciAction::CpuOn {
-                        target,
-                        entry,
-                        context,
-                    } => {
-                        let tgt = (target & 0x00ff_ffff) as usize;
-                        let code = if tgt >= n {
-                            log::warn!("vCPU{idx} CPU_ON target={target:#x} out of range (n={n})");
-                            psci::ret::INVALID_PARAMETERS
-                        } else if slots[tgt].started.swap(true, Ordering::SeqCst) {
-                            psci::ret::ALREADY_ON
-                        } else {
-                            log::info!("vCPU{idx} powers on vCPU{tgt} at pc={entry:#x}");
-                            slots[tgt].deposit(entry, context);
-                            psci::ret::SUCCESS
-                        };
-                        vcpu.set_gpr(0, code)?;
-                    }
-                    psci::PsciAction::Return(value) => {
-                        vcpu.set_gpr(0, value)?;
-                    }
-                },
-                VmExit::Unknown(_) if shutdown.load(Ordering::SeqCst) => return Ok(()),
-                other => {
-                    let (esr, elr, far) = vcpu.el1_exception_state();
-                    log::warn!(
-                        "vCPU{idx} unhandled exit: {other:?}; guest EL1 state at first \
-                         exception: ESR_EL1={esr:#x} (EC={:#x}) ELR_EL1={elr:#x} \
-                         FAR_EL1={far:#x}",
-                        esr >> 26
-                    );
-                    return Err(Error::Hv(format!("unhandled HVF exit: {other:?}")));
-                }
-            }
+        fn force_exit_live(&self) {
+            let live: Vec<VcpuHandle> = self
+                .handles
+                .iter()
+                .filter_map(|h| h.lock().expect("handle poisoned").clone())
+                .collect();
+            let _ = force_vcpus_exit(&live);
         }
     }
 
@@ -1085,6 +1086,7 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use std::sync::Arc;
+        use std::thread;
 
         use super::*;
 

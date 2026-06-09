@@ -2045,29 +2045,35 @@ CI verification:
 - `27218684156` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
   `macos-arm64`, and `windows-2025`.
 
-Audit fix 14 - remove backend CPU/memory attach compatibility:
+Audit fix 14 - move CPU execution to `Arc<Cpu>::run/stop`:
 - Removed KVM/WHP public PIO callback aliases and constructor-time PIO
   injection from their vCPU creation paths. Legacy x86 config-port probes now
   fail inside the backend run loop by returning all ones for PIO reads and
   dropping PIO writes.
-- Removed KVM/WHP `Attach<Cpu>` and `Attach<Memory>` compatibility
-  implementations. Their associated `Cpu` and `Memory` types are now opaque
-  markers; callers must use `Machine::attach_ram` and `Machine::create_vcpu`.
-- Made KVM/WHP backend-local `VcpuExit` facade enums private. The public vCPU
-  API remains the common `dillo_machine::Vcpu::run() -> VcpuStop` path.
+- Replaced the public `Vcpu`/`RunControl` shape with `CpuState` and
+  `Arc<Cpu>`. Dillo constructs abstract backend CPU state, attaches it to the
+  selected machine, runs each `Arc<Cpu>` in a dillo-owned thread, and stops
+  remaining CPUs through `Cpu::stop()`.
+- Kept OS-specific stop mechanics inside `dillo-machine-*`: KVM signals the
+  `KVM_RUN` thread, WHP uses its cancel handle internally, and HVF creates the
+  real vCPU inside `Cpu::run()` on the dillo-owned worker thread.
 
 Evidence:
-- `grep -RInE "pub type Pio|pub enum VcpuExit|Attach<Memory>|Attach<Cpu>|Memory::from_ranges|Memory::new\\(|create_vcpu_with_pio|pub pio_read|pub pio_write" dillo/deps/dillo-machine-kvm/src dillo/deps/dillo-machine-whp/src dillo/src --include='*.rs'`
-  reports no stale public compatibility API.
+- `grep -RInE "pub type Pio|pub enum VcpuExit|create_vcpu_with_pio|pub pio_read|pub pio_write" dillo/deps/dillo-machine-kvm/src dillo/deps/dillo-machine-whp/src dillo/src --include='*.rs'`
+  reports no stale public PIO/debug compatibility API.
+- `grep -RIn "RunControl\\|pub trait Vcpu\\|dillo_machine::Vcpu\\|type Vcpu\\|Machine::run_vcpus\\|run_vcpus(" dillo/src dillo/deps/dillo-machine/src dillo/deps/dillo-machine-kvm/src dillo/deps/dillo-machine-whp/src dillo/deps/dillo-machine-hvf/src --include='*.rs'`
+  reports no stale public vCPU/run-control API.
+- `grep -RInE "type CpuState|impl Attach<CpuState> for Vm|impl dillo_machine::Cpu for Cpu" dillo/deps/dillo-machine-kvm/src dillo/deps/dillo-machine-whp/src dillo/deps/dillo-machine-hvf/src --include='*.rs'`
+  reports the backend CPU state attachment and CPU run/stop implementations.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `git diff --check`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-kvm -p dillo-machine-whp -p dillo`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine -p dillo-machine-kvm -p dillo-machine-whp -p dillo-machine-hvf -p dillo`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine-kvm -p dillo-machine-whp -p dillo-machine -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine-kvm -p dillo-machine-whp -p dillo-machine-hvf -p dillo-machine -p dillo --test architecture_cfg`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`

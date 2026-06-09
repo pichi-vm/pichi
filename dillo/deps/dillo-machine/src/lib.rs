@@ -4,7 +4,6 @@
 //! implementations. Concrete backend crates implement this trait boundary, and
 //! the top-level `dillo` launcher composes only through these APIs.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 /// Selected-machine launch configuration derived by dillo from PMI and DTB.
@@ -33,18 +32,6 @@ pub trait BootVcpuState {
 
     fn aarch64(&self) -> Option<&pmi::vm::vcpu::aarch64::CpuState> {
         None
-    }
-}
-
-/// Supervisor-provided lifecycle control observed by machine run loops.
-pub trait RunControl: Send + Sync + 'static {
-    fn stop_requested(&self) -> Option<VcpuStop>;
-}
-
-impl RunControl for std::sync::atomic::AtomicBool {
-    fn stop_requested(&self) -> Option<VcpuStop> {
-        self.load(std::sync::atomic::Ordering::Acquire)
-            .then_some(VcpuStop::Stopped)
     }
 }
 
@@ -83,43 +70,53 @@ pub trait Host {
     fn install_signal_watchers(supervisor_shutdown: &'static AtomicBool);
 }
 
+/// Backend-owned memory input constructed from DTB-derived RAM ranges.
+pub trait Memory: 'static {
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    fn from_ranges(ranges: &[RamRange]) -> Result<Self, Self::Error>
+    where
+        Self: Sized;
+}
+
+/// Backend-owned CPU input constructed from PMI/DTB-derived launch facts.
+pub trait CpuState: Send + 'static {
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    fn new(
+        index: u32,
+        cpu_profile: &str,
+        boot_state: Option<&dyn BootVcpuState>,
+    ) -> Result<Self, Self::Error>
+    where
+        Self: Sized;
+}
+
+/// Backend-owned CPU object attached to a machine.
+pub trait Cpu: Send + Sync + 'static {
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Run this CPU on the current thread until guest or supervisor stop.
+    fn run(&self) -> Result<VcpuStop, Self::Error>;
+
+    /// Make a currently running `run()` call return as soon as the backend can.
+    fn stop(&self) -> Result<(), Self::Error>;
+}
+
 /// A constructed VM capable of accepting DTB-derived resources and vCPUs.
 pub trait Machine: Sized + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
-    type Vcpu: Vcpu<Error = Self::Error>;
-    type Cpu: 'static;
-    type Memory: 'static;
+    type Cpu: Cpu<Error = Self::Error> + Send;
+    type CpuState: CpuState<Error = Self::Error>;
+    type Memory: Memory<Error = Self::Error>;
 
     const DEVICE_MODEL: DeviceModel;
 
     /// Construct the backend VM from selected-machine launch facts.
     fn from_launch_config(config: LaunchConfig) -> Result<Self, Self::Error>;
 
-    /// Attach all standard guest RAM ranges for this VM.
-    fn attach_ram(&mut self, ranges: &[RamRange]) -> Result<(), Self::Error>;
-
     /// Write launch data into guest RAM through backend-owned memory access.
     fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Self::Error>;
-
-    /// Create one backend CPU input and attach it as a runnable vCPU.
-    fn create_vcpu(
-        &mut self,
-        index: u32,
-        cpu_profile: &str,
-        boot_state: Option<&dyn BootVcpuState>,
-    ) -> Result<Self::Vcpu, Self::Error>;
-
-    /// Run the VM's vCPUs until guest or supervisor lifecycle stop.
-    fn run_vcpus(
-        &mut self,
-        count: u32,
-        cpu_profile: &str,
-        boot_state: &dyn BootVcpuState,
-        control: Arc<dyn RunControl>,
-    ) -> Result<VcpuStop, Self::Error>;
-
-    /// Make every currently running vCPU for this machine leave `Vcpu::run`.
-    fn request_vcpu_exit(&self) -> Result<(), Self::Error>;
 
     /// Prepare backend-owned run state after all vCPUs have been created.
     fn prepare_vcpu_run(&mut self) -> Result<(), Self::Error> {
@@ -130,14 +127,6 @@ pub trait Machine: Sized + 'static {
     fn reset_for_reboot(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
-}
-
-/// One runnable vCPU owned by a machine backend.
-pub trait Vcpu: 'static {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Run until the guest or supervisor reaches a lifecycle stop point.
-    fn run(&mut self) -> Result<VcpuStop, Self::Error>;
 }
 
 /// Successful vCPU lifecycle outcomes reported to the supervisor.
@@ -159,6 +148,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use dillo_mmio::Attach;
 
     #[derive(Debug)]
     struct TestError;
@@ -171,28 +161,72 @@ mod tests {
 
     impl std::error::Error for TestError {}
 
-    struct TestCpu;
+    struct TestCpuState;
+
+    impl CpuState for TestCpuState {
+        type Error = TestError;
+
+        fn new(
+            _index: u32,
+            _cpu_profile: &str,
+            _boot_state: Option<&dyn BootVcpuState>,
+        ) -> Result<Self, Self::Error> {
+            Ok(Self)
+        }
+    }
 
     struct TestMemory;
 
-    struct TestVcpu {
+    impl Memory for TestMemory {
+        type Error = TestError;
+
+        fn from_ranges(_ranges: &[RamRange]) -> Result<Self, Self::Error> {
+            Ok(Self)
+        }
+    }
+
+    struct TestCpu {
         stop: VcpuStop,
     }
 
-    impl Vcpu for TestVcpu {
+    impl Cpu for TestCpu {
         type Error = TestError;
 
-        fn run(&mut self) -> Result<VcpuStop, Self::Error> {
+        fn run(&self) -> Result<VcpuStop, Self::Error> {
             Ok(self.stop)
+        }
+
+        fn stop(&self) -> Result<(), Self::Error> {
+            Ok(())
         }
     }
 
     struct TestMachine;
 
+    impl Attach<TestMemory> for TestMachine {
+        type Error = TestError;
+        type Output = ();
+
+        fn attach(&mut self, _item: TestMemory) -> Result<Self::Output, Self::Error> {
+            Ok(())
+        }
+    }
+
+    impl Attach<TestCpuState> for TestMachine {
+        type Error = TestError;
+        type Output = Arc<TestCpu>;
+
+        fn attach(&mut self, _item: TestCpuState) -> Result<Self::Output, Self::Error> {
+            Ok(Arc::new(TestCpu {
+                stop: VcpuStop::Stopped,
+            }))
+        }
+    }
+
     impl Machine for TestMachine {
         type Error = TestError;
-        type Vcpu = TestVcpu;
         type Cpu = TestCpu;
+        type CpuState = TestCpuState;
         type Memory = TestMemory;
 
         const DEVICE_MODEL: DeviceModel = DeviceModel::Thread;
@@ -201,36 +235,7 @@ mod tests {
             Ok(Self)
         }
 
-        fn attach_ram(&mut self, _ranges: &[RamRange]) -> Result<(), Self::Error> {
-            Ok(())
-        }
-
         fn write_guest(&mut self, _gpa: u64, _data: &[u8]) -> Result<(), Self::Error> {
-            Ok(())
-        }
-
-        fn create_vcpu(
-            &mut self,
-            _index: u32,
-            _cpu_profile: &str,
-            _boot_state: Option<&dyn BootVcpuState>,
-        ) -> Result<Self::Vcpu, Self::Error> {
-            Ok(TestVcpu {
-                stop: VcpuStop::Stopped,
-            })
-        }
-
-        fn run_vcpus(
-            &mut self,
-            _count: u32,
-            _cpu_profile: &str,
-            _boot_state: &dyn BootVcpuState,
-            _control: Arc<dyn RunControl>,
-        ) -> Result<VcpuStop, Self::Error> {
-            Ok(VcpuStop::Stopped)
-        }
-
-        fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Ok(())
         }
     }
@@ -238,20 +243,19 @@ mod tests {
     #[test]
     fn machine_uses_common_launch_ram_and_vcpu_api() {
         let mut machine = TestMachine;
-        machine
-            .attach_ram(&[RamRange {
-                gpa: 0x1000,
-                size: 0x2000,
-            }])
-            .expect("RAM attached");
+        let memory = TestMemory::from_ranges(&[RamRange {
+            gpa: 0x1000,
+            size: 0x2000,
+        }])
+        .expect("memory constructed");
+        Attach::attach(&mut machine, memory).expect("RAM attached");
         machine
             .write_guest(0x1000, b"boot")
             .expect("guest write accepted");
-        let mut vcpu = machine
-            .create_vcpu(0, "test-profile", None)
-            .expect("vCPU created");
+        let state = TestCpuState::new(0, "test-profile", None).expect("CPU state constructed");
+        let cpu = Attach::attach(&mut machine, state).expect("CPU attached");
 
-        assert_eq!(vcpu.run().expect("vCPU run"), VcpuStop::Stopped);
-        machine.request_vcpu_exit().expect("exit requested");
+        cpu.stop().expect("CPU stopped");
+        assert_eq!(cpu.run().expect("CPU ran"), VcpuStop::Stopped);
     }
 }

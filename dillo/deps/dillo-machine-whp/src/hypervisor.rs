@@ -444,10 +444,6 @@ pub(crate) struct Vcpu {
 }
 
 impl Vcpu {
-    pub(crate) fn index(&self) -> u32 {
-        self.idx
-    }
-
     pub(crate) fn cancel_handle(&self) -> VcpuCancel {
         VcpuCancel {
             partition: Arc::clone(&self.partition),
@@ -528,7 +524,7 @@ impl Vcpu {
 }
 
 #[derive(Clone, Debug)]
-pub struct VcpuCancel {
+pub(crate) struct VcpuCancel {
     partition: Arc<VmInner>,
     idx: u32,
 }

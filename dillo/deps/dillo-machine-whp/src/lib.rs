@@ -28,9 +28,7 @@ mod imp {
         FromDevTree,
         devtree::{NodeView, OwnedTree, PropertyView, Tree},
     };
-    use dillo_machine::{
-        BootVcpuState, Host, HostArchitecture, LaunchConfig, RamRange, RunControl, VcpuStop,
-    };
+    use dillo_machine::{BootVcpuState, Host, HostArchitecture, LaunchConfig, RamRange, VcpuStop};
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt,
@@ -39,8 +37,8 @@ mod imp {
     use vm_memory::{GuestAddress, GuestMemoryMmap};
 
     use crate::VmExit;
+    pub use crate::hypervisor::Error;
     use crate::hypervisor::InterruptController;
-    pub use crate::hypervisor::{Error, VcpuCancel};
     use crate::ioapic::IoApic;
 
     fn install_signal_watchers(_supervisor_shutdown: &'static AtomicBool) {}
@@ -59,7 +57,6 @@ mod imp {
     pub struct Vm {
         inner: crate::hypervisor::Vm,
         mmio_bus: Arc<Mutex<MmioBus>>,
-        vcpu_cancels: Arc<Mutex<Vec<VcpuCancel>>>,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
         ioapic: Option<Arc<IoApic>>,
     }
@@ -104,7 +101,6 @@ mod imp {
             Ok(Self {
                 inner: crate::hypervisor::Vm::new_x86_64_with_local_apic_count(processor_count)?,
                 mmio_bus,
-                vcpu_cancels: Arc::new(Mutex::new(Vec::new())),
                 shared_memory: Vec::new(),
                 ioapic,
             })
@@ -114,26 +110,22 @@ mod imp {
             self.inner.set_memory(memory)
         }
 
+        fn attach_guest_memory(&mut self, memory: GuestMemoryMmap) -> Result<(), Error> {
+            self.set_memory(memory)?;
+            let guest_mem = self.guest_memory()?;
+            self.shared_memory = vec![Arc::new(dillo_mmio::MappedSharedMemory::for_guest_memory(
+                guest_mem,
+                dillo_mmio::SharedAccess::ReadWrite,
+            ))];
+            Ok(())
+        }
+
         fn create_vcpu_inner(&self, idx: u32, cpu_profile: &str) -> Result<Vcpu, Error> {
             let inner = self.inner.create_vcpu(idx, cpu_profile)?;
-            self.vcpu_cancels
-                .lock()
-                .expect("vCPU cancel list poisoned")
-                .push(inner.cancel_handle());
             Ok(Vcpu {
                 inner,
                 mmio_bus: Arc::clone(&self.mmio_bus),
             })
-        }
-
-        fn request_vcpu_exit(&self) -> Result<(), Error> {
-            self.exit_requester().request_vcpu_exit()
-        }
-
-        fn exit_requester(&self) -> VcpuExitRequester {
-            VcpuExitRequester {
-                vcpu_cancels: Arc::clone(&self.vcpu_cancels),
-            }
         }
 
         fn fixed_interrupt_requester(&self) -> FixedInterruptRequester {
@@ -217,8 +209,8 @@ mod imp {
 
     impl dillo_machine::Machine for Vm {
         type Error = Error;
-        type Vcpu = Vcpu;
         type Cpu = Cpu;
+        type CpuState = CpuState;
         type Memory = Memory;
 
         const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
@@ -230,107 +222,8 @@ mod imp {
             })
         }
 
-        fn attach_ram(&mut self, ranges: &[RamRange]) -> Result<(), Self::Error> {
-            let memory =
-                guest_memory_from_ranges(ranges.iter().map(|range| (range.gpa, range.size)))?;
-            self.set_memory(memory)?;
-            let guest_mem = self.guest_memory()?;
-            self.shared_memory = vec![Arc::new(dillo_mmio::MappedSharedMemory::for_guest_memory(
-                guest_mem,
-                dillo_mmio::SharedAccess::ReadWrite,
-            ))];
-            Ok(())
-        }
-
         fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Self::Error> {
             self.inner.write_guest(gpa, data)
-        }
-
-        fn create_vcpu(
-            &mut self,
-            index: u32,
-            cpu_profile: &str,
-            boot_state: Option<&dyn BootVcpuState>,
-        ) -> Result<Self::Vcpu, Self::Error> {
-            let mut vcpu = self.create_vcpu_inner(index, cpu_profile)?;
-            if let Some(boot_state) = boot_state {
-                let state = boot_state
-                    .x86_64()
-                    .ok_or_else(|| Error::UnhandledExit("boot vCPU state is not x86_64".into()))?;
-                vcpu.set_x86_64_state(state)?;
-            }
-            Ok(vcpu)
-        }
-
-        fn run_vcpus(
-            &mut self,
-            count: u32,
-            cpu_profile: &str,
-            boot_state: &dyn BootVcpuState,
-            control: Arc<dyn RunControl>,
-        ) -> Result<VcpuStop, Self::Error> {
-            let mut vcpus = Vec::with_capacity(count as usize);
-            for index in 0..count {
-                let state = (index == 0).then_some(boot_state);
-                vcpus.push(self.create_vcpu(index, cpu_profile, state)?);
-            }
-            let shutdown = Arc::new(AtomicBool::new(false));
-            let mut joins = Vec::with_capacity(vcpus.len());
-            for mut vcpu in vcpus {
-                let shutdown_c = Arc::clone(&shutdown);
-                let control_c = Arc::clone(&control);
-                let exit_requester = self.exit_requester();
-                joins.push(std::thread::spawn(move || -> Result<VcpuStop, Error> {
-                    let index = vcpu.index();
-                    let result = vcpu.run_until_stop(|| {
-                        if shutdown_c.load(std::sync::atomic::Ordering::Acquire) {
-                            return Some(VcpuStop::Stopped);
-                        }
-                        if let Some(stop) = control_c.stop_requested() {
-                            log::info!("vCPU {index}: supervisor stop observed");
-                            shutdown_c.store(true, std::sync::atomic::Ordering::Release);
-                            return Some(stop);
-                        }
-                        None
-                    });
-                    shutdown_c.store(true, std::sync::atomic::Ordering::Release);
-                    let _ = exit_requester.request_vcpu_exit();
-                    result
-                }));
-            }
-
-            let mut first_stop = VcpuStop::Stopped;
-            let mut first_error = None;
-            for join in joins {
-                match join.join() {
-                    Ok(Ok(stop)) => {
-                        if matches!(stop, VcpuStop::GuestReset | VcpuStop::GuestPoweroff) {
-                            first_stop = stop;
-                        }
-                        if shutdown.load(std::sync::atomic::Ordering::Acquire) {
-                            self.request_vcpu_exit()?;
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        shutdown.store(true, std::sync::atomic::Ordering::Release);
-                        self.request_vcpu_exit()?;
-                        first_error.get_or_insert_with(|| e.to_string());
-                    }
-                    Err(_) => {
-                        shutdown.store(true, std::sync::atomic::Ordering::Release);
-                        self.request_vcpu_exit()?;
-                        first_error.get_or_insert_with(|| "vCPU thread panicked".to_string());
-                    }
-                }
-            }
-            if let Some(error) = first_error {
-                return Err(Error::UnhandledExit(error));
-            }
-            Ok(first_stop)
-        }
-
-        fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
-            Vm::request_vcpu_exit(self)
         }
     }
 
@@ -448,24 +341,109 @@ mod imp {
         ))
     }
 
-    /// WHP memory input marker. RAM is attached through `Machine::attach_ram`.
     #[derive(Debug)]
     pub struct Memory {
-        _private: (),
+        guest_memory: GuestMemoryMmap,
     }
 
-    /// WHP CPU input marker. vCPUs are created through `Machine::create_vcpu`.
+    impl dillo_machine::Memory for Memory {
+        type Error = Error;
+
+        fn from_ranges(ranges: &[RamRange]) -> Result<Self, Self::Error> {
+            Ok(Self {
+                guest_memory: guest_memory_from_ranges(ranges.iter().copied())?,
+            })
+        }
+    }
+
+    impl Attach<Memory> for Vm {
+        type Error = Error;
+        type Output = ();
+
+        fn attach(&mut self, item: Memory) -> Result<Self::Output, Self::Error> {
+            self.attach_guest_memory(item.guest_memory)
+        }
+    }
+
     #[derive(Debug)]
+    pub struct CpuState {
+        index: u32,
+        cpu_profile: String,
+        boot_state: Option<pmi::vm::vcpu::x86_64::CpuState>,
+    }
+
+    impl dillo_machine::CpuState for CpuState {
+        type Error = Error;
+
+        fn new(
+            index: u32,
+            cpu_profile: &str,
+            boot_state: Option<&dyn BootVcpuState>,
+        ) -> Result<Self, Self::Error> {
+            let boot_state = (index == 0)
+                .then_some(boot_state)
+                .flatten()
+                .map(|state| {
+                    state
+                        .x86_64()
+                        .cloned()
+                        .ok_or_else(|| Error::UnhandledExit("boot vCPU state is not x86_64".into()))
+                })
+                .transpose()?;
+            Ok(Self {
+                index,
+                cpu_profile: cpu_profile.into(),
+                boot_state,
+            })
+        }
+    }
+
+    impl Attach<CpuState> for Vm {
+        type Error = Error;
+        type Output = Arc<Cpu>;
+
+        fn attach(&mut self, item: CpuState) -> Result<Self::Output, Self::Error> {
+            let mut vcpu = self.create_vcpu_inner(item.index, &item.cpu_profile)?;
+            if let Some(state) = &item.boot_state {
+                vcpu.set_x86_64_state(state)?;
+            }
+            Ok(Arc::new(Cpu {
+                vcpu: Mutex::new(vcpu),
+            }))
+        }
+    }
+
     pub struct Cpu {
-        _private: (),
+        vcpu: Mutex<Vcpu>,
+    }
+
+    impl std::fmt::Debug for Cpu {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Cpu").finish_non_exhaustive()
+        }
+    }
+
+    impl dillo_machine::Cpu for Cpu {
+        type Error = Error;
+
+        fn run(&self) -> Result<VcpuStop, Self::Error> {
+            self.vcpu
+                .lock()
+                .expect("WHP vCPU lock poisoned")
+                .run_to_stop()
+        }
+
+        fn stop(&self) -> Result<(), Self::Error> {
+            self.vcpu.lock().expect("WHP vCPU lock poisoned").stop()
+        }
     }
 
     fn guest_memory_from_ranges(
-        ranges: impl IntoIterator<Item = (u64, u64)>,
+        ranges: impl IntoIterator<Item = RamRange>,
     ) -> Result<GuestMemoryMmap, Error> {
         let ranges: Vec<(GuestAddress, usize)> = ranges
             .into_iter()
-            .map(|(gpa, size)| (GuestAddress(gpa), size as usize))
+            .map(|range| (GuestAddress(range.gpa), range.size as usize))
             .collect();
         GuestMemoryMmap::from_ranges(&ranges).map_err(|e| Error::CreateGuestMemory(format!("{e}")))
     }
@@ -712,31 +690,6 @@ mod imp {
         }
     }
 
-    #[derive(Clone)]
-    struct VcpuExitRequester {
-        vcpu_cancels: Arc<Mutex<Vec<VcpuCancel>>>,
-    }
-
-    impl std::fmt::Debug for VcpuExitRequester {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("VcpuExitRequester").finish_non_exhaustive()
-        }
-    }
-
-    impl VcpuExitRequester {
-        fn request_vcpu_exit(&self) -> Result<(), Error> {
-            for cancel in self
-                .vcpu_cancels
-                .lock()
-                .expect("vCPU cancel list poisoned")
-                .iter()
-            {
-                cancel.cancel()?;
-            }
-            Ok(())
-        }
-    }
-
     pub struct Vcpu {
         inner: crate::hypervisor::Vcpu,
         mmio_bus: Arc<Mutex<MmioBus>>,
@@ -761,10 +714,6 @@ mod imp {
     }
 
     impl Vcpu {
-        fn index(&self) -> u32 {
-            self.inner.index()
-        }
-
         fn set_x86_64_state(
             &mut self,
             state: &pmi::vm::vcpu::x86_64::CpuState,
@@ -825,20 +774,11 @@ mod imp {
             }
         }
 
-        fn run_until_stop<F>(&mut self, mut stop: F) -> Result<VcpuStop, Error>
-        where
-            F: FnMut() -> Option<VcpuStop>,
-        {
+        fn run_to_stop(&mut self) -> Result<VcpuStop, Error> {
             loop {
-                if let Some(stop) = stop() {
-                    return Ok(stop);
-                }
                 match self.run()? {
-                    VcpuExit::MmioWrite { .. } | VcpuExit::Interrupted => {
-                        if let Some(stop) = stop() {
-                            return Ok(stop);
-                        }
-                    }
+                    VcpuExit::MmioWrite { .. } => {}
+                    VcpuExit::Interrupted => return Ok(VcpuStop::Stopped),
                     VcpuExit::Shutdown => {
                         log::warn!("guest shutdown via WHP shutdown exit");
                         return Ok(VcpuStop::GuestPoweroff);
@@ -846,13 +786,9 @@ mod imp {
                 }
             }
         }
-    }
 
-    impl dillo_machine::Vcpu for Vcpu {
-        type Error = Error;
-
-        fn run(&mut self) -> Result<VcpuStop, Self::Error> {
-            self.run_until_stop(|| None)
+        fn stop(&self) -> Result<(), Error> {
+            self.inner.cancel_handle().cancel()
         }
     }
 
