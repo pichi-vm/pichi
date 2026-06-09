@@ -1521,13 +1521,13 @@ mod machine_select {
                     let cpus = cpus.clone();
                     let shutdown = Arc::clone(&shutdown);
                     scope.spawn(move || {
+                        let mut stop_requested = false;
                         while !shutdown.load(Ordering::Acquire) {
-                            if control.stop_requested().is_some() {
-                                shutdown.store(true, Ordering::Release);
+                            if stop_requested || control.stop_requested().is_some() {
+                                stop_requested = true;
                                 for cpu in &cpus {
                                     let _ = cpu.stop();
                                 }
-                                return;
                             }
                             thread::sleep(std::time::Duration::from_millis(10));
                         }

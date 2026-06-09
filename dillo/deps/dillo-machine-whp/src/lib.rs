@@ -21,7 +21,7 @@ enum VmExit {
 
 #[cfg(target_os = "windows")]
 mod imp {
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use dillo_devtree::{
@@ -125,6 +125,7 @@ mod imp {
             Ok(Vcpu {
                 inner,
                 mmio_bus: Arc::clone(&self.mmio_bus),
+                stop_requested: Arc::new(AtomicBool::new(false)),
             })
         }
 
@@ -407,14 +408,21 @@ mod imp {
             if let Some(state) = &item.boot_state {
                 vcpu.set_x86_64_state(state)?;
             }
+            let stop_requested = Arc::new(AtomicBool::new(false));
+            vcpu.stop_requested = Arc::clone(&stop_requested);
+            let cancel = vcpu.inner.cancel_handle();
             Ok(Arc::new(Cpu {
                 vcpu: Mutex::new(vcpu),
+                cancel,
+                stop_requested,
             }))
         }
     }
 
     pub struct Cpu {
         vcpu: Mutex<Vcpu>,
+        cancel: crate::hypervisor::VcpuCancel,
+        stop_requested: Arc<AtomicBool>,
     }
 
     impl std::fmt::Debug for Cpu {
@@ -434,7 +442,8 @@ mod imp {
         }
 
         fn stop(&self) -> Result<(), Self::Error> {
-            self.vcpu.lock().expect("WHP vCPU lock poisoned").stop()
+            self.stop_requested.store(true, Ordering::Release);
+            self.cancel.cancel()
         }
     }
 
@@ -693,6 +702,7 @@ mod imp {
     pub struct Vcpu {
         inner: crate::hypervisor::Vcpu,
         mmio_bus: Arc<Mutex<MmioBus>>,
+        stop_requested: Arc<AtomicBool>,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -776,6 +786,9 @@ mod imp {
 
         fn run_to_stop(&mut self) -> Result<VcpuStop, Error> {
             loop {
+                if self.stop_requested.load(Ordering::Acquire) {
+                    return Ok(VcpuStop::Stopped);
+                }
                 match self.run()? {
                     VcpuExit::MmioWrite { .. } => {}
                     VcpuExit::Interrupted => return Ok(VcpuStop::Stopped),
@@ -785,10 +798,6 @@ mod imp {
                     }
                 }
             }
-        }
-
-        fn stop(&self) -> Result<(), Error> {
-            self.inner.cancel_handle().cancel()
         }
     }
 

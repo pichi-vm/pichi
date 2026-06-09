@@ -743,14 +743,17 @@ mod imp {
             if let Some(state) = &item.boot_state {
                 vcpu.set_aarch64_state(state)?;
             }
+            let exit_requester = vcpu.exit_requester.clone();
             Ok(Arc::new(Cpu {
                 vcpu: Mutex::new(vcpu),
+                exit_requester,
             }))
         }
     }
 
     pub struct Cpu {
         vcpu: Mutex<Vcpu>,
+        exit_requester: VcpuExitRequester,
     }
 
     impl std::fmt::Debug for Cpu {
@@ -770,10 +773,7 @@ mod imp {
         }
 
         fn stop(&self) -> Result<(), Self::Error> {
-            self.vcpu
-                .lock()
-                .expect("KVM vCPU lock poisoned")
-                .request_exit();
+            self.exit_requester.request_exit();
             Ok(())
         }
     }
@@ -988,6 +988,7 @@ mod imp {
     #[derive(Clone, Debug)]
     struct VcpuExitRequester {
         threads: Arc<Mutex<Vec<libc::pthread_t>>>,
+        requested: Arc<AtomicBool>,
     }
 
     impl VcpuExitRequester {
@@ -995,6 +996,7 @@ mod imp {
             Self::install_kick_handler();
             Self {
                 threads: Arc::new(Mutex::new(Vec::new())),
+                requested: Arc::new(AtomicBool::new(false)),
             }
         }
 
@@ -1026,24 +1028,37 @@ mod imp {
             if !threads.contains(&thread) {
                 threads.push(thread);
             }
+            drop(threads);
+            if self.requested.load(Ordering::Acquire) {
+                self.kick_thread(thread);
+            }
         }
 
         fn request_exit(&self) {
+            self.requested.store(true, Ordering::Release);
             for thread in self
                 .threads
                 .lock()
                 .expect("vCPU thread list poisoned")
                 .iter()
             {
-                // SAFETY: pthread_t values come from vCPU worker threads that
-                // registered themselves before entering KVM_RUN. If a thread
-                // has already exited, pthread_kill returns ESRCH and there is
-                // nothing left to wake.
-                #[allow(unsafe_code)]
-                let rc = unsafe { libc::pthread_kill(*thread, VCPU_KICK_SIGNAL as libc::c_int) };
-                if rc != 0 && rc != libc::ESRCH {
-                    log::warn!("failed to kick vCPU thread with signal: errno {rc}");
-                }
+                self.kick_thread(*thread);
+            }
+        }
+
+        fn requested(&self) -> bool {
+            self.requested.load(Ordering::Acquire)
+        }
+
+        fn kick_thread(&self, thread: libc::pthread_t) {
+            // SAFETY: pthread_t values come from vCPU worker threads that
+            // registered themselves before entering KVM_RUN. If a thread
+            // has already exited, pthread_kill returns ESRCH and there is
+            // nothing left to wake.
+            #[allow(unsafe_code)]
+            let rc = unsafe { libc::pthread_kill(thread, VCPU_KICK_SIGNAL as libc::c_int) };
+            if rc != 0 && rc != libc::ESRCH {
+                log::warn!("failed to kick vCPU thread with signal: errno {rc}");
             }
         }
     }
@@ -1141,6 +1156,9 @@ mod imp {
                 self.exit_requester.register_current_thread();
             }
             loop {
+                if self.exit_requester.requested() {
+                    return Ok(VcpuStop::Stopped);
+                }
                 match self.run()? {
                     VcpuExit::MmioWrite { .. } => {}
                     VcpuExit::Interrupted => return Ok(VcpuStop::Stopped),
@@ -1152,10 +1170,6 @@ mod imp {
                     }
                 }
             }
-        }
-
-        fn request_exit(&self) {
-            self.exit_requester.request_exit();
         }
     }
 
