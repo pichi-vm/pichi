@@ -40,6 +40,19 @@ pub enum Error {
     #[error("WHP set local APIC emulation mode failed: {0}")]
     SetLocalApicEmulation(HResult),
 
+    #[error("parse DTB for WHP platform substrate: {0:?}")]
+    ParseDtb(dillo_devtree::devtree::Error),
+
+    #[error("DTB missing WHP platform substrate node `{0}`")]
+    MissingSubstrate(&'static str),
+
+    #[error("DTB property `{prop}` on `{node}` is malformed ({reason})")]
+    BadSubstrateProperty {
+        node: &'static str,
+        prop: &'static str,
+        reason: &'static str,
+    },
+
     #[error("WHP set CPUID result list failed: {0}")]
     SetCpuidResults(HResult),
 

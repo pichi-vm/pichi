@@ -24,18 +24,22 @@ mod imp {
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
 
+    use dillo_devtree::{
+        FromDevTree,
+        devtree::{NodeView, OwnedTree, PropertyView, Tree},
+    };
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
-        SharedMemory,
+        MmioWindow, SharedMemory,
     };
     use vm_memory::GuestMemoryMmap;
 
     use crate::VmExit;
     use crate::hypervisor::InterruptController;
     pub use crate::hypervisor::{Error, VcpuCancel};
-    pub use crate::ioapic::IoApic;
+    use crate::ioapic::IoApic;
 
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::X86_64;
 
@@ -60,6 +64,7 @@ mod imp {
         mmio_bus: Arc<Mutex<MmioBus>>,
         vcpu_cancels: Arc<Mutex<Vec<VcpuCancel>>>,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
+        ioapic: Option<Arc<IoApic>>,
     }
 
     impl std::fmt::Debug for Vm {
@@ -78,15 +83,29 @@ mod imp {
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
                 vcpu_cancels: Arc::new(Mutex::new(Vec::new())),
                 shared_memory: Vec::new(),
+                ioapic: None,
             })
         }
 
         pub fn new_x86_64_with_local_apic_count(processor_count: u32) -> Result<Self, Error> {
+            Self::new_x86_64(processor_count, None)
+        }
+
+        fn new_x86_64(processor_count: u32, ioapic: Option<IoApic>) -> Result<Self, Error> {
+            let mmio_bus = Arc::new(Mutex::new(MmioBus::new()));
+            let ioapic = ioapic.map(Arc::new);
+            if let Some(ioapic) = &ioapic {
+                mmio_bus
+                    .lock()
+                    .expect("MMIO bus lock poisoned")
+                    .register_device(Arc::clone(ioapic));
+            }
             Ok(Self {
                 inner: crate::hypervisor::Vm::new_x86_64_with_local_apic_count(processor_count)?,
-                mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
+                mmio_bus,
                 vcpu_cancels: Arc::new(Mutex::new(Vec::new())),
                 shared_memory: Vec::new(),
+                ioapic,
             })
         }
 
@@ -138,14 +157,6 @@ mod imp {
             }
         }
 
-        pub fn create_ioapic_interrupt_line(
-            &self,
-            ioapic: Arc<IoApic>,
-            gsi: u32,
-        ) -> IoApicInterruptLine {
-            IoApicInterruptLine::new(self.inner.interrupt_controller(), ioapic, gsi)
-        }
-
         pub fn set_shared_memory_capabilities(
             &mut self,
             shared_memory: Vec<Arc<dyn SharedMemory>>,
@@ -154,9 +165,27 @@ mod imp {
         }
     }
 
+    #[derive(Debug, Clone)]
+    pub struct Config {
+        pub processor_count: u32,
+        pub dtb: Vec<u8>,
+    }
+
+    impl TryFrom<Config> for Vm {
+        type Error = Error;
+
+        fn try_from(config: Config) -> Result<Self, Self::Error> {
+            let parsed: Tree<'_> = Tree::parse(&config.dtb).map_err(Error::ParseDtb)?;
+            let mut tree = OwnedTree::materialize(&parsed);
+            let substrate = WhpX86Substrate::from_devtree(&mut tree)?
+                .ok_or(Error::MissingSubstrate("/ioapic"))?;
+            Self::new_x86_64(config.processor_count, Some(substrate.ioapic))
+        }
+    }
+
     impl dillo_machine::Machine for Vm {
         type Error = Error;
-        type Config = u32;
+        type Config = Config;
         type Vcpu = Vcpu;
         type Cpu = Cpu;
         type Memory = Memory;
@@ -168,10 +197,15 @@ mod imp {
         }
 
         fn create_line_interrupt(&self, source: u32) -> Result<Interrupt, Self::Error> {
-            let _ = source;
-            Err(Error::UnhandledExit(
-                "wired interrupt factory is not implemented for WHP x86".into(),
-            ))
+            let ioapic = self
+                .ioapic
+                .as_ref()
+                .ok_or(Error::MissingSubstrate("/ioapic"))?;
+            Ok(Interrupt::new(Arc::new(IoApicInterruptLine::new(
+                self.inner.interrupt_controller(),
+                Arc::clone(ioapic),
+                source,
+            ))))
         }
 
         fn create_message_interrupt_domain(
@@ -183,6 +217,120 @@ mod imp {
                 vectors,
             )))
         }
+    }
+
+    #[derive(Debug)]
+    struct WhpX86Substrate {
+        ioapic: IoApic,
+    }
+
+    impl FromDevTree for WhpX86Substrate {
+        type Error = Error;
+
+        fn from_devtree(tree: &mut OwnedTree) -> Result<Option<Self>, Self::Error> {
+            let root = tree.root_mut();
+            let Some(name) = root
+                .children()
+                .find(|node| {
+                    node.name().starts_with("interrupt-controller@")
+                        && compatible_contains(*node, "intel,ce4100-ioapic")
+                })
+                .map(|node| node.name().to_string())
+            else {
+                return Ok(None);
+            };
+            let mut node = root
+                .remove_child(&name)
+                .ok_or(Error::MissingSubstrate("/ioapic"))?;
+            consume_compatible(&mut node, "/ioapic", "intel,ce4100-ioapic")?;
+            let reg = node
+                .remove_property("reg")
+                .ok_or(Error::BadSubstrateProperty {
+                    node: "/ioapic",
+                    prop: "reg",
+                    reason: "missing",
+                })?;
+            let (base, size) = reg_pair(&reg, 0).ok_or(Error::BadSubstrateProperty {
+                node: "/ioapic",
+                prop: "reg",
+                reason: "missing reg pair",
+            })?;
+            node.remove_property("#interrupt-cells")
+                .ok_or(Error::BadSubstrateProperty {
+                    node: "/ioapic",
+                    prop: "#interrupt-cells",
+                    reason: "missing",
+                })?;
+            node.remove_property("interrupt-controller")
+                .ok_or(Error::BadSubstrateProperty {
+                    node: "/ioapic",
+                    prop: "interrupt-controller",
+                    reason: "missing",
+                })?;
+            node.remove_property("phandle")
+                .ok_or(Error::BadSubstrateProperty {
+                    node: "/ioapic",
+                    prop: "phandle",
+                    reason: "missing",
+                })?;
+            if node.properties().next().is_some() || node.children().next().is_some() {
+                return Err(Error::BadSubstrateProperty {
+                    node: "/ioapic",
+                    prop: "*",
+                    reason: "unconsumed property or child",
+                });
+            }
+            Ok(Some(Self {
+                ioapic: IoApic::new(MmioWindow { base, size }),
+            }))
+        }
+    }
+
+    fn compatible_contains(node: impl NodeView, needle: &str) -> bool {
+        let Some(prop) = node.property("compatible") else {
+            return false;
+        };
+        stringlist_contains(prop.as_ref(), needle)
+    }
+
+    fn consume_compatible(
+        node: &mut dillo_devtree::devtree::OwnedNode,
+        path: &'static str,
+        needle: &'static str,
+    ) -> Result<(), Error> {
+        let prop = node
+            .remove_property("compatible")
+            .ok_or(Error::BadSubstrateProperty {
+                node: path,
+                prop: "compatible",
+                reason: "missing",
+            })?;
+        if stringlist_contains(prop.as_ref(), needle) {
+            Ok(())
+        } else {
+            Err(Error::BadSubstrateProperty {
+                node: path,
+                prop: "compatible",
+                reason: "missing expected compatible",
+            })
+        }
+    }
+
+    fn stringlist_contains(bytes: &[u8], value: &str) -> bool {
+        bytes
+            .split(|byte| *byte == 0)
+            .filter(|item| !item.is_empty())
+            .any(|item| item == value.as_bytes())
+    }
+
+    fn reg_pair<P: PropertyView>(prop: P, pair_index: usize) -> Option<(u64, u64)> {
+        let cells = prop.as_u32s()?.collect::<Vec<_>>();
+        let base = cells.get(pair_index * 4..pair_index * 4 + 2)?;
+        let size = cells.get(pair_index * 4 + 2..pair_index * 4 + 4)?;
+        Some((
+            (u64::from(base[0]) << 32) | u64::from(base[1]),
+            (u64::from(size[0]) << 32) | u64::from(size[1]),
+        ))
     }
 
     /// WHP guest RAM mapping selected by dillo from the merged DTB memory plan.

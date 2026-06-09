@@ -1406,9 +1406,13 @@ Local verification:
 Pushed commit:
 - `refactor: hide kvm x86 interrupt plumbing`
 
+CI verification:
+- Run `27202826941` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
+
 ## Stage 20 - Record remaining divergence for human review
 
-Status: pending.
+Status: complete.
 
 Goal: write down any remaining divergence after the third conformance loop.
 
@@ -1429,7 +1433,116 @@ Success criteria:
 - Human reviewers can decide each item without reconstructing the audit.
 - Default local verification passes.
 
-## Stage 20 - Final acceptance audit
+Human-review divergences:
+
+1. Launcher cfg structure still exceeds selected-machine binding.
+   - Requirement: target invariants say the only target/OS/arch cfg in the
+     top-level launcher is selected-machine binding.
+   - Current behavior: `dillo/src/machine_select/runner.rs` still contains
+     target-specific imports, helper modules, and per-target run paths beyond
+     backend selection.
+   - Why not fixed here: retiring these paths requires moving remaining memory,
+     PIO compatibility, architecture substrate, and boot-loop wiring into
+     backend-owned APIs without regressing boot tests.
+   - Human decision needed: confirm whether to keep collapsing the existing
+     runner incrementally or replace it with one generic runner over
+     `Machine`/`Attach` now that the conformance loops have identified the
+     remaining seams.
+   - Evidence: `grep -R "cfg(.*target\\|target_os\\|target_arch" dillo/src`.
+
+2. `Machine` and `Vcpu` are not yet `Send`/`Sync`.
+   - Requirement: `DILLO-CRATE-SPLIT.md` specifies `Machine: Send + Sync` and
+     `Vcpu: Send` so the supervisor can run vCPUs and device hosts through a
+     backend-neutral parallel model.
+   - Current behavior: `dillo-machine::Machine` and `Vcpu` are only `'static`;
+     HVF/applevisor thread-bound wrappers prevented tightening this bound during
+     the conformance passes.
+   - Why not fixed here: enforcing the bound requires a concrete HVF strategy:
+     construct vCPUs inside worker threads, return a portable run handle, or
+     preserve thread-bound ownership behind a backend-specific supervisor shim.
+   - Human decision needed: choose the HVF execution/ownership model before the
+     trait bound is made normative in code.
+   - Evidence: `dillo/deps/dillo-machine/src/lib.rs`.
+
+3. Shared-memory is still compatibility-backed, not fully CC-first.
+   - Requirement: target invariants and `DILLO-CRATE-SPLIT.md` say devices must
+     access guest memory only through attachment-scoped shared-memory
+     capabilities, and the execution model is confidential-computing first.
+   - Current behavior: standard VM paths still install
+     `MappedSharedMemory::for_guest_memory(...)` capabilities over
+     `GuestMemoryMmap`; this enforces the new access shape but not a true
+     guest-driven private/shared conversion model.
+   - Why not fixed here: real CC support needs backend-specific memory
+     conversion handling and state updates, especially KVM guest_memfd/private
+     memory support. That is larger than API cleanup and requires platform
+     decisions.
+   - Human decision needed: decide the first confidential backend target
+     (KVM+TDX, KVM+SEV-SNP, or another) and the required guest shared/private
+     conversion contract.
+   - Evidence: `grep -R "MappedSharedMemory::for_guest_memory\\|GuestMemoryMmap" dillo/src dillo/deps/dillo-mmio dillo/deps/dillo-machine-*`.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+
+Push policy:
+- This stage is documentation-only, so it is bundled with the Stage 21 code
+  change instead of being pushed by itself.
+
+## Stage 21 - Move WHP IOAPIC behind backend
+
+Status: complete.
+
+Goal: remove dillo's direct knowledge of the WHP IOAPIC model and make WHP
+consume its IOAPIC substrate from the DTB.
+
+Process:
+- Add a WHP backend config carrying the merged DTB and processor count.
+- Implement a WHP x86 substrate parser over `devtree::OwnedTree` for the
+  `intel,ce4100-ioapic` node.
+- Register the backend-owned IOAPIC MMIO device on WHP VM construction.
+- Make `Machine::create_line_interrupt` use the backend-owned IOAPIC route.
+- Remove dillo's construction of `backend_machine::IoApic` and
+  `create_ioapic_interrupt_line`.
+
+Success criteria:
+- `grep -R "backend_machine::IoApic\\|create_ioapic_interrupt_line" dillo/src dillo/deps/dillo-machine-whp/src`
+  finds no direct dillo/backend API leak.
+- Windows target checks pass with warnings denied.
+- Local workspace and boot tests pass, with CI providing authoritative WHP boot
+  verification.
+
+Completed changes:
+- Added `dillo-devtree` to `dillo-machine-whp`.
+- Added `dillo_machine_whp::Config { processor_count, dtb }` and
+  `TryFrom<Config> for Vm`.
+- Added WHP-owned DTB consumption for the x86 IOAPIC node and internal MMIO bus
+  registration.
+- Removed the public WHP `IoApic` re-export and `create_ioapic_interrupt_line`
+  helper.
+- Updated the Windows runner to create WHP through the DTB-backed config and to
+  request wired interrupts through `Machine::create_line_interrupt`.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-whp --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp -p dillo`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+Local verification note:
+- The first local macOS boot run failed four tests with the known HVF
+  `operation not allowed by the system` error. Rerunning the same boot command
+  immediately passed all five tests.
+
+## Stage 22 - Final acceptance audit
 
 Status: pending.
 

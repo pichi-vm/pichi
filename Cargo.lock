@@ -446,6 +446,7 @@ dependencies = [
 name = "dillo-machine-whp"
 version = "0.1.0"
 dependencies = [
+ "dillo-devtree",
  "dillo-machine",
  "dillo-mmio",
  "log",

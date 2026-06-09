@@ -8,14 +8,14 @@ use dillo_mmio::{MmioDevice, MmioError, MmioWindow};
 /// backend exposes the DTB-declared IOAPIC register window and uses the
 /// programmed redirection table when injecting wired interrupts.
 #[derive(Debug)]
-pub struct IoApic {
+pub(crate) struct IoApic {
     window: MmioWindow,
     select: Mutex<u32>,
     redirection: Mutex<[u64; 24]>,
 }
 
 impl IoApic {
-    pub fn new(window: MmioWindow) -> Self {
+    pub(crate) fn new(window: MmioWindow) -> Self {
         Self {
             window,
             select: Mutex::new(0),
@@ -23,7 +23,7 @@ impl IoApic {
         }
     }
 
-    pub fn route(&self, gsi: u32) -> Option<IoApicRoute> {
+    pub(crate) fn route(&self, gsi: u32) -> Option<IoApicRoute> {
         let idx = usize::try_from(gsi).ok()?;
         let redirection = self.redirection.lock().expect("ioapic redir poisoned");
         let entry = *redirection.get(idx)?;
@@ -121,9 +121,9 @@ impl MmioDevice for IoApic {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IoApicRoute {
-    pub destination: u32,
-    pub vector: u8,
+pub(crate) struct IoApicRoute {
+    pub(crate) destination: u32,
+    pub(crate) vector: u8,
 }
 
 fn decode_route(entry: u64) -> Option<IoApicRoute> {

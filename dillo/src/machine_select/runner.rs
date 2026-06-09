@@ -182,7 +182,7 @@ pub(crate) fn run(
     vcpus: u32,
     supervisor_shutdown: &'static AtomicBool,
 ) -> Result<i32, RunError> {
-    let (parsed, machine, _dtb, plan, guest_writes) = preflight.into_parts();
+    let (parsed, machine, dtb, plan, guest_writes) = preflight.into_parts();
     log::info!(
         "WHP coverage: base DTB fully claimed — {} declared region(s), pcie={}",
         machine.plan.regions().len(),
@@ -195,12 +195,11 @@ pub(crate) fn run(
         .poweroff
         .ok_or(RunError::MissingRequiredDevice("/syscon-poweroff"))?;
     log::info!(
-        "WHP machine from DTB: pcie mmio {:#x}..{:#x}, ecam {:#x}..{:#x}, ioapic={:?}, poweroff @ {:#x}+{:#x} = {:#x} & {:#x}",
+        "WHP machine from DTB: pcie mmio {:#x}..{:#x}, ecam {:#x}..{:#x}, poweroff @ {:#x}+{:#x} = {:#x} & {:#x}",
         machine.pcie.mmio_base,
         machine.pcie.mmio_base + machine.pcie.mmio_size,
         machine.pcie.ecam_base,
         machine.pcie.ecam_base + machine.pcie.ecam_size,
-        machine.ioapic,
         poweroff.base,
         poweroff.offset,
         poweroff.value,
@@ -237,7 +236,10 @@ pub(crate) fn run(
     let guest_mem: GuestMemoryMmap = GuestMemoryMmap::from_ranges(&ranges)
         .map_err(|e| RunError::MemfdSetup(anyhow::anyhow!("GuestMemoryMmap: {e}")))?;
 
-    let mut vm = backend_machine::Vm::new_x86_64_with_local_apic_count(vcpus)?;
+    let mut vm = backend_machine::Vm::try_from(backend_machine::Config {
+        processor_count: vcpus,
+        dtb,
+    })?;
     Attach::attach(&mut vm, backend_machine::Memory::new(guest_mem.clone()))?;
     vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
         guest_mem.clone(),
@@ -280,25 +282,17 @@ pub(crate) fn run(
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
     let shutdown = Arc::new(AtomicBool::new(false));
-    let ioapic_region = machine
-        .ioapic
-        .ok_or(RunError::MissingRequiredDevice("/intc reg[1] ioapic"))?;
-    let ioapic = Arc::new(backend_machine::IoApic::new(MmioWindow {
-        base: ioapic_region.base,
-        size: ioapic_region.size,
-    }));
     let syscon_state = Arc::new(syscon::SysconState::default());
     match &machine.uart {
         Some(uart) => {
+            let interrupt = dillo_machine::Machine::create_line_interrupt(&vm, uart.irq)?;
             let serial = dillo_mmio_uart::Ns16550::new(
                 MmioWindow {
                     base: uart.base,
                     size: uart.size,
                 },
                 uart.reg_shift,
-                Some(dillo_mmio::Interrupt::new(Arc::new(
-                    vm.create_ioapic_interrupt_line(Arc::clone(&ioapic), uart.irq),
-                ))),
+                Some(interrupt),
                 Box::new(std::io::stderr()),
             );
             Attach::attach(&mut vm, Arc::new(serial))?;
@@ -330,7 +324,6 @@ pub(crate) fn run(
             )),
         )?;
     }
-    Attach::attach(&mut vm, ioapic)?;
     let attachment = Attach::attach(&mut vm, Arc::clone(&pci_root))?;
     pci_root.set_attachment(attachment);
 
