@@ -1,65 +1,20 @@
 //! VM-side integration crate for dillo.
 //!
-//! Orchestrates the remaining compatibility VM runner:
-//! launch plan → memfd setup → backend wiring → vCPU thread launch →
-//! MMIO/PIO dispatch.
-//!
-//! See `dillo/ARCHITECTURE.md` §7, §8, §10.1, §11, §12.
+//! The top-level launcher composes DTB-derived portable devices with the
+//! selected machine through the common `dillo-machine` trait API.
 
-#![allow(clippy::needless_lifetimes)]
-
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-mod backend_select;
 mod error;
-// KVM/Linux-only submodules (memfd setup, gdb stub).
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod gdb;
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use std::sync::atomic::Ordering;
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    target_os = "windows"
-))]
-use std::thread;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::Result;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use backend_machine::Vm;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use backend_select::machine as backend_machine;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use dillo::pmi_parse::VcpuState;
-#[cfg(target_os = "windows")]
-use dillo::pmi_parse::VcpuState;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use super::machine as selected_machine;
 use dillo_devtree::platform::Machine as PlatformMachine;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use dillo_machine::VcpuStop;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use dillo_mmio::Attach;
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "linux", target_arch = "aarch64"),
-    target_os = "macos",
-    target_os = "windows"
-))]
-use dillo_mmio::MmioAttachment;
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    target_os = "windows"
-))]
+use dillo_machine::{BootVcpuState, LaunchConfig, Machine, RamRange, RunControl, VcpuStop};
 use dillo_mmio::syscon;
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "linux", target_arch = "aarch64"),
-    target_os = "macos",
-    target_os = "windows"
-))]
-use dillo_pci::{MsixInterruptAdapter, MsixNotifier};
+use dillo_mmio::{Attach, MmioAttachment, MmioWindow};
+use dillo_pci::{MsixInterruptAdapter, MsixNotifier, PciRoot};
+use dillo_pci_virtio::VirtioPciAdapter;
 
 pub(crate) use error::RunError;
 
@@ -72,7 +27,6 @@ pub(crate) struct RunRegion {
 
 /// One launch-time write into guest RAM, already derived by `dillo`.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct RunWrite {
     pub(crate) section: String,
     pub(crate) gpa: u64,
@@ -85,12 +39,19 @@ struct RunMemoryPlan {
     memory_nodes: Vec<RunRegion>,
 }
 
+impl RunMemoryPlan {
+    fn ram_ranges(&self) -> Vec<RamRange> {
+        self.memslots
+            .iter()
+            .map(|range| RamRange {
+                gpa: range.gpa,
+                size: range.size,
+            })
+            .collect()
+    }
+}
+
 /// Target-neutral launch facts already derived by `dillo`.
-///
-/// This is a compatibility handoff while the old runner is removed. It keeps
-/// PMI parsing, DTB coverage, load cross-validation, memory placement, and
-/// guest launch writes owned by the top-level launcher instead of duplicating
-/// those decisions here.
 #[derive(Debug)]
 pub(crate) struct Preflight {
     parsed: dillo::pmi_parse::ParsedPmi,
@@ -99,29 +60,6 @@ pub(crate) struct Preflight {
     memslots: Vec<RunRegion>,
     memory_nodes: Vec<RunRegion>,
     guest_writes: Vec<RunWrite>,
-}
-
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    target_os = "windows"
-))]
-fn syscon_register(syscon: dillo_devtree::platform::Syscon) -> syscon::SysconRegister {
-    syscon::SysconRegister {
-        base: syscon.base,
-        offset: syscon.offset,
-        value: syscon.value,
-        mask: syscon.mask,
-    }
-}
-
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    target_os = "windows"
-))]
-fn no_pio_callbacks() -> (backend_machine::PioRead, backend_machine::PioWrite) {
-    let read = Arc::new(|_port, _size| u32::MAX);
-    let write = Arc::new(|_port, _data: &[u8]| {});
-    (read, write)
 }
 
 impl Preflight {
@@ -165,29 +103,52 @@ impl Preflight {
     }
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "linux", target_arch = "aarch64"),
-    target_os = "macos",
-    target_os = "windows"
-))]
+#[derive(Debug)]
+struct SupervisorControl {
+    supervisor_shutdown: &'static AtomicBool,
+    syscon_state: Option<Arc<syscon::SysconState>>,
+}
+
+impl RunControl for SupervisorControl {
+    fn stop_requested(&self) -> Option<VcpuStop> {
+        if let Some(state) = &self.syscon_state {
+            match state.action() {
+                Some(syscon::SysconAction::Poweroff) => return Some(VcpuStop::GuestPoweroff),
+                Some(syscon::SysconAction::Reboot) => return Some(VcpuStop::GuestReset),
+                None => {}
+            }
+        }
+        self.supervisor_shutdown
+            .load(Ordering::Acquire)
+            .then_some(VcpuStop::Stopped)
+    }
+}
+
+fn syscon_register(syscon: dillo_devtree::platform::Syscon) -> syscon::SysconRegister {
+    syscon::SysconRegister {
+        base: syscon.base,
+        offset: syscon.offset,
+        value: syscon.value,
+        mask: syscon.mask,
+    }
+}
+
 fn attach_pci_console<M, E>(
     vm: &mut M,
-    machine: &PlatformMachine,
+    platform: &PlatformMachine,
 ) -> Result<Option<Arc<PciRoot>>, RunError>
 where
     E: std::error::Error + Send + Sync + 'static,
-    M: dillo_machine::Machine<Error = E>,
+    M: Machine<Error = E>,
     M: Attach<Arc<PciRoot>, Error = E, Output = Arc<dyn MmioAttachment>>,
-    RunError: From<E>,
 {
-    if !machine.has_pcie {
+    if !platform.has_pcie {
         return Ok(None);
     }
 
     let vectors: u16 = 3;
     let notifier = Arc::new(MsixInterruptAdapter::new(
-        M::create_message_interrupt_domain(vm, vectors)?,
+        M::create_message_interrupt_domain(vm, vectors).map_err(RunError::machine)?,
     ));
     let lookup_notifier = Arc::clone(&notifier);
     let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
@@ -199,38 +160,39 @@ where
     let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
         console,
         vectors,
-        machine.pcie.mmio_base,
-        machine.pcie.mmio_base + 0x1000,
+        platform.pcie.mmio_base,
+        platform.pcie.mmio_base + 0x1000,
         Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
     );
     let mut pci_root = PciRoot::new(MmioWindow {
-        base: machine.pcie.ecam_base,
-        size: machine.pcie.ecam_size,
+        base: platform.pcie.ecam_base,
+        size: platform.pcie.ecam_size,
     });
     pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
     let pci_root = Arc::new(pci_root);
-    let attachment = Attach::attach(vm, Arc::clone(&pci_root))?;
+    let attachment = Attach::attach(vm, Arc::clone(&pci_root)).map_err(RunError::machine)?;
     pci_root.set_attachment(attachment);
     Ok(Some(pci_root))
 }
 
-#[cfg(any(all(target_os = "linux", target_arch = "aarch64"), target_os = "macos"))]
 fn attach_first_virtio_mmio_console<M, E>(
     vm: &mut M,
-    machine: &PlatformMachine,
+    platform: &PlatformMachine,
 ) -> Result<(), RunError>
 where
     E: std::error::Error + Send + Sync + 'static,
-    M: dillo_machine::Machine<Error = E>,
+    M: Machine<Error = E>,
     M: Attach<Arc<dillo_mmio_virtio::VirtioMmio>, Error = E, Output = Arc<dyn MmioAttachment>>,
-    RunError: From<E>,
 {
-    let Some(slot) = machine.virtio_mmio.first() else {
+    let Some(slot) = platform.virtio_mmio.first() else {
         return Ok(());
     };
 
     let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let irq = dillo_mmio_virtio::WiredIrq::new(slot.irq, M::create_line_interrupt(vm, slot.irq)?);
+    let irq = dillo_mmio_virtio::WiredIrq::new(
+        slot.irq,
+        M::create_line_interrupt(vm, slot.irq).map_err(RunError::machine)?,
+    );
     let interrupt_irq = irq.clone();
     let is = Arc::clone(&int_status);
     let console: Box<dyn dillo_virtio::VirtioDevice> = Box::new(
@@ -250,272 +212,112 @@ where
         Arc::clone(&int_status),
         irq.clone(),
     ));
-    let attachment = Attach::attach(vm, Arc::clone(&transport))?;
+    let attachment = Attach::attach(vm, Arc::clone(&transport)).map_err(RunError::machine)?;
     transport.set_attachment(attachment);
     log::info!(
         "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
         slot.base,
         irq.intid(),
-        machine.virtio_mmio.len()
+        platform.virtio_mmio.len()
     );
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[cfg(all(test, target_os = "macos"))]
-use dillo_mmio::MmioBus;
-use dillo_mmio::{MappedSharedMemory, MmioWindow, SharedAccess};
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use dillo_pci::PciRoot;
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "linux", target_arch = "aarch64"),
-    target_os = "macos",
-    target_os = "windows"
-))]
-use dillo_pci_virtio::VirtioPciAdapter;
-/// Top-level VM-child entry point (Windows / Windows Hypervisor Platform).
-///
-/// This keeps the binary and workspace build linked through the normal
-/// selected-runner boundary while the WHP memory/vCPU run path is filled in.
-#[cfg(target_os = "windows")]
-pub(crate) fn run(
-    preflight: Preflight,
-    vcpus: u32,
-    supervisor_shutdown: &'static AtomicBool,
-) -> Result<i32, RunError> {
-    let (parsed, machine, dtb, plan, guest_writes) = preflight.into_parts();
-    log::info!(
-        "WHP coverage: base DTB fully claimed — {} declared region(s), pcie={}",
-        machine.plan.regions().len(),
-        machine.has_pcie
-    );
-    if !machine.has_pcie {
-        return Err(RunError::MissingRequiredDevice("/pcie"));
-    }
-    let poweroff = machine
-        .poweroff
-        .ok_or(RunError::MissingRequiredDevice("/syscon-poweroff"))?;
-    log::info!(
-        "WHP machine from DTB: pcie mmio {:#x}..{:#x}, ecam {:#x}..{:#x}, poweroff @ {:#x}+{:#x} = {:#x} & {:#x}",
-        machine.pcie.mmio_base,
-        machine.pcie.mmio_base + machine.pcie.mmio_size,
-        machine.pcie.ecam_base,
-        machine.pcie.ecam_base + machine.pcie.ecam_size,
-        poweroff.base,
-        poweroff.offset,
-        poweroff.value,
-        poweroff.mask,
-    );
-
-    log::info!("WHP memory placement: {} memslot(s)", plan.memslots.len());
-    for r in &plan.memslots {
-        log::info!(
-            "  RAM memslot [{:#x}..{:#x}) ({} bytes)",
-            r.gpa,
-            r.gpa + r.size,
-            r.size
-        );
-    }
-    log::info!(
-        "WHP DTBO /memory nodes: {} region(s)",
-        plan.memory_nodes.len()
-    );
-    for r in &plan.memory_nodes {
-        log::info!(
-            "  DTB memory node [{:#x}..{:#x}) ({} bytes)",
-            r.gpa,
-            r.gpa + r.size,
-            r.size
-        );
-    }
-
-    let mut vm = backend_machine::Vm::try_from(backend_machine::Config {
-        processor_count: vcpus,
-        dtb,
-    })?;
-    Attach::attach(
-        &mut vm,
-        backend_machine::Memory::from_ranges(plan.memslots.iter().map(|r| (r.gpa, r.size)))?,
-    )?;
-    let guest_mem = vm.guest_memory()?;
-    vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
-        guest_mem.clone(),
-        SharedAccess::ReadWrite,
-    ))]);
-
-    apply_load_sections(&mut vm, &guest_writes)?;
-
-    let cpu_profile = parsed.cpu_profile.as_str();
-    let boot_state = match &parsed.vcpu {
-        VcpuState::X86_64(state) => state,
-        VcpuState::Aarch64(_) => return Err(RunError::ArchMismatch),
+fn attach_uart<M, E>(vm: &mut M, platform: &PlatformMachine) -> Result<(), RunError>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    M: Machine<Error = E>,
+    M: Attach<Arc<dillo_mmio_uart::Ns16550>, Error = E>,
+{
+    let Some(uart) = platform.uart else {
+        log::warn!("no UART in Machine - guest console output will be dropped");
+        return Ok(());
     };
-    attach_pci_console(&mut vm, &machine)?.ok_or(RunError::MissingRequiredDevice("/pcie"))?;
-    let (pio_read, pio_write) = no_pio_callbacks();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let syscon_state = Arc::new(syscon::SysconState::default());
-    match &machine.uart {
-        Some(uart) => {
-            let interrupt = dillo_machine::Machine::create_line_interrupt(&vm, uart.irq)?;
-            let serial = dillo_mmio_uart::Ns16550::new(
-                MmioWindow {
-                    base: uart.base,
-                    size: uart.size,
-                },
-                uart.reg_shift,
-                Some(interrupt),
-                Box::new(std::io::stderr()),
-            );
-            Attach::attach(&mut vm, Arc::new(serial))?;
-            log::info!(
-                "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
-                uart.base,
-                uart.size,
-                uart.reg_shift,
-                uart.irq
-            );
-        }
-        None => log::warn!("no UART in Machine — guest console output will be dropped"),
-    }
+    let interrupt = M::create_line_interrupt(vm, uart.irq).map_err(RunError::machine)?;
+    let serial = dillo_mmio_uart::Ns16550::new(
+        MmioWindow {
+            base: uart.base,
+            size: uart.size,
+        },
+        uart.reg_shift,
+        Some(interrupt),
+        Box::new(std::io::stderr()),
+    );
+    Attach::attach(vm, Arc::new(serial)).map_err(RunError::machine)?;
+    log::info!(
+        "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, IRQ {})",
+        uart.base,
+        uart.size,
+        uart.reg_shift,
+        uart.irq
+    );
+    Ok(())
+}
+
+fn attach_syscon<M, E>(
+    vm: &mut M,
+    platform: &PlatformMachine,
+) -> Result<Option<Arc<syscon::SysconState>>, RunError>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    M: Machine<Error = E>,
+    M: Attach<Arc<syscon::SysconDevice>, Error = E>,
+{
+    let Some(poweroff) = platform.poweroff else {
+        return Ok(None);
+    };
+    let state = Arc::new(syscon::SysconState::default());
     Attach::attach(
-        &mut vm,
+        vm,
         Arc::new(syscon::SysconDevice::new(
             syscon_register(poweroff),
             syscon::SysconAction::Poweroff,
-            Arc::clone(&syscon_state),
+            Arc::clone(&state),
         )),
-    )?;
-    if let Some(reboot) = machine.reboot {
+    )
+    .map_err(RunError::machine)?;
+    if let Some(reboot) = platform.reboot {
         Attach::attach(
-            &mut vm,
+            vm,
             Arc::new(syscon::SysconDevice::new(
                 syscon_register(reboot),
                 syscon::SysconAction::Reboot,
-                Arc::clone(&syscon_state),
+                Arc::clone(&state),
             )),
-        )?;
+        )
+        .map_err(RunError::machine)?;
     }
-    let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
-    for idx in 0..vcpus {
-        let vcpu = Attach::attach(
-            &mut vm,
-            backend_machine::Cpu {
-                idx,
-                cpu_profile: cpu_profile.to_string(),
-                pio_read: Arc::clone(&pio_read),
-                pio_write: Arc::clone(&pio_write),
-                state: (idx == 0).then(|| boot_state.clone()),
-            },
-        )?;
-        vcpu_handles.push(vcpu);
-    }
-    log::info!(
-        "WHP created {} vCPU(s); boot vCPU state programmed",
-        vcpu_handles.len()
-    );
-
-    let mut joins = Vec::with_capacity(vcpu_handles.len());
-    for mut vcpu in vcpu_handles {
-        let shutdown_c = Arc::clone(&shutdown);
-        let syscon_c = Arc::clone(&syscon_state);
-        let exit_requester = vm.exit_requester();
-        joins.push(thread::spawn(move || -> Result<RunOutcome> {
-            let result =
-                run_windows_vcpu_loop(&mut vcpu, &shutdown_c, &syscon_c, supervisor_shutdown);
-            shutdown_c.store(true, Ordering::Release);
-            if let Err(e) = exit_requester.request_vcpu_exit() {
-                log::warn!("failed to cancel WHP vCPU run: {e}");
-            }
-            result
-        }));
-    }
-
-    let mut err: Option<RunError> = None;
-    let mut outcome = RunOutcome::Exit(0);
-    for join in joins {
-        match join.join() {
-            Ok(Ok(thread_outcome)) => {
-                if matches!(thread_outcome, RunOutcome::Reboot) {
-                    outcome = RunOutcome::Reboot;
-                }
-                if shutdown.load(Ordering::Acquire) {
-                    if let Err(e) = vm.request_vcpu_exit() {
-                        log::warn!("failed to cancel WHP vCPU run: {e}");
-                    }
-                }
-            }
-            Ok(Err(e)) => {
-                let msg = format!("{e:#}");
-                log::error!("Windows/WHP vCPU thread error: {msg}");
-                shutdown.store(true, Ordering::Release);
-                if let Err(e) = vm.request_vcpu_exit() {
-                    log::warn!("failed to cancel WHP vCPU run: {e}");
-                }
-                err = err.or(Some(RunError::VcpuThread(msg)));
-            }
-            Err(_) => {
-                log::error!("Windows/WHP vCPU thread panicked");
-                shutdown.store(true, Ordering::Release);
-                if let Err(e) = vm.request_vcpu_exit() {
-                    log::warn!("failed to cancel WHP vCPU run: {e}");
-                }
-                err = err.or(Some(RunError::VcpuPanic));
-            }
-        }
-    }
-    if let Some(err) = err {
-        return Err(err);
-    }
-
-    let _guest_mem = guest_mem;
-    match outcome {
-        RunOutcome::Exit(code) => Ok(code),
-        RunOutcome::Reboot => {
-            log::warn!("WHP guest reboot requested; exiting until x86 warm reboot is implemented");
-            Ok(0)
-        }
-    }
+    Ok(Some(state))
 }
 
-#[cfg(target_os = "windows")]
-fn run_windows_vcpu_loop(
-    vcpu: &mut backend_machine::Vcpu,
-    shutdown: &Arc<AtomicBool>,
-    syscon_state: &Arc<syscon::SysconState>,
-    supervisor_shutdown: &AtomicBool,
-) -> Result<RunOutcome> {
-    let index = vcpu.index();
-    let stop = vcpu.run_until_stop(|| {
-        if shutdown.load(Ordering::Acquire) {
-            return Some(VcpuStop::Stopped);
-        }
-        if let Some(action) = syscon_state.action() {
-            return Some(action.vcpu_stop());
-        }
-        if supervisor_shutdown.load(Ordering::Acquire) {
-            log::info!("vCPU {index}: supervisor shutdown observed");
-            shutdown.store(true, Ordering::Release);
-            return Some(VcpuStop::Stopped);
-        }
-        None
-    })?;
-    Ok(vcpu_stop_outcome(stop, shutdown))
+fn apply_load_sections<M: Machine>(vm: &mut M, guest_writes: &[RunWrite]) -> Result<(), RunError> {
+    for write in guest_writes {
+        log::debug!(
+            "writing launch section `{}` to GPA {:#x} ({} bytes)",
+            write.section,
+            write.gpa,
+            write.data.len()
+        );
+        vm.write_guest(write.gpa, &write.data)
+            .map_err(RunError::machine)?;
+    }
+    Ok(())
 }
 
-/// Top-level VM-child entry point (macOS / Hypervisor.framework).
-///
-/// Parses the PMI, surveys the Machine, computes memory placement, creates the
-/// HVF VM, maps + loads guest RAM, writes the host DTBO, builds the MMIO bus
-/// (ns16550a serial + PCIe ECAM + virtio-console BARs), and runs all vCPUs (thread-per-vCPU
-/// with userspace PSCI). A guest reboot warm-restarts in place; SYSTEM_OFF exits.
-#[cfg(target_os = "macos")]
-pub(crate) fn run(
+fn run_selected<M, E>(
     preflight: Preflight,
     vcpus: u32,
-    _supervisor_shutdown: &'static AtomicBool,
-) -> Result<i32, RunError> {
-    let (parsed, machine, dtb, plan, guest_writes) = preflight.into_parts();
+    supervisor_shutdown: &'static AtomicBool,
+) -> Result<i32, RunError>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    M: Machine<Error = E>,
+    M: Attach<Arc<PciRoot>, Error = E, Output = Arc<dyn MmioAttachment>>,
+    M: Attach<Arc<dillo_mmio_virtio::VirtioMmio>, Error = E, Output = Arc<dyn MmioAttachment>>,
+    M: Attach<Arc<dillo_mmio_uart::Ns16550>, Error = E>,
+    M: Attach<Arc<syscon::SysconDevice>, Error = E>,
+{
+    let (parsed, platform, dtb, plan, guest_writes) = preflight.into_parts();
     log::info!(
         "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
         parsed.arch,
@@ -523,792 +325,88 @@ pub(crate) fn run(
         parsed.merged_dtb_section
     );
     log::info!(
-        "coverage: base DTB fully claimed — {} declared region(s), pcie={}",
-        machine.plan.regions().len(),
-        machine.has_pcie
+        "coverage: base DTB fully claimed - {} declared region(s), pcie={}",
+        platform.plan.regions().len(),
+        platform.has_pcie
     );
-    if machine.has_pcie {
-        log::info!(
-            "machine: pcie ecam {:#x}, mmio {:#x}",
-            machine.pcie.ecam_base,
-            machine.pcie.mmio_base,
-        );
-    } else {
-        log::info!("machine: no PCIe (microVM)");
-    }
     let total_backed: u64 = plan.memslots.iter().map(|r| r.size).sum();
     log::info!(
         "memslots: {} region(s), {} bytes",
         plan.memslots.len(),
         total_backed
     );
-    log::info!(
-        "HVF DTBO /memory nodes: {} region(s)",
-        plan.memory_nodes.len()
-    );
+    log::info!("/memory@N nodes: {} region(s)", plan.memory_nodes.len());
     for r in &plan.memory_nodes {
-        log::info!(
-            "  DTB memory node [{:#x}..{:#x}) ({} bytes)",
-            r.gpa,
-            r.gpa + r.size,
-            r.size
-        );
+        log::info!("  [{:#x}..{:#x}) ({} bytes)", r.gpa, r.gpa + r.size, r.size);
     }
 
-    // 5. host-RAM pre-flight.
-    let host_ram = host_total_ram_bytes().unwrap_or(u64::MAX);
-    let overhead = 256u64 << 20;
-    if total_backed.saturating_add(overhead) > host_ram {
-        return Err(RunError::HostRam {
-            requested_mib: total_backed >> 20,
-            overhead_mib: overhead >> 20,
-            available_mib: host_ram >> 20,
-        });
-    }
-
-    // 6. create the HVF VM from the DTB-derived platform substrate and map
-    //    guest RAM. Backend-owned platform placement and the address-space
-    //    watermark X (F7) come from the machine — never hardcoded. 2^X = the
-    //    BAR window's burned-buddy top when PCIe is present, else enough bits
-    //    to cover the device island.
-    let mut vm = backend_machine::Vm::try_from(backend_machine::Config {
+    let mut vm = M::from_launch_config(LaunchConfig {
         dtb,
-        min_addr_space_bits: machine.min_addr_space_bits(),
-    })?;
-    let max_vcpus = vm.max_vcpus()?;
-    if vcpus > max_vcpus {
-        return Err(RunError::TooManyVcpus {
-            requested: vcpus,
-            max: max_vcpus,
-        });
-    }
-    for r in &plan.memslots {
-        log::info!(
-            "mapping HVF RAM [{:#x}..{:#x}) ({} bytes)",
-            r.gpa,
-            r.gpa + r.size,
-            r.size
-        );
-        Attach::attach(&mut vm, backend_machine::Memory::new(r.gpa, r.size))?;
-    }
-    let guest_mem = vm.guest_memory().map_err(RunError::from)?;
-    vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
-        guest_mem.clone(),
-        SharedAccess::ReadWrite,
-    ))]);
+        vcpus,
+        min_addr_space_bits: platform.min_addr_space_bits(),
+    })
+    .map_err(RunError::machine)?;
+    vm.attach_ram(&plan.ram_ranges())
+        .map_err(RunError::machine)?;
+    apply_load_sections(&mut vm, &guest_writes)?;
 
-    // 7. Attach MMIO devices once (reused across warm reboots): the ns16550a
-    //    serial console (TX → stderr) here, then the PCIe ECAM + virtio-console BARs
-    //    in 7b. aarch64 shutdown/reboot is PSCI (handled in the run loop), so
-    //    there is no syscon device.
-    match &machine.uart {
-        Some(uart) => {
-            log::info!(
-                "registering ns16550a at {:#x} (size {:#x}, reg-shift {})",
-                uart.base,
-                uart.size,
-                uart.reg_shift
-            );
-            Attach::attach(
-                &mut vm,
-                Arc::new(dillo_mmio_uart::Ns16550::new(
-                    MmioWindow {
-                        base: uart.base,
-                        size: uart.size,
-                    },
-                    uart.reg_shift,
-                    None,
-                    Box::new(std::io::stderr()),
-                )),
-            )?;
-        }
-        None => log::warn!("no UART in Machine — guest console output will be dropped"),
-    }
+    attach_uart(&mut vm, &platform)?;
+    let syscon_state = attach_syscon(&mut vm, &platform)?;
+    attach_pci_console(&mut vm, &platform)?;
+    attach_first_virtio_mmio_console(&mut vm, &platform)?;
 
-    attach_pci_console(&mut vm, &machine)?;
-    attach_first_virtio_mmio_console(&mut vm, &machine)?;
-
-    let mmio_bus = vm.mmio_bus();
-
-    let boot_state = match &parsed.vcpu {
-        VcpuState::Aarch64(state) => state.clone(),
-        VcpuState::X86_64(_) => return Err(RunError::ArchMismatch),
-    };
-
-    // 8. Warm-reboot loop. Each iteration (re-)applies the PMI load plan + DTBO
-    //    into the persistent guest RAM and runs all vCPUs (each on its own
-    //    thread; vCPU0 boots from the PMI state, secondaries park for PSCI
-    //    CPU_ON). A guest PSCI SYSTEM_RESET resets backend-owned run state and
-    //    loops to a fresh boot image (Phase 2 in-VM restart); SYSTEM_OFF exits.
-    //    `vm` (and its memory mappings) lives across the whole loop on this
-    //    thread.
-    loop {
-        apply_load_sections(&mut vm, &guest_writes)?;
-        log::info!(
-            "macOS/HVF: {} memslot(s) mapped, load sections + DTBO written; boot vCPU0 pc={:#x}, launching {} vCPU(s)",
-            plan.memslots.len(),
-            boot_state.pc,
+    let control: Arc<dyn RunControl> = Arc::new(SupervisorControl {
+        supervisor_shutdown,
+        syscon_state: syscon_state.clone(),
+    });
+    let cpu_profile = parsed.cpu_profile.as_str();
+    let mut outcome = vm
+        .run_vcpus(
             vcpus,
-        );
-        match vcpu_stop_outcome(
-            backend_machine::run_smp(vcpus, boot_state.clone(), Arc::clone(&mmio_bus))?,
-            &AtomicBool::new(false),
-        ) {
-            RunOutcome::Exit(code) => {
-                drop(vm); // unmap guest RAM only after all vCPU threads joined
-                return Ok(code);
-            }
-            RunOutcome::Reboot => {
-                log::info!("guest requested reboot — warm in-VM restart");
-                dillo_machine::Machine::reset_for_reboot(&mut vm)?;
-            }
-        }
-    }
-}
-
-/// (Re-)apply the launch-time guest writes into guest RAM. Idempotent —
-/// re-running it refreshes the boot image for a warm reboot without zeroing the
-/// rest of RAM.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn apply_load_sections(vm: &mut Vm, guest_writes: &[RunWrite]) -> Result<(), RunError> {
-    for write in guest_writes {
-        vm.write_guest(write.gpa, &write.data)?;
-    }
-    Ok(())
-}
-
-/// Outcome of a full `run_smp` invocation: the guest powered off (process exit
-/// code) or requested a reboot (warm in-VM restart).
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-enum RunOutcome {
-    Exit(i32),
-    Reboot,
-}
-
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    target_os = "windows"
-))]
-trait SysconActionExt {
-    fn vcpu_stop(self) -> VcpuStop;
-}
-
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    target_os = "windows"
-))]
-impl SysconActionExt for syscon::SysconAction {
-    fn vcpu_stop(self) -> VcpuStop {
-        match self {
-            syscon::SysconAction::Poweroff => VcpuStop::GuestPoweroff,
-            syscon::SysconAction::Reboot => VcpuStop::GuestReset,
-        }
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn vcpu_stop_outcome(stop: VcpuStop, shutdown: &AtomicBool) -> RunOutcome {
-    match stop {
-        VcpuStop::GuestPoweroff => {
-            log::info!("guest poweroff observed by run loop");
-            dillo_virtio_console::flush_output();
-            shutdown.store(true, Ordering::Release);
-            RunOutcome::Exit(0)
-        }
-        VcpuStop::GuestReset => {
-            log::warn!("guest reboot observed; x86 warm reboot is not wired yet");
-            shutdown.store(true, Ordering::Release);
-            RunOutcome::Reboot
-        }
-        VcpuStop::Stopped => RunOutcome::Exit(0),
-    }
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod macos_tests {
-    use super::*;
-
-    /// Empirically verify the macOS run loop end-to-end against a tiny stub
-    /// guest: `str w2,[x1]` writes a byte to the ns16550a data register (→ MMIO
-    /// bus → stderr), then `hvc #0` with x0 = PSCI SYSTEM_OFF makes the loop
-    /// return exit code 0. Requires the codesigned harness (hypervisor
-    /// entitlement). Exercises the real MMIO-bus dispatch + PSCI handling.
-    #[test]
-    #[ignore = "requires a codesigned binary with com.apple.security.hypervisor; run via the codesigned harness with --ignored"]
-    fn run_loop_ns16550_write_then_psci_off() {
-        let mut vm = Vm::try_from(backend_machine::Config {
-            dtb: test_gic_dtb(),
-            min_addr_space_bits: 36,
-        })
-        .expect("vm");
-        let code_base = 0x4000_0000u64;
-        Attach::attach(&mut vm, backend_machine::Memory::new(code_base, 0x1_0000)).expect("mem");
-        // str w2,[x1] ; hvc #0
-        let code = [0xB900_0022u32, 0xD400_0002u32];
-        let mut bytes = Vec::new();
-        for w in code {
-            bytes.extend_from_slice(&w.to_le_bytes());
-        }
-        vm.write_guest(code_base, &bytes).expect("write");
-
-        let serial_base = 0x0A11_0000u64;
-        let mut mmio_bus = MmioBus::new();
-        mmio_bus.register_device(Arc::new(dillo_mmio_uart::Ns16550::new(
-            MmioWindow {
-                base: serial_base,
-                size: 0x1000,
-            },
-            0,
-            None,
-            Box::new(std::io::stderr()),
-        )));
-
-        // GPRs are carried in the boot state (set_aarch64_state programs
-        // x0..x30): x1=serial THR, x2='h', x0=PSCI SYSTEM_OFF.
-        let state = pmi::vm::vcpu::aarch64::CpuState {
-            pc: code_base,
-            pstate: 0x3c5,
-            sctlr_el1: 0,
-            x0: 0x8400_0008,
-            x1: serial_base,
-            x2: u64::from(b'h'),
-            ..Default::default()
-        };
-
-        // Run via the production single-/multi-vCPU launcher (vcpus = 1). It
-        // creates the vCPU on its own thread, so `vm` must outlive the call.
-        let outcome = backend_machine::run_smp(1, state, Arc::new(std::sync::Mutex::new(mmio_bus)))
-            .expect("run loop");
-        drop(vm);
-        assert!(
-            matches!(outcome, VcpuStop::GuestPoweroff),
-            "PSCI SYSTEM_OFF -> GuestPoweroff"
-        );
-    }
-
-    fn test_gic_dtb() -> Vec<u8> {
-        use devtree::{OwnedNode, OwnedProperty, OwnedTree};
-
-        fn reg2(base: u64, size: u64) -> Vec<u32> {
-            vec![
-                (base >> 32) as u32,
-                base as u32,
-                (size >> 32) as u32,
-                size as u32,
-            ]
-        }
-
-        let mut intc_reg = reg2(0x0800_0000, 0x1_0000);
-        intc_reg.extend(reg2(0x0810_0000, 0x200_0000));
-
-        let root = OwnedNode::new("")
-            .with_property(OwnedProperty::new("#address-cells").with_u32(2))
-            .with_property(OwnedProperty::new("#size-cells").with_u32(2))
-            .with_child(
-                OwnedNode::new("interrupt-controller@8000000")
-                    .with_property(OwnedProperty::new("compatible").with_str("arm,gic-v3"))
-                    .with_property(OwnedProperty::new("#interrupt-cells").with_u32(3))
-                    .with_property(OwnedProperty::new("interrupt-controller"))
-                    .with_property(OwnedProperty::new("reg").with_u32s(&intc_reg))
-                    .with_property(OwnedProperty::new("phandle").with_u32(1)),
-            )
-            .with_child(
-                OwnedNode::new("msi-controller@a100000")
-                    .with_property(OwnedProperty::new("compatible").with_str("arm,gic-v2m-frame"))
-                    .with_property(OwnedProperty::new("msi-controller"))
-                    .with_property(
-                        OwnedProperty::new("reg").with_u32s(&reg2(0x0a10_0000, 0x1_0000)),
-                    )
-                    .with_property(OwnedProperty::new("arm,msi-base-spi").with_u32(64))
-                    .with_property(OwnedProperty::new("arm,msi-num-spis").with_u32(32))
-                    .with_property(OwnedProperty::new("phandle").with_u32(3)),
-            );
-
-        OwnedTree::new(root).encode().expect("test DTB")
-    }
-}
-
-/// Top-level VM-child entry point (Linux / KVM).
-///
-/// Parses the PMI at `pmi_path`, sets up KVM, allocates memory, copies
-/// load sections, synthesizes + writes the DTBO, spawns `vcpus`
-/// vCPU threads, and runs until guest shutdown.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub(crate) fn run(
-    preflight: Preflight,
-    vcpus: u32,
-    supervisor_shutdown: &'static AtomicBool,
-) -> Result<i32, RunError> {
-    let (parsed, machine, _dtb, plan, guest_writes) = preflight.into_parts();
-    log::info!(
-        "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
-        parsed.arch,
-        parsed.actions.len(),
-        parsed.merged_dtb_section
-    );
-    log::info!(
-        "coverage: base DTB fully claimed — {} declared region(s), pcie={}",
-        machine.plan.regions().len(),
-        machine.has_pcie
-    );
-    if !machine.has_pcie {
-        return Err(RunError::MissingRequiredDevice("/pcie"));
-    }
-    let poweroff = machine
-        .poweroff
-        .ok_or(RunError::MissingRequiredDevice("/syscon-poweroff"))?;
-    log::info!(
-        "machine: pcie@{:#x} (ecam {:#x}), poweroff @ {:#x}+{:#x} = {:#x} & {:#x}",
-        machine.pcie.mmio_base,
-        machine.pcie.ecam_base,
-        poweroff.base,
-        poweroff.offset,
-        poweroff.value,
-        poweroff.mask,
-    );
-
-    log::info!("memslots: {} region(s)", plan.memslots.len());
-    for r in &plan.memslots {
-        log::info!("  [{:#x}..{:#x}) ({} bytes)", r.gpa, r.gpa + r.size, r.size);
-    }
-    log::info!("/memory@N nodes: {} region(s)", plan.memory_nodes.len());
-    for r in &plan.memory_nodes {
-        log::info!("  [{:#x}..{:#x}) ({} bytes)", r.gpa, r.gpa + r.size, r.size);
-    }
-
-    // ── 5. host-RAM pre-flight ─────────────────────────────────────
-    let host_ram = host_total_ram_bytes().unwrap_or(u64::MAX);
-    let total_backed: u64 = plan.memslots.iter().map(|r| r.size).sum();
-    let overhead = 256u64 << 20;
-    if total_backed.saturating_add(overhead) > host_ram {
-        return Err(RunError::HostRam {
-            requested_mib: total_backed >> 20,
-            overhead_mib: overhead >> 20,
-            available_mib: host_ram >> 20,
-        });
-    }
-
-    // ── 6. KVM guest-memory backing ────────────────────────────────
-    let guest_memory =
-        backend_machine::memory::MappedMemory::new(plan.memslots.iter().map(|r| (r.gpa, r.size)))
-            .map_err(RunError::MemfdSetup)?;
-
-    // ── 7. copy launch-time guest writes ───────────────────────────
-    for write in &guest_writes {
-        guest_memory
-            .gpa_map()
-            .write(write.gpa, &write.data)
-            .map_err(|source| RunError::SectionWrite {
-                section: write.section.clone(),
-                gpa: write.gpa,
-                source,
-            })?;
-    }
-
-    // ── 8. create KVM VM + memslots ────────────────────────────────
-    let mut vm = backend_machine::Vm::new()?;
-    for (slot_idx, r) in guest_memory.regions().iter().enumerate() {
-        log::info!(
-            "registering KVM memslot {}: [{:#x}..{:#x}) host={:#x}",
-            slot_idx,
-            r.gpa(),
-            r.gpa() + r.size(),
-            r.host_addr()
-        );
-        Attach::attach(
-            &mut vm,
-            backend_machine::Memory::new(slot_idx as u32, r.gpa(), r.host_addr(), r.size()),
-        )?;
-    }
-    let guest_mem = guest_memory.guest_memory();
-    vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
-        guest_mem.clone(),
-        SharedAccess::ReadWrite,
-    ))]);
-
-    // ── 8.5. build PCI bus + virtio-console + MMIO dispatch ────────
-    //
-    // The kernel's PCIe enumeration walks the ECAM range declared by
-    // the base DTB; we register a single virtio-console device at
-    // 00:01.0 (slot 0 is the host bridge). Its BAR0 (virtio config /
-    // notify / ISR / device-config) and BAR2 (MSI-X table + PBA) get
-    // independently registered with the MMIO bus so guest accesses
-    // route directly to the transport.
-    //
-    // MSI-X uses a backend notifier: on each MSI-X table write the guest does,
-    // a fresh backend interrupt route is allocated. Queue completions are then
-    // backend-direct — no VMM relay.
-    let syscon_state = Arc::new(syscon::SysconState::default());
-    Attach::attach(
-        &mut vm,
-        Arc::new(syscon::SysconDevice::new(
-            syscon_register(poweroff),
-            syscon::SysconAction::Poweroff,
-            Arc::clone(&syscon_state),
-        )),
-    )?;
-    if let Some(reboot) = machine.reboot {
-        Attach::attach(
-            &mut vm,
-            Arc::new(syscon::SysconDevice::new(
-                syscon_register(reboot),
-                syscon::SysconAction::Reboot,
-                Arc::clone(&syscon_state),
-            )),
-        )?;
-    }
-
-    // Machine-driven UART attach (device-model §"Serial port"): the serial
-    // port is an MMIO ns16550a. If the Machine declares one, attach it with a
-    // KVM irqfd at the declared GSI and map its register window on the MMIO
-    // bus. Absent → no UART emulation at all.
-    match machine.uart {
-        Some(uart) => {
-            let interrupt = dillo_machine::Machine::create_line_interrupt(&vm, uart.irq)?;
-            let serial = dillo_mmio_uart::Ns16550::new(
-                MmioWindow {
-                    base: uart.base,
-                    size: uart.size,
-                },
-                uart.reg_shift,
-                Some(interrupt),
-                Box::new(std::io::stdout()),
-            );
-            Attach::attach(&mut vm, Arc::new(serial))?;
-            log::info!(
-                "serial: ns16550a @ {:#x} (size {:#x}, reg-shift {}, GSI {})",
-                uart.base,
-                uart.size,
-                uart.reg_shift,
-                uart.irq
-            );
-        }
-        None => log::warn!("no UART in Machine — guest console output will be dropped"),
-    }
-
-    attach_pci_console(&mut vm, &machine)?.ok_or(RunError::MissingRequiredDevice("/pcie"))?;
-    let (pio_read, pio_write) = no_pio_callbacks();
-
-    // ── 9. create vCPUs + set boot vCPU state ──────────────────────
-    let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
-    let cpu_profile = parsed.cpu_profile.as_str();
-    let boot_state = match &parsed.vcpu {
-        VcpuState::X86_64(state) => state,
-        VcpuState::Aarch64(_) => {
-            return Err(RunError::ArchMismatch);
-        }
-    };
-    for idx in 0..vcpus {
-        let vcpu = Attach::attach(
-            &mut vm,
-            backend_machine::Cpu {
-                idx,
-                cpu_profile: cpu_profile.to_string(),
-                pio_read: Arc::clone(&pio_read),
-                pio_write: Arc::clone(&pio_write),
-                state: (idx == 0).then(|| boot_state.clone()),
-            },
-        )?;
-        vcpu_handles.push(vcpu);
-    }
-
-    // ── 10. spawn vCPU threads + dispatch loop ─────────────────────
-    let shutdown = Arc::new(AtomicBool::new(false));
-
-    // gdb mode: take vCPU 0, ignore the rest, hand it to the gdb stub.
-    // Useful for debugging tatu / early-boot Linux without rebuilding
-    // dillo. See `gdb` module for the protocol details.
-    if let Ok(port_str) = std::env::var("DILLO_GDB") {
-        let port: u16 = port_str.parse().map_err(|source| RunError::GdbPort {
-            value: port_str.clone(),
-            source,
-        })?;
-        let mut handles = vcpu_handles.into_iter();
-        let vcpu0 = handles.next().expect("at least one vCPU was created above");
-        let n_skipped = handles.count();
-        if n_skipped > 0 {
+            cpu_profile,
+            &parsed.vcpu as &dyn BootVcpuState,
+            control,
+        )
+        .map_err(RunError::machine)?;
+    while matches!(outcome, VcpuStop::GuestReset) {
+        if syscon_state.is_some() {
             log::warn!(
-                "DILLO_GDB set: only vCPU 0 will run; the other {n_skipped} vCPU(s) are inert"
+                "guest reboot requested through syscon; exiting until warm reboot is implemented for this machine"
             );
+            return Ok(0);
         }
-        let stream = gdb::wait_for_gdb(port).map_err(|e| RunError::VcpuThread(e.to_string()))?;
-        let gpa_arc = Arc::new(guest_memory.gpa_map().clone());
-        let target = gdb::GdbTarget::new(
-            vcpu0,
-            gpa_arc,
-            syscon_register(poweroff),
-            Arc::clone(&shutdown),
-        );
-        gdb::run_loop(target, stream);
-        return Ok(0);
-    }
-
-    let mut joins = Vec::with_capacity(vcpus as usize);
-    for mut vcpu in vcpu_handles {
-        let shutdown_c = Arc::clone(&shutdown);
-        let syscon_c = Arc::clone(&syscon_state);
-        let exit_requester = vm.exit_requester();
-        let join = thread::spawn(move || -> Result<RunOutcome> {
-            let result = run_vcpu_loop(&mut vcpu, &shutdown_c, &syscon_c, supervisor_shutdown);
-            shutdown_c.store(true, Ordering::Release);
-            exit_requester.request_vcpu_exit();
-            result
+        log::info!("guest requested reboot - replaying launch writes");
+        vm.reset_for_reboot().map_err(RunError::machine)?;
+        apply_load_sections(&mut vm, &guest_writes)?;
+        let control: Arc<dyn RunControl> = Arc::new(SupervisorControl {
+            supervisor_shutdown,
+            syscon_state: None,
         });
-        joins.push(join);
+        outcome = vm
+            .run_vcpus(
+                vcpus,
+                cpu_profile,
+                &parsed.vcpu as &dyn BootVcpuState,
+                control,
+            )
+            .map_err(RunError::machine)?;
     }
 
-    // ── 11. wait for shutdown ──────────────────────────────────────
-    let mut err: Option<RunError> = None;
-    let mut outcome = RunOutcome::Exit(0);
-    for j in joins {
-        match j.join() {
-            Ok(Ok(thread_outcome)) => {
-                if matches!(thread_outcome, RunOutcome::Reboot) {
-                    outcome = RunOutcome::Reboot;
-                }
-                if shutdown.load(Ordering::Acquire) {
-                    vm.request_vcpu_exit();
-                }
-            }
-            Ok(Err(e)) => {
-                let msg = format!("{e:#}");
-                log::error!("vCPU thread error: {msg}");
-                shutdown.store(true, Ordering::Release);
-                vm.request_vcpu_exit();
-                err = err.or(Some(RunError::VcpuThread(msg)));
-            }
-            Err(_panic) => {
-                log::error!("vCPU thread panicked");
-                shutdown.store(true, Ordering::Release);
-                vm.request_vcpu_exit();
-                err = err.or(Some(RunError::VcpuPanic));
-            }
-        }
+    if matches!(outcome, VcpuStop::GuestPoweroff) {
+        dillo_virtio_console::flush_output();
     }
-    if let Some(e) = err {
-        return Err(e);
-    }
-    match outcome {
-        RunOutcome::Exit(code) => Ok(code),
-        RunOutcome::Reboot => {
-            log::warn!("KVM guest reboot requested; exiting until x86 warm reboot is implemented");
-            Ok(0)
-        }
-    }
+    Ok(0)
 }
 
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+/// Top-level VM-child entry point for the selected host machine.
 pub(crate) fn run(
     preflight: Preflight,
     vcpus: u32,
     supervisor_shutdown: &'static AtomicBool,
 ) -> Result<i32, RunError> {
-    let (parsed, machine, dtb, plan, guest_writes) = preflight.into_parts();
-    log::info!(
-        "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
-        parsed.arch,
-        parsed.actions.len(),
-        parsed.merged_dtb_section
-    );
-    log::info!(
-        "coverage: base DTB fully claimed — {} declared region(s), pcie={}",
-        machine.plan.regions().len(),
-        machine.has_pcie
-    );
-    let total_backed: u64 = plan.memslots.iter().map(|r| r.size).sum();
-    log::info!("/memory@N nodes: {} region(s)", plan.memory_nodes.len());
-    for r in &plan.memory_nodes {
-        log::info!("  [{:#x}..{:#x}) ({} bytes)", r.gpa, r.gpa + r.size, r.size);
-    }
-    let host_ram = host_total_ram_bytes().unwrap_or(u64::MAX);
-    let overhead = 256u64 << 20;
-    if total_backed.saturating_add(overhead) > host_ram {
-        return Err(RunError::HostRam {
-            requested_mib: total_backed >> 20,
-            overhead_mib: overhead >> 20,
-            available_mib: host_ram >> 20,
-        });
-    }
-
-    let guest_memory =
-        backend_machine::memory::MappedMemory::new(plan.memslots.iter().map(|r| (r.gpa, r.size)))
-            .map_err(RunError::MemfdSetup)?;
-    for write in &guest_writes {
-        guest_memory
-            .gpa_map()
-            .write(write.gpa, &write.data)
-            .map_err(|source| RunError::SectionWrite {
-                section: write.section.clone(),
-                gpa: write.gpa,
-                source,
-            })?;
-    }
-
-    let mut vm = backend_machine::Vm::try_from(backend_machine::Config { dtb })?;
-    for (slot_idx, r) in guest_memory.regions().iter().enumerate() {
-        Attach::attach(
-            &mut vm,
-            backend_machine::Memory::new(slot_idx as u32, r.gpa(), r.host_addr(), r.size()),
-        )?;
-    }
-    let guest_mem = guest_memory.guest_memory();
-    vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
-        guest_mem.clone(),
-        SharedAccess::ReadWrite,
-    ))]);
-
-    if let Some(uart) = machine.uart {
-        let interrupt = dillo_machine::Machine::create_line_interrupt(&vm, uart.irq)?;
-        Attach::attach(
-            &mut vm,
-            Arc::new(dillo_mmio_uart::Ns16550::new(
-                MmioWindow {
-                    base: uart.base,
-                    size: uart.size,
-                },
-                uart.reg_shift,
-                Some(interrupt),
-                Box::new(std::io::stderr()),
-            )),
-        )?;
-    }
-
-    attach_pci_console(&mut vm, &machine)?;
-    attach_first_virtio_mmio_console(&mut vm, &machine)?;
-
-    let boot_state = match &parsed.vcpu {
-        VcpuState::Aarch64(state) => state.clone(),
-        VcpuState::X86_64(_) => return Err(RunError::ArchMismatch),
-    };
-    let cpu_profile = parsed.cpu_profile.as_str();
-    let mut created_vcpus = Vec::with_capacity(vcpus as usize);
-    for idx in 0..vcpus {
-        let vcpu = Attach::attach(
-            &mut vm,
-            backend_machine::Cpu {
-                idx,
-                cpu_profile: cpu_profile.to_string(),
-                state: (idx == 0).then(|| boot_state.clone()),
-            },
-        )?;
-        created_vcpus.push(vcpu);
-    }
-    dillo_machine::Machine::prepare_vcpu_run(&mut vm)?;
-
-    let mut joins = Vec::with_capacity(vcpus as usize);
-    let shutdown = Arc::new(AtomicBool::new(false));
-    for mut vcpu in created_vcpus {
-        let shutdown_c = Arc::clone(&shutdown);
-        let exit_requester = vm.exit_requester();
-        let join = std::thread::spawn(move || -> Result<RunOutcome> {
-            let result = run_vcpu_loop_aarch64(&mut vcpu, &shutdown_c, supervisor_shutdown);
-            shutdown_c.store(true, Ordering::Release);
-            exit_requester.request_vcpu_exit();
-            result
-        });
-        joins.push(join);
-    }
-
-    let mut err: Option<RunError> = None;
-    let mut outcome = RunOutcome::Exit(0);
-    for join in joins {
-        match join.join() {
-            Ok(Ok(thread_outcome)) => {
-                if matches!(thread_outcome, RunOutcome::Reboot) {
-                    outcome = RunOutcome::Reboot;
-                }
-                if shutdown.load(Ordering::Acquire) {
-                    vm.request_vcpu_exit();
-                }
-            }
-            Ok(Err(e)) => {
-                let msg = format!("{e:#}");
-                shutdown.store(true, Ordering::Release);
-                vm.request_vcpu_exit();
-                err = err.or(Some(RunError::VcpuThread(msg)));
-            }
-            Err(_) => {
-                shutdown.store(true, Ordering::Release);
-                vm.request_vcpu_exit();
-                err = err.or(Some(RunError::VcpuPanic));
-            }
-        }
-    }
-    if let Some(e) = err {
-        return Err(e);
-    }
-    match outcome {
-        RunOutcome::Exit(code) => Ok(code),
-        RunOutcome::Reboot => Ok(0),
-    }
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn run_vcpu_loop(
-    vcpu: &mut backend_machine::Vcpu,
-    shutdown: &Arc<AtomicBool>,
-    syscon_state: &Arc<syscon::SysconState>,
-    supervisor_shutdown: &AtomicBool,
-) -> Result<RunOutcome> {
-    let index = vcpu.index();
-    let stop = vcpu.run_until_stop(|| {
-        if shutdown.load(Ordering::Acquire) {
-            return Some(VcpuStop::Stopped);
-        }
-        if let Some(action) = syscon_state.action() {
-            return Some(action.vcpu_stop());
-        }
-        // §13.3: supervisor requested orderly shutdown.
-        if supervisor_shutdown.load(Ordering::Acquire) {
-            log::info!("vCPU {index}: supervisor shutdown observed");
-            shutdown.store(true, Ordering::Release);
-            return Some(VcpuStop::Stopped);
-        }
-        None
-    })?;
-    Ok(vcpu_stop_outcome(stop, shutdown))
-}
-
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-fn run_vcpu_loop_aarch64(
-    vcpu: &mut backend_machine::Vcpu,
-    shutdown: &Arc<AtomicBool>,
-    supervisor_shutdown: &AtomicBool,
-) -> Result<RunOutcome> {
-    let index = vcpu.index();
-    let stop = vcpu.run_until_stop(|| {
-        if shutdown.load(Ordering::Acquire) {
-            return Some(VcpuStop::Stopped);
-        }
-        if supervisor_shutdown.load(Ordering::Acquire) {
-            log::info!("vCPU {index}: supervisor shutdown observed");
-            shutdown.store(true, Ordering::Release);
-            return Some(VcpuStop::Stopped);
-        }
-        None
-    })?;
-    Ok(vcpu_stop_outcome(stop, shutdown))
-}
-
-#[cfg(target_os = "linux")]
-fn host_total_ram_bytes() -> Option<u64> {
-    // sysconf is a pure FFI query of kernel-resident counters; no aliasing,
-    // no allocation, no callbacks. The unsafe block exists because libc
-    // declares all syscalls as unsafe.
-    #[allow(unsafe_code)]
-    let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
-    #[allow(unsafe_code)]
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    if pages <= 0 || page_size <= 0 {
-        return None;
-    }
-    Some((pages as u64) * (page_size as u64))
-}
-
-// macOS host-RAM query (sysctl HW_MEMSIZE) is a TODO (§F); returning None
-// skips the pre-flight check rather than blocking boot. Safe: the check is
-// a gross-misuse guard, not a correctness requirement.
-#[cfg(target_os = "macos")]
-fn host_total_ram_bytes() -> Option<u64> {
-    None
+    run_selected::<selected_machine::Vm, selected_machine::Error>(
+        preflight,
+        vcpus,
+        supervisor_shutdown,
+    )
 }

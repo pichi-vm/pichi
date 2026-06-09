@@ -8,6 +8,47 @@ use std::sync::Arc;
 
 use dillo_mmio::{Interrupt, MessageInterruptDomain};
 
+/// Selected-machine launch configuration derived by dillo from PMI and DTB.
+#[derive(Debug)]
+pub struct LaunchConfig {
+    pub dtb: Vec<u8>,
+    pub vcpus: u32,
+    pub min_addr_space_bits: u32,
+}
+
+/// One DTB/launch-derived guest RAM range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RamRange {
+    pub gpa: u64,
+    pub size: u64,
+}
+
+/// Arch-erased view of the PMI boot vCPU state.
+///
+/// Backends pick the arm they support; dillo never constructs backend-specific
+/// CPU input structs directly.
+pub trait BootVcpuState {
+    fn x86_64(&self) -> Option<&pmi::vm::vcpu::x86_64::CpuState> {
+        None
+    }
+
+    fn aarch64(&self) -> Option<&pmi::vm::vcpu::aarch64::CpuState> {
+        None
+    }
+}
+
+/// Supervisor-provided lifecycle control observed by machine run loops.
+pub trait RunControl: Send + Sync + 'static {
+    fn stop_requested(&self) -> Option<VcpuStop>;
+}
+
+impl RunControl for std::sync::atomic::AtomicBool {
+    fn stop_requested(&self) -> Option<VcpuStop> {
+        self.load(std::sync::atomic::Ordering::Acquire)
+            .then_some(VcpuStop::Stopped)
+    }
+}
+
 /// Host architecture exposed by the selected machine backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostArchitecture {
@@ -33,6 +74,32 @@ pub trait Machine: Sized + 'static {
     type Memory: 'static;
 
     const DEVICE_MODEL: DeviceModel;
+
+    /// Construct the backend VM from selected-machine launch facts.
+    fn from_launch_config(config: LaunchConfig) -> Result<Self, Self::Error>;
+
+    /// Attach all standard guest RAM ranges for this VM.
+    fn attach_ram(&mut self, ranges: &[RamRange]) -> Result<(), Self::Error>;
+
+    /// Write launch data into guest RAM through backend-owned memory access.
+    fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Self::Error>;
+
+    /// Create one backend CPU input and attach it as a runnable vCPU.
+    fn create_vcpu(
+        &mut self,
+        index: u32,
+        cpu_profile: &str,
+        boot_state: Option<&dyn BootVcpuState>,
+    ) -> Result<Self::Vcpu, Self::Error>;
+
+    /// Run the VM's vCPUs until guest or supervisor lifecycle stop.
+    fn run_vcpus(
+        &mut self,
+        count: u32,
+        cpu_profile: &str,
+        boot_state: &dyn BootVcpuState,
+        control: Arc<dyn RunControl>,
+    ) -> Result<VcpuStop, Self::Error>;
 
     /// Make every currently running vCPU for this machine leave `Vcpu::run`.
     fn request_vcpu_exit(&self) -> Result<(), Self::Error>;
@@ -142,6 +209,39 @@ mod tests {
         type Memory = TestMemory;
 
         const DEVICE_MODEL: DeviceModel = DeviceModel::Thread;
+
+        fn from_launch_config(_config: LaunchConfig) -> Result<Self, Self::Error> {
+            Ok(Self)
+        }
+
+        fn attach_ram(&mut self, _ranges: &[RamRange]) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn write_guest(&mut self, _gpa: u64, _data: &[u8]) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn create_vcpu(
+            &mut self,
+            _index: u32,
+            _cpu_profile: &str,
+            _boot_state: Option<&dyn BootVcpuState>,
+        ) -> Result<Self::Vcpu, Self::Error> {
+            Ok(TestVcpu {
+                stop: VcpuStop::Stopped,
+            })
+        }
+
+        fn run_vcpus(
+            &mut self,
+            _count: u32,
+            _cpu_profile: &str,
+            _boot_state: &dyn BootVcpuState,
+            _control: Arc<dyn RunControl>,
+        ) -> Result<VcpuStop, Self::Error> {
+            Ok(VcpuStop::Stopped)
+        }
 
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Ok(())

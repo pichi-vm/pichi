@@ -9,20 +9,6 @@ pub mod memory;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod msi;
 
-/// Re-export the KVM debug-control flags so dillo can configure guest-debug
-/// modes without depending on `kvm-bindings` directly.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub mod debug_flags {
-    pub use kvm_bindings::{
-        KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP,
-        KVM_GUESTDBG_USE_SW_BP,
-    };
-}
-
-/// Re-export raw KVM register structures for the gdb stub.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub use kvm_bindings::{kvm_regs, kvm_sregs};
-
 /// Reasons a KVM vCPU run returned to backend code.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
@@ -51,7 +37,7 @@ mod imp {
         FromDevTree,
         devtree::{NodeView, OwnedTree, PropertyView, Tree},
     };
-    use dillo_machine::VcpuStop;
+    use dillo_machine::{BootVcpuState, LaunchConfig, RamRange, RunControl, VcpuStop};
     use dillo_mmio::{
         Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
         MmioDeviceHandle, MmioInterrupt, MmioSpawnError, SharedMemory,
@@ -60,14 +46,13 @@ mod imp {
     use dillo_mmio::{Interrupt, MessageInterrupt, MessageInterruptDomain};
 
     #[cfg(target_arch = "x86_64")]
-    use crate::{kvm_regs, kvm_sregs};
-    #[cfg(target_arch = "x86_64")]
     use vmm_sys_util::eventfd::EventFd;
 
     use crate::VmExit;
     pub use crate::hypervisor::Error;
     #[cfg(target_arch = "x86_64")]
     use crate::irq::IrqManager;
+    use crate::memory;
     #[cfg(target_arch = "x86_64")]
     use crate::msi::KvmMessageInterruptDomain;
 
@@ -238,6 +223,7 @@ mod imp {
         mmio_bus: Arc<Mutex<MmioBus>>,
         exit_requester: VcpuExitRequester,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
+        mapped_memory: Option<Arc<memory::MappedMemory>>,
         #[cfg(target_arch = "x86_64")]
         irq_manager: Arc<Mutex<IrqManager>>,
     }
@@ -249,6 +235,7 @@ mod imp {
                 .field("mmio_bus", &self.mmio_bus)
                 .field("exit_requester", &self.exit_requester)
                 .field("shared_memory", &self.shared_memory.len())
+                .field("mapped_memory", &self.mapped_memory.is_some())
                 .field(
                     "irq_manager",
                     &cfg!(target_arch = "x86_64").then_some("<backend-owned>"),
@@ -339,6 +326,7 @@ mod imp {
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
                 exit_requester,
                 shared_memory: Vec::new(),
+                mapped_memory: None,
                 #[cfg(target_arch = "x86_64")]
                 irq_manager,
             })
@@ -476,6 +464,157 @@ mod imp {
         type Memory = Memory;
 
         const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
+
+        fn from_launch_config(config: LaunchConfig) -> Result<Self, Self::Error> {
+            #[cfg(target_arch = "x86_64")]
+            let _ = config;
+            Self::try_from(Config {
+                #[cfg(target_arch = "aarch64")]
+                dtb: config.dtb,
+            })
+        }
+
+        fn attach_ram(&mut self, ranges: &[RamRange]) -> Result<(), Self::Error> {
+            let mapped = Arc::new(
+                memory::MappedMemory::new(ranges.iter().map(|range| (range.gpa, range.size)))
+                    .map_err(|e| Error::UnhandledExit(e.to_string()))?,
+            );
+            for (slot_idx, region) in mapped.regions().iter().enumerate() {
+                log::info!(
+                    "registering KVM memslot {}: [{:#x}..{:#x}) host={:#x}",
+                    slot_idx,
+                    region.gpa(),
+                    region.gpa() + region.size(),
+                    region.host_addr()
+                );
+                self.add_memslot(
+                    slot_idx as u32,
+                    region.gpa(),
+                    region.host_addr(),
+                    region.size(),
+                )?;
+            }
+            self.shared_memory = vec![Arc::new(dillo_mmio::MappedSharedMemory::for_guest_memory(
+                mapped.guest_memory(),
+                dillo_mmio::SharedAccess::ReadWrite,
+            ))];
+            self.mapped_memory = Some(mapped);
+            Ok(())
+        }
+
+        fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Self::Error> {
+            let memory = self
+                .mapped_memory
+                .as_ref()
+                .ok_or_else(|| Error::UnhandledExit("guest RAM is not attached".to_string()))?;
+            memory
+                .gpa_map()
+                .write(gpa, data)
+                .map_err(|e| Error::UnhandledExit(e.to_string()))
+        }
+
+        fn create_vcpu(
+            &mut self,
+            index: u32,
+            cpu_profile: &str,
+            boot_state: Option<&dyn BootVcpuState>,
+        ) -> Result<Self::Vcpu, Self::Error> {
+            let mut vcpu = self.create_vcpu_with_pio(
+                index,
+                cpu_profile,
+                #[cfg(target_arch = "x86_64")]
+                Arc::new(|_port, _size| u32::MAX),
+                #[cfg(target_arch = "x86_64")]
+                Arc::new(|_port, _data: &[u8]| {}),
+                #[cfg(target_arch = "aarch64")]
+                Arc::new(|_, _| 0),
+                #[cfg(target_arch = "aarch64")]
+                Arc::new(|_, _| {}),
+            )?;
+            #[cfg(target_arch = "x86_64")]
+            if let Some(boot_state) = boot_state {
+                let state = boot_state
+                    .x86_64()
+                    .ok_or_else(|| Error::UnhandledExit("boot vCPU state is not x86_64".into()))?;
+                vcpu.set_x86_64_state(state)?;
+            }
+            #[cfg(target_arch = "aarch64")]
+            if let Some(boot_state) = boot_state {
+                let state = boot_state
+                    .aarch64()
+                    .ok_or_else(|| Error::UnhandledExit("boot vCPU state is not aarch64".into()))?;
+                vcpu.set_aarch64_state(state)?;
+            }
+            Ok(vcpu)
+        }
+
+        fn run_vcpus(
+            &mut self,
+            count: u32,
+            cpu_profile: &str,
+            boot_state: &dyn BootVcpuState,
+            control: Arc<dyn RunControl>,
+        ) -> Result<VcpuStop, Self::Error> {
+            let mut vcpus = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                let state = (index == 0).then_some(boot_state);
+                vcpus.push(self.create_vcpu(index, cpu_profile, state)?);
+            }
+            self.prepare_vcpu_run()?;
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let mut joins = Vec::with_capacity(vcpus.len());
+            for mut vcpu in vcpus {
+                let shutdown_c = Arc::clone(&shutdown);
+                let control_c = Arc::clone(&control);
+                let exit_requester = self.exit_requester();
+                joins.push(thread::spawn(move || -> Result<VcpuStop, Error> {
+                    let index = vcpu.index();
+                    let result = vcpu.run_until_stop(|| {
+                        if shutdown_c.load(Ordering::Acquire) {
+                            return Some(VcpuStop::Stopped);
+                        }
+                        if let Some(stop) = control_c.stop_requested() {
+                            log::info!("vCPU {index}: supervisor stop observed");
+                            shutdown_c.store(true, Ordering::Release);
+                            return Some(stop);
+                        }
+                        None
+                    });
+                    shutdown_c.store(true, Ordering::Release);
+                    exit_requester.request_vcpu_exit();
+                    result
+                }));
+            }
+
+            let mut first_stop = VcpuStop::Stopped;
+            let mut first_error = None;
+            for join in joins {
+                match join.join() {
+                    Ok(Ok(stop)) => {
+                        if matches!(stop, VcpuStop::GuestReset | VcpuStop::GuestPoweroff) {
+                            first_stop = stop;
+                        }
+                        if shutdown.load(Ordering::Acquire) {
+                            Vm::request_vcpu_exit(self);
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        shutdown.store(true, Ordering::Release);
+                        Vm::request_vcpu_exit(self);
+                        first_error.get_or_insert_with(|| e.to_string());
+                    }
+                    Err(_) => {
+                        shutdown.store(true, Ordering::Release);
+                        Vm::request_vcpu_exit(self);
+                        first_error.get_or_insert_with(|| "vCPU thread panicked".to_string());
+                    }
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(Error::UnhandledExit(error));
+            }
+            Ok(first_stop)
+        }
 
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Vm::request_vcpu_exit(self);
@@ -893,21 +1032,6 @@ mod imp {
         Shutdown,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum DebugExit {
-        Debug,
-
-        Halted,
-
-        MmioWrite { addr: u64, data: [u8; 8], size: u8 },
-
-        Shutdown,
-
-        Interrupted,
-
-        Unknown(String),
-    }
-
     impl std::fmt::Debug for Vcpu {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("Vcpu")
@@ -936,31 +1060,6 @@ mod imp {
             state: &pmi::vm::vcpu::aarch64::CpuState,
         ) -> Result<(), Error> {
             self.inner.set_aarch64_state(state)
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        pub fn set_guest_debug_flags(&self, flags: u32) -> Result<(), Error> {
-            self.inner.set_guest_debug_flags(flags)
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        pub fn get_regs(&self) -> Result<kvm_regs, Error> {
-            self.inner.get_regs()
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        pub fn set_regs(&self, regs: &kvm_regs) -> Result<(), Error> {
-            self.inner.set_regs(regs)
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        pub fn get_sregs(&self) -> Result<kvm_sregs, Error> {
-            self.inner.get_sregs()
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        pub fn set_sregs(&self, sregs: &kvm_sregs) -> Result<(), Error> {
-            self.inner.set_sregs(sregs)
         }
 
         fn run(&mut self) -> Result<VcpuExit, Error> {
@@ -1041,61 +1140,6 @@ mod imp {
                         );
                         return Ok(VcpuStop::GuestPoweroff);
                     }
-                }
-            }
-        }
-
-        pub fn run_debug(&mut self) -> Result<DebugExit, Error> {
-            loop {
-                let bus = Arc::clone(&self.mmio_bus);
-                let pio_read = Arc::clone(&self.pio_read);
-                let exit = self.inner.run(
-                    move |port, size| pio_read(port, size),
-                    move |addr, data| {
-                        let handled = bus.lock().expect("MMIO bus lock poisoned").read(addr, data);
-                        if !handled {
-                            log::debug!(
-                                "MMIO read from unmapped {:#x} (size {}); returning zeros",
-                                addr,
-                                data.len(),
-                            );
-                        }
-                        handled
-                    },
-                )?;
-                match exit {
-                    VmExit::MmioRead { addr, size } => {
-                        let _ = (addr, size);
-                        continue;
-                    }
-                    VmExit::PioRead { port, size } => {
-                        let _ = (port, size);
-                        continue;
-                    }
-                    VmExit::PioWrite { port, data, size } => {
-                        (self.pio_write)(port, &data[..size as usize]);
-                    }
-                    VmExit::MmioWrite { addr, data, size } => {
-                        if !self
-                            .mmio_bus
-                            .lock()
-                            .expect("MMIO bus lock poisoned")
-                            .write(addr, &data[..size as usize])
-                        {
-                            log::warn!(
-                                "MMIO write to unmapped {:#x} (size {}, data {:02x?})",
-                                addr,
-                                size,
-                                &data[..size as usize],
-                            );
-                        }
-                        return Ok(DebugExit::MmioWrite { addr, data, size });
-                    }
-                    VmExit::Interrupted => return Ok(DebugExit::Interrupted),
-                    VmExit::Halted => return Ok(DebugExit::Halted),
-                    VmExit::Shutdown => return Ok(DebugExit::Shutdown),
-                    VmExit::Debug => return Ok(DebugExit::Debug),
-                    VmExit::Unknown(reason) => return Ok(DebugExit::Unknown(reason)),
                 }
             }
         }

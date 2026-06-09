@@ -1347,6 +1347,61 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
 
 Audit fix 7 - move platform DTB survey out of `dillo`:
+- Moved the drain-to-empty platform survey implementation from the top-level
+  `dillo` crate into `dillo-devtree::platform`.
+- The selected machine crates now provide the platform-survey entry point for
+  their supported architecture.
+- `dillo` no longer owns the survey implementation or survey tests.
+
+CI verification:
+- `27209484214` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
+
+Audit fix 8 - move platform survey tests out of `dillo`:
+- Moved the adversarial platform survey tests from `dillo/tests` to
+  `dillo-devtree/tests`.
+- Verified production dillo no longer calls `Machine::survey` directly.
+
+CI verification:
+- `27209935193` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
+
+Audit fix 9 - make dillo use only the common machine trait API:
+- Added common `dillo-machine` launch/run API: `LaunchConfig`, `RamRange`,
+  `BootVcpuState`, `RunControl`, and `Machine::{from_launch_config,
+  attach_ram, write_guest, create_vcpu, run_vcpus}`.
+- Implemented that API for KVM, HVF, and WHP. Backend crates now own VM
+  construction, RAM attachment, launch writes, CPU construction, vCPU
+  threading, and run-loop stop handling.
+- Replaced the per-target `dillo` runner branches with one generic runner over
+  `Machine + Attach<portable device>`.
+- Removed the KVM-only GDB extension and stale `gdbstub` dependencies; dillo no
+  longer reaches into backend debug APIs.
+- Deleted the stale nested `dillo/Cargo.lock`; the root workspace lock is the
+  authoritative lockfile and no longer contains GDB crates.
+
+Evidence:
+- `grep -R "backend_machine::\|dillo_machine_kvm\|dillo_machine_hvf\|dillo_machine_whp\|run_smp\|exit_requester\|run_until_stop\|Config {\|Memory::new\|Cpu {\|MappedMemory\|debug_flags\|DILLO_GDB\|gdbstub\|GdbTarget" -n dillo/src dillo/Cargo.toml --include='*.rs' --include='Cargo.toml'`
+  reports only the selected backend binding in `dillo/src/machine_select.rs`
+  and the common `Machine::from_launch_config` call.
+- `grep -R "gdbstub\|GdbTarget\|DILLO_GDB\|debug_flags" -n Cargo.toml Cargo.lock dillo --include='*.rs' --include='Cargo.toml' --include='Cargo.lock'`
+  reports no matches.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+CI verification:
+- Pending for this code slice.
+
+Audit fix 7 - move platform DTB survey out of `dillo`:
 - Moved the drain-to-empty platform survey, survey errors, resource plan, and
   DTB-derived platform fact types from `dillo::platform` into
   `dillo-devtree::platform`.

@@ -30,7 +30,7 @@ mod imp {
         FromDevTree,
         devtree::{NodeView, OwnedTree, PropertyView, Tree},
     };
-    use dillo_machine::VcpuStop;
+    use dillo_machine::{BootVcpuState, LaunchConfig, RamRange, RunControl, VcpuStop};
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
@@ -467,6 +467,54 @@ mod imp {
         type Memory = Memory;
 
         const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
+
+        fn from_launch_config(config: LaunchConfig) -> Result<Self, Self::Error> {
+            Self::try_from(Config {
+                dtb: config.dtb,
+                min_addr_space_bits: config.min_addr_space_bits,
+            })
+        }
+
+        fn attach_ram(&mut self, ranges: &[RamRange]) -> Result<(), Self::Error> {
+            for range in ranges {
+                self.add_memory(range.gpa, range.size)?;
+            }
+            let guest_mem = self.guest_memory()?;
+            self.shared_memory = vec![Arc::new(dillo_mmio::MappedSharedMemory::for_guest_memory(
+                guest_mem,
+                dillo_mmio::SharedAccess::ReadWrite,
+            ))];
+            Ok(())
+        }
+
+        fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Self::Error> {
+            self.inner.write_guest(gpa, data)
+        }
+
+        fn create_vcpu(
+            &mut self,
+            _index: u32,
+            _cpu_profile: &str,
+            _boot_state: Option<&dyn BootVcpuState>,
+        ) -> Result<Self::Vcpu, Self::Error> {
+            Err(Error::Hv(
+                "HVF creates vCPUs inside its backend-owned SMP runner".to_string(),
+            ))
+        }
+
+        fn run_vcpus(
+            &mut self,
+            count: u32,
+            _cpu_profile: &str,
+            boot_state: &dyn BootVcpuState,
+            _control: Arc<dyn RunControl>,
+        ) -> Result<VcpuStop, Self::Error> {
+            let state = boot_state
+                .aarch64()
+                .ok_or_else(|| Error::Hv("boot vCPU state is not aarch64".to_string()))?
+                .clone();
+            run_smp(count, state, self.mmio_bus())
+        }
 
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Ok(())

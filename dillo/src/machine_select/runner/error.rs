@@ -6,9 +6,6 @@
 
 use thiserror::Error;
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use super::backend_select::machine as backend_machine;
-
 /// Exit-code-bearing error for the VM-side run loop. Each variant
 /// corresponds to one of ARCH §13.4's documented categories.
 #[derive(Debug, Error)]
@@ -56,8 +53,8 @@ pub(crate) enum RunError {
     #[error("mmap memfd range: {0}")]
     Mmap(#[source] anyhow::Error),
 
-    #[error("KVM: {0}")]
-    Kvm(#[from] backend_machine::Error),
+    #[error("machine: {0}")]
+    Machine(String),
 
     #[error("write load section `{section}` to GPA {gpa:#x}: {source}")]
     SectionWrite {
@@ -96,36 +93,14 @@ pub(crate) enum RunError {
         #[source]
         source: anyhow::Error,
     },
-
     // ── exit 20 — Guest crash ──────────────────────────────────────
-    #[error("vCPU thread error: {0}")]
-    VcpuThread(String),
-
-    #[error("vCPU thread panicked")]
-    VcpuPanic,
-
-    #[error("unknown KVM exit: {0}")]
-    UnknownKvmExit(String),
-
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    #[error("serial init from DTB: {source}")]
-    SerialInit {
-        #[source]
-        source: anyhow::Error,
-    },
-
-    // ── exit 2 — Invocation / env error ────────────────────────────
-    // DILLO_GDB is set via env; an unparseable port is a usability
-    // error of the same shape as bad argv.
-    #[error("DILLO_GDB port must be u16, got {value:?}: {source}")]
-    GdbPort {
-        value: String,
-        #[source]
-        source: std::num::ParseIntError,
-    },
 }
 
 impl RunError {
+    pub(crate) fn machine(source: impl std::error::Error) -> Self {
+        Self::Machine(source.to_string())
+    }
+
     /// Map to the documented exit code from ARCH §13.4.
     #[must_use]
     pub(crate) fn exit_code(&self) -> i32 {
@@ -139,7 +114,7 @@ impl RunError {
             | Self::DtboWrite { .. } => 11,
             Self::MemfdSetup(_)
             | Self::Mmap(_)
-            | Self::Kvm(_)
+            | Self::Machine(_)
             | Self::SectionWrite { .. }
             | Self::ArchMismatch
             | Self::Unimplemented(_)
@@ -147,10 +122,6 @@ impl RunError {
             | Self::UnknownCpuProfile(_) => 12,
             Self::HostRam { .. } => 13,
             Self::Placement { .. } => 13,
-            Self::VcpuThread(_) | Self::VcpuPanic | Self::UnknownKvmExit(_) => 20,
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
-            Self::SerialInit { .. } => 11,
-            Self::GdbPort { .. } => 2,
         }
     }
 }

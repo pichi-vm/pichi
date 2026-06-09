@@ -49,6 +49,22 @@ pub enum VcpuState {
     Aarch64(vcpu_aarch64::CpuState),
 }
 
+impl dillo_machine::BootVcpuState for VcpuState {
+    fn x86_64(&self) -> Option<&vcpu_x86_64::CpuState> {
+        match self {
+            Self::X86_64(state) => Some(state),
+            Self::Aarch64(_) => None,
+        }
+    }
+
+    fn aarch64(&self) -> Option<&vcpu_aarch64::CpuState> {
+        match self {
+            Self::Aarch64(state) => Some(state),
+            Self::X86_64(_) => None,
+        }
+    }
+}
+
 /// Information about a PE section reachable from the active target.
 #[derive(Debug, Clone)]
 pub struct SectionInfo {

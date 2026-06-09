@@ -9,8 +9,6 @@ use std::sync::Arc;
 #[cfg(target_arch = "aarch64")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(target_arch = "x86_64")]
-use kvm_bindings::kvm_guest_debug;
 use kvm_bindings::kvm_userspace_memory_region;
 #[cfg(target_arch = "aarch64")]
 use kvm_bindings::{
@@ -413,54 +411,6 @@ impl Vcpu {
             .set_sregs(&sregs)
             .map_err(|e| Error::SetSregs(self.idx, io(e)))?;
         Ok(())
-    }
-
-    /// Configure KVM_GUESTDBG flags directly. Used by the gdb stub to
-    /// toggle between "run free", "single-step", and "report INT3/HW
-    /// breakpoint" modes between guest runs.
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn set_guest_debug_flags(&self, flags: u32) -> Result<(), Error> {
-        let dbg = kvm_guest_debug {
-            control: flags,
-            pad: 0,
-            arch: kvm_bindings::kvm_guest_debug_arch::default(),
-        };
-        self.fd
-            .set_guest_debug(&dbg)
-            .map_err(|e| Error::RunVcpu(self.idx, io(e)))?;
-        Ok(())
-    }
-
-    /// Read the vCPU's general-purpose registers (for debug snapshots).
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn get_regs(&self) -> Result<kvm_regs, Error> {
-        self.fd
-            .get_regs()
-            .map_err(|e| Error::SetRegs(self.idx, io(e)))
-    }
-
-    /// Write the vCPU's general-purpose registers.
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn set_regs(&self, regs: &kvm_regs) -> Result<(), Error> {
-        self.fd
-            .set_regs(regs)
-            .map_err(|e| Error::SetRegs(self.idx, io(e)))
-    }
-
-    /// Read the vCPU's segment / system registers.
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn get_sregs(&self) -> Result<kvm_bindings::kvm_sregs, Error> {
-        self.fd
-            .get_sregs()
-            .map_err(|e| Error::GetSregs(self.idx, io(e)))
-    }
-
-    /// Write the vCPU's segment / system registers.
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn set_sregs(&self, sregs: &kvm_bindings::kvm_sregs) -> Result<(), Error> {
-        self.fd
-            .set_sregs(sregs)
-            .map_err(|e| Error::SetSregs(self.idx, io(e)))
     }
 
     #[cfg(target_arch = "aarch64")]

@@ -122,10 +122,6 @@ nix = { version = "0.30", features = ["fs", "process", "signal", "ioctl", "mman"
 log = "0.4"
 env_logger = "0.11"
 
-# Remote-debug (GDB Remote Serial Protocol)
-gdbstub = "0.7"
-gdbstub_arch = "0.3"
-
 # Utility
 zerocopy = { version = "0.8", features = ["derive"] }
 vmm-sys-util = "0.15"

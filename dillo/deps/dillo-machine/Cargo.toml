@@ -8,6 +8,7 @@ description = "Host-neutral machine and vCPU traits for dillo."
 
 [dependencies]
 dillo-mmio.workspace = true
+pmi.workspace = true
 
 [lints]
 workspace = true

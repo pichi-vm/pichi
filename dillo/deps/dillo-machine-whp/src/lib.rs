@@ -28,7 +28,7 @@ mod imp {
         FromDevTree,
         devtree::{NodeView, OwnedTree, PropertyView, Tree},
     };
-    use dillo_machine::VcpuStop;
+    use dillo_machine::{BootVcpuState, LaunchConfig, RamRange, RunControl, VcpuStop};
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
@@ -201,6 +201,116 @@ mod imp {
         type Memory = Memory;
 
         const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
+
+        fn from_launch_config(config: LaunchConfig) -> Result<Self, Self::Error> {
+            Self::try_from(Config {
+                processor_count: config.vcpus,
+                dtb: config.dtb,
+            })
+        }
+
+        fn attach_ram(&mut self, ranges: &[RamRange]) -> Result<(), Self::Error> {
+            let memory = Memory::from_ranges(ranges.iter().map(|range| (range.gpa, range.size)))?;
+            self.set_memory(memory.guest_memory)?;
+            let guest_mem = self.guest_memory()?;
+            self.shared_memory = vec![Arc::new(dillo_mmio::MappedSharedMemory::for_guest_memory(
+                guest_mem,
+                dillo_mmio::SharedAccess::ReadWrite,
+            ))];
+            Ok(())
+        }
+
+        fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Self::Error> {
+            self.inner.write_guest(gpa, data)
+        }
+
+        fn create_vcpu(
+            &mut self,
+            index: u32,
+            cpu_profile: &str,
+            boot_state: Option<&dyn BootVcpuState>,
+        ) -> Result<Self::Vcpu, Self::Error> {
+            let mut vcpu = self.create_vcpu_with_pio(
+                index,
+                cpu_profile,
+                Arc::new(|_port, _size| u32::MAX),
+                Arc::new(|_port, _data: &[u8]| {}),
+            )?;
+            if let Some(boot_state) = boot_state {
+                let state = boot_state
+                    .x86_64()
+                    .ok_or_else(|| Error::UnhandledExit("boot vCPU state is not x86_64".into()))?;
+                vcpu.set_x86_64_state(state)?;
+            }
+            Ok(vcpu)
+        }
+
+        fn run_vcpus(
+            &mut self,
+            count: u32,
+            cpu_profile: &str,
+            boot_state: &dyn BootVcpuState,
+            control: Arc<dyn RunControl>,
+        ) -> Result<VcpuStop, Self::Error> {
+            let mut vcpus = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                let state = (index == 0).then_some(boot_state);
+                vcpus.push(self.create_vcpu(index, cpu_profile, state)?);
+            }
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let mut joins = Vec::with_capacity(vcpus.len());
+            for mut vcpu in vcpus {
+                let shutdown_c = Arc::clone(&shutdown);
+                let control_c = Arc::clone(&control);
+                let exit_requester = self.exit_requester();
+                joins.push(std::thread::spawn(move || -> Result<VcpuStop, Error> {
+                    let index = vcpu.index();
+                    let result = vcpu.run_until_stop(|| {
+                        if shutdown_c.load(std::sync::atomic::Ordering::Acquire) {
+                            return Some(VcpuStop::Stopped);
+                        }
+                        if let Some(stop) = control_c.stop_requested() {
+                            log::info!("vCPU {index}: supervisor stop observed");
+                            shutdown_c.store(true, std::sync::atomic::Ordering::Release);
+                            return Some(stop);
+                        }
+                        None
+                    });
+                    shutdown_c.store(true, std::sync::atomic::Ordering::Release);
+                    let _ = exit_requester.request_vcpu_exit();
+                    result
+                }));
+            }
+
+            let mut first_stop = VcpuStop::Stopped;
+            let mut first_error = None;
+            for join in joins {
+                match join.join() {
+                    Ok(Ok(stop)) => {
+                        if matches!(stop, VcpuStop::GuestReset | VcpuStop::GuestPoweroff) {
+                            first_stop = stop;
+                        }
+                        if shutdown.load(std::sync::atomic::Ordering::Acquire) {
+                            self.request_vcpu_exit()?;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        shutdown.store(true, std::sync::atomic::Ordering::Release);
+                        self.request_vcpu_exit()?;
+                        first_error.get_or_insert_with(|| e.to_string());
+                    }
+                    Err(_) => {
+                        shutdown.store(true, std::sync::atomic::Ordering::Release);
+                        self.request_vcpu_exit()?;
+                        first_error.get_or_insert_with(|| "vCPU thread panicked".to_string());
+                    }
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(Error::UnhandledExit(error));
+            }
+            Ok(first_stop)
+        }
 
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Vm::request_vcpu_exit(self)
