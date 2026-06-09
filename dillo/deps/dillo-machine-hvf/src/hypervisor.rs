@@ -132,12 +132,6 @@ impl Vm {
         Ok(())
     }
 
-    /// Maximum number of vCPUs the host supports for this VM. Used to reject
-    /// `--cpus` values the GIC redistributor region can't back.
-    pub(crate) fn max_vcpus(&self) -> Result<u32, Error> {
-        Ok(AvVcpu::get_max_count()?)
-    }
-
     /// `(gpa, host_addr, size)` for every mapped guest-RAM region — used to
     /// build a `vm-memory` view so virtio-pci can walk queues/descriptors.
     pub(crate) fn region_mappings(&self) -> Vec<(u64, u64, u64)> {

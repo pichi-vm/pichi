@@ -5,7 +5,7 @@ mod hypervisor;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod irq;
 #[cfg(target_os = "linux")]
-pub mod memory;
+mod memory;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod msi;
 
@@ -252,11 +252,6 @@ mod imp {
     }
 
     impl Vm {
-        #[cfg(target_arch = "x86_64")]
-        pub fn new() -> Result<Self, Error> {
-            Self::try_from(Config {})
-        }
-
         fn add_memslot(&self, slot: u32, gpa: u64, host_addr: u64, size: u64) -> Result<(), Error> {
             self.inner.add_memslot(slot, gpa, host_addr, size)
         }
@@ -278,19 +273,12 @@ mod imp {
             })
         }
 
-        pub fn request_vcpu_exit(&self) {
+        fn request_vcpu_exit(&self) {
             self.exit_requester.request_vcpu_exit();
         }
 
-        pub fn exit_requester(&self) -> VcpuExitRequester {
+        fn exit_requester(&self) -> VcpuExitRequester {
             self.exit_requester.clone()
-        }
-
-        pub fn set_shared_memory_capabilities(
-            &mut self,
-            shared_memory: Vec<Arc<dyn SharedMemory>>,
-        ) {
-            self.shared_memory = shared_memory;
         }
     }
 
@@ -303,9 +291,9 @@ mod imp {
     }
 
     #[derive(Debug, Clone)]
-    pub struct Config {
+    struct Config {
         #[cfg(target_arch = "aarch64")]
-        pub dtb: Vec<u8>,
+        dtb: Vec<u8>,
     }
 
     impl TryFrom<Config> for Vm {
@@ -465,7 +453,6 @@ mod imp {
 
     impl dillo_machine::Machine for Vm {
         type Error = Error;
-        type Config = Config;
         type Vcpu = Vcpu;
         type Cpu = Cpu;
         type Memory = Memory;
@@ -968,7 +955,7 @@ mod imp {
     }
 
     #[derive(Clone, Debug)]
-    pub struct VcpuExitRequester {
+    struct VcpuExitRequester {
         threads: Arc<Mutex<Vec<libc::pthread_t>>>,
     }
 
@@ -1010,7 +997,7 @@ mod imp {
             }
         }
 
-        pub fn request_vcpu_exit(&self) {
+        fn request_vcpu_exit(&self) {
             for thread in self
                 .threads
                 .lock()
@@ -1049,12 +1036,12 @@ mod imp {
     }
 
     impl Vcpu {
-        pub fn index(&self) -> u32 {
+        fn index(&self) -> u32 {
             self.inner.index()
         }
 
         #[cfg(target_arch = "x86_64")]
-        pub fn set_x86_64_state(
+        fn set_x86_64_state(
             &mut self,
             state: &pmi::vm::vcpu::x86_64::CpuState,
         ) -> Result<(), Error> {
@@ -1062,7 +1049,7 @@ mod imp {
         }
 
         #[cfg(target_arch = "aarch64")]
-        pub fn set_aarch64_state(
+        fn set_aarch64_state(
             &mut self,
             state: &pmi::vm::vcpu::aarch64::CpuState,
         ) -> Result<(), Error> {
@@ -1123,7 +1110,7 @@ mod imp {
             }
         }
 
-        pub fn run_until_stop<F>(&mut self, mut stop: F) -> Result<VcpuStop, Error>
+        fn run_until_stop<F>(&mut self, mut stop: F) -> Result<VcpuStop, Error>
         where
             F: FnMut() -> Option<VcpuStop>,
         {

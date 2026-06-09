@@ -1678,7 +1678,7 @@ Local verification note:
 
 ## Stage 22 - Final acceptance audit
 
-Status: in progress; host-service trait audit fix local-verified, CI pending.
+Status: in progress; machine API cleanup local-verified, CI pending.
 
 Goal: prove the implementation satisfies `DILLO-CRATE-SPLIT.md` or that all
 remaining divergence has been recorded for human review after three conformance
@@ -1916,6 +1916,38 @@ Audit fix 10 - selected host services behind common trait:
   type.
 - Moved platform survey selection into target-neutral launch preflight by
   mapping `HostArchitecture` to `dillo_devtree::platform::Arch`.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp -p dillo`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+Audit fix 11 - remove stale machine extension API:
+- Removed unused `Machine::Config`; all backend construction now goes through
+  common `Machine::from_launch_config(LaunchConfig)`.
+- Made backend `Config` structs private and removed stale public inherent
+  helpers for guest writes, memory mappings, shared-memory capability
+  replacement, vCPU state setup, vCPU run loops, SMP launch, and vCPU exit
+  requesters where callers already use common traits.
+- Made KVM guest-memory backing private to `dillo-machine-kvm`; it is backend
+  implementation plumbing, not a public launcher API.
+- Updated the `dillo-machine` unit test to exercise the common
+  `attach_ram`/`write_guest`/`create_vcpu` flow instead of preserving the old
+  associated-input `Attach` model.
+
+Evidence:
+- `grep -RIn "type Config\|pub struct Config" dillo/deps/dillo-machine dillo/deps/dillo-machine-* --include='*.rs'`
+  reports no matches.
+- `grep -RInE "pub fn (new|new_x86_64_with_local_apic_count|write_guest|region_mappings|request_vcpu_exit|exit_requester|set_shared_memory_capabilities|guest_memory|set_x86_64_state|set_aarch64_state|run_until_stop|index|create_vcpu_current_thread|run_smp|max_vcpus|mmio_bus)" dillo/deps/dillo-machine-kvm/src dillo/deps/dillo-machine-hvf/src dillo/deps/dillo-machine-whp/src --include='*.rs'`
+  reports only memory input constructors.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

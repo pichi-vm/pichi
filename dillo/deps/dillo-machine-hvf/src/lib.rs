@@ -151,38 +151,23 @@ mod imp {
             })
         }
 
-        pub fn max_vcpus(&self) -> Result<u32, Error> {
-            self.inner.max_vcpus()
-        }
-
         fn add_memory(&mut self, base: u64, size: u64) -> Result<(), Error> {
             self.inner.add_memory(base, size)
         }
 
-        pub fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Error> {
-            self.inner.write_guest(gpa, data)
-        }
-
-        pub fn region_mappings(&self) -> Vec<(u64, u64, u64)> {
+        fn region_mappings(&self) -> Vec<(u64, u64, u64)> {
             self.inner.region_mappings()
         }
 
-        pub fn mmio_bus(&self) -> Arc<Mutex<MmioBus>> {
+        fn mmio_bus(&self) -> Arc<Mutex<MmioBus>> {
             Arc::clone(&self.mmio_bus)
-        }
-
-        pub fn set_shared_memory_capabilities(
-            &mut self,
-            shared_memory: Vec<Arc<dyn SharedMemory>>,
-        ) {
-            self.shared_memory = shared_memory;
         }
 
         /// Build a `vm-memory` view over HVF-mapped guest RAM.
         ///
         /// The returned regions borrow the mappings owned by this VM; dropping
         /// the `GuestMemoryMmap` must not unmap the backend-owned memory.
-        pub fn guest_memory(&self) -> Result<GuestMemoryMmap, Error> {
+        fn guest_memory(&self) -> Result<GuestMemoryMmap, Error> {
             let mappings = self.region_mappings();
             let mut built: Vec<GuestRegionMmap> = Vec::with_capacity(mappings.len());
             for (gpa, host_addr, size) in mappings {
@@ -224,9 +209,9 @@ mod imp {
     }
 
     #[derive(Debug, Clone)]
-    pub struct Config {
-        pub dtb: Vec<u8>,
-        pub min_addr_space_bits: u32,
+    struct Config {
+        dtb: Vec<u8>,
+        min_addr_space_bits: u32,
     }
 
     impl TryFrom<Config> for Vm {
@@ -473,7 +458,6 @@ mod imp {
 
     impl dillo_machine::Machine for Vm {
         type Error = Error;
-        type Config = Config;
         type Vcpu = Vcpu;
         type Cpu = ();
         type Memory = Memory;
@@ -629,7 +613,7 @@ mod imp {
         mmio_bus: Arc<Mutex<MmioBus>>,
     }
 
-    pub fn create_vcpu_current_thread(mmio_bus: Arc<Mutex<MmioBus>>) -> Result<Vcpu, Error> {
+    fn create_vcpu_current_thread(mmio_bus: Arc<Mutex<MmioBus>>) -> Result<Vcpu, Error> {
         Ok(Vcpu {
             inner: crate::hypervisor::create_vcpu_current_thread()?,
             mmio_bus,
@@ -637,26 +621,23 @@ mod imp {
     }
 
     impl Vcpu {
-        pub fn set_aarch64_state(
-            &self,
-            state: &pmi::vm::vcpu::aarch64::CpuState,
-        ) -> Result<(), Error> {
+        fn set_aarch64_state(&self, state: &pmi::vm::vcpu::aarch64::CpuState) -> Result<(), Error> {
             self.inner.set_aarch64_state(state)
         }
 
-        pub fn set_mpidr(&self, mpidr: u64) -> Result<(), Error> {
+        fn set_mpidr(&self, mpidr: u64) -> Result<(), Error> {
             self.inner.set_mpidr(mpidr)
         }
 
-        pub fn set_gpr(&self, n: u8, value: u64) -> Result<(), Error> {
+        fn set_gpr(&self, n: u8, value: u64) -> Result<(), Error> {
             self.inner.set_gpr(n, value)
         }
 
-        pub fn el1_exception_state(&self) -> (u64, u64, u64) {
+        fn el1_exception_state(&self) -> (u64, u64, u64) {
             self.inner.el1_exception_state()
         }
 
-        pub fn handle(&self) -> VcpuHandle {
+        fn handle(&self) -> VcpuHandle {
             self.inner.handle()
         }
 
@@ -730,7 +711,7 @@ mod imp {
     /// HVF exposes PSCI HVCs to userspace, so the backend owns the HVC decode,
     /// secondary CPU parking, and raw-exit handling. The supervisor sees only a
     /// lifecycle stop reason.
-    pub fn run_smp(
+    fn run_smp(
         vcpus: u32,
         boot_state: pmi::vm::vcpu::aarch64::CpuState,
         mmio_bus: Arc<Mutex<MmioBus>>,

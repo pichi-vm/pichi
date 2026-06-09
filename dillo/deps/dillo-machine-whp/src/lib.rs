@@ -95,20 +95,6 @@ mod imp {
     }
 
     impl Vm {
-        pub fn new() -> Result<Self, Error> {
-            Ok(Self {
-                inner: crate::hypervisor::Vm::new()?,
-                mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
-                vcpu_cancels: Arc::new(Mutex::new(Vec::new())),
-                shared_memory: Vec::new(),
-                ioapic: None,
-            })
-        }
-
-        pub fn new_x86_64_with_local_apic_count(processor_count: u32) -> Result<Self, Error> {
-            Self::new_x86_64(processor_count, None)
-        }
-
         fn new_x86_64(processor_count: u32, ioapic: Option<IoApic>) -> Result<Self, Error> {
             let mmio_bus = Arc::new(Mutex::new(MmioBus::new()));
             let ioapic = ioapic.map(Arc::new);
@@ -131,14 +117,6 @@ mod imp {
             self.inner.set_memory(memory)
         }
 
-        pub fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Error> {
-            self.inner.write_guest(gpa, data)
-        }
-
-        pub fn region_mappings(&self) -> Vec<(u64, u64, u64)> {
-            self.inner.region_mappings()
-        }
-
         fn create_vcpu_with_pio(
             &self,
             idx: u32,
@@ -159,11 +137,11 @@ mod imp {
             })
         }
 
-        pub fn request_vcpu_exit(&self) -> Result<(), Error> {
+        fn request_vcpu_exit(&self) -> Result<(), Error> {
             self.exit_requester().request_vcpu_exit()
         }
 
-        pub fn exit_requester(&self) -> VcpuExitRequester {
+        fn exit_requester(&self) -> VcpuExitRequester {
             VcpuExitRequester {
                 vcpu_cancels: Arc::clone(&self.vcpu_cancels),
             }
@@ -175,22 +153,15 @@ mod imp {
             }
         }
 
-        pub fn set_shared_memory_capabilities(
-            &mut self,
-            shared_memory: Vec<Arc<dyn SharedMemory>>,
-        ) {
-            self.shared_memory = shared_memory;
-        }
-
-        pub fn guest_memory(&self) -> Result<GuestMemoryMmap, Error> {
+        fn guest_memory(&self) -> Result<GuestMemoryMmap, Error> {
             self.inner.guest_memory()
         }
     }
 
     #[derive(Debug, Clone)]
-    pub struct Config {
-        pub processor_count: u32,
-        pub dtb: Vec<u8>,
+    struct Config {
+        processor_count: u32,
+        dtb: Vec<u8>,
     }
 
     impl TryFrom<Config> for Vm {
@@ -207,7 +178,6 @@ mod imp {
 
     impl dillo_machine::Machine for Vm {
         type Error = Error;
-        type Config = Config;
         type Vcpu = Vcpu;
         type Cpu = Cpu;
         type Memory = Memory;
@@ -778,7 +748,7 @@ mod imp {
     }
 
     #[derive(Clone)]
-    pub struct VcpuExitRequester {
+    struct VcpuExitRequester {
         vcpu_cancels: Arc<Mutex<Vec<VcpuCancel>>>,
     }
 
@@ -789,7 +759,7 @@ mod imp {
     }
 
     impl VcpuExitRequester {
-        pub fn request_vcpu_exit(&self) -> Result<(), Error> {
+        fn request_vcpu_exit(&self) -> Result<(), Error> {
             for cancel in self
                 .vcpu_cancels
                 .lock()
@@ -828,11 +798,11 @@ mod imp {
     }
 
     impl Vcpu {
-        pub fn index(&self) -> u32 {
+        fn index(&self) -> u32 {
             self.inner.index()
         }
 
-        pub fn set_x86_64_state(
+        fn set_x86_64_state(
             &mut self,
             state: &pmi::vm::vcpu::x86_64::CpuState,
         ) -> Result<(), Error> {
@@ -893,7 +863,7 @@ mod imp {
             }
         }
 
-        pub fn run_until_stop<F>(&mut self, mut stop: F) -> Result<VcpuStop, Error>
+        fn run_until_stop<F>(&mut self, mut stop: F) -> Result<VcpuStop, Error>
         where
             F: FnMut() -> Option<VcpuStop>,
         {

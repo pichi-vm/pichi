@@ -1,8 +1,8 @@
 //! Host-neutral machine boundary for dillo.
 //!
 //! This crate owns the narrow VM-facing traits shared by backend machine
-//! implementations. Concrete backend crates provide inherent constructors and
-//! implement the attachment set that the top-level `dillo` launcher uses.
+//! implementations. Concrete backend crates implement this trait boundary, and
+//! the top-level `dillo` launcher composes only through these APIs.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -82,7 +82,6 @@ pub trait Host {
 /// A constructed VM capable of accepting DTB-derived resources and vCPUs.
 pub trait Machine: Sized + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
-    type Config: 'static;
     type Vcpu: Vcpu<Error = Self::Error>;
     type Cpu: 'static;
     type Memory: 'static;
@@ -164,7 +163,6 @@ mod tests {
     use std::fmt;
     use std::sync::Arc;
 
-    use dillo_mmio::Attach;
     use dillo_mmio::{Interrupt, InterruptError, MessageInterrupt, MessageInterruptDomain};
 
     use super::*;
@@ -217,7 +215,6 @@ mod tests {
 
     impl Machine for TestMachine {
         type Error = TestError;
-        type Config = ();
         type Vcpu = TestVcpu;
         type Cpu = TestCpu;
         type Memory = TestMemory;
@@ -273,54 +270,21 @@ mod tests {
         }
     }
 
-    impl Attach<TestMemory> for TestMachine {
-        type Error = TestError;
-        type Output = ();
-
-        fn attach(&mut self, _item: TestMemory) -> Result<Self::Output, Self::Error> {
-            Ok(())
-        }
-    }
-
-    impl Attach<TestCpu> for TestMachine {
-        type Error = TestError;
-        type Output = TestVcpu;
-
-        fn attach(&mut self, _item: TestCpu) -> Result<Self::Output, Self::Error> {
-            Ok(TestVcpu {
-                stop: VcpuStop::Stopped,
-            })
-        }
-    }
-
-    fn build_one_vcpu<M>(machine: &mut M) -> Result<<M as Machine>::Vcpu, <M as Machine>::Error>
-    where
-        M: Machine,
-        M: Attach<<M as Machine>::Memory, Error = <M as Machine>::Error, Output = ()>,
-        M: Attach<<M as Machine>::Cpu, Error = <M as Machine>::Error, Output = M::Vcpu>,
-        <M as Machine>::Memory: Default,
-        <M as Machine>::Cpu: Default,
-    {
-        <M as Attach<M::Memory>>::attach(machine, M::Memory::default())?;
-        <M as Attach<M::Cpu>>::attach(machine, M::Cpu::default())
-    }
-
-    impl Default for TestCpu {
-        fn default() -> Self {
-            Self
-        }
-    }
-
-    impl Default for TestMemory {
-        fn default() -> Self {
-            Self
-        }
-    }
-
     #[test]
-    fn machine_uses_associated_input_types_and_attach() {
+    fn machine_uses_common_launch_ram_and_vcpu_api() {
         let mut machine = TestMachine;
-        let mut vcpu = build_one_vcpu(&mut machine).expect("vCPU created");
+        machine
+            .attach_ram(&[RamRange {
+                gpa: 0x1000,
+                size: 0x2000,
+            }])
+            .expect("RAM attached");
+        machine
+            .write_guest(0x1000, b"boot")
+            .expect("guest write accepted");
+        let mut vcpu = machine
+            .create_vcpu(0, "test-profile", None)
+            .expect("vCPU created");
 
         assert_eq!(vcpu.run().expect("vCPU run"), VcpuStop::Stopped);
         machine.request_vcpu_exit().expect("exit requested");

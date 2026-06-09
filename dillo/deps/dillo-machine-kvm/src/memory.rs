@@ -16,7 +16,7 @@ use vm_memory::{FileOffset, GuestAddress, GuestMemoryMmap, GuestRegionMmap};
 
 /// Owned memfd.
 #[derive(Debug)]
-pub struct Memfd {
+struct Memfd {
     fd: std::os::fd::OwnedFd,
 }
 
@@ -137,29 +137,29 @@ fn build_guest_memory(
 /// Maps GPA → (host_addr, size). Used to translate guest-physical
 /// writes (load-section copies, DTBO fill) into host-virtual writes.
 #[derive(Debug)]
-pub struct MappedRegion {
+pub(crate) struct MappedRegion {
     gpa: u64,
     host_addr: u64,
     size: u64,
 }
 
 impl MappedRegion {
-    pub fn gpa(&self) -> u64 {
+    pub(crate) fn gpa(&self) -> u64 {
         self.gpa
     }
 
-    pub fn host_addr(&self) -> u64 {
+    pub(crate) fn host_addr(&self) -> u64 {
         self.host_addr
     }
 
-    pub fn size(&self) -> u64 {
+    pub(crate) fn size(&self) -> u64 {
         self.size
     }
 }
 
 /// KVM-owned standard-VM guest memory backing.
 #[derive(Debug)]
-pub struct MappedMemory {
+pub(crate) struct MappedMemory {
     _memfd: Memfd,
     regions: Vec<MappedRegion>,
     gpa_map: GpaMap,
@@ -167,7 +167,7 @@ pub struct MappedMemory {
 }
 
 impl MappedMemory {
-    pub fn new(regions: impl IntoIterator<Item = (u64, u64)>) -> Result<Self> {
+    pub(crate) fn new(regions: impl IntoIterator<Item = (u64, u64)>) -> Result<Self> {
         let requested = regions.into_iter().collect::<Vec<_>>();
         let total_bytes = requested.iter().map(|(_, size)| *size).sum();
         let memfd = create_and_size(total_bytes)?;
@@ -197,43 +197,35 @@ impl MappedMemory {
         })
     }
 
-    pub fn regions(&self) -> &[MappedRegion] {
+    pub(crate) fn regions(&self) -> &[MappedRegion] {
         &self.regions
     }
 
-    pub fn gpa_map(&self) -> &GpaMap {
+    pub(crate) fn gpa_map(&self) -> &GpaMap {
         &self.gpa_map
     }
 
-    pub fn guest_memory(&self) -> GuestMemoryMmap {
+    pub(crate) fn guest_memory(&self) -> GuestMemoryMmap {
         self.guest_memory.clone()
     }
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct GpaMap {
+pub(crate) struct GpaMap {
     regions: Vec<(u64, u64, u64)>, // (gpa, host_addr, size)
 }
 
 impl GpaMap {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
-    pub fn add(&mut self, gpa: u64, host_addr: u64, size: u64) {
+    pub(crate) fn add(&mut self, gpa: u64, host_addr: u64, size: u64) {
         self.regions.push((gpa, host_addr, size));
     }
-    pub fn lookup(&self, gpa: u64) -> Option<u64> {
-        for &(rg, ra, rs) in &self.regions {
-            if gpa >= rg && gpa < rg + rs {
-                let off = gpa - rg;
-                return Some(ra + off);
-            }
-        }
-        None
-    }
+
     /// Copy `src` into guest memory starting at `gpa`. Errors if the
     /// destination range spans regions or falls outside any region.
-    pub fn write(&self, gpa: u64, src: &[u8]) -> Result<()> {
+    pub(crate) fn write(&self, gpa: u64, src: &[u8]) -> Result<()> {
         for &(rg, ra, rs) in &self.regions {
             if gpa >= rg && gpa < rg + rs {
                 let off = gpa - rg;

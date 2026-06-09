@@ -147,6 +147,7 @@ struct VmInner {
 }
 
 impl Vm {
+    #[cfg(test)]
     pub(crate) fn new() -> Result<Self, Error> {
         Self::new_with_options(PartitionOptions::default())
     }
@@ -243,6 +244,7 @@ impl Vm {
             .ok_or(Error::UnmappedGuestAddr(0))
     }
 
+    #[cfg(test)]
     pub(crate) fn region_mappings(&self) -> Vec<(u64, u64, u64)> {
         let Some(memory) = &self.memory else {
             return Vec::new();
