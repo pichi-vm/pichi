@@ -13,7 +13,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use dillo_pci::PciRoot;
+use crate::PciRoot;
 
 pub const CF8_PORT: u16 = 0xCF8;
 pub const CF8_PORT_END: u16 = 0xCFB;

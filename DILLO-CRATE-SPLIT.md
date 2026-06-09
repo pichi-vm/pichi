@@ -83,23 +83,17 @@ flowchart TD
     dillo-virtio-net --> dillo-virtio
     dillo-virtio-vsock --> dillo-virtio
 
-    dillo-x86 --> dillo-mmio
-    dillo-arm --> dillo-mmio
-
     dillo-machine-kvm --> dillo-machine
     dillo-machine-kvm --> dillo-mmio
-    dillo-machine-kvm -.-> dillo-x86
     dillo-machine-kvm -.-> kvm-ioctls
     dillo-machine-kvm -.-> kvm-bindings
 
     dillo-machine-hvf --> dillo-machine
     dillo-machine-hvf --> dillo-mmio
-    dillo-machine-hvf -.-> dillo-arm
     dillo-machine-hvf -.-> applevisor
 
     dillo-machine-whp --> dillo-machine
     dillo-machine-whp --> dillo-mmio
-    dillo-machine-whp -.-> dillo-x86
     dillo-machine-whp -.-> whp-api
 
     dillo --> pmi
@@ -146,7 +140,7 @@ Machine backend crates know:
 - `dillo-machine`;
 - `dillo-mmio`;
 - their host OS hypervisor API;
-- optional architecture substrate crates such as `dillo-x86` or `dillo-arm`.
+- architecture machinery that is specific to that backend's execution model.
 
 Machine backend crates do not know PCI, virtio, UART, or concrete devices. A
 backend exposes an inherent constructor for its concrete `Machine`, creates and
@@ -193,10 +187,10 @@ occupancy.
 an inherent constructor that takes DTB-derived MMIO window and interrupt
 requirements.
 
-`dillo-x86` and `dillo-arm` are optional architecture substrate crates for
-machine-owned architecture machinery such as IOAPIC, GIC, syscon, PSCI, and
-architecture-specific interrupt decoding. Backend crates may depend on these as
-appropriate. `dillo` should not directly manipulate their internals.
+Architecture-specific machinery belongs in the owning `dillo-machine-*` crate
+unless it is a portable device or protocol implementation. For example, WHP owns
+its userspace IOAPIC model, `dillo-mmio` owns the portable syscon MMIO device,
+and `dillo-pci` owns legacy PCI configuration-port decoding over `PciRoot`.
 
 The DTB survey layer consumes base DTB and overlay rules and returns typed
 platform facts with provenance. This logic now lives in `dillo::platform`; it

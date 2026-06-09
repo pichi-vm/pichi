@@ -24,6 +24,8 @@ pub mod bdf;
 pub mod capability;
 /// 256-byte Type 0 PCI configuration space.
 pub mod configuration;
+/// Legacy x86 PCI configuration PIO ports (`0xCF8` / `0xCFC`).
+pub mod legacy_pio;
 /// MSI-X table, capability, and notifier trait.
 pub mod msix;
 

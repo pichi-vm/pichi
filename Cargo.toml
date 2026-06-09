@@ -23,7 +23,6 @@ members = [
     "dillo/deps/dillo-pci",
     "dillo/deps/dillo-pci-virtio",
     "dillo/deps/dillo-virtio-console",
-    "dillo/deps/dillo-x86",
     "dillo/deps/dillo-virtio",
     "dillo/deps/snuffler",
 ]
@@ -81,8 +80,6 @@ dillo-pci = { path = "dillo/deps/dillo-pci" }
 dillo-pci-virtio = { path = "dillo/deps/dillo-pci-virtio" }
 dillo-virtio = { path = "dillo/deps/dillo-virtio" }
 dillo-virtio-console = { path = "dillo/deps/dillo-virtio-console" }
-dillo-x86 = { path = "dillo/deps/dillo-x86" }
-
 # Error handling
 anyhow = "1"
 thiserror = "2"

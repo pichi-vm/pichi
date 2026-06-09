@@ -11,6 +11,8 @@ use std::thread;
 
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 
+pub mod syscon;
+
 /// A guest-physical MMIO window owned by one device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MmioWindow {

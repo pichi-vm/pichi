@@ -26,7 +26,6 @@ dillo-pci.workspace = true
 dillo-pci-virtio.workspace = true
 dillo-virtio.workspace = true
 dillo-virtio-console.workspace = true
-dillo-x86.workspace = true
 vm-memory.workspace = true
 pmi.workspace = true
 devtree = { workspace = true, features = ["alloc"] }

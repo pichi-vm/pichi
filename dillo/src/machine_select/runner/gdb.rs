@@ -52,7 +52,7 @@ use super::memory::GpaMap;
 pub(crate) struct GdbTarget {
     vcpu: Vcpu,
     gpa: Arc<GpaMap>,
-    poweroff: dillo_x86::syscon::SysconRegister,
+    poweroff: dillo_mmio::syscon::SysconRegister,
     /// Address → original byte patched out by an INT3.
     sw_breakpoints: HashMap<u64, u8>,
     /// `true` once gdb has issued `continue`, cleared on every stop.
@@ -67,7 +67,7 @@ impl GdbTarget {
     pub(crate) fn new(
         vcpu: Vcpu,
         gpa: Arc<GpaMap>,
-        poweroff: dillo_x86::syscon::SysconRegister,
+        poweroff: dillo_mmio::syscon::SysconRegister,
         shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -125,7 +125,7 @@ impl GdbTarget {
                 Some(SingleThreadStopReason::Exited(0))
             }
             DebugExit::MmioWrite { addr, data, size } => {
-                if dillo_x86::syscon::SysconDevice::matches_poweroff(
+                if dillo_mmio::syscon::SysconDevice::matches_poweroff(
                     self.poweroff,
                     addr,
                     &data[..size as usize],

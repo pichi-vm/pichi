@@ -45,12 +45,12 @@ use dillo_machine::VcpuStop;
 use dillo_mmio::Attach;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_mmio::Interrupt;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use dillo_mmio::syscon;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use dillo_pci::legacy_pio as pio_pci;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::{MsixInterruptAdapter, MsixNotifier};
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use dillo_x86::pio_pci;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use dillo_x86::syscon;
 
 pub(crate) use error::RunError;
 
@@ -261,7 +261,7 @@ pub(crate) fn run(
     let ioapic_region = machine
         .ioapic
         .ok_or(RunError::MissingRequiredDevice("/intc reg[1] ioapic"))?;
-    let ioapic = Arc::new(dillo_x86::IoApic::new(MmioWindow {
+    let ioapic = Arc::new(backend_machine::IoApic::new(MmioWindow {
         name: "ioapic",
         base: ioapic_region.base,
         size: ioapic_region.size,

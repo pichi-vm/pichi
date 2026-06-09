@@ -2,6 +2,8 @@
 mod cpuid_x86;
 #[cfg(target_os = "windows")]
 mod hypervisor;
+#[cfg(target_os = "windows")]
+mod ioapic;
 
 /// Reasons a WHP vCPU run returned to backend code.
 #[cfg(target_os = "windows")]
@@ -28,12 +30,12 @@ mod imp {
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
         SharedMemory,
     };
-    use dillo_x86::IoApic;
     use vm_memory::GuestMemoryMmap;
 
     use crate::VmExit;
     use crate::hypervisor::InterruptController;
     pub use crate::hypervisor::{Error, VcpuCancel};
+    pub use crate::ioapic::IoApic;
 
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::X86_64;
 

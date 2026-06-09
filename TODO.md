@@ -859,9 +859,9 @@ Process:
   adapters that could be copied into device code.
 - Remove backend handle accessors above backend crates.
 - Remove temporary module re-exports that hide the final crate graph.
-- Move architecture-specific machinery out of `dillo-vm` into `dillo-x86` and
-  `dillo-arm`, or into the owning `dillo-machine-*` crate when the machinery is
-  backend-specific rather than reusable architecture substrate.
+- Move architecture-specific machinery into the owning `dillo-machine-*` crate
+  when it is backend-specific, or into the portable protocol/device crate when
+  it is backend-neutral.
 - Split concrete virtio devices into `dillo-virtio-blk`,
   `dillo-virtio-console`, `dillo-virtio-net`, and `dillo-virtio-vsock` as those
   devices exist, with inherent constructors and no DTB/PMI/backend knowledge.
@@ -888,9 +888,8 @@ Completed changes:
   crates. `dillo-virtio::Kick` is now one target-neutral blocking counter, and
   `dillo-pci-virtio` always records queue kicks and signals workers from its
   MMIO notify write path.
-- Added `dillo-x86` and moved the x86 IOAPIC MMIO register model out of
-  `dillo-vm`; the remaining WHP-specific trigger glue now injects decoded
-  IOAPIC routes instead of owning the register model.
+- Moved the x86 IOAPIC MMIO register model out of `dillo-vm`; WHP now owns
+  that model because it is backend-specific interrupt substrate.
 - Made `dillo-mmio-uart` target-neutral by replacing Linux/macOS/WHP trigger
   types with an optional backend-resolved `dillo-mmio::Interrupt`; KVM and WHP
   now provide their interrupt-line implementations from machine backend crates.
@@ -977,8 +976,7 @@ Completed changes:
   `dillo` process; backend-specific signal hooks now receive the process-owned
   shutdown state.
 - Moved x86 CF8/CFC PCI configuration PIO decoding from `dillo-vm` into
-  `dillo-x86::pio_pci`; `dillo-vm` now consumes that architecture substrate
-  instead of owning the decoder. The CF8/CFC tests now run under `dillo-x86`.
+  `dillo-pci::legacy_pio`, so the decoder lives with the `PciRoot` it adapts.
 - Removed `dillo-mmio::MmioNotifyEvent` and `QueueNotifier` plus the KVM
   ioeventfd notifier implementation that depended on exposing Linux eventfds
   through portable transport APIs.
@@ -987,9 +985,9 @@ Completed changes:
 - Tightened `dillo/tests/architecture_cfg.rs` so the no-target-cfg guard covers
   `dillo/src` plus the portable MMIO, PCI, and virtio core crates, not just
   the top-level launcher sources.
-- Moved x86 syscon power/reboot MMIO devices from `dillo-vm` into
-  `dillo-x86::syscon`; the remaining compatibility runner now consumes that
-  architecture substrate instead of owning the device implementation.
+- Moved syscon power/reboot MMIO devices from `dillo-vm` into
+  `dillo-mmio::syscon`, so the concrete MMIO device is implemented once in a
+  portable device crate.
 - Removed the obsolete `vhost-backend` workspace crate and the `dillo backend
   console` reexec path; all current machine backends use the portable
   thread-hosted console device.
@@ -1044,10 +1042,13 @@ Completed changes:
   imports, and lockfile package entries.
 - Retired the standalone `dillo-platform` crate by moving its DTB extraction
   and drain-to-empty survey modules into `dillo::platform`.
-- Decoupled `dillo-x86` from dillo-specific platform survey types; x86 syscon
-  devices now take a `dillo_x86::syscon::SysconRegister` descriptor.
 - Removed `dillo-platform` from workspace members, workspace dependencies,
   source imports, and lockfile package entries.
+- Retired the standalone `dillo-x86` crate. Its portable syscon device moved
+  to `dillo-mmio`, its legacy PCI configuration-port adapter moved to
+  `dillo-pci`, and its WHP-only IOAPIC model moved to `dillo-machine-whp`.
+- Removed `dillo-x86` from workspace members, workspace dependencies, source
+  imports, and lockfile package entries.
 
 Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 cargo check -p dillo-mmio -p dillo-pci -p dillo-virtio -p dillo-mmio-virtio -p dillo-pci-virtio -p dillo-machine`

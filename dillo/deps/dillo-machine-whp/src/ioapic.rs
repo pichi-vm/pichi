@@ -1,17 +1,12 @@
-//! x86 architecture substrate for dillo.
-
-pub mod pio_pci;
-pub mod syscon;
-
 use std::sync::Mutex;
 
 use dillo_mmio::{MmioDevice, MmioWindow};
 
-/// Minimal x86 IOAPIC register model.
+/// Minimal x86 IOAPIC register model used by the WHP backend.
 ///
-/// The x86 base DTB declares an IOAPIC at 0xFEC00000. Host backends that do not
-/// provide a full PC chipset can expose this register interface so Linux can
-/// probe and program interrupt routes during early boot.
+/// WHP does not provide an in-kernel IOAPIC for this machine model, so the
+/// backend exposes the DTB-declared IOAPIC register window and uses the
+/// programmed redirection table when injecting wired interrupts.
 #[derive(Debug)]
 pub struct IoApic {
     window: MmioWindow,

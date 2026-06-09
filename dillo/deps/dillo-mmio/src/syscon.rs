@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use dillo_mmio::{MmioDevice, MmioWindow};
+use crate::{MmioDevice, MmioWindow};
 
 const WINDOW_SIZE: u64 = 0x1000;
 

@@ -378,7 +378,6 @@ dependencies = [
  "dillo-pci-virtio",
  "dillo-virtio",
  "dillo-virtio-console",
- "dillo-x86",
  "env_logger",
  "gdbstub",
  "gdbstub_arch",
@@ -440,7 +439,6 @@ version = "0.1.0"
 dependencies = [
  "dillo-machine",
  "dillo-mmio",
- "dillo-x86",
  "log",
  "pmi",
  "thiserror",
@@ -452,6 +450,7 @@ dependencies = [
 name = "dillo-mmio"
 version = "0.1.0"
 dependencies = [
+ "log",
  "thiserror",
  "vm-memory",
 ]
@@ -511,15 +510,6 @@ dependencies = [
  "log",
  "thiserror",
  "vm-memory",
-]
-
-[[package]]
-name = "dillo-x86"
-version = "0.1.0"
-dependencies = [
- "dillo-mmio",
- "dillo-pci",
- "log",
 ]
 
 [[package]]
