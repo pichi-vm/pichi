@@ -181,6 +181,16 @@ impl Vm {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn add_memory(&mut self, base: u64, size: u64) -> Result<(), Error> {
+        if size == 0 {
+            return Err(Error::EmptyMemoryRegion);
+        }
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(base), size as usize)])
+            .map_err(|source| Error::CreateGuestMemory(source.to_string()))?;
+        self.set_memory(memory)
+    }
+
     pub(crate) fn set_memory(&mut self, memory: GuestMemoryMmap) -> Result<(), Error> {
         self.regions.clear();
         for region in memory.iter() {
