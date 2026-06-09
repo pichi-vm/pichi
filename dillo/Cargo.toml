@@ -28,7 +28,6 @@ dillo-virtio.workspace = true
 dillo-virtio-console.workspace = true
 dillo-devtree.workspace = true
 pmi.workspace = true
-devtree = { workspace = true, features = ["alloc"] }
 object.workspace = true
 serde.workspace = true
 ciborium.workspace = true

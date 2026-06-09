@@ -2241,3 +2241,16 @@ Audit fix 20 - preserve boot timeout output:
   files after killing the child and include them in the panic. The next
   Ubuntu/x86 CI failure will distinguish "guest never reported" from "guest
   reported but dillo did not exit".
+
+CI verification:
+- `27227048248` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
+
+Audit fix 21 - keep DTB decoding behind dillo-devtree:
+- Removed `dillo`'s direct `devtree` dependency. Overlay tests now use the
+  `dillo-devtree` re-export, matching the runtime boundary where DTB
+  extraction and platform survey live in `dillo-devtree`.
+
+Evidence:
+- `grep -RInE "dillo_machine_(kvm|hvf|whp)|dillo-machine-(kvm|hvf|whp)|dillo_machine::|\\bpmi\\b|dillo_devtree|devtree" dillo/deps/dillo-mmio dillo/deps/dillo-mmio-uart dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-pci-virtio dillo/deps/dillo-virtio dillo/deps/dillo-virtio-console --include='*.rs' --include='Cargo.toml'`
+  reports no device-crate dependency on backends, PMI, or devtree.

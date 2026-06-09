@@ -633,7 +633,7 @@ mod overlay {
 
     #[cfg(test)]
     mod tests {
-        use devtree::{NodeView, PropertyView, Tree, TreeView};
+        use dillo_devtree::devtree::{NodeView, PropertyView, Tree, TreeView};
 
         use super::*;
 
