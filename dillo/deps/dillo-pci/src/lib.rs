@@ -9,8 +9,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 pub use dillo_mmio::{
-    MmioAttachment, MmioDeviceHandle, MmioDeviceHost, MmioJoinError, MmioProcessHost,
-    MmioSpawnError, SharedMemory,
+    MmioAttachment, MmioDeviceHandle, MmioDeviceRun, MmioJoinError, MmioSpawnError, SharedMemory,
 };
 use dillo_mmio::{MmioDevice, MmioWindow};
 pub use vm_pci::{
@@ -64,7 +63,7 @@ pub trait PciDevice: Send + Sync + std::fmt::Debug {
 pub trait PciDeviceHost: Send + Sync + std::fmt::Debug {
     fn shared_memory(&self) -> &[Arc<dyn SharedMemory>];
 
-    fn spawn(&self, host: MmioDeviceHost) -> Result<MmioDeviceHandle, MmioSpawnError>;
+    fn spawn(&self, run: MmioDeviceRun) -> Result<MmioDeviceHandle, MmioSpawnError>;
 }
 
 /// Number of slots on the single PCI bus. PCIe spec allows 32 device
@@ -303,8 +302,8 @@ impl PciDeviceHost for PciRootHost {
         self.attachment.shared_memory()
     }
 
-    fn spawn(&self, host: MmioDeviceHost) -> Result<MmioDeviceHandle, MmioSpawnError> {
-        Arc::clone(&self.attachment).spawn(host)
+    fn spawn(&self, run: MmioDeviceRun) -> Result<MmioDeviceHandle, MmioSpawnError> {
+        Arc::clone(&self.attachment).spawn(run)
     }
 }
 
@@ -574,7 +573,7 @@ mod tests {
 
             fn spawn(
                 self: Arc<Self>,
-                _host: MmioDeviceHost,
+                _run: dillo_mmio::MmioDeviceRun,
             ) -> Result<MmioDeviceHandle, MmioSpawnError> {
                 Ok(MmioDeviceHandle::noop())
             }

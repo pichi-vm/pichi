@@ -8,9 +8,7 @@ use crate::kick::Kick;
 use crate::memory::{NullVirtioMemory, SharedVirtioMemory, VirtioMemory};
 use crate::queue::{NullQueueMemory, Queue, QueueMemory, SharedQueueMemory};
 
-use std::process::Child;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
@@ -180,8 +178,6 @@ pub trait VirtioDeviceHost: Send + Sync + std::fmt::Debug {
         &self,
         run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,
     ) -> Result<VirtioDeviceHandle, ActivateError>;
-
-    fn adopt_process(&self, child: Child) -> Result<VirtioDeviceHandle, ActivateError>;
 }
 
 /// Compatibility host that runs virtio device workers as local threads.
@@ -204,10 +200,6 @@ impl VirtioDeviceHost for ThreadDeviceHost {
                 Err(_) => Err(DeviceJoinError::Panicked),
             },
         ))
-    }
-
-    fn adopt_process(&self, child: Child) -> Result<VirtioDeviceHandle, ActivateError> {
-        Ok(VirtioDeviceHandle::from_process(child))
     }
 }
 
@@ -234,34 +226,6 @@ impl VirtioDeviceHandle {
         }
     }
 
-    pub fn from_process(child: Child) -> Self {
-        let child = Arc::new(Mutex::new(Some(child)));
-        let shutdown_child = Arc::clone(&child);
-        let join_child = Arc::clone(&child);
-        Self::new(
-            move || {
-                if let Some(mut child) = shutdown_child
-                    .lock()
-                    .expect("virtio process child poisoned")
-                    .take()
-                {
-                    let _ = Self::terminate_process(&mut child);
-                }
-            },
-            move || {
-                if let Some(mut child) = join_child
-                    .lock()
-                    .expect("virtio process child poisoned")
-                    .take()
-                {
-                    Self::terminate_process(&mut child)
-                        .map_err(|e| DeviceJoinError::Worker(e.to_string()))?;
-                }
-                Ok(())
-            },
-        )
-    }
-
     pub fn noop() -> Self {
         Self::new(|| {}, || Ok(()))
     }
@@ -279,15 +243,6 @@ impl VirtioDeviceHandle {
         } else {
             Ok(())
         }
-    }
-
-    fn terminate_process(child: &mut Child) -> std::io::Result<()> {
-        if child.try_wait()?.is_some() {
-            return Ok(());
-        }
-        child.kill()?;
-        child.wait()?;
-        Ok(())
     }
 
     fn log_join_error(e: &DeviceJoinError) {

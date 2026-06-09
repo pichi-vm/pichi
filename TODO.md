@@ -968,6 +968,31 @@ Completed changes:
   traits for KVM, HVF, and WHP backend VMs. The trait no longer requires
   `Machine`/`Vcpu` to be `Send` because HVF vCPUs are thread-affine and must be
   created and run on their owning thread.
+- Removed the remaining MMIO/virtio process-host API surface. `MmioAttachment`
+  now accepts one worker closure directly and backend crates spawn it through a
+  thread-backed `MmioDeviceHandle`; `VirtioDeviceHost` no longer exposes
+  `adopt_process`, and `dillo_machine::Machine` no longer has a one-value
+  `DEVICE_MODEL` constant.
+
+Local verification for current in-progress slice:
+- `RUSTC_BOOTSTRAP=1 cargo check -p dillo-mmio -p dillo-pci -p dillo-virtio -p dillo-mmio-virtio -p dillo-pci-virtio -p dillo-machine`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-kvm --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-hvf --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-whp --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --no-run`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+
+Boot verification note:
+- Local macOS boot tests were attempted with `target/debug/dillo` signed using
+  `com.apple.security.hypervisor`, but this host still returns
+  `hvf: HypervisorError { code: -85377017, description: "operation not allowed by the system" }`
+  before guest execution. Treat CI boot lanes as the boot signal for this
+  in-progress slice.
 
 CI verification:
 - `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
@@ -988,6 +1013,8 @@ CI verification:
   `c21a869 refactor: move x86 syscon into substrate`.
 - `27174890915` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `d342a4a refactor: remove vhost console backend`.
+- `27175300534` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `b7ba725 refactor: implement machine traits in backends`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

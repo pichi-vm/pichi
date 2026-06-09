@@ -14,7 +14,7 @@ mod imp {
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
         Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
-        MmioDeviceHandle, MmioDeviceHost, MmioInterrupt, MmioSpawnError, SharedMemory,
+        MmioDeviceHandle, MmioInterrupt, MmioSpawnError, SharedMemory,
     };
 
     use dillo_hypervisor::VmExit;
@@ -263,8 +263,6 @@ mod imp {
         type Cpu = ();
         type Memory = ();
 
-        const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
-
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Vm::request_vcpu_exit(self);
             Ok(())
@@ -346,9 +344,9 @@ mod imp {
 
         fn spawn(
             self: Arc<Self>,
-            host: MmioDeviceHost,
+            run: dillo_mmio::MmioDeviceRun,
         ) -> Result<MmioDeviceHandle, MmioSpawnError> {
-            host.spawn_supervisor_model()
+            Ok(MmioDeviceHandle::thread(run))
         }
     }
 

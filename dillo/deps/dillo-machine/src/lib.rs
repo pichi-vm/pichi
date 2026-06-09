@@ -4,8 +4,6 @@
 //! implementations. Concrete backend crates provide inherent constructors and
 //! implement the attachment set that the top-level `dillo` launcher uses.
 
-pub use dillo_mmio::DeviceModel;
-
 /// Host architecture exposed by the selected machine backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostArchitecture {
@@ -20,8 +18,6 @@ pub trait Machine: Sized + 'static {
     type Vcpu: Vcpu<Error = Self::Error>;
     type Cpu: 'static;
     type Memory: 'static;
-
-    const DEVICE_MODEL: DeviceModel;
 
     /// Make every currently running vCPU for this machine leave `Vcpu::run`.
     fn request_vcpu_exit(&self) -> Result<(), Self::Error>;
@@ -91,8 +87,6 @@ mod tests {
         type Cpu = TestCpu;
         type Memory = TestMemory;
 
-        const DEVICE_MODEL: DeviceModel = DeviceModel::Thread;
-
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Ok(())
         }
@@ -147,7 +141,6 @@ mod tests {
         let mut machine = TestMachine;
         let mut vcpu = build_one_vcpu(&mut machine).expect("vCPU created");
 
-        assert_eq!(TestMachine::DEVICE_MODEL, DeviceModel::Thread);
         assert_eq!(vcpu.run().expect("vCPU run"), VcpuStop::Stopped);
         machine.request_vcpu_exit().expect("exit requested");
     }
