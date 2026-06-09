@@ -1544,7 +1544,7 @@ Local verification note:
 
 ## Stage 22 - Final acceptance audit
 
-Status: pending.
+Status: in progress; first audit fix complete, CI pending.
 
 Goal: prove the implementation satisfies `DILLO-CRATE-SPLIT.md` or that all
 remaining divergence has been recorded for human review after three conformance
@@ -1570,3 +1570,27 @@ Success criteria:
 - Three conformance loops have completed, and any remaining divergence is
   recorded for human review.
 - CI passes all supported platform lanes, including real boot tests.
+
+Audit fix 1 - portable console attachment:
+- Replaced per-target PCI console construction in the Linux/x86 KVM,
+  Linux/aarch64 KVM, macOS/HVF, and Windows/WHP run paths with one generic
+  `attach_pci_console<M, E>` helper over `Machine + Attach<Arc<PciRoot>>`.
+- Replaced duplicated macOS/HVF and Linux/aarch64 KVM virtio-mmio console
+  construction with one generic `attach_first_virtio_mmio_console<M, E>`
+  helper over `Machine + Attach<Arc<VirtioMmio>>`.
+- Preserved x86 legacy CF8/CFC callbacks where the current x86 vCPU associated
+  type still requires them.
+- Evidence: `grep -n "VirtioPciDevice::new\\|VirtioMmio::new\\|PciRoot::new\\|MsixInterruptAdapter::new" dillo/src/machine_select/runner.rs`
+  reports only the two generic helper sites.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`

@@ -46,6 +46,13 @@ use dillo_machine::VcpuStop;
 use dillo_mmio::Attach;
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
+    target_os = "macos",
+    target_os = "windows"
+))]
+use dillo_mmio::MmioAttachment;
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
     target_os = "windows"
 ))]
 use dillo_mmio::syscon;
@@ -156,6 +163,102 @@ impl Preflight {
     }
 }
 
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
+    target_os = "macos",
+    target_os = "windows"
+))]
+fn attach_pci_console<M, E>(
+    vm: &mut M,
+    machine: &dillo::platform::Machine,
+) -> Result<Option<Arc<PciRoot>>, RunError>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    M: dillo_machine::Machine<Error = E>,
+    M: Attach<Arc<PciRoot>, Error = E, Output = Arc<dyn MmioAttachment>>,
+    RunError: From<E>,
+{
+    if !machine.has_pcie {
+        return Ok(None);
+    }
+
+    let vectors: u16 = 3;
+    let notifier = Arc::new(MsixInterruptAdapter::new(
+        M::create_message_interrupt_domain(vm, vectors)?,
+    ));
+    let lookup_notifier = Arc::clone(&notifier);
+    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
+        std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
+            Arc::new(move |vector| lookup_notifier.interrupt_for(vector)),
+        ))),
+    );
+
+    let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
+        console,
+        vectors,
+        machine.pcie.mmio_base,
+        machine.pcie.mmio_base + 0x1000,
+        Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
+    );
+    let mut pci_root = PciRoot::new(MmioWindow {
+        base: machine.pcie.ecam_base,
+        size: machine.pcie.ecam_size,
+    });
+    pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
+    let pci_root = Arc::new(pci_root);
+    let attachment = Attach::attach(vm, Arc::clone(&pci_root))?;
+    pci_root.set_attachment(attachment);
+    Ok(Some(pci_root))
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "aarch64"), target_os = "macos"))]
+fn attach_first_virtio_mmio_console<M, E>(
+    vm: &mut M,
+    machine: &dillo::platform::Machine,
+) -> Result<(), RunError>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    M: dillo_machine::Machine<Error = E>,
+    M: Attach<Arc<dillo_mmio_virtio::VirtioMmio>, Error = E, Output = Arc<dyn MmioAttachment>>,
+    RunError: From<E>,
+{
+    let Some(slot) = machine.virtio_mmio.first() else {
+        return Ok(());
+    };
+
+    let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let irq = dillo_mmio_virtio::WiredIrq::new(slot.irq, M::create_line_interrupt(vm, slot.irq)?);
+    let interrupt_irq = irq.clone();
+    let is = Arc::clone(&int_status);
+    let console: Box<dyn dillo_virtio::VirtioDevice> = Box::new(
+        dillo_virtio_console::VirtioConsole::new(Arc::new(move |_vector| {
+            Some(dillo_mmio_virtio::VirtioMmio::interrupt(
+                Arc::clone(&is),
+                interrupt_irq.clone(),
+            ))
+        })),
+    );
+    let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::new(
+        MmioWindow {
+            base: slot.base,
+            size: slot.size,
+        },
+        console,
+        Arc::clone(&int_status),
+        irq.clone(),
+    ));
+    let attachment = Attach::attach(vm, Arc::clone(&transport))?;
+    transport.set_attachment(attachment);
+    log::info!(
+        "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
+        slot.base,
+        irq.intid(),
+        machine.virtio_mmio.len()
+    );
+    Ok(())
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[cfg(all(test, target_os = "macos"))]
 use dillo_mmio::MmioBus;
@@ -255,32 +358,8 @@ pub(crate) fn run(
     };
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
-    let msix_vectors: u16 = 3;
-    let notifier = Arc::new(MsixInterruptAdapter::new(
-        dillo_machine::Machine::create_message_interrupt_domain(&vm, msix_vectors)?,
-    ));
-    let lookup_notifier = Arc::clone(&notifier);
-    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
-        std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
-            Arc::new(move |vector| lookup_notifier.interrupt_for(vector)),
-        ))),
-    );
-
-    let bar0_gpa = machine.pcie.mmio_base;
-    let bar2_gpa = machine.pcie.mmio_base + 0x1000;
-    let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
-        console,
-        msix_vectors,
-        bar0_gpa,
-        bar2_gpa,
-        Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
-    );
-    let mut pci_root = PciRoot::new(MmioWindow {
-        base: machine.pcie.ecam_base,
-        size: machine.pcie.ecam_size,
-    });
-    pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
-    let pci_root = Arc::new(pci_root);
+    let pci_root =
+        attach_pci_console(&mut vm, &machine)?.ok_or(RunError::MissingRequiredDevice("/pcie"))?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let syscon_state = Arc::new(syscon::SysconState::default());
     match &machine.uart {
@@ -324,9 +403,6 @@ pub(crate) fn run(
             )),
         )?;
     }
-    let attachment = Attach::attach(&mut vm, Arc::clone(&pci_root))?;
-    pci_root.set_attachment(attachment);
-
     let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
     for idx in 0..vcpus {
         let legacy_for_read = Arc::clone(&legacy_pci);
@@ -577,79 +653,8 @@ pub(crate) fn run(
         None => log::warn!("no UART in Machine — guest console output will be dropped"),
     }
 
-    // 7b. PCIe (skipped on a --pci-slots 0 microVM): one virtio-console
-    //     endpoint at 00:01.0 (slot 0 = host bridge). BAR0 = virtio config;
-    //     BAR2 = MSI-X table + PBA. MSI-X is injected through the backend
-    //     notifier. ECAM + each BAR register on the MMIO bus.
-    if machine.has_pcie {
-        let msix_vectors: u16 = 3; // 2 queues (rx/tx) + config-change vector
-        let notifier = Arc::new(MsixInterruptAdapter::new(
-            dillo_machine::Machine::create_message_interrupt_domain(&vm, msix_vectors)?,
-        ));
-        let lookup_notifier = Arc::clone(&notifier);
-        let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
-            std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
-                Arc::new(move |vector| lookup_notifier.interrupt_for(vector)),
-            ))),
-        );
-
-        let bar0_gpa = machine.pcie.mmio_base;
-        let bar2_gpa = machine.pcie.mmio_base + 0x1000;
-        let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
-            console,
-            msix_vectors,
-            bar0_gpa,
-            bar2_gpa,
-            Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
-        );
-        let mut pci_root = PciRoot::new(MmioWindow {
-            base: machine.pcie.ecam_base,
-            size: machine.pcie.ecam_size,
-        });
-        pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
-        let pci_root = Arc::new(pci_root);
-        let attachment = Attach::attach(&mut vm, Arc::clone(&pci_root))?;
-        pci_root.set_attachment(attachment);
-    } // end: if platform.has_pcie (microVM with --pci-slots 0 skips PCI fabric)
-
-    // 7c. virtio-mmio (F6): bind a virtio-console to the first transport slot
-    //     so a microVM (no PCIe) still gets an hvc console. Remaining slots stay
-    //     empty — the guest reads DeviceID 0 (unmapped MMIO ⇒ 0) and skips them.
-    //     The wired interrupt is injected through a backend-owned capability.
-    if let Some(slot) = machine.virtio_mmio.first() {
-        let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let irq = dillo_mmio_virtio::WiredIrq::new(
-            slot.irq,
-            dillo_machine::Machine::create_line_interrupt(&vm, slot.irq)?,
-        );
-        let interrupt_irq = irq.clone();
-        let is = Arc::clone(&int_status);
-        let console: Box<dyn dillo_virtio::VirtioDevice> = Box::new(
-            dillo_virtio_console::VirtioConsole::new(Arc::new(move |_vector| {
-                Some(dillo_mmio_virtio::VirtioMmio::interrupt(
-                    Arc::clone(&is),
-                    interrupt_irq.clone(),
-                ))
-            })),
-        );
-        let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::new(
-            MmioWindow {
-                base: slot.base,
-                size: slot.size,
-            },
-            console,
-            Arc::clone(&int_status),
-            irq.clone(),
-        ));
-        let attachment = Attach::attach(&mut vm, Arc::clone(&transport))?;
-        transport.set_attachment(attachment);
-        log::info!(
-            "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
-            slot.base,
-            irq.intid(),
-            machine.virtio_mmio.len()
-        );
-    }
+    attach_pci_console(&mut vm, &machine)?;
+    attach_first_virtio_mmio_console(&mut vm, &machine)?;
 
     let mmio_bus = vm.mmio_bus();
 
@@ -1030,42 +1035,8 @@ pub(crate) fn run(
         None => log::warn!("no UART in Machine — guest console output will be dropped"),
     }
 
-    // num_queues + 1 vector for config-change. Console has 2 queues.
-    let msix_vectors: u16 = 3;
-    let irqfd_domain: Arc<dyn dillo_mmio::MessageInterruptDomain> =
-        dillo_machine::Machine::create_message_interrupt_domain(&vm, msix_vectors)?;
-    let irqfd_notifier = Arc::new(MsixInterruptAdapter::new(Arc::clone(&irqfd_domain)));
-
-    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = {
-        let call_lookup_notifier = Arc::clone(&irqfd_notifier);
-        Arc::new(std::sync::Mutex::new(Box::new(
-            dillo_virtio_console::VirtioConsole::new(Arc::new(move |vector| {
-                call_lookup_notifier.interrupt_for(vector)
-            })),
-        )))
-    };
-
-    // Pick a BAR layout inside the DTB-declared MMIO window. Two 4 KiB
-    // BARs per device (BAR0 + BAR2); slot 1 is the first endpoint.
-    let bar_window_base = machine.pcie.mmio_base;
-    let bar0_gpa = bar_window_base + 0x0000;
-    let bar2_gpa = bar_window_base + 0x1000;
-    let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
-        console,
-        msix_vectors,
-        bar0_gpa,
-        bar2_gpa,
-        irqfd_notifier as Arc<dyn MsixNotifier>,
-    );
-
-    let mut pci_root = PciRoot::new(MmioWindow {
-        base: machine.pcie.ecam_base,
-        size: machine.pcie.ecam_size,
-    });
-    pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
-    let pci_root = Arc::new(pci_root);
-    let attachment = Attach::attach(&mut vm, Arc::clone(&pci_root))?;
-    pci_root.set_attachment(attachment);
+    let pci_root =
+        attach_pci_console(&mut vm, &machine)?.ok_or(RunError::MissingRequiredDevice("/pcie"))?;
     let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
 
     // ── 9. create vCPUs + set boot vCPU state ──────────────────────
@@ -1292,62 +1263,8 @@ pub(crate) fn run(
         )?;
     }
 
-    if machine.has_pcie {
-        let msix_vectors: u16 = 3;
-        let notifier = Arc::new(MsixInterruptAdapter::new(
-            dillo_machine::Machine::create_message_interrupt_domain(&vm, msix_vectors)?,
-        ));
-        let lookup_notifier = Arc::clone(&notifier);
-        let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
-            std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
-                Arc::new(move |vector| lookup_notifier.interrupt_for(vector)),
-            ))),
-        );
-        let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
-            console,
-            msix_vectors,
-            machine.pcie.mmio_base,
-            machine.pcie.mmio_base + 0x1000,
-            Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
-        );
-        let mut pci_root = PciRoot::new(MmioWindow {
-            base: machine.pcie.ecam_base,
-            size: machine.pcie.ecam_size,
-        });
-        pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
-        let pci_root = Arc::new(pci_root);
-        let attachment = Attach::attach(&mut vm, Arc::clone(&pci_root))?;
-        pci_root.set_attachment(attachment);
-    }
-
-    if let Some(slot) = machine.virtio_mmio.first() {
-        let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let irq = dillo_mmio_virtio::WiredIrq::new(
-            slot.irq,
-            dillo_machine::Machine::create_line_interrupt(&vm, slot.irq)?,
-        );
-        let interrupt_irq = irq.clone();
-        let is = Arc::clone(&int_status);
-        let console: Box<dyn dillo_virtio::VirtioDevice> = Box::new(
-            dillo_virtio_console::VirtioConsole::new(Arc::new(move |_vector| {
-                Some(dillo_mmio_virtio::VirtioMmio::interrupt(
-                    Arc::clone(&is),
-                    interrupt_irq.clone(),
-                ))
-            })),
-        );
-        let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::new(
-            MmioWindow {
-                base: slot.base,
-                size: slot.size,
-            },
-            console,
-            Arc::clone(&int_status),
-            irq,
-        ));
-        let attachment = Attach::attach(&mut vm, Arc::clone(&transport))?;
-        transport.set_attachment(attachment);
-    }
+    attach_pci_console(&mut vm, &machine)?;
+    attach_first_virtio_mmio_console(&mut vm, &machine)?;
 
     let boot_state = match &parsed.vcpu {
         VcpuState::Aarch64(state) => state.clone(),
