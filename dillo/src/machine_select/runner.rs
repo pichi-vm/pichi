@@ -11,9 +11,6 @@
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod backend_select;
 mod error;
-// HVF guest-memory builder (KVM uses memfd, WHP uses GuestMemoryMmap).
-#[cfg(target_os = "macos")]
-mod hvf_devices;
 // KVM/Linux-only submodules (memfd setup, gdb stub).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod gdb;
@@ -277,9 +274,6 @@ use dillo_pci::PciRoot;
     target_os = "windows"
 ))]
 use dillo_pci_virtio::VirtioPciAdapter;
-#[cfg(target_os = "windows")]
-use vm_memory::{GuestAddress, GuestMemoryMmap};
-
 /// Top-level VM-child entry point (Windows / Windows Hypervisor Platform).
 ///
 /// This keeps the binary and workspace build linked through the normal
@@ -336,19 +330,15 @@ pub(crate) fn run(
         );
     }
 
-    let ranges: Vec<(GuestAddress, usize)> = plan
-        .memslots
-        .iter()
-        .map(|r| (GuestAddress(r.gpa), r.size as usize))
-        .collect();
-    let guest_mem: GuestMemoryMmap = GuestMemoryMmap::from_ranges(&ranges)
-        .map_err(|e| RunError::MemfdSetup(anyhow::anyhow!("GuestMemoryMmap: {e}")))?;
-
     let mut vm = backend_machine::Vm::try_from(backend_machine::Config {
         processor_count: vcpus,
         dtb,
     })?;
-    Attach::attach(&mut vm, backend_machine::Memory::new(guest_mem.clone()))?;
+    Attach::attach(
+        &mut vm,
+        backend_machine::Memory::from_ranges(plan.memslots.iter().map(|r| (r.gpa, r.size)))?,
+    )?;
+    let guest_mem = vm.guest_memory()?;
     vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
         guest_mem.clone(),
         SharedAccess::ReadWrite,
@@ -601,8 +591,7 @@ pub(crate) fn run(
         );
         Attach::attach(&mut vm, backend_machine::Memory::new(r.gpa, r.size))?;
     }
-    let guest_mem =
-        hvf_devices::build_guest_memory(&vm.region_mappings()).map_err(RunError::MemfdSetup)?;
+    let guest_mem = vm.guest_memory().map_err(RunError::from)?;
     vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
         guest_mem.clone(),
         SharedAccess::ReadWrite,

@@ -423,6 +423,7 @@ dependencies = [
  "log",
  "pmi",
  "thiserror",
+ "vm-memory",
 ]
 
 [[package]]

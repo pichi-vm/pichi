@@ -36,6 +36,8 @@ mod imp {
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
         SharedMemory,
     };
+    use vm_memory::mmap::MmapRegionBuilder;
+    use vm_memory::{GuestAddress, GuestMemoryMmap, GuestRegionMmap};
 
     use crate::VcpuHandle;
     use crate::VmExit;
@@ -174,6 +176,32 @@ mod imp {
             shared_memory: Vec<Arc<dyn SharedMemory>>,
         ) {
             self.shared_memory = shared_memory;
+        }
+
+        /// Build a `vm-memory` view over HVF-mapped guest RAM.
+        ///
+        /// The returned regions borrow the mappings owned by this VM; dropping
+        /// the `GuestMemoryMmap` must not unmap the backend-owned memory.
+        pub fn guest_memory(&self) -> Result<GuestMemoryMmap, Error> {
+            let mappings = self.region_mappings();
+            let mut built: Vec<GuestRegionMmap> = Vec::with_capacity(mappings.len());
+            for (gpa, host_addr, size) in mappings {
+                #[allow(unsafe_code)]
+                let region = unsafe {
+                    MmapRegionBuilder::new(size as usize)
+                        .with_raw_mmap_pointer(host_addr as *mut u8)
+                }
+                .build()
+                .map_err(|e| Error::Hv(format!("MmapRegionBuilder: {e}")))?;
+                let gr = GuestRegionMmap::new(region, GuestAddress(gpa)).ok_or_else(|| {
+                    Error::Hv(format!(
+                        "GuestRegionMmap: gpa+size overflow at {gpa:#x}+{size}"
+                    ))
+                })?;
+                built.push(gr);
+            }
+            GuestMemoryMmap::from_regions(built)
+                .map_err(|e| Error::Hv(format!("GuestMemoryMmap: {e:?}")))
         }
     }
 

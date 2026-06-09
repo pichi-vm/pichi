@@ -1550,7 +1550,7 @@ Local verification note:
 
 ## Stage 22 - Final acceptance audit
 
-Status: in progress; second audit fix local-verified, CI pending.
+Status: in progress; third audit fix local-verified, CI pending.
 
 Goal: prove the implementation satisfies `DILLO-CRATE-SPLIT.md` or that all
 remaining divergence has been recorded for human review after three conformance
@@ -1647,3 +1647,34 @@ Local verification:
 - `objdump -h target/x86_64-unknown-none/debug/tatu | grep -E '\\.tatu\\.(dmi|rompad|acpi|text)'`
 - `objdump -s -j .tatu.dmi target/x86_64-unknown-none/debug/tatu | head -24`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p arma`
+
+Audit fix 3 - backend-owned guest-memory views:
+- Removed the macOS/HVF `GuestMemoryMmap` builder from `dillo` and moved it to
+  `dillo-machine-hvf::Vm::guest_memory()`, backed by the HVF-owned guest RAM
+  mappings.
+- Changed the Windows/WHP runner to pass only DTB/launch-derived GPA/size
+  ranges into `dillo-machine-whp::Memory::from_ranges()`. The WHP backend now
+  constructs the `GuestMemoryMmap` associated memory input and exposes the
+  backend-owned memory view through `Vm::guest_memory()`.
+- Removed `vm_memory` imports from the Windows and macOS runner paths.
+
+Remaining divergence:
+- Linux/KVM memfd allocation, mmap setup, and the gdb GPA map still live in
+  `dillo/src/machine_select/runner/memory.rs`. Moving that into
+  `dillo-machine-kvm` is the next memory-boundary audit item because it affects
+  boot writes, shared-memory capability construction, and the explicit KVM gdb
+  runner.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-hvf --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-whp --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`

@@ -236,6 +236,13 @@ impl Vm {
         Ok(())
     }
 
+    pub(crate) fn guest_memory(&self) -> Result<GuestMemoryMmap, Error> {
+        self.memory
+            .as_ref()
+            .cloned()
+            .ok_or(Error::UnmappedGuestAddr(0))
+    }
+
     pub(crate) fn region_mappings(&self) -> Vec<(u64, u64, u64)> {
         let Some(memory) = &self.memory else {
             return Vec::new();

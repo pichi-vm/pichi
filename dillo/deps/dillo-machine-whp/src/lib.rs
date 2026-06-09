@@ -34,7 +34,7 @@ mod imp {
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
         MmioWindow, SharedMemory,
     };
-    use vm_memory::GuestMemoryMmap;
+    use vm_memory::{GuestAddress, GuestMemoryMmap};
 
     use crate::VmExit;
     use crate::hypervisor::InterruptController;
@@ -162,6 +162,10 @@ mod imp {
             shared_memory: Vec<Arc<dyn SharedMemory>>,
         ) {
             self.shared_memory = shared_memory;
+        }
+
+        pub fn guest_memory(&self) -> Result<GuestMemoryMmap, Error> {
+            self.inner.guest_memory()
         }
     }
 
@@ -348,6 +352,16 @@ mod imp {
     impl Memory {
         pub fn new(guest_memory: GuestMemoryMmap) -> Self {
             Self { guest_memory }
+        }
+
+        pub fn from_ranges(ranges: impl IntoIterator<Item = (u64, u64)>) -> Result<Self, Error> {
+            let ranges: Vec<(GuestAddress, usize)> = ranges
+                .into_iter()
+                .map(|(gpa, size)| (GuestAddress(gpa), size as usize))
+                .collect();
+            let guest_memory = GuestMemoryMmap::from_ranges(&ranges)
+                .map_err(|e| Error::CreateGuestMemory(format!("{e}")))?;
+            Ok(Self { guest_memory })
         }
     }
 
