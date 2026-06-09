@@ -7,7 +7,6 @@ license.workspace = true
 description = "KVM machine backend crate for dillo."
 
 [dependencies]
-dillo-hypervisor.workspace = true
 dillo-machine.workspace = true
 dillo-mmio.workspace = true
 log.workspace = true

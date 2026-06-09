@@ -397,22 +397,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dillo-hypervisor"
-version = "0.1.0"
-dependencies = [
- "applevisor",
- "applevisor-sys",
- "kvm-bindings",
- "kvm-ioctls",
- "log",
- "nix",
- "pmi",
- "thiserror",
- "vm-memory",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "dillo-machine"
 version = "0.1.0"
 dependencies = [
@@ -423,19 +407,20 @@ dependencies = [
 name = "dillo-machine-hvf"
 version = "0.1.0"
 dependencies = [
- "dillo-hypervisor",
+ "applevisor",
+ "applevisor-sys",
  "dillo-machine",
  "dillo-mmio",
  "libc",
  "log",
  "pmi",
+ "thiserror",
 ]
 
 [[package]]
 name = "dillo-machine-kvm"
 version = "0.1.0"
 dependencies = [
- "dillo-hypervisor",
  "dillo-machine",
  "dillo-mmio",
  "kvm-bindings",
@@ -452,13 +437,14 @@ dependencies = [
 name = "dillo-machine-whp"
 version = "0.1.0"
 dependencies = [
- "dillo-hypervisor",
  "dillo-machine",
  "dillo-mmio",
  "dillo-x86",
  "log",
  "pmi",
+ "thiserror",
  "vm-memory",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1,4 +1,22 @@
 #[cfg(target_os = "macos")]
+mod hypervisor;
+
+#[cfg(target_os = "macos")]
+pub use applevisor::prelude::VcpuHandle;
+
+/// Reasons an HVF vCPU run returned to backend code.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+enum VmExit {
+    MmioRead { addr: u64, size: u8 },
+    MmioWrite { addr: u64, data: [u8; 8], size: u8 },
+    Hvc { args: [u64; 8] },
+    Smc { args: [u64; 8] },
+    Halted,
+    Unknown(String),
+}
+
+#[cfg(target_os = "macos")]
 mod imp {
     use std::sync::OnceLock;
     use std::sync::{Arc, Mutex};
@@ -15,8 +33,10 @@ mod imp {
         SharedMemory,
     };
 
-    use dillo_hypervisor::VmExit;
-    pub use dillo_hypervisor::{Error, GicParams, VcpuHandle, force_vcpus_exit};
+    use crate::VcpuHandle;
+    use crate::VmExit;
+    use crate::hypervisor::force_vcpus_exit;
+    pub use crate::hypervisor::{Error, GicParams};
 
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::Aarch64;
 
@@ -98,7 +118,7 @@ mod imp {
     }
 
     pub struct Vm {
-        inner: dillo_hypervisor::Vm,
+        inner: crate::hypervisor::Vm,
         mmio_bus: Arc<Mutex<MmioBus>>,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
     }
@@ -116,7 +136,7 @@ mod imp {
     impl Vm {
         pub fn new(gic: &GicParams, min_addr_space_bits: u32) -> Result<Self, Error> {
             Ok(Self {
-                inner: dillo_hypervisor::Vm::new(gic, min_addr_space_bits)?,
+                inner: crate::hypervisor::Vm::new(gic, min_addr_space_bits)?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
                 shared_memory: Vec::new(),
             })
@@ -178,7 +198,7 @@ mod imp {
         }
 
         fn set_level(&self, level: bool) -> Result<(), InterruptError> {
-            dillo_hypervisor::set_spi(self.intid, level)
+            crate::hypervisor::set_spi(self.intid, level)
                 .map_err(|e| InterruptError::Delivery(e.to_string()))
         }
     }
@@ -250,7 +270,7 @@ mod imp {
                 let Some(message) = domain.message_for(vector) else {
                     return;
                 };
-                if let Err(e) = dillo_hypervisor::send_msi(message.address, message.data) {
+                if let Err(e) = crate::hypervisor::send_msi(message.address, message.data) {
                     log::warn!("HVF MSI-X inject (vector {vector}) failed: {e}");
                 }
             }))
@@ -345,13 +365,13 @@ mod imp {
 
     #[derive(Debug)]
     pub struct Vcpu {
-        inner: dillo_hypervisor::Vcpu,
+        inner: crate::hypervisor::Vcpu,
         mmio_bus: Arc<Mutex<MmioBus>>,
     }
 
     pub fn create_vcpu_current_thread(mmio_bus: Arc<Mutex<MmioBus>>) -> Result<Vcpu, Error> {
         Ok(Vcpu {
-            inner: dillo_hypervisor::create_vcpu_current_thread()?,
+            inner: crate::hypervisor::create_vcpu_current_thread()?,
             mmio_bus,
         })
     }
@@ -380,7 +400,7 @@ mod imp {
             self.inner.handle()
         }
 
-        pub fn run(&self) -> Result<VmExit, Error> {
+        fn run(&self) -> Result<VmExit, Error> {
             loop {
                 match self.inner.run()? {
                     VmExit::MmioRead { addr, size } => {
@@ -435,11 +455,6 @@ mod imp {
                         log::warn!("unexpected SMC exit from HVF vCPU: args={args:?}");
                     }
                     VmExit::MmioRead { .. } | VmExit::MmioWrite { .. } | VmExit::Halted => {}
-                    VmExit::Interrupted => {}
-                    VmExit::PioRead { .. } | VmExit::PioWrite { .. } | VmExit::Debug => {
-                        return Err(Error::Hv("unexpected HVF vCPU exit".into()));
-                    }
-                    VmExit::Shutdown => return Ok(VcpuStop::GuestPoweroff),
                     VmExit::Unknown(reason) => return Err(Error::Hv(reason)),
                 }
             }

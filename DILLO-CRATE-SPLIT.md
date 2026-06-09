@@ -31,7 +31,7 @@ This design is derived from current code and primary specs.
 | Current `dillo-platform::machine` already tracks region provenance and distinguishes required properties from acknowledged pass-through properties. | `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:121`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:157`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:1167`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:1190` |
 | Current `dillo-pmi` already decodes `vm:vcpu` into an arch-erased parsed value; target `dillo-machine` must not invent a universal CPU-state struct. | `dillo/deps/dillo-vm/deps/dillo-pmi/src/parse.rs:47`, `dillo/deps/dillo-vm/deps/dillo-pmi/src/parse.rs:83` |
 | Current vCPU execution still routes MMIO through callbacks owned by `dillo-vm`; the target no-callback `Vcpu::run()` moves MMIO routing below the `Machine` boundary. | `dillo/deps/dillo-vm/src/lib.rs:1701`, `dillo/deps/dillo-vm/src/lib.rs:1713`, `dillo/deps/dillo-vm/src/mmio_bus.rs:49` |
-| Current vCPU exits expose PIO, HVC, SMC, debug, halt, and shutdown above the hypervisor crate; the target `VcpuStop` API requires those exits to move into backend or architecture-substrate internals. | `dillo/deps/dillo-vm/deps/dillo-hypervisor/src/lib.rs:53`, `dillo/deps/dillo-vm/src/psci.rs:63` |
+| vCPU exits are now backend-local implementation details in the selected machine crate; remaining conformance work should ensure only lifecycle stops cross the `dillo-machine` trait boundary. | `dillo/deps/dillo-machine-kvm/src/lib.rs`, `dillo/deps/dillo-machine-hvf/src/lib.rs`, `dillo/deps/dillo-machine-whp/src/lib.rs` |
 | Current confidential-computing private-memory support is still incomplete; standard VM virtio activation now routes through shared-memory capabilities. | `dillo/deps/dillo-mmio/src/lib.rs`, `dillo/deps/dillo-virtio/src/device.rs`, `dillo/deps/dillo-virtio/src/memory.rs` |
 | Virtio PCI writes now use shared-reference `PciDevice` methods with interior mutability for config space, MSI-X state, and device state. | `dillo/deps/dillo-pci-virtio/src/transport.rs` |
 | Current UART interrupting is trigger-only; a level/deassert-capable interrupt line is new backend/device work. | `dillo/deps/dillo-vm/src/uart.rs:81`, `dillo/deps/dillo-vm/src/uart.rs:270` |
@@ -46,7 +46,8 @@ with the same names or boundaries.
 Current crates are evidence and migration sources:
 
 - `dillo-vm` should disappear as a monolith.
-- `dillo-hypervisor` should split into backend `Machine` implementation crates.
+- `dillo-hypervisor` has been retired; its former KVM, HVF, and WHP
+  implementation modules now live in the owning `dillo-machine-*` crates.
 - `dillo-pmi` can become a `dillo` module unless reuse justifies a crate.
 - `dillo-platform::machine::Machine` is today's DTB survey result, not the
   target `dillo-machine::Machine` trait. That name collision must be resolved

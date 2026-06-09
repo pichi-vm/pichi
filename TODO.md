@@ -1028,6 +1028,12 @@ Completed changes:
 - Renamed the transport-neutral virtio crate directory from `dillo/deps/virtio`
   to `dillo/deps/dillo-virtio` so the on-disk crate graph matches the package
   and design names.
+- Retired the shared `dillo-hypervisor` crate. KVM implementation code now
+  lives in `dillo-machine-kvm`, HVF implementation code now lives in
+  `dillo-machine-hvf`, and WHP implementation code now lives in
+  `dillo-machine-whp`.
+- Removed `dillo-hypervisor` from workspace members, workspace dependencies,
+  source imports, and lockfile package entries.
 
 Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 cargo check -p dillo-mmio -p dillo-pci -p dillo-virtio -p dillo-mmio-virtio -p dillo-pci-virtio -p dillo-machine`
@@ -1037,12 +1043,22 @@ Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `git diff --check`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --no-run`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `grep -R "\.add_memslot\|\.add_memory\|\.set_memory\|create_vcpu_with_pio\|set_x86_64_state(boot_state" -n dillo/src dillo/deps/dillo-machine* --include='*.rs'`
 - `grep -R "vm-pci\|vm_pci" -n Cargo.toml dillo --include='Cargo.toml' --include='*.rs' --include='*.md'`
+- `RUSTC_BOOTSTRAP=1 cargo metadata --no-deps --format-version 1 | grep -o '"name":"dillo-hypervisor"' || true`
+- `grep -R -n "dillo_hypervisor\|dillo-hypervisor" Cargo.toml Cargo.lock dillo --include='Cargo.toml' --include='*.rs' --include='*.md' || true`
+
+Local verification limitation:
+- Full `cargo check -p dillo --tests --target x86_64-unknown-linux-gnu` and
+  `cargo check -p dillo --tests --target x86_64-pc-windows-msvc` are blocked
+  on this macOS host by missing local cross C toolchains used by test
+  dependencies (`x86_64-linux-gnu-gcc`, MSVC headers, and musl std). The
+  backend-specific KVM/WHP target checks above passed and CI must verify the
+  full Linux/Windows dillo lanes after push.
 - `find dillo/deps -maxdepth 2 -name vm-pci -print`
 - `RUSTC_BOOTSTRAP=1 cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name' | grep '^vm-pci$'`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-pci`

@@ -7,12 +7,16 @@ license.workspace = true
 description = "HVF machine backend crate for dillo."
 
 [dependencies]
-dillo-hypervisor.workspace = true
 dillo-machine.workspace = true
 dillo-mmio.workspace = true
 pmi.workspace = true
 log.workspace = true
 libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+applevisor.workspace = true
+applevisor-sys.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

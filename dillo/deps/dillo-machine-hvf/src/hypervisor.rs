@@ -58,7 +58,7 @@ impl From<applevisor::prelude::HypervisorError> for Error {
 /// The per-process HVF virtual machine. Owns the guest-memory mappings; the
 /// VM/GIC themselves live in the `applevisor` process-global singleton.
 #[derive(Debug)]
-pub struct Vm {
+pub(crate) struct Vm {
     /// Kept alive for the VM's lifetime; `Memory::drop` unmaps each region.
     regions: Vec<Region>,
 }
@@ -79,7 +79,7 @@ impl Vm {
     /// `X` the image requires (F7): the host's max IPA must be ≥ `X` or the
     /// image cannot run here. IPA is set to the host max (≥ `X`) so guest RAM
     /// can still scale above `2^X` on wider hosts.
-    pub fn new(gic: &GicParams, min_addr_space_bits: u32) -> Result<Self, Error> {
+    pub(crate) fn new(gic: &GicParams, min_addr_space_bits: u32) -> Result<Self, Error> {
         let mut vm_config = VirtualMachineConfig::new();
         let max_ipa = VirtualMachineConfig::get_max_ipa_size()?;
         if u32::from(max_ipa) < min_addr_space_bits {
@@ -103,7 +103,7 @@ impl Vm {
     }
 
     /// Allocate `size` bytes of guest RAM and map it at `base`.
-    pub fn add_memory(&mut self, base: u64, size: u64) -> Result<(), Error> {
+    pub(crate) fn add_memory(&mut self, base: u64, size: u64) -> Result<(), Error> {
         let vm = VirtualMachineStaticInstance::get_gic().ok_or(Error::NoVm)?;
         let mut mem = vm.memory_create(size as usize)?;
         mem.map(base, MemPerms::ReadWriteExec)?;
@@ -112,7 +112,7 @@ impl Vm {
     }
 
     /// Copy `data` into guest memory at `gpa` (used to load PMI sections).
-    pub fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Error> {
+    pub(crate) fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Error> {
         let region = self
             .regions
             .iter_mut()
@@ -124,46 +124,23 @@ impl Vm {
 
     /// Maximum number of vCPUs the host supports for this VM. Used to reject
     /// `--cpus` values the GIC redistributor region can't back.
-    pub fn max_vcpus(&self) -> Result<u32, Error> {
+    pub(crate) fn max_vcpus(&self) -> Result<u32, Error> {
         Ok(AvVcpu::get_max_count()?)
-    }
-
-    /// Create a vCPU. MUST be called on the thread that will run it.
-    pub fn create_vcpu(&self) -> Result<Vcpu, Error> {
-        let vm = VirtualMachineStaticInstance::get_gic().ok_or(Error::NoVm)?;
-        Ok(Vcpu {
-            inner: vm.vcpu_create()?,
-            pending_mmio: Cell::new(None),
-        })
-    }
-
-    /// Inject a message-based MSI (PCIe MSI-X) into the GIC.
-    pub fn send_msi(&self, addr: u64, intid: u32) -> Result<(), Error> {
-        let vm = VirtualMachineStaticInstance::get_gic().ok_or(Error::NoVm)?;
-        vm.gic_send_msi(addr, intid)?;
-        Ok(())
     }
 
     /// `(gpa, host_addr, size)` for every mapped guest-RAM region — used to
     /// build a `vm-memory` view so virtio-pci can walk queues/descriptors.
-    pub fn region_mappings(&self) -> Vec<(u64, u64, u64)> {
+    pub(crate) fn region_mappings(&self) -> Vec<(u64, u64, u64)> {
         self.regions
             .iter()
             .map(|r| (r.base, r.mem.host_addr() as u64, r.size))
             .collect()
     }
 
-    /// Assert/deassert a wired SPI (e.g. the serial UART).
-    pub fn set_spi(&self, intid: u32, level: bool) -> Result<(), Error> {
-        let vm = VirtualMachineStaticInstance::get_gic().ok_or(Error::NoVm)?;
-        vm.gic_set_spi(intid, level)?;
-        Ok(())
-    }
-
     /// Reset the in-kernel GIC to its initial state — used for a warm in-VM
     /// reboot (Phase 2), so the new boot doesn't inherit pending IRQs /
     /// distributor state from the previous run.
-    pub fn reset_gic(&self) -> Result<(), Error> {
+    pub(crate) fn reset_gic(&self) -> Result<(), Error> {
         let vm = VirtualMachineStaticInstance::get_gic().ok_or(Error::NoVm)?;
         vm.gic_reset()?;
         Ok(())
@@ -177,7 +154,7 @@ impl Vm {
 /// needs no `Vm` reference — which lets the SMP launcher keep the (non-`Sync`)
 /// `Vm` and its memory mappings on the main thread while worker threads each
 /// create and run their own vCPU.
-pub fn create_vcpu_current_thread() -> Result<Vcpu, Error> {
+pub(crate) fn create_vcpu_current_thread() -> Result<Vcpu, Error> {
     let vm = VirtualMachineStaticInstance::get_gic().ok_or(Error::NoVm)?;
     Ok(Vcpu {
         inner: vm.vcpu_create()?,
@@ -187,7 +164,7 @@ pub fn create_vcpu_current_thread() -> Result<Vcpu, Error> {
 
 /// Force the given vCPUs out of their in-flight `run()` (used on shutdown to
 /// kick running secondaries so their threads observe the shutdown flag).
-pub fn force_vcpus_exit(handles: &[VcpuHandle]) -> Result<(), Error> {
+pub(crate) fn force_vcpus_exit(handles: &[VcpuHandle]) -> Result<(), Error> {
     let vm = VirtualMachineStaticInstance::get_gic().ok_or(Error::NoVm)?;
     vm.vcpus_exit(handles)?;
     Ok(())
@@ -197,7 +174,7 @@ pub fn force_vcpus_exit(handles: &[VcpuHandle]) -> Result<(), Error> {
 /// process-global singleton, so a device worker thread can call it (the MSI-X
 /// `Interrupt` closure). `address` is the guest-programmed MSI doorbell;
 /// `intid` is the message data (the MBI SPI number).
-pub fn send_msi(address: u64, intid: u32) -> Result<(), Error> {
+pub(crate) fn send_msi(address: u64, intid: u32) -> Result<(), Error> {
     let vm = VirtualMachineStaticInstance::get_gic().ok_or(Error::NoVm)?;
     vm.gic_send_msi(address, intid)?;
     Ok(())
@@ -205,7 +182,7 @@ pub fn send_msi(address: u64, intid: u32) -> Result<(), Error> {
 
 /// Assert/deassert a wired SPI through the in-kernel GIC, from any thread (the
 /// virtio-mmio interrupt path). Mirrors [`send_msi`] for level-style wired IRQs.
-pub fn set_spi(intid: u32, level: bool) -> Result<(), Error> {
+pub(crate) fn set_spi(intid: u32, level: bool) -> Result<(), Error> {
     let vm = VirtualMachineStaticInstance::get_gic().ok_or(Error::NoVm)?;
     vm.gic_set_spi(intid, level)?;
     Ok(())
@@ -221,14 +198,17 @@ struct PendingMmio {
 
 /// A single vCPU, bound to the thread that created it.
 #[derive(Debug)]
-pub struct Vcpu {
+pub(crate) struct Vcpu {
     inner: AvVcpu,
     pending_mmio: Cell<Option<PendingMmio>>,
 }
 
 impl Vcpu {
     /// Program the boot vCPU register state from the PMI `vm:vcpu` map.
-    pub fn set_aarch64_state(&self, state: &pmi::vm::vcpu::aarch64::CpuState) -> Result<(), Error> {
+    pub(crate) fn set_aarch64_state(
+        &self,
+        state: &pmi::vm::vcpu::aarch64::CpuState,
+    ) -> Result<(), Error> {
         // General-purpose registers x0..x30.
         let gprs = [
             state.x0, state.x1, state.x2, state.x3, state.x4, state.x5, state.x6, state.x7,
@@ -254,20 +234,15 @@ impl Vcpu {
 
     /// Set this vCPU's MPIDR_EL1 affinity (must be done before GIC redistributor
     /// resources are queried / vCPUs run).
-    pub fn set_mpidr(&self, mpidr: u64) -> Result<(), Error> {
+    pub(crate) fn set_mpidr(&self, mpidr: u64) -> Result<(), Error> {
         self.inner.set_sys_reg(SysReg::MPIDR_EL1, mpidr)?;
         Ok(())
-    }
-
-    /// Read a general-purpose register x0..x30.
-    pub fn get_gpr(&self, n: u8) -> Result<u64, Error> {
-        Ok(self.inner.get_reg(gpr(n))?)
     }
 
     /// Snapshot the guest's EL1 exception state `(ESR_EL1, ELR_EL1, FAR_EL1)`.
     /// After a stage-2 fault at the (unmapped) EL1 vector, these still hold the
     /// *original* in-guest exception that vectored there — the real diagnostic.
-    pub fn el1_exception_state(&self) -> (u64, u64, u64) {
+    pub(crate) fn el1_exception_state(&self) -> (u64, u64, u64) {
         let esr = self.inner.get_sys_reg(SysReg::ESR_EL1).unwrap_or(0);
         let elr = self.inner.get_sys_reg(SysReg::ELR_EL1).unwrap_or(0);
         let far = self.inner.get_sys_reg(SysReg::FAR_EL1).unwrap_or(0);
@@ -275,20 +250,14 @@ impl Vcpu {
     }
 
     /// Write a general-purpose register x0..x30.
-    pub fn set_gpr(&self, n: u8, value: u64) -> Result<(), Error> {
+    pub(crate) fn set_gpr(&self, n: u8, value: u64) -> Result<(), Error> {
         self.inner.set_reg(gpr(n), value)?;
-        Ok(())
-    }
-
-    /// Mask/unmask the virtual timer (must be re-unmasked after each vtimer exit).
-    pub fn set_vtimer_mask(&self, masked: bool) -> Result<(), Error> {
-        self.inner.set_vtimer_mask(masked)?;
         Ok(())
     }
 
     /// A `Send`/`Sync` handle to this vCPU, usable from other threads only to
     /// force it out of `run()` via [`force_vcpus_exit`].
-    pub fn handle(&self) -> VcpuHandle {
+    pub(crate) fn handle(&self) -> VcpuHandle {
         self.inner.get_handle()
     }
 
@@ -297,7 +266,7 @@ impl Vcpu {
     /// handled inline as RAZ/WI and the guest is resumed — HVF traps the
     /// debug/PMU/unimplemented sysregs the kernel probes during boot, and
     /// read-as-zero / write-ignored is the standard VMM treatment.
-    pub fn run(&self) -> Result<VmExit, Error> {
+    pub(crate) fn run(&self) -> Result<VmExit, Error> {
         loop {
             self.inner.run()?;
             let exit = self.inner.get_exit_info();
@@ -334,7 +303,7 @@ impl Vcpu {
 
     /// Complete an [`VmExit::MmioRead`] by writing the bus-provided value into
     /// the destination register and advancing past the load instruction.
-    pub fn complete_mmio_read(&self, value: u64) -> Result<(), Error> {
+    pub(crate) fn complete_mmio_read(&self, value: u64) -> Result<(), Error> {
         if let Some(p) = self.pending_mmio.take() {
             if p.srt != 31 {
                 self.inner.set_reg(gpr(p.srt), value)?;
@@ -344,7 +313,7 @@ impl Vcpu {
     }
 
     /// Advance PC past the current (trapping) instruction.
-    pub fn advance_pc(&self) -> Result<(), Error> {
+    pub(crate) fn advance_pc(&self) -> Result<(), Error> {
         let pc = self.inner.get_reg(Reg::PC)?;
         self.inner.set_reg(Reg::PC, pc.wrapping_add(INSN_LEN))?;
         Ok(())
@@ -470,7 +439,7 @@ mod tests {
         }
         vm.write_guest(base, &bytes).expect("write_guest");
 
-        let vcpu = vm.create_vcpu().expect("create_vcpu");
+        let vcpu = create_vcpu_current_thread().expect("create_vcpu");
 
         // 1) HVC.
         vcpu.set_aarch64_state(&boot_state(base)).expect("state");

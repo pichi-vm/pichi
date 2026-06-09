@@ -7,13 +7,16 @@ license.workspace = true
 description = "WHP machine backend crate for dillo."
 
 [dependencies]
-dillo-hypervisor.workspace = true
 dillo-machine.workspace = true
 dillo-mmio.workspace = true
 dillo-x86.workspace = true
 pmi.workspace = true
 vm-memory.workspace = true
 log.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys.workspace = true
 
 [lints]
 workspace = true

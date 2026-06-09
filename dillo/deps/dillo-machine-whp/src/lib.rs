@@ -1,4 +1,23 @@
 #[cfg(target_os = "windows")]
+mod cpuid_x86;
+#[cfg(target_os = "windows")]
+mod hypervisor;
+
+/// Reasons a WHP vCPU run returned to backend code.
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+enum VmExit {
+    MmioRead { addr: u64, size: u8 },
+    MmioWrite { addr: u64, data: [u8; 8], size: u8 },
+    PioRead { port: u16, size: u8 },
+    PioWrite { port: u16, data: [u8; 4], size: u8 },
+    Shutdown,
+    Interrupted,
+    Halted,
+    Unknown(String),
+}
+
+#[cfg(target_os = "windows")]
 mod imp {
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
@@ -12,8 +31,9 @@ mod imp {
     use dillo_x86::IoApic;
     use vm_memory::GuestMemoryMmap;
 
-    pub use dillo_hypervisor::{Error, VcpuCancel};
-    use dillo_hypervisor::{InterruptController, VmExit};
+    use crate::VmExit;
+    use crate::hypervisor::InterruptController;
+    pub use crate::hypervisor::{Error, VcpuCancel};
 
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::X86_64;
 
@@ -34,7 +54,7 @@ mod imp {
     }
 
     pub struct Vm {
-        inner: dillo_hypervisor::Vm,
+        inner: crate::hypervisor::Vm,
         mmio_bus: Arc<Mutex<MmioBus>>,
         vcpu_cancels: Arc<Mutex<Vec<VcpuCancel>>>,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
@@ -52,7 +72,7 @@ mod imp {
     impl Vm {
         pub fn new() -> Result<Self, Error> {
             Ok(Self {
-                inner: dillo_hypervisor::Vm::new()?,
+                inner: crate::hypervisor::Vm::new()?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
                 vcpu_cancels: Arc::new(Mutex::new(Vec::new())),
                 shared_memory: Vec::new(),
@@ -61,7 +81,7 @@ mod imp {
 
         pub fn new_x86_64_with_local_apic_count(processor_count: u32) -> Result<Self, Error> {
             Ok(Self {
-                inner: dillo_hypervisor::Vm::new_x86_64_with_local_apic_count(processor_count)?,
+                inner: crate::hypervisor::Vm::new_x86_64_with_local_apic_count(processor_count)?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
                 vcpu_cancels: Arc::new(Mutex::new(Vec::new())),
                 shared_memory: Vec::new(),
@@ -499,7 +519,7 @@ mod imp {
     }
 
     pub struct Vcpu {
-        inner: dillo_hypervisor::Vcpu,
+        inner: crate::hypervisor::Vcpu,
         mmio_bus: Arc<Mutex<MmioBus>>,
         pio_read: PioRead,
         pio_write: PioWrite,
@@ -535,7 +555,7 @@ mod imp {
             self.inner.set_x86_64_state(state)
         }
 
-        pub fn run(&mut self) -> Result<VcpuExit, Error> {
+        fn run(&mut self) -> Result<VcpuExit, Error> {
             loop {
                 let bus = Arc::clone(&self.mmio_bus);
                 let pio_read = Arc::clone(&self.pio_read);
@@ -554,7 +574,14 @@ mod imp {
                     },
                 )?;
                 match exit {
-                    VmExit::MmioRead { .. } | VmExit::PioRead { .. } => continue,
+                    VmExit::MmioRead { addr, size } => {
+                        let _ = (addr, size);
+                        continue;
+                    }
+                    VmExit::PioRead { port, size } => {
+                        let _ = (port, size);
+                        continue;
+                    }
                     VmExit::PioWrite { port, data, size } => {
                         (self.pio_write)(port, &data[..size as usize]);
                     }
@@ -577,13 +604,6 @@ mod imp {
                     VmExit::Interrupted => return Ok(VcpuExit::Interrupted),
                     VmExit::Halted => continue,
                     VmExit::Shutdown => return Ok(VcpuExit::Shutdown),
-                    VmExit::Debug => continue,
-                    VmExit::Hvc { args } => {
-                        log::warn!("unexpected WHP HVC exit: args={args:?}");
-                    }
-                    VmExit::Smc { args } => {
-                        log::warn!("unexpected WHP SMC exit: args={args:?}");
-                    }
                     VmExit::Unknown(reason) => return Err(Error::UnhandledExit(reason)),
                 }
             }

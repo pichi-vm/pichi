@@ -13,7 +13,6 @@ members = [
     "arma/deps/tatu/deps/dtb2acpi",
     "arma/deps/tatu/deps/dtb2e820",
     # dillo-owned (nested by sole consumer)
-    "dillo/deps/dillo-hypervisor",
     "dillo/deps/dillo-platform",
     "dillo/deps/dillo-pmi",
     "dillo/deps/dillo-machine",
@@ -75,7 +74,6 @@ devtree = { path = "deps/devtree" }
 # dillo-internal crates
 dillo-pmi = { path = "dillo/deps/dillo-pmi" }
 dillo-platform = { path = "dillo/deps/dillo-platform" }
-dillo-hypervisor = { path = "dillo/deps/dillo-hypervisor" }
 dillo-machine = { path = "dillo/deps/dillo-machine" }
 dillo-machine-hvf = { path = "dillo/deps/dillo-machine-hvf" }
 dillo-machine-kvm = { path = "dillo/deps/dillo-machine-kvm" }
@@ -109,6 +107,11 @@ ciborium = "0.2"
 vm-memory = { version = "0.17", default-features = false, features = ["backend-mmap", "backend-atomic"] }
 kvm-ioctls = "0.24"
 kvm-bindings = "0.14"
+
+# Hypervisor backends
+applevisor = "1"
+applevisor-sys = "1"
+windows-sys = { version = "0.61", features = ["Win32_System_Hypervisor"] }
 
 # Battle-tested 16550 UART implementation (matches what the PoC
 # uses) — the kernel's 8250 driver only enables ttyS0 if the probe

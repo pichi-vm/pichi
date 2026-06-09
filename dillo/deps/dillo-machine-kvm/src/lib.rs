@@ -1,7 +1,40 @@
 #[cfg(target_os = "linux")]
+mod cpuid_x86;
+#[cfg(target_os = "linux")]
+mod hypervisor;
+#[cfg(target_os = "linux")]
 mod irq;
 #[cfg(target_os = "linux")]
 mod msi;
+
+/// Re-export the KVM debug-control flags so dillo can configure guest-debug
+/// modes without depending on `kvm-bindings` directly.
+#[cfg(target_os = "linux")]
+pub mod debug_flags {
+    pub use kvm_bindings::{
+        KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP,
+        KVM_GUESTDBG_USE_SW_BP,
+    };
+}
+
+/// Re-export raw KVM register structures for the gdb stub.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub use kvm_bindings::{kvm_regs, kvm_sregs};
+
+/// Reasons a KVM vCPU run returned to backend code.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+enum VmExit {
+    MmioRead { addr: u64, size: u8 },
+    MmioWrite { addr: u64, data: [u8; 8], size: u8 },
+    PioRead { port: u16, size: u8 },
+    PioWrite { port: u16, data: [u8; 4], size: u8 },
+    Shutdown,
+    Interrupted,
+    Halted,
+    Unknown(String),
+    Debug,
+}
 
 #[cfg(target_os = "linux")]
 mod imp {
@@ -17,10 +50,11 @@ mod imp {
         MmioDeviceHandle, MmioInterrupt, MmioSpawnError, SharedMemory,
     };
 
-    use dillo_hypervisor::VmExit;
-    pub use dillo_hypervisor::{Error, debug_flags, kvm_regs, kvm_sregs};
+    use crate::{kvm_regs, kvm_sregs};
     pub use vmm_sys_util::eventfd::EventFd;
 
+    use crate::VmExit;
+    pub use crate::hypervisor::Error;
     pub use crate::irq::{IrqError, IrqManager};
     pub use crate::msi::IrqfdNotifier;
 
@@ -174,7 +208,7 @@ mod imp {
 
     #[derive(Clone)]
     pub struct Vm {
-        inner: dillo_hypervisor::Vm,
+        inner: crate::hypervisor::Vm,
         mmio_bus: Arc<Mutex<MmioBus>>,
         exit_requester: VcpuExitRequester,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
@@ -195,7 +229,7 @@ mod imp {
         pub fn new() -> Result<Self, Error> {
             let exit_requester = VcpuExitRequester::new();
             Ok(Self {
-                inner: dillo_hypervisor::Vm::new()?,
+                inner: crate::hypervisor::Vm::new()?,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
                 exit_requester,
                 shared_memory: Vec::new(),
@@ -427,7 +461,7 @@ mod imp {
     }
 
     pub struct Vcpu {
-        inner: dillo_hypervisor::Vcpu,
+        inner: crate::hypervisor::Vcpu,
         mmio_bus: Arc<Mutex<MmioBus>>,
         pio_read: PioRead,
         pio_write: PioWrite,
@@ -563,7 +597,7 @@ mod imp {
             self.inner.set_sregs(sregs)
         }
 
-        pub fn run(&mut self) -> Result<VcpuExit, Error> {
+        fn run(&mut self) -> Result<VcpuExit, Error> {
             loop {
                 let bus = Arc::clone(&self.mmio_bus);
                 let pio_read = Arc::clone(&self.pio_read);
@@ -582,7 +616,14 @@ mod imp {
                     },
                 )?;
                 match exit {
-                    VmExit::MmioRead { .. } | VmExit::PioRead { .. } => continue,
+                    VmExit::MmioRead { addr, size } => {
+                        let _ = (addr, size);
+                        continue;
+                    }
+                    VmExit::PioRead { port, size } => {
+                        let _ = (port, size);
+                        continue;
+                    }
                     VmExit::PioWrite { port, data, size } => {
                         (self.pio_write)(port, &data[..size as usize]);
                     }
@@ -606,12 +647,6 @@ mod imp {
                     VmExit::Halted => continue,
                     VmExit::Shutdown => return Ok(VcpuExit::Shutdown),
                     VmExit::Debug => continue,
-                    VmExit::Hvc { args } => {
-                        log::warn!("unexpected KVM HVC exit: args={args:?}");
-                    }
-                    VmExit::Smc { args } => {
-                        log::warn!("unexpected KVM SMC exit: args={args:?}");
-                    }
                     VmExit::Unknown(reason) => return Err(Error::UnhandledExit(reason)),
                 }
             }
@@ -663,7 +698,14 @@ mod imp {
                     },
                 )?;
                 match exit {
-                    VmExit::MmioRead { .. } | VmExit::PioRead { .. } => continue,
+                    VmExit::MmioRead { addr, size } => {
+                        let _ = (addr, size);
+                        continue;
+                    }
+                    VmExit::PioRead { port, size } => {
+                        let _ = (port, size);
+                        continue;
+                    }
                     VmExit::PioWrite { port, data, size } => {
                         (self.pio_write)(port, &data[..size as usize]);
                     }
@@ -687,12 +729,6 @@ mod imp {
                     VmExit::Halted => return Ok(DebugExit::Halted),
                     VmExit::Shutdown => return Ok(DebugExit::Shutdown),
                     VmExit::Debug => return Ok(DebugExit::Debug),
-                    VmExit::Hvc { args } => {
-                        log::warn!("unexpected KVM HVC exit while debugging: args={args:?}");
-                    }
-                    VmExit::Smc { args } => {
-                        log::warn!("unexpected KVM SMC exit while debugging: args={args:?}");
-                    }
                     VmExit::Unknown(reason) => return Ok(DebugExit::Unknown(reason)),
                 }
             }

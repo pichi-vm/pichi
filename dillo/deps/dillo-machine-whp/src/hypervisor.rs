@@ -122,7 +122,7 @@ impl std::fmt::Display for HResult {
 }
 
 #[derive(Debug)]
-pub struct Vm {
+pub(crate) struct Vm {
     regions: Vec<Region>,
     memory: Option<GuestMemoryMmap>,
     inner: Arc<VmInner>,
@@ -134,15 +134,11 @@ struct VmInner {
 }
 
 impl Vm {
-    pub fn new() -> Result<Self, Error> {
+    pub(crate) fn new() -> Result<Self, Error> {
         Self::new_with_options(PartitionOptions::default())
     }
 
-    pub fn new_x86_64_with_local_apic() -> Result<Self, Error> {
-        Self::new_x86_64_with_local_apic_count(1)
-    }
-
-    pub fn new_x86_64_with_local_apic_count(processor_count: u32) -> Result<Self, Error> {
+    pub(crate) fn new_x86_64_with_local_apic_count(processor_count: u32) -> Result<Self, Error> {
         Self::new_with_options(PartitionOptions {
             processor_count,
             local_apic: true,
@@ -185,16 +181,7 @@ impl Vm {
         })
     }
 
-    pub fn add_memory(&mut self, base: u64, size: u64) -> Result<(), Error> {
-        if size == 0 {
-            return Err(Error::EmptyMemoryRegion);
-        }
-        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(base), size as usize)])
-            .map_err(|source| Error::CreateGuestMemory(source.to_string()))?;
-        self.set_memory(memory)
-    }
-
-    pub fn set_memory(&mut self, memory: GuestMemoryMmap) -> Result<(), Error> {
+    pub(crate) fn set_memory(&mut self, memory: GuestMemoryMmap) -> Result<(), Error> {
         self.regions.clear();
         for region in memory.iter() {
             let base = region.start_addr().raw_value();
@@ -218,7 +205,7 @@ impl Vm {
         Ok(())
     }
 
-    pub fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Error> {
+    pub(crate) fn write_guest(&mut self, gpa: u64, data: &[u8]) -> Result<(), Error> {
         let memory = self.memory.as_ref().ok_or(Error::UnmappedGuestAddr(gpa))?;
         memory
             .write(data, GuestAddress(gpa))
@@ -226,7 +213,7 @@ impl Vm {
         Ok(())
     }
 
-    pub fn region_mappings(&self) -> Vec<(u64, u64, u64)> {
+    pub(crate) fn region_mappings(&self) -> Vec<(u64, u64, u64)> {
         let Some(memory) = &self.memory else {
             return Vec::new();
         };
@@ -240,7 +227,7 @@ impl Vm {
             .collect()
     }
 
-    pub fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<Vcpu, Error> {
+    pub(crate) fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<Vcpu, Error> {
         validate_cpu_profile(cpu_profile)?;
         raw::create_virtual_processor(self.inner.partition, idx)
             .map_err(|hr| Error::CreateVcpu { idx, hr })?;
@@ -250,7 +237,7 @@ impl Vm {
         })
     }
 
-    pub fn interrupt_controller(&self) -> InterruptController {
+    pub(crate) fn interrupt_controller(&self) -> InterruptController {
         InterruptController {
             inner: Arc::clone(&self.inner),
         }
@@ -289,12 +276,16 @@ impl Default for PartitionOptions {
 }
 
 #[derive(Clone, Debug)]
-pub struct InterruptController {
+pub(crate) struct InterruptController {
     inner: Arc<VmInner>,
 }
 
 impl InterruptController {
-    pub fn request_fixed_interrupt(&self, destination: u32, vector: u8) -> Result<(), Error> {
+    pub(crate) fn request_fixed_interrupt(
+        &self,
+        destination: u32,
+        vector: u8,
+    ) -> Result<(), Error> {
         raw::request_fixed_interrupt(self.inner.partition, destination, vector)
             .map_err(Error::RequestInterrupt)
     }
@@ -415,24 +406,24 @@ impl Drop for VmInner {
 }
 
 #[derive(Debug)]
-pub struct Vcpu {
+pub(crate) struct Vcpu {
     partition: Arc<VmInner>,
     idx: u32,
 }
 
 impl Vcpu {
-    pub fn index(&self) -> u32 {
+    pub(crate) fn index(&self) -> u32 {
         self.idx
     }
 
-    pub fn cancel_handle(&self) -> VcpuCancel {
+    pub(crate) fn cancel_handle(&self) -> VcpuCancel {
         VcpuCancel {
             partition: Arc::clone(&self.partition),
             idx: self.idx,
         }
     }
 
-    pub fn set_x86_64_state(
+    pub(crate) fn set_x86_64_state(
         &mut self,
         state: &pmi::vm::vcpu::x86_64::CpuState,
     ) -> Result<(), Error> {
@@ -483,7 +474,7 @@ impl Vcpu {
         Ok(())
     }
 
-    pub fn run(
+    pub(crate) fn run(
         &mut self,
         pio_read: impl Fn(u16, u8) -> u32,
         mmio_read: impl Fn(u64, &mut [u8]) -> bool,
@@ -511,7 +502,7 @@ pub struct VcpuCancel {
 }
 
 impl VcpuCancel {
-    pub fn cancel(&self) -> Result<(), Error> {
+    pub(crate) fn cancel(&self) -> Result<(), Error> {
         raw::cancel_run_virtual_processor(self.partition.partition, self.idx)
             .map_err(|hr| Error::CancelVcpu { idx: self.idx, hr })
     }

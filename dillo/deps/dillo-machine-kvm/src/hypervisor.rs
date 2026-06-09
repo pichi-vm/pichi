@@ -79,7 +79,7 @@ fn io(e: kvm_ioctls::Error) -> std::io::Error {
 
 /// VM handle. Cheaply cloned via Arc-wrapped inner state.
 #[derive(Clone, Debug)]
-pub struct Vm {
+pub(crate) struct Vm {
     inner: Arc<VmInner>,
 }
 
@@ -94,13 +94,13 @@ impl Vm {
     /// KVM-specific facilities (ioeventfd, irqfd) directly. Cheap
     /// `Arc::clone` — both `Vm` and the returned handle share the fd.
     /// Only meaningful on Linux because `VmFd` is KVM-specific.
-    pub fn vm_fd_arc(&self) -> std::sync::Arc<VmFd> {
+    pub(crate) fn vm_fd_arc(&self) -> std::sync::Arc<VmFd> {
         std::sync::Arc::clone(&self.inner.vm)
     }
 
     /// Open `/dev/kvm`, create a VM, and (on x86_64) set up the in-kernel
     /// LAPIC + I/O APIC.
-    pub fn new() -> Result<Self, Error> {
+    pub(crate) fn new() -> Result<Self, Error> {
         let kvm = Kvm::new().map_err(io).map_err(Error::OpenKvm)?;
         let api = kvm.get_api_version();
         if api != 12 {
@@ -138,7 +138,13 @@ impl Vm {
     /// SAFETY caveat encoded by KVM's API: `host_addr` must remain valid
     /// for the lifetime of the slot. Caller holds the memfd
     /// mapping for the VM's entire lifetime.
-    pub fn add_memslot(&self, slot: u32, gpa: u64, host_addr: u64, size: u64) -> Result<(), Error> {
+    pub(crate) fn add_memslot(
+        &self,
+        slot: u32,
+        gpa: u64,
+        host_addr: u64,
+        size: u64,
+    ) -> Result<(), Error> {
         let region = kvm_userspace_memory_region {
             slot,
             flags: 0,
@@ -170,7 +176,7 @@ impl Vm {
     /// claimed vendor/family not trusted). On x86_64 we apply via
     /// `KVM_SET_CPUID2(KVM_GET_SUPPORTED_CPUID)` and refuse with
     /// [`Error::HostMissingCpuFeature`] if the floor is unmet.
-    pub fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<Vcpu, Error> {
+    pub(crate) fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<Vcpu, Error> {
         let fd = self
             .inner
             .vm
@@ -210,19 +216,19 @@ impl Vm {
 
 /// Per-vCPU handle. Move into the vCPU thread; call `run()` in a loop.
 #[derive(Debug)]
-pub struct Vcpu {
+pub(crate) struct Vcpu {
     fd: VcpuFd,
     idx: u32,
 }
 
 impl Vcpu {
-    pub fn index(&self) -> u32 {
+    pub(crate) fn index(&self) -> u32 {
         self.idx
     }
 
     /// Apply boot-vCPU register state from a `pmi::vm::vcpu::x86_64::CpuState`.
     #[cfg(target_arch = "x86_64")]
-    pub fn set_x86_64_state(
+    pub(crate) fn set_x86_64_state(
         &mut self,
         state: &pmi::vm::vcpu::x86_64::CpuState,
     ) -> Result<(), Error> {
@@ -313,7 +319,7 @@ impl Vcpu {
     /// Configure KVM_GUESTDBG flags directly. Used by the gdb stub to
     /// toggle between "run free", "single-step", and "report INT3/HW
     /// breakpoint" modes between guest runs.
-    pub fn set_guest_debug_flags(&self, flags: u32) -> Result<(), Error> {
+    pub(crate) fn set_guest_debug_flags(&self, flags: u32) -> Result<(), Error> {
         let dbg = kvm_guest_debug {
             control: flags,
             pad: 0,
@@ -326,14 +332,14 @@ impl Vcpu {
     }
 
     /// Read the vCPU's general-purpose registers (for debug snapshots).
-    pub fn get_regs(&self) -> Result<kvm_regs, Error> {
+    pub(crate) fn get_regs(&self) -> Result<kvm_regs, Error> {
         self.fd
             .get_regs()
             .map_err(|e| Error::SetRegs(self.idx, io(e)))
     }
 
     /// Write the vCPU's general-purpose registers.
-    pub fn set_regs(&self, regs: &kvm_regs) -> Result<(), Error> {
+    pub(crate) fn set_regs(&self, regs: &kvm_regs) -> Result<(), Error> {
         self.fd
             .set_regs(regs)
             .map_err(|e| Error::SetRegs(self.idx, io(e)))
@@ -341,7 +347,7 @@ impl Vcpu {
 
     /// Read the vCPU's segment / system registers.
     #[cfg(target_arch = "x86_64")]
-    pub fn get_sregs(&self) -> Result<kvm_bindings::kvm_sregs, Error> {
+    pub(crate) fn get_sregs(&self) -> Result<kvm_bindings::kvm_sregs, Error> {
         self.fd
             .get_sregs()
             .map_err(|e| Error::GetSregs(self.idx, io(e)))
@@ -349,7 +355,7 @@ impl Vcpu {
 
     /// Write the vCPU's segment / system registers.
     #[cfg(target_arch = "x86_64")]
-    pub fn set_sregs(&self, sregs: &kvm_bindings::kvm_sregs) -> Result<(), Error> {
+    pub(crate) fn set_sregs(&self, sregs: &kvm_bindings::kvm_sregs) -> Result<(), Error> {
         self.fd
             .set_sregs(sregs)
             .map_err(|e| Error::SetSregs(self.idx, io(e)))
@@ -374,7 +380,7 @@ impl Vcpu {
     ///
     /// `EINTR` is returned to the caller so the supervisor can use a
     /// thread-directed signal to make blocked vCPUs observe shutdown.
-    pub fn run(
+    pub(crate) fn run(
         &mut self,
         pio_read: impl Fn(u16, u8) -> u32,
         mmio_read: impl Fn(u64, &mut [u8]) -> bool,
