@@ -51,8 +51,9 @@ mod imp {
     };
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
-        Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
-        MmioDeviceHandle, MmioInterrupt, MmioSpawnError, SharedMemory,
+        Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
+        MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
+        SharedMemory,
     };
 
     #[cfg(target_arch = "x86_64")]
@@ -581,18 +582,19 @@ mod imp {
     #[derive(Debug)]
     pub struct SpiInterruptLine {
         vm: Arc<kvm_ioctls::VmFd>,
-        intid: u32,
+        spi: u32,
     }
 
     #[cfg(target_arch = "aarch64")]
     impl SpiInterruptLine {
-        fn new(vm: Arc<kvm_ioctls::VmFd>, intid: u32) -> Self {
-            Self { vm, intid }
+        fn new(vm: Arc<kvm_ioctls::VmFd>, spi: u32) -> Self {
+            Self { vm, spi }
         }
 
         fn irq_line(&self) -> u32 {
+            let intid = self.spi + 32;
             (kvm_bindings::KVM_ARM_IRQ_TYPE_SPI << kvm_bindings::KVM_ARM_IRQ_TYPE_SHIFT)
-                | (self.intid << kvm_bindings::KVM_ARM_IRQ_NUM_SHIFT)
+                | (intid << kvm_bindings::KVM_ARM_IRQ_NUM_SHIFT)
         }
     }
 
@@ -615,9 +617,90 @@ mod imp {
     }
 
     #[cfg(target_arch = "aarch64")]
+    #[derive(Debug)]
+    pub struct KvmMessageInterruptDomain {
+        vm: Arc<kvm_ioctls::VmFd>,
+        vectors: Mutex<Vec<MessageInterrupt>>,
+        enabled: AtomicBool,
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    impl KvmMessageInterruptDomain {
+        fn new(vm: Arc<kvm_ioctls::VmFd>, count: u16) -> Self {
+            Self {
+                vm,
+                vectors: Mutex::new(vec![
+                    MessageInterrupt {
+                        address: 0,
+                        data: 0,
+                        masked: true,
+                    };
+                    count as usize
+                ]),
+                enabled: AtomicBool::new(false),
+            }
+        }
+
+        fn message_for(&self, vector: u16) -> Option<MessageInterrupt> {
+            if !self.enabled.load(Ordering::SeqCst) {
+                return None;
+            }
+            let msg = *self
+                .vectors
+                .lock()
+                .expect("KVM MSI vector table poisoned")
+                .get(vector as usize)?;
+            (!msg.masked).then_some(msg)
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    impl MessageInterruptDomain for KvmMessageInterruptDomain {
+        fn update(&self, vector: u16, msg: MessageInterrupt) -> Result<(), InterruptError> {
+            if let Some(slot) = self
+                .vectors
+                .lock()
+                .expect("KVM MSI vector table poisoned")
+                .get_mut(vector as usize)
+            {
+                *slot = msg;
+            }
+            Ok(())
+        }
+
+        fn enabled(&self, enabled: bool) -> Result<(), InterruptError> {
+            self.enabled.store(enabled, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn interrupt(&self, vector: u16) -> Option<Interrupt> {
+            let vm = Arc::clone(&self.vm);
+            let msg = self.message_for(vector)?;
+            Some(Interrupt::from_fn(move || {
+                let msi = kvm_bindings::kvm_msi {
+                    address_lo: msg.address as u32,
+                    address_hi: (msg.address >> 32) as u32,
+                    data: msg.data,
+                    ..Default::default()
+                };
+                if let Err(e) = vm.signal_msi(msi) {
+                    log::warn!("KVM MSI signal for vector {vector} failed: {e}");
+                }
+            }))
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
     impl Vm {
-        pub fn create_spi_interrupt_line(&self, intid: u32) -> SpiInterruptLine {
-            SpiInterruptLine::new(self.vm_fd_arc(), intid)
+        pub fn create_spi_interrupt_line(&self, spi: u32) -> SpiInterruptLine {
+            SpiInterruptLine::new(self.vm_fd_arc(), spi)
+        }
+
+        pub fn create_message_interrupt_domain(
+            &self,
+            count: u16,
+        ) -> Arc<dyn MessageInterruptDomain> {
+            Arc::new(KvmMessageInterruptDomain::new(self.vm_fd_arc(), count))
         }
 
         pub fn init_gic(&self) -> Result<(), Error> {

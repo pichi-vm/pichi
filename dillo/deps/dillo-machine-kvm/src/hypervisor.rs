@@ -16,7 +16,9 @@ use kvm_bindings::kvm_userspace_memory_region;
 use kvm_bindings::{
     KVM_ARM_VCPU_POWER_OFF, KVM_ARM_VCPU_PSCI_0_2, KVM_DEV_ARM_VGIC_CTRL_INIT,
     KVM_DEV_ARM_VGIC_GRP_ADDR, KVM_DEV_ARM_VGIC_GRP_CTRL, KVM_DEV_ARM_VGIC_GRP_NR_IRQS,
-    KVM_REG_ARM_CORE, KVM_REG_ARM64, KVM_REG_SIZE_U64, KVM_VGIC_V3_ADDR_TYPE_DIST,
+    KVM_REG_ARM_CORE, KVM_REG_ARM64, KVM_REG_ARM64_SYSREG, KVM_REG_ARM64_SYSREG_CRM_SHIFT,
+    KVM_REG_ARM64_SYSREG_CRN_SHIFT, KVM_REG_ARM64_SYSREG_OP0_SHIFT, KVM_REG_ARM64_SYSREG_OP1_SHIFT,
+    KVM_REG_ARM64_SYSREG_OP2_SHIFT, KVM_REG_SIZE_U64, KVM_VGIC_V3_ADDR_TYPE_DIST,
     KVM_VGIC_V3_ADDR_TYPE_REDIST, kvm_create_device, kvm_device_attr,
     kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3, kvm_vcpu_init,
 };
@@ -479,13 +481,20 @@ impl Vcpu {
             },
         )?;
         self.set_one_u64(core_reg(34), state.sp_el1)?;
+        self.set_one_u64(sys_reg(3, 0, 1, 0, 0), state.sctlr_el1)?;
+        self.set_one_u64(sys_reg(3, 0, 1, 0, 2), state.cpacr_el1)?;
+        self.set_one_u64(sys_reg(3, 0, 2, 0, 2), state.tcr_el1)?;
+        self.set_one_u64(sys_reg(3, 0, 2, 0, 0), state.ttbr0_el1)?;
+        self.set_one_u64(sys_reg(3, 0, 2, 0, 1), state.ttbr1_el1)?;
+        self.set_one_u64(sys_reg(3, 0, 10, 2, 0), state.mair_el1)?;
+        self.set_one_u64(sys_reg(3, 0, 12, 0, 0), state.vbar_el1)?;
         Ok(())
     }
 
     #[cfg(target_arch = "aarch64")]
     fn set_one_u64(&self, reg_id: u64, value: u64) -> Result<(), Error> {
         self.fd
-            .set_one_reg(reg_id, &u128::from(value).to_le_bytes())
+            .set_one_reg(reg_id, &value.to_le_bytes())
             .map_err(|e| Error::SetRegs(self.idx, io(e)))?;
         Ok(())
     }
@@ -621,6 +630,18 @@ fn set_vgic_addr(vgic: &DeviceFd, attr: u32, addr: u64) -> Result<(), Error> {
 #[cfg(target_arch = "aarch64")]
 fn core_reg(index: u64) -> u64 {
     KVM_REG_ARM64 | KVM_REG_SIZE_U64 | u64::from(KVM_REG_ARM_CORE) | (2 * index)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn sys_reg(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
+    KVM_REG_ARM64
+        | KVM_REG_SIZE_U64
+        | u64::from(KVM_REG_ARM64_SYSREG)
+        | (op0 << KVM_REG_ARM64_SYSREG_OP0_SHIFT)
+        | (op1 << KVM_REG_ARM64_SYSREG_OP1_SHIFT)
+        | (crn << KVM_REG_ARM64_SYSREG_CRN_SHIFT)
+        | (crm << KVM_REG_ARM64_SYSREG_CRM_SHIFT)
+        | (op2 << KVM_REG_ARM64_SYSREG_OP2_SHIFT)
 }
 
 #[cfg(target_arch = "x86_64")]

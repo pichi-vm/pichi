@@ -22,7 +22,7 @@ mod memory;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(target_os = "linux")]
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -60,6 +60,7 @@ use dillo_mmio::syscon;
 use dillo_pci::legacy_pio as pio_pci;
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     target_os = "macos",
     target_os = "windows"
 ))]
@@ -167,6 +168,7 @@ use dillo_mmio::{MappedSharedMemory, MmioWindow, SharedAccess};
 use dillo_pci::PciRoot;
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     target_os = "macos",
     target_os = "windows"
 ))]
@@ -1333,11 +1335,30 @@ pub(crate) fn run(
     }
 
     if machine.has_pcie {
-        let pci_root = Arc::new(PciRoot::new(MmioWindow {
+        let msix_vectors: u16 = 3;
+        let notifier = Arc::new(MsixInterruptAdapter::new(
+            vm.create_message_interrupt_domain(msix_vectors),
+        ));
+        let lookup_notifier = Arc::clone(&notifier);
+        let console: Arc<Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(Mutex::new(
+            Box::new(dillo_virtio_console::VirtioConsole::new(Arc::new(
+                move |vector| lookup_notifier.interrupt_for(vector),
+            ))),
+        ));
+        let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
+            console,
+            msix_vectors,
+            machine.pcie.mmio_base,
+            machine.pcie.mmio_base + 0x1000,
+            Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
+        );
+        let mut pci_root = PciRoot::new(MmioWindow {
             name: "pcie-ecam",
             base: machine.pcie.ecam_base,
             size: machine.pcie.ecam_size,
-        }));
+        });
+        pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
+        let pci_root = Arc::new(pci_root);
         let attachment = Attach::attach(&mut vm, Arc::clone(&pci_root))?;
         pci_root.set_attachment(attachment);
     }

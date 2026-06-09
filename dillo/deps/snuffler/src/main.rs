@@ -9,9 +9,10 @@
 //! Output: bracketed JSON on stdout (which is /dev/console / hvc0 for
 //! PID 1 given `console=hvc0`). Free-form debug lines go to stderr.
 
+#![no_main]
+
 use std::ffi::CStr;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use std::ptr;
 
@@ -22,21 +23,23 @@ use snuffler::{
 
 const RB_POWER_OFF: libc::c_int = 0x4321_FEDC_u32 as i32;
 
-fn main() {
+#[unsafe(no_mangle)]
+pub extern "C" fn main(
+    _: libc::c_int,
+    _: *const *const libc::c_char,
+    _: *const *const libc::c_char,
+) -> libc::c_int {
+    run();
+    0
+}
+
+fn run() {
     setup_mounts();
+    reopen_console_stdio();
     let report = observe();
     let json = serde_json::to_string(&report)
         .unwrap_or_else(|e| format!("{{\"error\":\"serialize: {e}\"}}"));
-    // Emit to /dev/console (= fd 1 for PID 1). The bracketed sentinels
-    // let the host harness extract just the JSON from the surrounding
-    // kernel log. With `console=ttyS0 console=hvc0` and a working virtio-
-    // console driver, /dev/console is hvc0 → host stdout; if hvc0 fails
-    // to bind, /dev/console falls back to ttyS0 → host stderr. Host
-    // harness scans both streams for the sentinels and finds it either
-    // way.
-    println!("{REPORT_BEGIN}{json}{REPORT_END}");
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().flush();
+    write_report(&json);
     // SAFETY: sync() is parameterless and infallible.
     unsafe {
         libc::sync();
@@ -121,6 +124,70 @@ fn setup_mounts() {
     mount(c"proc", c"/proc", c"proc");
     mount(c"sysfs", c"/sys", c"sysfs");
     mount(c"devtmpfs", c"/dev", c"devtmpfs");
+}
+
+fn reopen_console_stdio() {
+    // The kernel can start PID 1 with fd 0/1/2 closed if /dev/console was not
+    // available before devtmpfs was mounted. Rebind them after setup_mounts()
+    // so the report has a real console sink.
+    for path in [c"/dev/hvc0", c"/dev/console", c"/dev/ttyS0"] {
+        // SAFETY: path is NUL-terminated; open/dup2/close follow libc contracts.
+        unsafe {
+            let fd = libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NONBLOCK);
+            if fd < 0 {
+                continue;
+            }
+            for target in 0..=2 {
+                let _ = libc::dup2(fd, target);
+            }
+            if fd > 2 {
+                let _ = libc::close(fd);
+            }
+            return;
+        }
+    }
+}
+
+fn write_report(json: &str) {
+    // Keep report emission independent of Rust stdio startup. This fixture runs
+    // as PID 1 in a minimal initramfs and enters through the C ABI on aarch64.
+    write_report_fd(1, json);
+    for path in [c"/dev/hvc0", c"/dev/console", c"/dev/ttyS0"] {
+        // SAFETY: path is NUL-terminated; open/close follow libc contracts.
+        unsafe {
+            let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK);
+            if fd < 0 {
+                continue;
+            }
+            write_report_fd(fd, json);
+            let _ = libc::close(fd);
+        }
+    }
+}
+
+fn write_report_fd(fd: libc::c_int, json: &str) {
+    for bytes in [
+        REPORT_BEGIN.as_bytes(),
+        json.as_bytes(),
+        REPORT_END.as_bytes(),
+        b"\n",
+    ] {
+        let _ = write_all_fd(fd, bytes);
+    }
+}
+
+fn write_all_fd(fd: libc::c_int, mut bytes: &[u8]) -> bool {
+    let mut wrote = false;
+    while !bytes.is_empty() {
+        // SAFETY: bytes points to a live buffer of the supplied length.
+        let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if n <= 0 {
+            return wrote;
+        }
+        wrote = true;
+        bytes = &bytes[n as usize..];
+    }
+    true
 }
 
 fn mount(src: &CStr, target: &CStr, fstype: &CStr) {
