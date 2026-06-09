@@ -43,14 +43,6 @@ pub enum HostArchitecture {
     Aarch64,
 }
 
-/// Device-host execution model used by one machine backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceModel {
-    Thread,
-
-    Process,
-}
-
 /// Host-level services exposed by the selected machine backend.
 pub trait Host {
     type RawStdioGuard: 'static;
@@ -109,8 +101,6 @@ pub trait Machine: Sized + 'static {
     type Cpu: Cpu<Error = Self::Error> + Send;
     type CpuState: CpuState<Error = Self::Error>;
     type Memory: Memory<Error = Self::Error>;
-
-    const DEVICE_MODEL: DeviceModel;
 
     /// Construct the backend VM from selected-machine launch facts.
     fn from_launch_config(config: LaunchConfig) -> Result<Self, Self::Error>;
@@ -228,8 +218,6 @@ mod tests {
         type Cpu = TestCpu;
         type CpuState = TestCpuState;
         type Memory = TestMemory;
-
-        const DEVICE_MODEL: DeviceModel = DeviceModel::Thread;
 
         fn from_launch_config(_config: LaunchConfig) -> Result<Self, Self::Error> {
             Ok(Self)

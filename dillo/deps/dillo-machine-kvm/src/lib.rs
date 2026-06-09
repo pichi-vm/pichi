@@ -625,8 +625,6 @@ mod imp {
         type CpuState = CpuState;
         type Memory = Memory;
 
-        const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
-
         fn from_launch_config(config: LaunchConfig) -> Result<Self, Self::Error> {
             #[cfg(target_arch = "x86_64")]
             let _ = config;

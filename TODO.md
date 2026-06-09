@@ -2288,3 +2288,15 @@ Local verification:
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+
+Audit fix 24 - remove unused device execution model from Machine:
+- Removed `DeviceModel` and `Machine::DEVICE_MODEL` from the common
+  `dillo-machine` API. All current backend crates use thread-mode attachment,
+  and no caller used this constant.
+- This keeps the common machine trait limited to operations `dillo` actually
+  composes through: machine construction, memory writes, vCPU preparation, and
+  reboot reset.
+
+Evidence:
+- `grep -RIn "DeviceModel\\|DEVICE_MODEL" dillo/src dillo/deps --include='*.rs'`
+  reports no references.
