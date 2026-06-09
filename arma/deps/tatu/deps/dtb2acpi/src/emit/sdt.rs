@@ -75,13 +75,17 @@ impl SdtHeader {
     ///    ACPI_X_SLEEP_ENABLE`, so `SLP_TYP = (sleep_value >> 2) & 0x7`
     ///    makes the byte the guest emits equal the byte the syscon
     ///    matches).
-    /// 2. One `Device(PCI<n>)` block per `pci-host-ecam-generic` root
+    /// 2. One `Device(MBR<n>)` `PNP0C02` block per
+    ///    `pci-host-ecam-generic` root child — so Linux's late MCFG
+    ///    validation sees each ECAM window as an ACPI motherboard
+    ///    resource.
+    /// 3. One `Device(PCI<n>)` block per `pci-host-ecam-generic` root
     ///    child — so `acpi_pci_root_add` registers each PCI root bus.
     ///    Without these, MCFG alone is not enough: Linux scans the
     ///    namespace for PNP0A03/PNP0A08 devices to know which bridges
     ///    exist, and falls through to legacy CF8/CFC port-IO when none
     ///    are present.
-    /// 3. One `Device(SER0)` block when the DTB declares a `ns16550a`
+    /// 4. One `Device(SER0)` block when the DTB declares a `ns16550a`
     ///    serial node — so Linux creates a normal 8250 `ttyS*` device
     ///    for the MMIO UART instead of only parsing SPCR metadata.
     ///
@@ -103,7 +107,8 @@ impl SdtHeader {
         slot.get_mut(body_start..s5_end)
             .ok_or(crate::error::DtbError::Internal)?
             .copy_from_slice(&s5_aml(sleep_value));
-        let after_pci = super::pci_host::emit(slot, s5_end, tree)?;
+        let after_motherboard = super::motherboard_resource::emit(slot, s5_end, tree)?;
+        let after_pci = super::pci_host::emit(slot, after_motherboard, tree)?;
         let end = super::serial_device::emit(slot, after_pci, tree)?;
         if end != slot.len() {
             // Layout-accounting mismatch — count and emit disagreed.

@@ -29,6 +29,7 @@ use crate::dtb::{DtbNode, cells_as_u32s};
 use crate::emit::fadt::Fadt as FadtTable;
 use crate::emit::madt::{MadtHeader, lapic_entry_size_for_apic, nmi_entry_size_for_uid};
 use crate::emit::mcfg::McfgHeader;
+use crate::emit::motherboard_resource;
 use crate::emit::pci_host;
 use crate::emit::rsdp::Rsdp;
 use crate::emit::sdt::{GenericAddress, S5_AML_LEN, SdtHeader};
@@ -125,6 +126,9 @@ struct Counts {
     /// Computed by [`pci_host::dsdt_total_bytes`] so count and emit
     /// agree on the slot size without duplicating the size math.
     pci_dsdt_bytes: usize,
+    /// Total bytes of DSDT body AML contributed by `PNP0C02` motherboard
+    /// resource devices that reserve ECAM windows.
+    motherboard_dsdt_bytes: usize,
     /// Total bytes of DSDT body AML contributed by `Device(SER0)`,
     /// or zero when the DTB has no serial node.
     serial_dsdt_bytes: usize,
@@ -409,6 +413,7 @@ impl Offsets {
         // ACPI device before it creates a normal ttyS port.
         let dsdt_size = SdtHeader::SIZE
             .checked_add(S5_AML_LEN)
+            .and_then(|n| n.checked_add(c.motherboard_dsdt_bytes))
             .and_then(|n| n.checked_add(c.pci_dsdt_bytes))
             .and_then(|n| n.checked_add(c.serial_dsdt_bytes))
             .ok_or(DtbError::Internal)?;
@@ -517,6 +522,7 @@ pub(crate) fn run<T: TreeView>(
 
     // Optional subtrees.
     let ecam_count = root.count_mcfg()?;
+    let motherboard_dsdt_bytes = motherboard_resource::dsdt_total_bytes(tree)?;
     let pci_dsdt_bytes = pci_host::dsdt_total_bytes(tree)?;
     let serial_dsdt_bytes = serial_device::dsdt_total_bytes(tree)?;
     let has_serial = spcr::present(tree)?;
@@ -527,6 +533,7 @@ pub(crate) fn run<T: TreeView>(
         cpu_entries_bytes: cpu_walk.cpu_entries_bytes,
         ioapic_count,
         ecam_count,
+        motherboard_dsdt_bytes,
         pci_dsdt_bytes,
         serial_dsdt_bytes,
         has_serial,

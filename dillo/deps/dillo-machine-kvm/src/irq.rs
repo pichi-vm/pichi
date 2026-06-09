@@ -35,7 +35,7 @@ pub enum IrqError {
     EventFdClone(std::io::Error),
 }
 
-/// First GSI available for MSI-X allocation (above IOAPIC range 0-23).
+/// First GSI available for message-interrupt routing (above IOAPIC range 0-23).
 const FIRST_MSI_GSI: u32 = 24;
 /// Number of IOAPIC pins (default routing entries).
 const NUM_IOAPIC_PINS: u32 = 24;

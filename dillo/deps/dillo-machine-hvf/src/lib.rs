@@ -419,7 +419,7 @@ mod imp {
                     return;
                 };
                 if let Err(e) = crate::hypervisor::send_msi(message.address, message.data) {
-                    log::warn!("HVF MSI-X inject (vector {vector}) failed: {e}");
+                    log::warn!("HVF message interrupt inject (vector {vector}) failed: {e}");
                 }
             }))
         }

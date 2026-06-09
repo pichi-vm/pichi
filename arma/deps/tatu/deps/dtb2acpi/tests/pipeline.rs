@@ -141,16 +141,17 @@ fn dsdt_carries_s5_aml_derived_from_syscon_value() {
     // basic.dts declares syscon-poweroff value = 0x34 (the conformant
     // device-model §4 value). Per SdtHeader::write_dsdt_into,
     // SLP_TYP = (value >> 2) & 0x7 = 5. The DSDT body starts with the
-    // \_S5_ AML (13 bytes), one Device(PCI0) block (78 bytes for the
-    // basic fixture, which has no `ranges` property → zero MMIO windows),
-    // and one Device(SER0) block for the MMIO ns16550a.
+    // \_S5_ AML (13 bytes), one Device(MBR0) PNP0C02 reservation for
+    // ECAM (84 bytes), one Device(PCI0) block (78 bytes for the basic
+    // fixture, which has no `ranges` property → zero MMIO windows), and
+    // one Device(SER0) block for the MMIO ns16550a.
     let buf = build_layout();
     let d = common::decode(&*buf);
     let bytes = AsRef::<[u8]>::as_ref(&*buf);
     assert_eq!(
         d.dsdt.header.length,
-        36 + 13 + 78 + 201,
-        "DSDT = header(36) + _S5_(13) + Device(PCI0)(78) + Device(SER0)(201)"
+        36 + 13 + 84 + 78 + 201,
+        "DSDT = header(36) + _S5_(13) + Device(MBR0)(84) + Device(PCI0)(78) + Device(SER0)(201)"
     );
     let body_off = d.dsdt.header.offset_in_buf + 36;
     let s5 = &bytes[body_off..body_off + 13];
@@ -161,12 +162,47 @@ fn dsdt_carries_s5_aml_derived_from_syscon_value() {
         ],
         "DSDT body must start with Name(\\_S5_, Package(3){{5,0,0}})"
     );
-    // The next byte begins the Device(PCI0) block: ExtOpPrefix 0x5B,
+    // The next byte begins the Device(MBR0) block: ExtOpPrefix 0x5B,
     // DeviceOp 0x82.
     assert_eq!(
         &bytes[body_off + 13..body_off + 15],
         &[0x5B, 0x82],
-        "Device(PCI0) follows _S5_"
+        "Device(MBR0) follows _S5_"
+    );
+}
+
+#[test]
+fn dsdt_reserves_ecam_as_motherboard_resource() {
+    let buf = build_layout();
+    let d = common::decode(&*buf);
+    let bytes = AsRef::<[u8]>::as_ref(&*buf);
+    let dsdt = &bytes[d.dsdt.header.offset_in_buf..][..d.dsdt.header.length as usize];
+
+    let mbr = dsdt
+        .windows(4)
+        .position(|w| w == b"MBR0")
+        .expect("Device(MBR0) present");
+    assert!(
+        dsdt[mbr..]
+            .windows(5)
+            .any(|w| w == [0x0c, 0x41, 0xd0, 0x0c, 0x02]),
+        "_HID PNP0C02 present"
+    );
+    let mem = dsdt[mbr..]
+        .windows(46)
+        .position(|w| w[0] == 0x8A && w[1] == 0x2B && w[3] == 0x00)
+        .expect("ECAM QWordMemory descriptor present")
+        + mbr;
+    let desc = &dsdt[mem..mem + 46];
+    assert_eq!(
+        u64::from_le_bytes(desc[14..22].try_into().unwrap()),
+        0x3000_0000,
+        "ECAM reservation base"
+    );
+    assert_eq!(
+        u64::from_le_bytes(desc[38..46].try_into().unwrap()),
+        0x1000_0000,
+        "ECAM reservation size"
     );
 }
 
@@ -185,10 +221,11 @@ fn dsdt_carries_mmio_serial_device() {
         dsdt[ser..].windows(9).any(|w| w == b"RSCV0003\0"),
         "_HID RSCV0003 present"
     );
-    let mem = dsdt
+    let mem = dsdt[ser..]
         .windows(46)
         .position(|w| w[0] == 0x8A && w[1] == 0x2B && w[3] == 0x00)
-        .expect("serial QWordMemory descriptor present");
+        .expect("serial QWordMemory descriptor present")
+        + ser;
     let desc = &dsdt[mem..mem + 46];
     assert_eq!(
         u64::from_le_bytes(desc[14..22].try_into().unwrap()),
@@ -412,11 +449,17 @@ fn pci_crs_includes_64bit_qword_window() {
     let dsdt_off = d.dsdt.header.offset_in_buf;
     let dsdt = &bytes[dsdt_off..dsdt_off + d.dsdt.header.length as usize];
 
-    // Find the QWordMemory descriptor (tag 0x8A) in the DSDT body.
-    let q = dsdt
+    let pci = dsdt
+        .windows(4)
+        .position(|w| w == b"PCI0")
+        .expect("Device(PCI0) present");
+
+    // Find the QWordMemory descriptor (tag 0x8A) in the PCI0 _CRS.
+    let q = dsdt[pci..]
         .windows(46)
         .position(|w| w[0] == 0x8A && w[1] == 0x2B && w[3] == 0x00)
-        .expect("QWordMemory descriptor present in _CRS");
+        .expect("QWordMemory descriptor present in PCI0 _CRS")
+        + pci;
     let desc = &dsdt[q..q + 46];
     let min = u64::from_le_bytes(desc[14..22].try_into().unwrap());
     let max = u64::from_le_bytes(desc[22..30].try_into().unwrap());

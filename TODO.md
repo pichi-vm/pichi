@@ -206,7 +206,8 @@ Process:
 Success criteria:
 - `PciRoot` implements `dillo-mmio::MmioDevice`.
 - PCI endpoints attach to `PciRoot`, never directly to `Machine`.
-- x86 CF8/CFC paths still decode onto the same `PciRoot` config accessor.
+- Superseded by Stage 22: x86 guests now use ECAM-only config access; legacy
+  CF8/CFC decoding is intentionally absent.
 - ECAM, BAR, and absent-BDF tests pass.
 - Default local verification and x86 Linux/Windows target checks pass.
 
@@ -218,7 +219,8 @@ Completed changes:
   `dillo-pci-virtio` exists.
 - Updated `PciDevice` to use shared-reference config/BAR write methods, with
   mutable endpoint state behind locks.
-- Updated x86 CF8/CFC PIO decoding to use `dillo_pci::PciRoot`.
+- Transitional only: x86 CF8/CFC PIO decoding moved with `PciRoot` in this
+  stage, then Stage 22 removed it so Linux falls through to ECAM.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
@@ -511,7 +513,8 @@ Process:
 - Move PSCI handling into backend or architecture substrate code.
 - Preserve PSCI `CPU_ON` secondary bring-up with backend-owned vCPU
   parking/wakeup state.
-- Keep x86 CF8/CFC PIO as backend/substrate decoding onto `PciRoot`.
+- Superseded by Stage 22: x86 CF8/CFC config ports must fail guest probing so
+  Linux uses ECAM for all PCI config access.
 - Keep WFI/HLT backend-internal.
 - Decide and implement the target gdb/debug story: either an explicit
   debug-capable runner or removal from the final design.
@@ -525,10 +528,12 @@ Success criteria:
 - Default local verification and all target checks pass.
 
 Completed changes:
-- Moved x86 PIO write handling behind the KVM/WHP backend facades by passing a
+- Transitional only: moved x86 PIO write handling behind the KVM/WHP backend
+  facades by passing a
   constructor-time PIO write function alongside the existing PIO read function.
-- Kept PCI CF8/CFC decoding in `dillo-vm` for now, but `Vcpu::run()` no longer
-  returns those PIO writes to the supervisor loop on KVM/WHP.
+- Kept PCI CF8/CFC decoding in `dillo-vm` temporarily, but `Vcpu::run()` no
+  longer returned those PIO writes to the supervisor loop on KVM/WHP. Stage 22
+  removes the decoder entirely.
 - Added KVM/WHP `VcpuExit` facade enums so normal `dillo-vm` and Linux gdb
   callers no longer see raw PIO read/write exits from `dillo-hypervisor`.
 - Moved x86 HLT and unexpected HVC/SMC handling inside the KVM/WHP facades
@@ -975,8 +980,9 @@ Completed changes:
 - Moved the supervisor shutdown flag out of `dillo-vm` and into the top-level
   `dillo` process; backend-specific signal hooks now receive the process-owned
   shutdown state.
-- Moved x86 CF8/CFC PCI configuration PIO decoding from `dillo-vm` into
-  `dillo-pci::legacy_pio`, so the decoder lives with the `PciRoot` it adapts.
+- Transitional only: moved x86 CF8/CFC PCI configuration PIO decoding from
+  `dillo-vm` into `dillo-pci::legacy_pio`, so the decoder lived with the
+  `PciRoot` it adapted. Stage 22 removes `legacy_pio` so x86 guests use ECAM.
 - Removed `dillo-mmio::MmioNotifyEvent` and `QueueNotifier` plus the KVM
   ioeventfd notifier implementation that depended on exposing Linux eventfds
   through portable transport APIs.
@@ -1544,7 +1550,7 @@ Local verification note:
 
 ## Stage 22 - Final acceptance audit
 
-Status: in progress; first audit fix complete, CI pending.
+Status: in progress; second audit fix local-verified, CI pending.
 
 Goal: prove the implementation satisfies `DILLO-CRATE-SPLIT.md` or that all
 remaining divergence has been recorded for human review after three conformance
@@ -1559,6 +1565,8 @@ Process:
 - Audit DTB consumption tests for all supported devices and transports.
 - Audit shared-memory tests for runtime limits and private/shared behavior.
 - Run Linux, Windows, and macOS local/CI verification.
+- This stage may touch `dtb2acpi`: ECAM-only x86 operation requires ACPI to
+  reserve the DTB-declared ECAM window as a motherboard resource.
 
 Success criteria:
 - `dillo` is the only composition point that knows PMI, devtree, concrete
@@ -1578,8 +1586,8 @@ Audit fix 1 - portable console attachment:
 - Replaced duplicated macOS/HVF and Linux/aarch64 KVM virtio-mmio console
   construction with one generic `attach_first_virtio_mmio_console<M, E>`
   helper over `Machine + Attach<Arc<VirtioMmio>>`.
-- Preserved x86 legacy CF8/CFC callbacks where the current x86 vCPU associated
-  type still requires them.
+- Superseded by audit fix 2: x86 legacy CF8/CFC callbacks now intentionally
+  fail guest config-port probing so the guest uses ECAM.
 - Evidence: `grep -n "VirtioPciDevice::new\\|VirtioMmio::new\\|PciRoot::new\\|MsixInterruptAdapter::new" dillo/src/machine_select/runner.rs`
   reports only the two generic helper sites.
 
@@ -1590,6 +1598,35 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+Audit fix 2 - ECAM-only x86 PCI config:
+- Removed `dillo-pci::legacy_pio` and the exported CF8 parser; `PciRoot` now
+  exposes only ECAM/BAR MMIO decoding.
+- Changed x86 KVM and WHP runner PIO callbacks so reads return all ones and
+  writes are dropped, causing Linux type1/type2 config-port probes to fail.
+- Added `dtb2acpi` `PNP0C02` motherboard-resource devices that reserve each
+  DTB-declared `pci-host-ecam-generic` `reg` window in DSDT before the
+  `PNP0A08` PCI root, so Linux late MCFG validation keeps ECAM enabled.
+- Added ACPI tests proving `Device(MBR0)` carries `_HID PNP0C02` and reserves
+  the expected ECAM base/size.
+- Removed remaining backend references to PCI MSI-X semantics; backend crates
+  speak in generic message-interrupt terms, while MSI-X table behavior remains
+  in `dillo-pci`.
+- Evidence: `grep -RInE "legacy_pio|parse_cf8|LegacyPciState|0xCF8|0xCFC" dillo/src dillo/deps/dillo-pci/src dillo/deps/dillo-machine-*`
+  reports no active decoder.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-pci -p dtb2acpi`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`

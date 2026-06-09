@@ -58,11 +58,6 @@ use dillo_mmio::MmioAttachment;
 use dillo_mmio::syscon;
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
-    target_os = "windows"
-))]
-use dillo_pci::legacy_pio as pio_pci;
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
     all(target_os = "linux", target_arch = "aarch64"),
     target_os = "macos",
     target_os = "windows"
@@ -120,6 +115,16 @@ fn syscon_register(syscon: dillo::platform::Syscon) -> syscon::SysconRegister {
         value: syscon.value,
         mask: syscon.mask,
     }
+}
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "windows"
+))]
+fn no_pio_callbacks() -> (backend_machine::PioRead, backend_machine::PioWrite) {
+    let read = Arc::new(|_port, _size| u32::MAX);
+    let write = Arc::new(|_port, _data: &[u8]| {});
+    (read, write)
 }
 
 impl Preflight {
@@ -356,10 +361,8 @@ pub(crate) fn run(
         VcpuState::X86_64(state) => state,
         VcpuState::Aarch64(_) => return Err(RunError::ArchMismatch),
     };
-    let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
-
-    let pci_root =
-        attach_pci_console(&mut vm, &machine)?.ok_or(RunError::MissingRequiredDevice("/pcie"))?;
+    attach_pci_console(&mut vm, &machine)?.ok_or(RunError::MissingRequiredDevice("/pcie"))?;
+    let (pio_read, pio_write) = no_pio_callbacks();
     let shutdown = Arc::new(AtomicBool::new(false));
     let syscon_state = Arc::new(syscon::SysconState::default());
     match &machine.uart {
@@ -405,33 +408,13 @@ pub(crate) fn run(
     }
     let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
     for idx in 0..vcpus {
-        let legacy_for_read = Arc::clone(&legacy_pci);
-        let pci_for_read = Arc::clone(&pci_root);
-        let pio_read = Arc::new(move |port, size| {
-            if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
-                || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
-            {
-                pio_pci::pio_read(&legacy_for_read, &pci_for_read, port, size)
-            } else {
-                0
-            }
-        });
-        let legacy_for_write = Arc::clone(&legacy_pci);
-        let pci_for_write = Arc::clone(&pci_root);
-        let pio_write = Arc::new(move |port, data: &[u8]| {
-            if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
-                || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
-            {
-                pio_pci::pio_write(&legacy_for_write, &pci_for_write, port, data);
-            }
-        });
         let vcpu = Attach::attach(
             &mut vm,
             backend_machine::Cpu {
                 idx,
                 cpu_profile: cpu_profile.to_string(),
-                pio_read,
-                pio_write,
+                pio_read: Arc::clone(&pio_read),
+                pio_write: Arc::clone(&pio_write),
                 state: (idx == 0).then(|| boot_state.clone()),
             },
         )?;
@@ -1035,9 +1018,8 @@ pub(crate) fn run(
         None => log::warn!("no UART in Machine — guest console output will be dropped"),
     }
 
-    let pci_root =
-        attach_pci_console(&mut vm, &machine)?.ok_or(RunError::MissingRequiredDevice("/pcie"))?;
-    let legacy_pci = Arc::new(pio_pci::LegacyPciState::new());
+    attach_pci_console(&mut vm, &machine)?.ok_or(RunError::MissingRequiredDevice("/pcie"))?;
+    let (pio_read, pio_write) = no_pio_callbacks();
 
     // ── 9. create vCPUs + set boot vCPU state ──────────────────────
     let mut vcpu_handles = Vec::with_capacity(vcpus as usize);
@@ -1049,33 +1031,13 @@ pub(crate) fn run(
         }
     };
     for idx in 0..vcpus {
-        let legacy_for_read = Arc::clone(&legacy_pci);
-        let pci_for_read = Arc::clone(&pci_root);
-        let pio_read = Arc::new(move |port, size| {
-            if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
-                || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
-            {
-                pio_pci::pio_read(&legacy_for_read, &pci_for_read, port, size)
-            } else {
-                0
-            }
-        });
-        let legacy_for_write = Arc::clone(&legacy_pci);
-        let pci_for_write = Arc::clone(&pci_root);
-        let pio_write = Arc::new(move |port, data: &[u8]| {
-            if (pio_pci::CF8_PORT..=pio_pci::CF8_PORT_END).contains(&port)
-                || (pio_pci::CFC_PORT_BASE..=pio_pci::CFC_PORT_END).contains(&port)
-            {
-                pio_pci::pio_write(&legacy_for_write, &pci_for_write, port, data);
-            }
-        });
         let vcpu = Attach::attach(
             &mut vm,
             backend_machine::Cpu {
                 idx,
                 cpu_profile: cpu_profile.to_string(),
-                pio_read,
-                pio_write,
+                pio_read: Arc::clone(&pio_read),
+                pio_write: Arc::clone(&pio_write),
                 state: (idx == 0).then(|| boot_state.clone()),
             },
         )?;

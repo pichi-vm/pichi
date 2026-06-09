@@ -14,6 +14,7 @@ pub(crate) mod aml;
 pub(crate) mod fadt;
 pub(crate) mod madt;
 pub(crate) mod mcfg;
+pub(crate) mod motherboard_resource;
 pub(crate) mod pci_host;
 pub(crate) mod rsdp;
 pub(crate) mod sdt;

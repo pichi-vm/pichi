@@ -14,7 +14,7 @@ pub use dillo_mmio::{
 };
 use dillo_mmio::{MmioDevice, MmioError, MmioWindow};
 
-/// CF8/CFC legacy PIO and ECAM MMIO address decoding.
+/// ECAM MMIO address decoding.
 pub mod address;
 /// BAR type definitions and decoding.
 pub mod bar;
@@ -24,12 +24,10 @@ pub mod bdf;
 pub mod capability;
 /// 256-byte Type 0 PCI configuration space.
 pub mod configuration;
-/// Legacy x86 PCI configuration PIO ports (`0xCF8` / `0xCFC`).
-pub mod legacy_pio;
 /// MSI-X table, capability, and notifier trait.
 pub mod msix;
 
-pub use address::{parse_cf8, parse_ecam_offset};
+pub use address::parse_ecam_offset;
 pub use bar::BarType;
 pub use bdf::PciBdf;
 pub use capability::{CAP_ID_MSIX, CAP_ID_PCIE, CAP_ID_PM, CAP_ID_VENDOR};
@@ -285,8 +283,7 @@ impl PciBus {
 /// PCIe root complex declared by the base DTB.
 ///
 /// The root owns the ECAM MMIO window and the single downstream PCI bus.
-/// x86 legacy CF8/CFC access is a backend PIO decoder onto this same config
-/// accessor; it is not a second PCI fabric.
+/// Legacy CF8/CFC PIO is intentionally absent so x86 guests use ECAM.
 pub struct PciRoot {
     window: MmioWindow,
     windows: Vec<MmioWindow>,

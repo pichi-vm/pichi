@@ -7,7 +7,7 @@
 //!   - `hv_gic` must be configured before any vCPU is created — so
 //!     [`Vm::new`] does `init_with_gic`;
 //!   - in-kernel GICv3 with **message-based** MSI (no ITS): inject via
-//!     `gic_send_msi` (PCIe MSI-X) / `gic_set_spi` (wired, e.g. the serial UART);
+//!     `gic_send_msi` (message interrupt) / `gic_set_spi` (wired, e.g. the serial UART);
 //!   - a vCPU is bound to its creating thread, so [`Vm::create_vcpu`] is
 //!     called from each vCPU thread;
 //!   - exits arrive as synchronous exceptions; EC = `ESR >> 26`
@@ -181,7 +181,7 @@ pub(crate) fn force_vcpus_exit(handles: &[VcpuHandle]) -> Result<(), Error> {
 }
 
 /// Inject a message-based MSI into the GIC without a `Vm` reference — uses the
-/// process-global singleton, so a device worker thread can call it (the MSI-X
+/// process-global singleton, so a device worker thread can call it (the message
 /// `Interrupt` closure). `address` is the guest-programmed MSI doorbell;
 /// `intid` is the message data (the MBI SPI number).
 pub(crate) fn send_msi(address: u64, intid: u32) -> Result<(), Error> {
