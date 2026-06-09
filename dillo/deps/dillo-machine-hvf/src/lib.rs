@@ -169,17 +169,6 @@ mod imp {
             Arc::clone(&self.mmio_bus)
         }
 
-        pub fn create_spi_interrupt_line(&self, intid: u32) -> SpiInterruptLine {
-            SpiInterruptLine { intid }
-        }
-
-        pub fn create_message_interrupt_domain(
-            &self,
-            count: u16,
-        ) -> Arc<dyn MessageInterruptDomain> {
-            Arc::new(GicMessageInterruptDomain::new(count))
-        }
-
         pub fn set_shared_memory_capabilities(
             &mut self,
             shared_memory: Vec<Arc<dyn SharedMemory>>,
@@ -451,6 +440,17 @@ mod imp {
 
         fn reset_for_reboot(&mut self) -> Result<(), Self::Error> {
             self.inner.reset_gic()
+        }
+
+        fn create_line_interrupt(&self, source: u32) -> Result<Interrupt, Self::Error> {
+            Ok(Interrupt::new(Arc::new(SpiInterruptLine { intid: source })))
+        }
+
+        fn create_message_interrupt_domain(
+            &self,
+            vectors: u16,
+        ) -> Result<Arc<dyn MessageInterruptDomain>, Self::Error> {
+            Ok(Arc::new(GicMessageInterruptDomain::new(vectors)))
         }
     }
 

@@ -46,8 +46,6 @@ use dillo::pmi_parse::VcpuState;
 use dillo_machine::VcpuStop;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_mmio::Attach;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use dillo_mmio::Interrupt;
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
     target_os = "windows"
@@ -259,7 +257,7 @@ pub(crate) fn run(
 
     let msix_vectors: u16 = 3;
     let notifier = Arc::new(MsixInterruptAdapter::new(
-        vm.create_message_interrupt_domain(msix_vectors),
+        dillo_machine::Machine::create_message_interrupt_domain(&vm, msix_vectors)?,
     ));
     let lookup_notifier = Arc::clone(&notifier);
     let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
@@ -300,10 +298,9 @@ pub(crate) fn run(
                     size: uart.size,
                 },
                 uart.reg_shift,
-                Some(Interrupt::new(Arc::new(vm.create_ioapic_interrupt_line(
-                    Arc::clone(&ioapic),
-                    uart.irq,
-                )))),
+                Some(dillo_mmio::Interrupt::new(Arc::new(
+                    vm.create_ioapic_interrupt_line(Arc::clone(&ioapic), uart.irq),
+                ))),
                 Box::new(std::io::stderr()),
             );
             Attach::attach(&mut vm, Arc::new(serial))?;
@@ -596,7 +593,7 @@ pub(crate) fn run(
     if machine.has_pcie {
         let msix_vectors: u16 = 3; // 2 queues (rx/tx) + config-change vector
         let notifier = Arc::new(MsixInterruptAdapter::new(
-            vm.create_message_interrupt_domain(msix_vectors),
+            dillo_machine::Machine::create_message_interrupt_domain(&vm, msix_vectors)?,
         ));
         let lookup_notifier = Arc::clone(&notifier);
         let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
@@ -632,7 +629,7 @@ pub(crate) fn run(
         let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let irq = dillo_mmio_virtio::WiredIrq::new(
             slot.irq,
-            Interrupt::new(Arc::new(vm.create_spi_interrupt_line(slot.irq))),
+            dillo_machine::Machine::create_line_interrupt(&vm, slot.irq)?,
         );
         let interrupt_irq = irq.clone();
         let is = Arc::clone(&int_status);
@@ -1042,7 +1039,7 @@ pub(crate) fn run(
                     size: uart.size,
                 },
                 uart.reg_shift,
-                Some(Interrupt::new(Arc::new(
+                Some(dillo_mmio::Interrupt::new(Arc::new(
                     backend_machine::EventFdInterruptLine::new(eventfd),
                 ))),
                 Box::new(std::io::stdout()),
@@ -1307,7 +1304,7 @@ pub(crate) fn run(
     ))]);
 
     if let Some(uart) = machine.uart {
-        let interrupt = Interrupt::new(Arc::new(vm.create_spi_interrupt_line(uart.irq)));
+        let interrupt = dillo_machine::Machine::create_line_interrupt(&vm, uart.irq)?;
         Attach::attach(
             &mut vm,
             Arc::new(dillo_mmio_uart::Ns16550::new(
@@ -1325,7 +1322,7 @@ pub(crate) fn run(
     if machine.has_pcie {
         let msix_vectors: u16 = 3;
         let notifier = Arc::new(MsixInterruptAdapter::new(
-            vm.create_message_interrupt_domain(msix_vectors),
+            dillo_machine::Machine::create_message_interrupt_domain(&vm, msix_vectors)?,
         ));
         let lookup_notifier = Arc::clone(&notifier);
         let console: Arc<Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(Mutex::new(
@@ -1354,7 +1351,7 @@ pub(crate) fn run(
         let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let irq = dillo_mmio_virtio::WiredIrq::new(
             slot.irq,
-            Interrupt::new(Arc::new(vm.create_spi_interrupt_line(slot.irq))),
+            dillo_machine::Machine::create_line_interrupt(&vm, slot.irq)?,
         );
         let interrupt_irq = irq.clone();
         let is = Arc::clone(&int_status);

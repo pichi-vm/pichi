@@ -1225,7 +1225,7 @@ Local verification limitation:
 
 ## Stage 17 - Conformance loop 1
 
-Status: in progress.
+Status: complete.
 
 Goal: perform the first full conformance pass over implementation,
 `DILLO-CRATE-SPLIT.md`, and this plan.
@@ -1258,6 +1258,8 @@ Completed changes:
   not part of the portable trait contract.
 - Fixed the Windows/WHP test-only compile failure from CI run `27196755182` by
   making IOAPIC tests assert the new routed-write `Result`.
+- CI run `27197049285` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
 
 Unresolved mismatches carried to Stage 18:
 - `Machine`/`Vcpu` still cannot require `Send`/`Sync`: the current HVF
@@ -1288,7 +1290,7 @@ Local verification:
 
 ## Stage 18 - Conformance loop 2
 
-Status: pending.
+Status: in progress.
 
 Goal: repeat the full conformance pass after the first loop's fixes have landed
 and CI has had a chance to run.
@@ -1305,6 +1307,43 @@ Success criteria:
 - New mismatches found in the second loop are fixed or carried forward
   explicitly.
 - Default local verification and all restored target checks pass.
+
+Completed changes:
+- Moved wired interrupt and message-interrupt domain construction onto the
+  generic `Machine` trait. `dillo` now asks the selected machine through the
+  trait for portable interrupt capabilities instead of calling KVM/HVF/WHP
+  message/SPI factory methods directly.
+- Removed the old public KVM/HVF/WHP message/SPI factory methods that were
+  superseded by the trait boundary.
+
+Unresolved mismatches carried to Stage 19:
+- The x86 compatibility paths still expose backend-specific interrupt plumbing:
+  WHP serial uses `create_ioapic_interrupt_line`, and KVM x86 serial uses
+  `EventFdInterruptLine` directly. These should move behind a DTB-derived
+  line-interrupt attachment model instead of backend concrete helper types.
+- `Machine`/`Vcpu` `Send`/`Sync` remains unresolved for HVF as recorded in
+  Stage 17.
+- Shared-memory access still uses compatibility guest-memory views; the final
+  CC-first runtime window model remains incomplete.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp -p dillo`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+- `ssh -A nathaniel@ares.local 'cd /tmp/pichi-stage18 && PATH=... RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
+
+Local verification note:
+- One macOS boot run immediately after the full workspace test failed three HVF
+  boots with `operation not allowed by the system`; rerunning the same boot
+  command by itself passed all five tests. CI must independently confirm the
+  macOS boot lane before Stage 18 can complete.
 
 ## Stage 19 - Conformance loop 3
 

@@ -138,16 +138,6 @@ mod imp {
             }
         }
 
-        pub fn create_message_interrupt_domain(
-            &self,
-            count: u16,
-        ) -> Arc<dyn MessageInterruptDomain> {
-            Arc::new(FixedMessageInterruptDomain::new(
-                self.fixed_interrupt_requester(),
-                count,
-            ))
-        }
-
         pub fn create_ioapic_interrupt_line(
             &self,
             ioapic: Arc<IoApic>,
@@ -175,6 +165,23 @@ mod imp {
 
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Vm::request_vcpu_exit(self)
+        }
+
+        fn create_line_interrupt(&self, source: u32) -> Result<Interrupt, Self::Error> {
+            let _ = source;
+            Err(Error::UnhandledExit(
+                "wired interrupt factory is not implemented for WHP x86".into(),
+            ))
+        }
+
+        fn create_message_interrupt_domain(
+            &self,
+            vectors: u16,
+        ) -> Result<Arc<dyn MessageInterruptDomain>, Self::Error> {
+            Ok(Arc::new(FixedMessageInterruptDomain::new(
+                self.fixed_interrupt_requester(),
+                vectors,
+            )))
         }
     }
 

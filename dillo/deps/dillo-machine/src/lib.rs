@@ -4,6 +4,10 @@
 //! implementations. Concrete backend crates provide inherent constructors and
 //! implement the attachment set that the top-level `dillo` launcher uses.
 
+use std::sync::Arc;
+
+use dillo_mmio::{Interrupt, MessageInterruptDomain};
+
 /// Host architecture exposed by the selected machine backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostArchitecture {
@@ -42,6 +46,15 @@ pub trait Machine: Sized + 'static {
     fn reset_for_reboot(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
+
+    /// Create a backend-owned wired interrupt capability.
+    fn create_line_interrupt(&self, _source: u32) -> Result<Interrupt, Self::Error>;
+
+    /// Create a backend-owned message-interrupt domain.
+    fn create_message_interrupt_domain(
+        &self,
+        _vectors: u16,
+    ) -> Result<Arc<dyn MessageInterruptDomain>, Self::Error>;
 }
 
 /// One runnable vCPU owned by a machine backend.
@@ -68,8 +81,10 @@ pub enum VcpuStop {
 #[cfg(test)]
 mod tests {
     use std::fmt;
+    use std::sync::Arc;
 
     use dillo_mmio::Attach;
+    use dillo_mmio::{Interrupt, InterruptError, MessageInterrupt, MessageInterruptDomain};
 
     use super::*;
 
@@ -102,6 +117,23 @@ mod tests {
 
     struct TestMachine;
 
+    #[derive(Debug)]
+    struct TestMessageInterruptDomain;
+
+    impl MessageInterruptDomain for TestMessageInterruptDomain {
+        fn update(&self, _vector: u16, _msg: MessageInterrupt) -> Result<(), InterruptError> {
+            Ok(())
+        }
+
+        fn enabled(&self, _enabled: bool) -> Result<(), InterruptError> {
+            Ok(())
+        }
+
+        fn interrupt(&self, _vector: u16) -> Option<Interrupt> {
+            None
+        }
+    }
+
     impl Machine for TestMachine {
         type Error = TestError;
         type Config = ();
@@ -113,6 +145,17 @@ mod tests {
 
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Ok(())
+        }
+
+        fn create_line_interrupt(&self, _source: u32) -> Result<Interrupt, Self::Error> {
+            Ok(Interrupt::from_fn(|| {}))
+        }
+
+        fn create_message_interrupt_domain(
+            &self,
+            _vectors: u16,
+        ) -> Result<Arc<dyn MessageInterruptDomain>, Self::Error> {
+            Ok(Arc::new(TestMessageInterruptDomain))
         }
     }
 

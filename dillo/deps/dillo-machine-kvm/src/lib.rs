@@ -475,6 +475,43 @@ mod imp {
             }
             Ok(())
         }
+
+        fn create_line_interrupt(&self, source: u32) -> Result<dillo_mmio::Interrupt, Self::Error> {
+            #[cfg(target_arch = "aarch64")]
+            {
+                return Ok(dillo_mmio::Interrupt::new(Arc::new(SpiInterruptLine::new(
+                    self.vm_fd_arc(),
+                    source,
+                ))));
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                let _ = source;
+                Err(Error::UnhandledExit(
+                    "wired interrupt factory is not implemented for KVM x86".into(),
+                ))
+            }
+        }
+
+        fn create_message_interrupt_domain(
+            &self,
+            vectors: u16,
+        ) -> Result<Arc<dyn dillo_mmio::MessageInterruptDomain>, Self::Error> {
+            #[cfg(target_arch = "aarch64")]
+            {
+                return Ok(Arc::new(KvmMessageInterruptDomain::new(
+                    self.vm_fd_arc(),
+                    vectors,
+                )));
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                let _ = vectors;
+                Err(Error::UnhandledExit(
+                    "message interrupt domain factory is not implemented for KVM x86".into(),
+                ))
+            }
+        }
     }
 
     /// One KVM memslot backed by host memory that dillo derived from the
@@ -698,20 +735,6 @@ mod imp {
                     log::warn!("KVM MSI signal for vector {vector} failed: {e}");
                 }
             }))
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    impl Vm {
-        pub fn create_spi_interrupt_line(&self, spi: u32) -> SpiInterruptLine {
-            SpiInterruptLine::new(self.vm_fd_arc(), spi)
-        }
-
-        pub fn create_message_interrupt_domain(
-            &self,
-            count: u16,
-        ) -> Arc<dyn MessageInterruptDomain> {
-            Arc::new(KvmMessageInterruptDomain::new(self.vm_fd_arc(), count))
         }
     }
 
