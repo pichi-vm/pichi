@@ -153,6 +153,19 @@ mod imp {
         }
     }
 
+    impl dillo_machine::Machine for Vm {
+        type Error = Error;
+        type Vcpu = Vcpu;
+        type Cpu = ();
+        type Memory = ();
+
+        const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
+
+        fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
     impl<D> Attach<Arc<D>> for Vm
     where
         D: MmioDevice + 'static,
@@ -277,6 +290,33 @@ mod imp {
                         });
                     }
                     other => return Ok(other),
+                }
+            }
+        }
+    }
+
+    impl dillo_machine::Vcpu for Vcpu {
+        type Error = Error;
+
+        fn run(&mut self) -> Result<VcpuStop, Self::Error> {
+            loop {
+                match Vcpu::run(self)? {
+                    VmExit::Hvc { args } => match psci::dispatch(&args) {
+                        psci::PsciAction::SystemOff => return Ok(VcpuStop::GuestPoweroff),
+                        psci::PsciAction::SystemReset => return Ok(VcpuStop::GuestReset),
+                        psci::PsciAction::Return(value) => self.set_gpr(0, value)?,
+                        psci::PsciAction::CpuOff | psci::PsciAction::CpuOn { .. } => {}
+                    },
+                    VmExit::Smc { args } => {
+                        log::warn!("unexpected SMC exit from HVF vCPU: args={args:?}");
+                    }
+                    VmExit::MmioRead { .. } | VmExit::MmioWrite { .. } | VmExit::Halted => {}
+                    VmExit::Interrupted => {}
+                    VmExit::PioRead { .. } | VmExit::PioWrite { .. } | VmExit::Debug => {
+                        return Err(Error::Hv("unexpected HVF vCPU exit".into()));
+                    }
+                    VmExit::Shutdown => return Ok(VcpuStop::GuestPoweroff),
+                    VmExit::Unknown(reason) => return Err(Error::Hv(reason)),
                 }
             }
         }

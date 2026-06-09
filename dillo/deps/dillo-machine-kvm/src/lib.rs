@@ -257,6 +257,20 @@ mod imp {
         }
     }
 
+    impl dillo_machine::Machine for Vm {
+        type Error = Error;
+        type Vcpu = Vcpu;
+        type Cpu = ();
+        type Memory = ();
+
+        const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
+
+        fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
+            Vm::request_vcpu_exit(self);
+            Ok(())
+        }
+    }
+
     #[derive(Debug)]
     pub struct EventFdInterruptLine {
         eventfd: EventFd,
@@ -608,6 +622,14 @@ mod imp {
                     VmExit::Unknown(reason) => return Ok(DebugExit::Unknown(reason)),
                 }
             }
+        }
+    }
+
+    impl dillo_machine::Vcpu for Vcpu {
+        type Error = Error;
+
+        fn run(&mut self) -> Result<VcpuStop, Self::Error> {
+            self.run_until_stop(|| None)
         }
     }
 

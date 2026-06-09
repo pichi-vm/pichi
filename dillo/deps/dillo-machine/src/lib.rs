@@ -15,11 +15,11 @@ pub enum HostArchitecture {
 }
 
 /// A constructed VM capable of accepting DTB-derived resources and vCPUs.
-pub trait Machine: Sized + Send + Sync + 'static {
+pub trait Machine: Sized + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
     type Vcpu: Vcpu<Error = Self::Error>;
-    type Cpu: Send + 'static;
-    type Memory: Send + 'static;
+    type Cpu: 'static;
+    type Memory: 'static;
 
     const DEVICE_MODEL: DeviceModel;
 
@@ -28,7 +28,7 @@ pub trait Machine: Sized + Send + Sync + 'static {
 }
 
 /// One runnable vCPU owned by a machine backend.
-pub trait Vcpu: Send + 'static {
+pub trait Vcpu: 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Run until the guest or supervisor reaches a lifecycle stop point.

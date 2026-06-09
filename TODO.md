@@ -961,6 +961,13 @@ Completed changes:
 - Moved x86 syscon power/reboot MMIO devices from `dillo-vm` into
   `dillo-x86::syscon`; the remaining compatibility runner now consumes that
   architecture substrate instead of owning the device implementation.
+- Removed the obsolete `vhost-backend` workspace crate and the `dillo backend
+  console` reexec path; all current machine backends use the portable
+  thread-hosted console device.
+- Implemented the public `dillo_machine::Machine` and `dillo_machine::Vcpu`
+  traits for KVM, HVF, and WHP backend VMs. The trait no longer requires
+  `Machine`/`Vcpu` to be `Send` because HVF vCPUs are thread-affine and must be
+  created and run on their owning thread.
 
 CI verification:
 - `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
@@ -977,6 +984,10 @@ CI verification:
   `5583a7e refactor: move x86 pci pio into substrate`.
 - `27173807545` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `908a2e3 refactor: remove portable virtio target cfg`.
+- `27174246533` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `c21a869 refactor: move x86 syscon into substrate`.
+- `27174890915` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `d342a4a refactor: remove vhost console backend`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
