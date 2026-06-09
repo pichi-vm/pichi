@@ -29,7 +29,6 @@ members = [
     "dillo/deps/dillo-pci-virtio",
     "dillo/deps/dillo-virtio-console",
     "dillo/deps/dillo-x86",
-    "dillo/deps/dillo-virtio-console/deps/vhost-backend",
     "dillo/deps/virtio",
     "dillo/deps/snuffler",
 ]
@@ -93,7 +92,6 @@ dillo-virtio-console = { path = "dillo/deps/dillo-virtio-console" }
 dillo-x86 = { path = "dillo/deps/dillo-x86" }
 dillo-vm = { path = "dillo/deps/dillo-vm" }
 vm-pci = { path = "dillo/deps/dillo-vm/deps/vm-pci" }
-vhost-backend = { path = "dillo/deps/dillo-virtio-console/deps/vhost-backend" }
 
 # Error handling
 anyhow = "1"
@@ -115,9 +113,6 @@ ciborium = "0.2"
 vm-memory = { version = "0.17", default-features = false, features = ["backend-mmap", "backend-atomic"] }
 kvm-ioctls = "0.24"
 kvm-bindings = "0.14"
-vhost-user-backend = "0.22"
-vhost = { version = "0.16", features = ["vhost-user-backend", "vhost-user-frontend"] }
-virtio-queue = "0.17"
 
 # Battle-tested 16550 UART implementation (matches what the PoC
 # uses) — the kernel's 8250 driver only enables ttyS0 if the probe
@@ -125,9 +120,6 @@ virtio-queue = "0.17"
 # stub usually fails one of those checks and Linux silently drops
 # the console.
 vm-superio = "0.8"
-
-# Seccomp (Linux)
-extrasafe = "0.5"
 
 # Process / signal / fd plumbing
 nix = { version = "0.30", features = ["fs", "process", "signal", "ioctl", "mman", "socket", "term"] }

@@ -11,11 +11,7 @@ name = "dillo"
 path = "src/main.rs"
 
 [features]
-# Default = production process-isolation model per ARCH §4.1. See
-# main.rs for the DILLO_GDB refusal cross-reference (ARCH §9.5).
-default = ["process-isolation"]
-process-isolation = ["dillo-vm/process-isolation-spawn"]
-thread-only = []
+default = []
 # Gates tests that actually launch a VM (need /dev/kvm, HVF, WHP, and the
 # OS permissions to use them). Off by default so `cargo test` runs anywhere;
 # CI's hardware lane runs `cargo test -p dillo --features vm-tests`.

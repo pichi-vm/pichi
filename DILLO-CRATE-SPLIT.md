@@ -53,8 +53,8 @@ Current crates are evidence and migration sources:
   before both concepts become public in the same API surface. The existing
   survey code can become a `dillo` DTB-survey module or a renamed crate.
 - `dillo-device` is an older process/thread experiment, not the target boundary.
-- current `virtio`, `virtio-pci`, `vm-pci`, and `vhost-backend` may be renamed,
-  split, absorbed, or upstreamed depending on the final rust-vmm alignment.
+- current `virtio`, `virtio-pci`, and `vm-pci` may be renamed, split,
+  absorbed, or upstreamed depending on the final rust-vmm alignment.
 
 ## Target graph
 
@@ -1094,11 +1094,10 @@ Current workspace evidence:
 
 - `vm-pci` contains Firecracker-derived code and may be a candidate for cleanup
   or upstream discussion.
-- `virtio`, `virtio-pci`, `vm-pci`, and `vhost-backend` were migrated from an
-  earlier local dillo tree.
+- `virtio`, `virtio-pci`, and `vm-pci` were migrated from an earlier local
+  dillo tree.
 - the workspace uses rust-vmm crates such as `vm-memory`, `vmm-sys-util`,
-  `kvm-ioctls`, `kvm-bindings`, `vhost`, `vhost-user-backend`, and
-  `virtio-queue`.
+  `kvm-ioctls`, and `kvm-bindings`.
 
 These names are current-state evidence only. The target design should not
 preserve a local crate solely because it exists today.

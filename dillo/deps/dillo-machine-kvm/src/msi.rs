@@ -15,9 +15,7 @@ use crate::irq::IrqManager;
 /// irqfd is allocated via `IrqManager::allocate_irqfd`. On re-programming, the
 /// existing GSI route is updated to the new address/data.
 ///
-/// At device-activate time, in-process devices use [`Self::interrupt_for_vector`].
-/// Linux vhost-user devices use [`Self::eventfd_for_vector`] because the
-/// protocol requires a raw eventfd for `set_vring_call`.
+/// At device-activate time, devices use [`Self::interrupt_for_vector`].
 pub struct IrqfdNotifier {
     irq_manager: Arc<Mutex<IrqManager>>,
     /// Per-vector: (gsi, eventfd clone for signaling).
@@ -49,10 +47,7 @@ impl IrqfdNotifier {
         }
     }
 
-    /// Clone the eventfd for `vector` if it has been programmed by the guest.
-    /// The Linux vhost-user frontend needs this raw eventfd for
-    /// `set_vring_call`.
-    pub fn eventfd_for_vector(&self, vector: u16) -> Option<EventFd> {
+    fn eventfd_for_vector(&self, vector: u16) -> Option<EventFd> {
         let vectors = self.vectors.lock().ok()?;
         let slot = vectors.get(vector as usize)?.as_ref()?;
         slot.1.try_clone().ok()

@@ -20,18 +20,13 @@ mod placement;
 // HVF MSI-X notifier + guest-memory builder (KVM uses memfd + irqfd instead).
 #[cfg(target_os = "macos")]
 mod hvf_devices;
-// KVM/Linux-only submodules (memfd, vhost-user, gdb stub).
+// KVM/Linux-only submodules (memfd setup, gdb stub).
 #[cfg(target_os = "linux")]
 mod gdb;
 #[cfg(target_os = "linux")]
 mod memory;
-#[cfg(target_os = "linux")]
-mod vhost_frontend;
 #[cfg(target_os = "windows")]
 mod whp_devices;
-
-#[cfg(target_os = "linux")]
-pub use vhost_frontend::spawn_backend;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
@@ -1008,37 +1003,6 @@ pub fn run(
     let msix_vectors: u16 = 3;
     let irqfd_notifier = vm.msix_notifier(Arc::clone(&irq_mgr), msix_vectors);
 
-    // Process-isolation: fork+exec the console backend as a separate
-    // child and use the vhost-user proxy as the PCI device. The proxy
-    // runs the full vhost-user handshake (set_owner/get_features) in
-    // its constructor; the data plane (descriptor walking, stdout
-    // writes) lives in the child after `activate()` shares memory and
-    // queue events. Process-isolation must fail closed if the child
-    // cannot be started or negotiated; substituting an in-process
-    // console would change the configured device model.
-    #[cfg(feature = "process-isolation-spawn")]
-    let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = {
-        let notifier_for_frontend = Arc::clone(&irqfd_notifier);
-        let (stream, child) =
-            spawn_backend("console").map_err(|source| RunError::DeviceBackend {
-                kind: "console",
-                source: source.into(),
-            })?;
-        let frontend = vhost_frontend::VhostUserFrontend::new(
-            stream,
-            child,
-            notifier_for_frontend,
-            guest_mem.clone(),
-        )
-        .map_err(|source| RunError::DeviceBackend {
-            kind: "console",
-            source,
-        })?;
-        log::info!("process-isolation: vhost-user console backend wired");
-        Arc::new(std::sync::Mutex::new(Box::new(frontend)))
-    };
-
-    #[cfg(not(feature = "process-isolation-spawn"))]
     let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = {
         let call_lookup_notifier = Arc::clone(&irqfd_notifier);
         Arc::new(std::sync::Mutex::new(Box::new(

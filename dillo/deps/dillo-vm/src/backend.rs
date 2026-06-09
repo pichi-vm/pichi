@@ -43,12 +43,6 @@ impl KvmMsixNotifier {
         Self { inner }
     }
 
-    #[cfg(feature = "process-isolation-spawn")]
-    pub(crate) fn eventfd_for_vector(&self, vector: u16) -> Option<backend_machine::EventFd> {
-        self.inner.eventfd_for_vector(vector)
-    }
-
-    #[cfg(not(feature = "process-isolation-spawn"))]
     pub(crate) fn interrupt_for_vector(&self, vector: u16) -> Option<Interrupt> {
         self.inner.interrupt_for_vector(vector)
     }

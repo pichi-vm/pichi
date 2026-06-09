@@ -319,8 +319,7 @@ impl VirtioPciDevice {
     /// Reset transport state for console soft reconnect.
     ///
     /// Clears activation state so that the guest driver's next `DRIVER_OK` write
-    /// triggers a fresh `activate_device()` call with new queue kicks and a new
-    /// vhost-user handshake.
+    /// triggers a fresh `activate_device()` call with new queue kicks.
     ///
     /// Does NOT touch the PCIe config space, MSI-X table, or BAR addresses — the
     /// guest driver continues to see the same PCI device without re-enumeration.

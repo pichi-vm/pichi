@@ -27,7 +27,7 @@ Default local verification:
 ```sh
 RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check
 git diff --check
-RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler
+RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler
 ```
 
 When a stage changes target-specific code, also run the relevant target checks:
@@ -91,7 +91,7 @@ Completed changes:
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `git diff --check`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 
 Pushed commit:
 - `498a2e5 docs: plan final dillo crate split`
@@ -135,7 +135,7 @@ Completed changes:
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `git diff --check`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 
 CI verification:
 - `27135940650` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
@@ -182,7 +182,7 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 
 CI verification:
 - `27136612124` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
@@ -226,7 +226,7 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 
 CI verification:
 - `27137010919` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
@@ -278,7 +278,7 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 
 CI verification:
 - `27138094866` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025`.
@@ -322,7 +322,7 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 
 CI verification:
 - `27138666519` failed on Linux because the Linux-only UART test harness still
@@ -372,7 +372,7 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 
 Pushed commit:
 - `refactor: add dillo machine traits`; final pushed hash and CI run to be
@@ -424,7 +424,7 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 
 Pushed commit:
 - `55326b9 refactor: split dillo machine backend crates`
@@ -487,7 +487,7 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
   was attempted locally but this machine lacks the required HVF entitlement, so
   platform boot validation is delegated to CI.
@@ -555,7 +555,7 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 
 Pushed commit:
 - `189e9c9 refactor: handle x86 pio writes in backends`
@@ -651,8 +651,8 @@ Process:
   portable devices only receive the launch/connect capability.
 - Ensure dropping the handle does not silently detach guest-visible state.
 - Migrate in-tree thread devices to the new launch path.
-- Keep process-host support narrow and only as needed by existing vhost-user
-  behavior.
+- Use thread-hosted devices in all `dillo-machine-*` crates for now; portable
+  devices must not carry process-specific implementations.
 
 Success criteria:
 - Backend crates own the parallel model.
@@ -676,8 +676,8 @@ Completed changes:
 - Commit `785d099` retained virtio activation worker handles; CI run
   `27150535316` passed on fmt, Ubuntu/KVM boot tests, and Windows/WHP boot
   tests.
-- Moved current vhost-user child-process ownership into the retained virtio
-  activation handle, with a frontend drop fallback when activation never occurs.
+- Superseded: the former vhost-user child-process console path is being removed
+  instead of carried into the target API.
 - Added a `dillo-virtio` host abstraction to `VirtioActivate`.
 - Wired direct virtio-mmio activation to the backend-owned `MmioAttachment`
   returned by `attach_mmio`.
@@ -687,18 +687,15 @@ Completed changes:
   `MmioAttachment`.
 - Wired virtio-pci activation through the PCI root host instead of the
   compatibility thread host when the root is attached.
-- Added adopted-process host support and routed the current vhost-user child
-  process through the activation host after the vhost setup handshake.
 - Removed the detached virtio-console stdin reader; host-to-guest input now
   requires a future portable host-input capability instead of direct OS polling
   in the device.
-- Wired top-level `dillo` `process-isolation` to the VM crate's process-spawn
-  feature, and made that path fail closed instead of falling back to an
-  in-process console when the vhost-user child cannot be started or negotiated.
+- Superseded: top-level `dillo` no longer has a `backend console` reexec mode,
+  and the portable console crate no longer contains a Linux vhost-user backend.
 
 Remaining divergence:
-- The vhost-user process still starts before activation because config-space
-  reads need the vhost handshake before guest `DRIVER_OK`.
+- Future process hosting, if restored, must be owned by `dillo-machine-*` and
+  must not introduce a second device implementation.
 - The in-process virtio-console no longer forwards host stdin to the guest.
 
 ## Stage 12 - Implement CC-first shared-memory capabilities
@@ -767,7 +764,7 @@ Completed changes:
   payload capability limits fail instead of falling back to whole guest memory.
 - Made `VirtioActivate` fields private and replaced the public
   `GuestMemoryMmap` field with explicit accessors for queue memory, buffer
-  memory, device host, queues, kicks, and a vhost-user-only memory export.
+  memory, device host, queues, and kicks.
 - Added a standard-VM `MappedSharedMemory::for_guest_memory` constructor whose
   runtime claim limits are derived from the machine's actual guest RAM regions,
   not from guessed DTB data.
@@ -776,9 +773,7 @@ Completed changes:
 - Wired standard-VM guest-RAM shared-memory capabilities into KVM, HVF, and WHP
   before device attachment, so virtio queue and payload accesses can claim
   runtime guest-supplied GPAs through the attachment.
-- Removed the Linux vhost-user memory export from portable `VirtioActivate`;
-  the Linux `dillo-vm` vhost-user frontend now owns the `SET_MEM_TABLE` memory
-  export directly.
+- Removed the Linux vhost-user memory export from portable `VirtioActivate`.
 - Added a cloneable `SharedMemoryState` so machine backends can update
   shared/private ranges while existing attachment-scoped capabilities enforce
   the current state at runtime.
@@ -796,10 +791,8 @@ Completed changes:
   access just like virtio-mmio.
 
 Remaining divergence:
-- vhost-user devices still use their backend-specific whole-memory protocol
-  path. This must either become a Linux/backend-local exception with explicit
-  conformance text, or be replaced by a portable process-device memory contract
-  before final acceptance.
+- The former vhost-user console process model is being removed instead of
+  preserved as a backend-specific whole-memory protocol.
 - KVM, HVF, and WHP standard-VM attachments treat all mapped guest RAM as
   currently shared. Confidential backends still need backend-owned
   conversion-exit handling and guest-private memory setup.
@@ -904,8 +897,7 @@ Completed changes:
 - Removed stale Linux-only dependencies from `dillo-pci-virtio`; the PCI virtio
   transport no longer depends on `vmm-sys-util` or `libc`.
 - Moved ordinary virtio call interrupts from `dillo-virtio` to backend-neutral
-  `dillo-mmio::Interrupt`; Linux vhost-user now obtains raw KVM eventfds
-  directly from the KVM notifier because that protocol is explicitly fd-based.
+  `dillo-mmio::Interrupt`.
 - Moved KVM GSI routing, irqfd allocation, and MSI-X irqfd notification from
   `dillo-vm` into `dillo-machine-kvm`; `dillo-vm` no longer depends directly on
   `kvm-bindings`, `kvm-ioctls`, or `vmm-sys-util`.
@@ -961,9 +953,8 @@ Completed changes:
 - Removed `dillo-mmio::MmioNotifyEvent` and `QueueNotifier` plus the KVM
   ioeventfd notifier implementation that depended on exposing Linux eventfds
   through portable transport APIs.
-- Kept the Linux fd requirement confined to the legacy `dillo-vm`
-  process-isolation vhost-user compatibility path by bridging portable `Kick`
-  notifications to local eventfds there.
+- Removed the former Linux process-isolation vhost-user console path instead of
+  preserving a second OS-specific console implementation.
 - Tightened `dillo/tests/architecture_cfg.rs` so the no-target-cfg guard covers
   `dillo/src` plus the portable MMIO, PCI, and virtio core crates, not just
   the top-level launcher sources.
@@ -995,7 +986,7 @@ Latest local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude vhost-backend --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --no-run`
 - local codesign of `target/debug/dillo`, `target/debug/deps/dillo-*`, and
   `target/debug/deps/boot-*` with `com.apple.security.hypervisor`

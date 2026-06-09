@@ -57,6 +57,7 @@ impl SourceScan {
             "deps/dillo-mmio-virtio",
             "deps/dillo-pci",
             "deps/dillo-pci-virtio",
+            "deps/dillo-virtio-console",
             "deps/virtio",
         ] {
             let root = self.manifest.join(crate_dir);

@@ -80,10 +80,8 @@ jobs:
       # (Registry deps are cap-lints'd, so only our crates can fail it.) It is set
       # per-step, never globally, so it can't reach the patched-cargo build above.
 
-      # Both platforms run the full workspace unit tests. The only members
-      # Windows/macOS can't build are the genuinely Linux-only ones:
-      # vhost-backend (vhost = a Linux kernel interface) and snuffler (the Linux
-      # guest probe binary, cross-built as a dillo test artifact instead).
+      # All platforms run the workspace unit tests, excluding only snuffler:
+      # the Linux guest probe binary is cross-built as a dillo test artifact.
       # Everything else in the currently scheduled matrix is built and tested
       # for parity with Linux. Restore the macOS lane when its runner returns.
       - name: Test (Linux, full workspace)
@@ -100,7 +98,7 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          cargo test --workspace --exclude vhost-backend --exclude snuffler
+          cargo test --workspace --exclude snuffler
 
       - name: Test (macOS, workspace minus Linux-only crates)
         if: runner.os == 'macOS'
@@ -108,7 +106,7 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          cargo test --workspace --exclude vhost-backend --exclude snuffler
+          cargo test --workspace --exclude snuffler
 
       - name: Sign dillo for HVF (macOS)
         if: runner.os == 'macOS'

@@ -84,10 +84,8 @@ pub(crate) fn mmap_range(memfd: &Memfd, fd_offset: u64, size: u64) -> Result<u64
 /// the raw pointers — the underlying mmap is owned by `mmap_range`'s
 /// leaked allocation, alive for the VM's lifetime.
 ///
-/// Used by virtio-pci to drive queues, by vhost-user `SET_MEM_TABLE`
-/// (file_offset must be `Some(...)` for the backend to mmap the same
-/// page set), and by any device backend that needs typed guest-memory
-/// access.
+/// Used by virtio-pci to drive queues and by any device backend that needs
+/// typed guest-memory access.
 pub(crate) fn build_guest_memory(
     memfd: &Memfd,
     regions: &[(u64, u64, u64)], // (gpa, host_addr, size) — same shape GpaMap takes

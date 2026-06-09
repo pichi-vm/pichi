@@ -10,17 +10,8 @@ description = "virtio-console device implementing dillo_virtio::VirtioDevice. Dr
 dillo-mmio.workspace = true
 dillo-virtio.workspace = true
 vm-memory.workspace = true
-vmm-sys-util.workspace = true
 log.workspace = true
 thiserror.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
-vhost-backend = { workspace = true }
-vhost-user-backend = { workspace = true }
-vhost = { workspace = true }
-virtio-queue = { workspace = true }
-extrasafe = { workspace = true }
 
 [lints]
 workspace = true

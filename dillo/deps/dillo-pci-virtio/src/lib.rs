@@ -10,11 +10,9 @@
 //!
 //! # Composition chain
 //!
-//! `VirtioPciDevice` wraps any `Arc<Mutex<dyn VirtioDevice>>`. In dillo,
-//! the concrete implementation is always `VhostUserFrontendDevice` (from the
-//! `vhost_frontend` module in `dillo-vmm`), which delegates all device I/O
-//! to an out-of-process backend via the vhost-user protocol. On `activate()`,
-//! the frontend performs the vhost-user handshake with the backend process.
+//! `VirtioPciDevice` wraps any `Arc<Mutex<dyn VirtioDevice>>`. The concrete
+//! device implementation remains portable; the Machine attachment supplies
+//! memory, interrupt, and host-thread capabilities during activation.
 //!
 //! [`VirtioPciAdapter`] wraps `VirtioPciDevice` as
 //! [`dillo_pci::PciDevice`], and `PciBus` dispatches config-space and BAR

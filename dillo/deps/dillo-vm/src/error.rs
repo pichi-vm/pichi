@@ -79,13 +79,6 @@ pub enum RunError {
     #[error("unrecognized cpu:profile {0:?} for this architecture")]
     UnknownCpuProfile(String),
 
-    #[error("device backend `{kind}` setup: {source}")]
-    DeviceBackend {
-        kind: &'static str,
-        #[source]
-        source: anyhow::Error,
-    },
-
     // ── exit 13 — Host RAM check ───────────────────────────────────
     #[error(
         "host RAM ({available_mib} MiB) insufficient for guest ({requested_mib} MiB) + \
@@ -150,8 +143,7 @@ impl RunError {
             | Self::ArchMismatch
             | Self::Unimplemented(_)
             | Self::TooManyVcpus { .. }
-            | Self::UnknownCpuProfile(_)
-            | Self::DeviceBackend { .. } => 12,
+            | Self::UnknownCpuProfile(_) => 12,
             Self::HostRam { .. } => 13,
             Self::Placement { .. } => 13,
             Self::VcpuThread(_) | Self::VcpuPanic | Self::UnknownKvmExit(_) => 20,
