@@ -39,8 +39,8 @@ mod imp {
 
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::X86_64;
 
-    type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
-    type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
+    pub type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
+    pub type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 
     pub fn install_signal_watchers(_supervisor_shutdown: &'static AtomicBool) {}
 
@@ -166,6 +166,7 @@ mod imp {
 
     impl dillo_machine::Machine for Vm {
         type Error = Error;
+        type Config = u32;
         type Vcpu = Vcpu;
         type Cpu = Cpu;
         type Memory = Memory;
@@ -204,11 +205,11 @@ mod imp {
 
     /// One WHP x86 vCPU creation request.
     pub struct Cpu {
-        idx: u32,
-        cpu_profile: String,
-        pio_read: PioRead,
-        pio_write: PioWrite,
-        state: Option<pmi::vm::vcpu::x86_64::CpuState>,
+        pub idx: u32,
+        pub cpu_profile: String,
+        pub pio_read: PioRead,
+        pub pio_write: PioWrite,
+        pub state: Option<pmi::vm::vcpu::x86_64::CpuState>,
     }
 
     impl std::fmt::Debug for Cpu {
@@ -218,24 +219,6 @@ mod imp {
                 .field("cpu_profile", &self.cpu_profile)
                 .field("has_state", &self.state.is_some())
                 .finish_non_exhaustive()
-        }
-    }
-
-    impl Cpu {
-        pub fn x86_64(
-            idx: u32,
-            cpu_profile: impl Into<String>,
-            pio_read: Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>,
-            pio_write: Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>,
-            state: Option<pmi::vm::vcpu::x86_64::CpuState>,
-        ) -> Self {
-            Self {
-                idx,
-                cpu_profile: cpu_profile.into(),
-                pio_read,
-                pio_write,
-                state,
-            }
         }
     }
 

@@ -10,8 +10,8 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   NIGHTLY: nightly-2026-06-04
 
-# Supported platforms are Linux x86_64 (KVM), Windows x86_64 (WHP), and macOS
-# arm64 (HVF on a bare-metal organization runner).
+# Supported platforms are Linux x86_64/aarch64 (KVM), Windows x86_64 (WHP),
+# and macOS arm64 (HVF on bare-metal organization runners).
 jobs:
   fmt:
     name: cargo fmt
@@ -40,6 +40,10 @@ jobs:
             os: ubuntu-24.04
             runs_on: '["ubuntu-24.04"]'
             guest_musl: x86_64-unknown-linux-musl
+          - name: linux-arm64       # Linux arm64 - full workspace + real KVM boot
+            os: linux-arm64
+            runs_on: '["self-hosted","Linux","ARM64","bare-metal","aarch64","kvm"]'
+            guest_musl: aarch64-unknown-linux-musl
           - name: windows-2025      # Windows x86_64 - build + real WHP boot
             os: windows-2025
             runs_on: '["windows-2025"]'
@@ -111,8 +115,19 @@ jobs:
 
       - name: Reserve hugepages for guest RAM (Linux/KVM)
         if: runner.os == 'Linux'
+        shell: bash
         run: |
-          sudo sysctl -w vm.nr_hugepages=1024
+          pages=$(sysctl -n vm.nr_hugepages)
+          if [ "$pages" -lt 1024 ]; then
+            sudo sysctl -w vm.nr_hugepages=1024
+          fi
+
+          pages=$(sysctl -n vm.nr_hugepages)
+          if [ "$pages" -lt 1024 ]; then
+            echo "Linux runner must provide vm.nr_hugepages >= 1024; got $pages" >&2
+            exit 1
+          fi
+
           grep -i huge /proc/meminfo
 
       # Real guest boot on every platform. dillo builds its per-OS backend

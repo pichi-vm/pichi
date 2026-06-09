@@ -7,9 +7,21 @@
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 
-use kvm_bindings::{kvm_guest_debug, kvm_userspace_memory_region};
+#[cfg(target_arch = "x86_64")]
+use kvm_bindings::kvm_guest_debug;
+use kvm_bindings::kvm_userspace_memory_region;
+#[cfg(target_arch = "aarch64")]
+use kvm_bindings::{
+    KVM_ARM_VCPU_POWER_OFF, KVM_ARM_VCPU_PSCI_0_2, KVM_DEV_ARM_VGIC_CTRL_INIT,
+    KVM_DEV_ARM_VGIC_GRP_ADDR, KVM_DEV_ARM_VGIC_GRP_CTRL, KVM_DEV_ARM_VGIC_GRP_NR_IRQS,
+    KVM_REG_ARM_CORE, KVM_REG_ARM64, KVM_REG_SIZE_U64, KVM_VGIC_V3_ADDR_TYPE_DIST,
+    KVM_VGIC_V3_ADDR_TYPE_REDIST, kvm_create_device, kvm_device_attr,
+    kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3, kvm_vcpu_init,
+};
 #[cfg(target_arch = "x86_64")]
 use kvm_bindings::{kvm_regs, kvm_segment};
+#[cfg(target_arch = "aarch64")]
+use kvm_ioctls::DeviceFd;
 use kvm_ioctls::{Cap, Kvm, VcpuExit, VcpuFd, VmFd};
 use thiserror::Error;
 
@@ -34,6 +46,12 @@ pub enum Error {
 
     #[error("create IRQ chip: {0}")]
     CreateIrqChip(std::io::Error),
+
+    #[error("create VGIC: {0}")]
+    CreateVgic(std::io::Error),
+
+    #[error("configure VGIC: {0}")]
+    ConfigureVgic(std::io::Error),
 
     #[error("set TSS address: {0}")]
     SetTss(std::io::Error),
@@ -87,6 +105,8 @@ pub(crate) struct Vm {
 struct VmInner {
     _kvm: Kvm,
     vm: std::sync::Arc<VmFd>,
+    #[cfg(target_arch = "aarch64")]
+    _vgic: Option<DeviceFd>,
 }
 
 impl Vm {
@@ -100,6 +120,7 @@ impl Vm {
 
     /// Open `/dev/kvm`, create a VM, and (on x86_64) set up the in-kernel
     /// LAPIC + I/O APIC.
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn new() -> Result<Self, Error> {
         let kvm = Kvm::new().map_err(io).map_err(Error::OpenKvm)?;
         let api = kvm.get_api_version();
@@ -129,6 +150,26 @@ impl Vm {
             inner: Arc::new(VmInner {
                 _kvm: kvm,
                 vm: std::sync::Arc::new(vm),
+                #[cfg(target_arch = "aarch64")]
+                _vgic: None,
+            }),
+        })
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn new_with_gic(gic: &crate::imp::GicParams) -> Result<Self, Error> {
+        let kvm = Kvm::new().map_err(io).map_err(Error::OpenKvm)?;
+        let api = kvm.get_api_version();
+        if api != 12 {
+            return Err(Error::ApiVersion(api));
+        }
+        let vm = kvm.create_vm().map_err(io).map_err(Error::CreateVm)?;
+        let vgic = create_vgic(&vm, gic)?;
+        Ok(Self {
+            inner: Arc::new(VmInner {
+                _kvm: kvm,
+                vm: std::sync::Arc::new(vm),
+                _vgic: Some(vgic),
             }),
         })
     }
@@ -208,6 +249,21 @@ impl Vm {
         #[cfg(not(target_arch = "x86_64"))]
         {
             let _ = cpu_profile;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mut init = kvm_vcpu_init::default();
+            self.inner
+                .vm
+                .get_preferred_target(&mut init)
+                .map_err(|e| Error::CreateVcpu(idx, io(e)))?;
+            init.features[0] |= 1 << KVM_ARM_VCPU_PSCI_0_2;
+            if idx != 0 {
+                init.features[0] |= 1 << KVM_ARM_VCPU_POWER_OFF;
+            }
+            fd.vcpu_init(&init)
+                .map_err(|e| Error::CreateVcpu(idx, io(e)))?;
         }
 
         Ok(Vcpu { fd, idx })
@@ -319,6 +375,7 @@ impl Vcpu {
     /// Configure KVM_GUESTDBG flags directly. Used by the gdb stub to
     /// toggle between "run free", "single-step", and "report INT3/HW
     /// breakpoint" modes between guest runs.
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn set_guest_debug_flags(&self, flags: u32) -> Result<(), Error> {
         let dbg = kvm_guest_debug {
             control: flags,
@@ -332,6 +389,7 @@ impl Vcpu {
     }
 
     /// Read the vCPU's general-purpose registers (for debug snapshots).
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn get_regs(&self) -> Result<kvm_regs, Error> {
         self.fd
             .get_regs()
@@ -339,6 +397,7 @@ impl Vcpu {
     }
 
     /// Write the vCPU's general-purpose registers.
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn set_regs(&self, regs: &kvm_regs) -> Result<(), Error> {
         self.fd
             .set_regs(regs)
@@ -359,6 +418,41 @@ impl Vcpu {
         self.fd
             .set_sregs(sregs)
             .map_err(|e| Error::SetSregs(self.idx, io(e)))
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn set_aarch64_state(
+        &mut self,
+        state: &pmi::vm::vcpu::aarch64::CpuState,
+    ) -> Result<(), Error> {
+        let gprs = [
+            state.x0, state.x1, state.x2, state.x3, state.x4, state.x5, state.x6, state.x7,
+            state.x8, state.x9, state.x10, state.x11, state.x12, state.x13, state.x14, state.x15,
+            state.x16, state.x17, state.x18, state.x19, state.x20, state.x21, state.x22, state.x23,
+            state.x24, state.x25, state.x26, state.x27, state.x28, state.x29, state.x30,
+        ];
+        for (idx, value) in gprs.into_iter().enumerate() {
+            self.set_one_u64(core_reg(idx as u64), value)?;
+        }
+        self.set_one_u64(core_reg(32), state.pc)?;
+        self.set_one_u64(
+            core_reg(33),
+            if state.pstate == 0 {
+                0x3c5
+            } else {
+                state.pstate
+            },
+        )?;
+        self.set_one_u64(core_reg(34), state.sp_el1)?;
+        Ok(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn set_one_u64(&self, reg_id: u64, value: u64) -> Result<(), Error> {
+        self.fd
+            .set_one_reg(reg_id, &u128::from(value).to_le_bytes())
+            .map_err(|e| Error::SetRegs(self.idx, io(e)))?;
+        Ok(())
     }
 
     /// Run the vCPU until the next exit. PIO and MMIO reads are
@@ -435,6 +529,59 @@ impl AsRawFd for Vcpu {
     fn as_raw_fd(&self) -> std::os::fd::RawFd {
         self.fd.as_raw_fd()
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn create_vgic(vm: &VmFd, gic: &crate::imp::GicParams) -> Result<DeviceFd, Error> {
+    let mut device = kvm_create_device {
+        type_: kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3,
+        fd: 0,
+        flags: 0,
+    };
+    let vgic = vm
+        .create_device(&mut device)
+        .map_err(io)
+        .map_err(Error::CreateVgic)?;
+    set_vgic_addr(&vgic, KVM_VGIC_V3_ADDR_TYPE_DIST, gic.dist_base)?;
+    set_vgic_addr(&vgic, KVM_VGIC_V3_ADDR_TYPE_REDIST, gic.redist_base)?;
+    let nr_irqs = 32 + gic.spi_count.max(96);
+    let nr_irqs_attr = kvm_device_attr {
+        group: KVM_DEV_ARM_VGIC_GRP_NR_IRQS,
+        attr: 0,
+        addr: &nr_irqs as *const u32 as u64,
+        flags: 0,
+    };
+    vgic.set_device_attr(&nr_irqs_attr)
+        .map_err(io)
+        .map_err(Error::ConfigureVgic)?;
+    let init_attr = kvm_device_attr {
+        group: KVM_DEV_ARM_VGIC_GRP_CTRL,
+        attr: u64::from(KVM_DEV_ARM_VGIC_CTRL_INIT),
+        addr: 0,
+        flags: 0,
+    };
+    vgic.set_device_attr(&init_attr)
+        .map_err(io)
+        .map_err(Error::ConfigureVgic)?;
+    Ok(vgic)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn set_vgic_addr(vgic: &DeviceFd, attr: u32, addr: u64) -> Result<(), Error> {
+    let device_attr = kvm_device_attr {
+        group: KVM_DEV_ARM_VGIC_GRP_ADDR,
+        attr: u64::from(attr),
+        addr: &addr as *const u64 as u64,
+        flags: 0,
+    };
+    vgic.set_device_attr(&device_attr)
+        .map_err(io)
+        .map_err(Error::ConfigureVgic)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn core_reg(index: u64) -> u64 {
+    KVM_REG_ARM64 | KVM_REG_SIZE_U64 | u64::from(KVM_REG_ARM_CORE) | (2 * index)
 }
 
 #[cfg(target_arch = "x86_64")]

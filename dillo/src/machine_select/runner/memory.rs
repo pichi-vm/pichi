@@ -160,6 +160,7 @@ impl GpaMap {
     /// Copy guest memory into `dst`, starting at `gpa`. Returns the
     /// number of bytes actually copied (which may be less than
     /// `dst.len()` if the request runs off the end of a region).
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn read(&self, gpa: u64, dst: &mut [u8]) -> usize {
         for &(rg, ra, rs) in &self.regions {
             if gpa >= rg && gpa < rg + rs {

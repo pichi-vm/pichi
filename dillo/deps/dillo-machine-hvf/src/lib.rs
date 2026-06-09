@@ -279,6 +279,7 @@ mod imp {
 
     impl dillo_machine::Machine for Vm {
         type Error = Error;
+        type Config = GicParams;
         type Vcpu = Vcpu;
         type Cpu = ();
         type Memory = Memory;

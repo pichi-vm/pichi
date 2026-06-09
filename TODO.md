@@ -1136,7 +1136,7 @@ Latest local verification:
 
 ## Stage 15 - Restore macOS CI
 
-Status: in progress.
+Status: complete.
 
 Goal: restore required macOS/HVF CI once the self-hosted runner is online.
 
@@ -1156,8 +1156,66 @@ Completed changes:
 - Restored the `macos-arm64` matrix entry using the self-hosted bare-metal M1
   runner labels.
 - Removed the temporary macOS quarantine comments from the workflow.
+- CI run `27183525191` passed on `cargo fmt`, `ubuntu-24.04`, `windows-2025`,
+  and `macos-arm64`; the macOS lane ran workspace tests and signed HVF boot
+  tests.
 
-## Stage 16 - Conformance loop 1
+## Stage 16 - Add Linux arm64 KVM CI
+
+Status: in progress.
+
+Goal: add native Linux arm64 KVM as an empirical architecture-isolation test
+before conformance loops begin.
+
+Process:
+- Add a `linux-arm64` CI matrix entry using the self-hosted Linux/aarch64/KVM
+  runner labels.
+- Keep all OS and architecture-specific implementation inside
+  `dillo-machine-kvm` and `dillo/src/machine_select`.
+- Make KVM machine construction and CPU construction use associated input
+  types rather than architecture-named public constructors.
+- Reuse existing portable MMIO and virtio-mmio devices; do not add arm64-only
+  device implementations.
+
+Success criteria:
+- `dillo` compiles for `aarch64-unknown-linux-gnu`.
+- CI schedules and passes Linux x86_64/KVM, Linux arm64/KVM, Windows/WHP, and
+  macOS/HVF boot lanes.
+- Source search finds no architecture-named KVM CPU constructors in dillo.
+- Default local verification and boot tests pass.
+
+Completed changes:
+- Added `Machine::Config` as an associated machine input type.
+- Added KVM `Config` and target-selected `Cpu` input fields instead of
+  `Cpu::x86_64`/`Cpu::aarch64` constructor variants.
+- Added Linux/aarch64 KVM VGIC setup from DTB-derived GIC addresses and SPI
+  interrupt injection through `dillo-mmio::InterruptLine`.
+- Added a Linux/aarch64 runner path that uses KVM, DTB-derived GIC/UART/PCIe
+  windows, and the existing portable virtio-mmio console device.
+- Added a `linux-arm64` CI matrix entry using the self-hosted
+  `["self-hosted","Linux","ARM64","bare-metal","aarch64","kvm"]` runner.
+- Made the Linux hugepage CI step check `vm.nr_hugepages` before trying sudo;
+  self-hosted Linux/aarch64 runs without sudo because the host preconfigures
+  the required 1024 hugepages.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
+- `ssh -A nathaniel@ares.local 'pages=$(sysctl -n vm.nr_hugepages); echo pages=$pages; if [ "$pages" -lt 1024 ]; then sudo sysctl -w vm.nr_hugepages=1024; fi; pages=$(sysctl -n vm.nr_hugepages); echo pages_after=$pages; sudo -u github-runner-ares sudo -n true && echo runner-sudo-ok || echo runner-sudo-no'`
+
+Local verification limitation:
+- `cargo check -p dillo --tests --target aarch64-unknown-linux-gnu` is blocked
+  on this macOS host by missing `aarch64-linux-gnu-gcc` for a transitive test
+  dependency build script. CI must verify this natively on the Linux arm64
+  runner.
+
+## Stage 17 - Conformance loop 1
 
 Status: pending.
 
@@ -1179,7 +1237,7 @@ Success criteria:
 - Any unresolved mismatch is written down for the next loop.
 - Default local verification and all restored target checks pass.
 
-## Stage 17 - Conformance loop 2
+## Stage 18 - Conformance loop 2
 
 Status: pending.
 
@@ -1199,7 +1257,7 @@ Success criteria:
   explicitly.
 - Default local verification and all restored target checks pass.
 
-## Stage 18 - Conformance loop 3
+## Stage 19 - Conformance loop 3
 
 Status: pending.
 
@@ -1218,7 +1276,7 @@ Success criteria:
 - All fixable mismatches have been fixed.
 - Default local verification and all restored target checks pass.
 
-## Stage 19 - Record remaining divergence for human review
+## Stage 20 - Record remaining divergence for human review
 
 Status: pending.
 

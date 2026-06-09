@@ -15,6 +15,7 @@ pub enum HostArchitecture {
 /// A constructed VM capable of accepting DTB-derived resources and vCPUs.
 pub trait Machine: Sized + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
+    type Config: 'static;
     type Vcpu: Vcpu<Error = Self::Error>;
     type Cpu: 'static;
     type Memory: 'static;
@@ -83,6 +84,7 @@ mod tests {
 
     impl Machine for TestMachine {
         type Error = TestError;
+        type Config = ();
         type Vcpu = TestVcpu;
         type Cpu = TestCpu;
         type Memory = TestMemory;

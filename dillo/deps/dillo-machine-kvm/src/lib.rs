@@ -1,15 +1,15 @@
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod cpuid_x86;
 #[cfg(target_os = "linux")]
 mod hypervisor;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod irq;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod msi;
 
 /// Re-export the KVM debug-control flags so dillo can configure guest-debug
 /// modes without depending on `kvm-bindings` directly.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod debug_flags {
     pub use kvm_bindings::{
         KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP,
@@ -50,18 +50,24 @@ mod imp {
         MmioDeviceHandle, MmioInterrupt, MmioSpawnError, SharedMemory,
     };
 
+    #[cfg(target_arch = "x86_64")]
     use crate::{kvm_regs, kvm_sregs};
     pub use vmm_sys_util::eventfd::EventFd;
 
     use crate::VmExit;
     pub use crate::hypervisor::Error;
+    #[cfg(target_arch = "x86_64")]
     pub use crate::irq::{IrqError, IrqManager};
+    #[cfg(target_arch = "x86_64")]
     pub use crate::msi::IrqfdNotifier;
 
+    #[cfg(target_arch = "x86_64")]
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::X86_64;
+    #[cfg(target_arch = "aarch64")]
+    pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::Aarch64;
 
-    type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
-    type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
+    pub type PioRead = Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>;
+    pub type PioWrite = Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>;
 
     const VCPU_KICK_SIGNAL: nix::sys::signal::Signal = nix::sys::signal::Signal::SIGUSR1;
 
@@ -226,20 +232,16 @@ mod imp {
     }
 
     impl Vm {
+        #[cfg(target_arch = "x86_64")]
         pub fn new() -> Result<Self, Error> {
-            let exit_requester = VcpuExitRequester::new();
-            Ok(Self {
-                inner: crate::hypervisor::Vm::new()?,
-                mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
-                exit_requester,
-                shared_memory: Vec::new(),
-            })
+            Self::try_from(Config {})
         }
 
         fn vm_fd_arc(&self) -> Arc<kvm_ioctls::VmFd> {
             self.inner.vm_fd_arc()
         }
 
+        #[cfg(target_arch = "x86_64")]
         pub fn create_irq_manager(&self) -> Result<IrqManager, IrqError> {
             IrqManager::new(self.vm_fd_arc())
         }
@@ -281,8 +283,44 @@ mod imp {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    #[derive(Debug, Clone, Copy)]
+    pub struct GicParams {
+        pub dist_base: u64,
+        pub redist_base: u64,
+        pub spi_count: u32,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct Config {
+        #[cfg(target_arch = "aarch64")]
+        pub gic: GicParams,
+    }
+
+    impl TryFrom<Config> for Vm {
+        type Error = Error;
+
+        fn try_from(config: Config) -> Result<Self, Self::Error> {
+            let exit_requester = VcpuExitRequester::new();
+            #[cfg(target_arch = "x86_64")]
+            let inner = {
+                let _ = config;
+                crate::hypervisor::Vm::new()?
+            };
+            #[cfg(target_arch = "aarch64")]
+            let inner = crate::hypervisor::Vm::new_with_gic(&config.gic)?;
+            Ok(Self {
+                inner,
+                mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
+                exit_requester,
+                shared_memory: Vec::new(),
+            })
+        }
+    }
+
     impl dillo_machine::Machine for Vm {
         type Error = Error;
+        type Config = Config;
         type Vcpu = Vcpu;
         type Cpu = Cpu;
         type Memory = Memory;
@@ -323,41 +361,28 @@ mod imp {
         }
     }
 
-    /// One x86 vCPU creation request. Backend-specific setup stays inside KVM;
+    /// One KVM vCPU creation request. Backend-specific setup stays inside KVM;
     /// dillo supplies only the launch facts it derived from PMI/DTB.
     pub struct Cpu {
-        idx: u32,
-        cpu_profile: String,
-        pio_read: PioRead,
-        pio_write: PioWrite,
-        state: Option<pmi::vm::vcpu::x86_64::CpuState>,
+        pub idx: u32,
+        pub cpu_profile: String,
+        #[cfg(target_arch = "x86_64")]
+        pub pio_read: PioRead,
+        #[cfg(target_arch = "x86_64")]
+        pub pio_write: PioWrite,
+        #[cfg(target_arch = "x86_64")]
+        pub state: Option<pmi::vm::vcpu::x86_64::CpuState>,
+        #[cfg(target_arch = "aarch64")]
+        pub state: Option<pmi::vm::vcpu::aarch64::CpuState>,
     }
 
     impl std::fmt::Debug for Cpu {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("Cpu")
-                .field("idx", &self.idx)
-                .field("cpu_profile", &self.cpu_profile)
-                .field("has_state", &self.state.is_some())
-                .finish_non_exhaustive()
-        }
-    }
-
-    impl Cpu {
-        pub fn x86_64(
-            idx: u32,
-            cpu_profile: impl Into<String>,
-            pio_read: Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>,
-            pio_write: Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>,
-            state: Option<pmi::vm::vcpu::x86_64::CpuState>,
-        ) -> Self {
-            Self {
-                idx,
-                cpu_profile: cpu_profile.into(),
-                pio_read,
-                pio_write,
-                state,
-            }
+            let mut debug = f.debug_struct("Cpu");
+            debug.field("idx", &self.idx);
+            debug.field("cpu_profile", &self.cpu_profile);
+            debug.field("has_state", &self.state.is_some());
+            debug.finish_non_exhaustive()
         }
     }
 
@@ -369,11 +394,22 @@ mod imp {
             let mut vcpu = self.create_vcpu_with_pio(
                 item.idx,
                 &item.cpu_profile,
+                #[cfg(target_arch = "x86_64")]
                 item.pio_read,
+                #[cfg(target_arch = "x86_64")]
                 item.pio_write,
+                #[cfg(target_arch = "aarch64")]
+                Arc::new(|_, _| 0),
+                #[cfg(target_arch = "aarch64")]
+                Arc::new(|_, _| {}),
             )?;
+            #[cfg(target_arch = "x86_64")]
             if let Some(state) = item.state {
                 vcpu.set_x86_64_state(&state)?;
+            }
+            #[cfg(target_arch = "aarch64")]
+            if let Some(state) = item.state {
+                vcpu.set_aarch64_state(&state)?;
             }
             Ok(vcpu)
         }
@@ -404,6 +440,50 @@ mod imp {
                     .map_err(|e| InterruptError::Delivery(e.to_string()))?;
             }
             Ok(())
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[derive(Debug)]
+    pub struct SpiInterruptLine {
+        vm: Arc<kvm_ioctls::VmFd>,
+        intid: u32,
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    impl SpiInterruptLine {
+        fn new(vm: Arc<kvm_ioctls::VmFd>, intid: u32) -> Self {
+            Self { vm, intid }
+        }
+
+        fn irq_line(&self) -> u32 {
+            (kvm_bindings::KVM_ARM_IRQ_TYPE_SPI << kvm_bindings::KVM_ARM_IRQ_TYPE_SHIFT)
+                | (self.intid << kvm_bindings::KVM_ARM_IRQ_NUM_SHIFT)
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    impl InterruptLine for SpiInterruptLine {
+        fn signal(&self) {
+            if let Err(e) = self.set_level(true) {
+                log::warn!("KVM SPI interrupt signal failed: {e}");
+            }
+            if let Err(e) = self.set_level(false) {
+                log::warn!("KVM SPI interrupt deassert failed: {e}");
+            }
+        }
+
+        fn set_level(&self, level: bool) -> Result<(), InterruptError> {
+            self.vm
+                .set_irq_line(self.irq_line(), level)
+                .map_err(|e| InterruptError::Delivery(e.to_string()))
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    impl Vm {
+        pub fn create_spi_interrupt_line(&self, intid: u32) -> SpiInterruptLine {
+            SpiInterruptLine::new(self.vm_fd_arc(), intid)
         }
     }
 
@@ -570,6 +650,7 @@ mod imp {
             self.inner.index()
         }
 
+        #[cfg(target_arch = "x86_64")]
         pub fn set_x86_64_state(
             &mut self,
             state: &pmi::vm::vcpu::x86_64::CpuState,
@@ -577,22 +658,35 @@ mod imp {
             self.inner.set_x86_64_state(state)
         }
 
+        #[cfg(target_arch = "aarch64")]
+        pub fn set_aarch64_state(
+            &mut self,
+            state: &pmi::vm::vcpu::aarch64::CpuState,
+        ) -> Result<(), Error> {
+            self.inner.set_aarch64_state(state)
+        }
+
+        #[cfg(target_arch = "x86_64")]
         pub fn set_guest_debug_flags(&self, flags: u32) -> Result<(), Error> {
             self.inner.set_guest_debug_flags(flags)
         }
 
+        #[cfg(target_arch = "x86_64")]
         pub fn get_regs(&self) -> Result<kvm_regs, Error> {
             self.inner.get_regs()
         }
 
+        #[cfg(target_arch = "x86_64")]
         pub fn set_regs(&self, regs: &kvm_regs) -> Result<(), Error> {
             self.inner.set_regs(regs)
         }
 
+        #[cfg(target_arch = "x86_64")]
         pub fn get_sregs(&self) -> Result<kvm_sregs, Error> {
             self.inner.get_sregs()
         }
 
+        #[cfg(target_arch = "x86_64")]
         pub fn set_sregs(&self, sregs: &kvm_sregs) -> Result<(), Error> {
             self.inner.set_sregs(sregs)
         }

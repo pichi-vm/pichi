@@ -15,19 +15,22 @@ mod error;
 #[cfg(target_os = "macos")]
 mod hvf_devices;
 // KVM/Linux-only submodules (memfd setup, gdb stub).
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod gdb;
 #[cfg(target_os = "linux")]
 mod memory;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::atomic::Ordering;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "windows"
+))]
 use std::thread;
 
 use anyhow::Result;
@@ -45,11 +48,21 @@ use dillo_machine::VcpuStop;
 use dillo_mmio::Attach;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_mmio::Interrupt;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "windows"
+))]
 use dillo_mmio::syscon;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "windows"
+))]
 use dillo_pci::legacy_pio as pio_pci;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "macos",
+    target_os = "windows"
+))]
 use dillo_pci::{MsixInterruptAdapter, MsixNotifier};
 
 pub(crate) use error::RunError;
@@ -91,7 +104,10 @@ pub(crate) struct Preflight {
     guest_writes: Vec<RunWrite>,
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "windows"
+))]
 fn syscon_register(syscon: dillo::platform::Syscon) -> syscon::SysconRegister {
     syscon::SysconRegister {
         base: syscon.base,
@@ -144,7 +160,11 @@ use dillo_mmio::MmioBus;
 use dillo_mmio::{MappedSharedMemory, MmioWindow, SharedAccess};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::PciRoot;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "macos",
+    target_os = "windows"
+))]
 use dillo_pci_virtio::VirtioPciAdapter;
 #[cfg(target_os = "windows")]
 use vm_memory::{GuestAddress, GuestMemoryMmap};
@@ -341,13 +361,13 @@ pub(crate) fn run(
         });
         let vcpu = Attach::attach(
             &mut vm,
-            backend_machine::Cpu::x86_64(
+            backend_machine::Cpu {
                 idx,
-                cpu_profile,
+                cpu_profile: cpu_profile.to_string(),
                 pio_read,
                 pio_write,
-                (idx == 0).then(|| boot_state.clone()),
-            ),
+                state: (idx == 0).then(|| boot_state.clone()),
+            },
         )?;
         vcpu_handles.push(vcpu);
     }
@@ -708,12 +728,18 @@ enum RunOutcome {
     Reboot,
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "windows"
+))]
 trait SysconActionExt {
     fn vcpu_stop(self) -> VcpuStop;
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "windows"
+))]
 impl SysconActionExt for syscon::SysconAction {
     fn vcpu_stop(self) -> VcpuStop {
         match self {
@@ -813,7 +839,7 @@ mod macos_tests {
 /// Parses the PMI at `pmi_path`, sets up KVM, allocates memory, copies
 /// load sections, synthesizes + writes the DTBO, spawns `vcpus`
 /// vCPU threads, and runs until guest shutdown.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) fn run(
     preflight: Preflight,
     vcpus: u32,
@@ -1079,13 +1105,13 @@ pub(crate) fn run(
         });
         let vcpu = Attach::attach(
             &mut vm,
-            backend_machine::Cpu::x86_64(
+            backend_machine::Cpu {
                 idx,
-                cpu_profile,
+                cpu_profile: cpu_profile.to_string(),
                 pio_read,
                 pio_write,
-                (idx == 0).then(|| boot_state.clone()),
-            ),
+                state: (idx == 0).then(|| boot_state.clone()),
+            },
         )?;
         vcpu_handles.push(vcpu);
     }
@@ -1175,7 +1201,216 @@ pub(crate) fn run(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub(crate) fn run(
+    preflight: Preflight,
+    vcpus: u32,
+    supervisor_shutdown: &'static AtomicBool,
+) -> Result<i32, RunError> {
+    let (parsed, machine, plan, guest_writes) = preflight.into_parts();
+    log::info!(
+        "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
+        parsed.arch,
+        parsed.actions.len(),
+        parsed.merged_dtb_section
+    );
+    log::info!(
+        "coverage: base DTB fully claimed — {} declared region(s), pcie={}",
+        machine.plan.regions().len(),
+        machine.has_pcie
+    );
+    let gic = machine
+        .gic
+        .as_ref()
+        .ok_or_else(|| RunError::DtbExtract(dillo::platform::Error::MissingNode("GIC config")))?;
+
+    let total_backed: u64 = plan.memslots.iter().map(|r| r.size).sum();
+    log::info!("/memory@N nodes: {} region(s)", plan.memory_nodes.len());
+    for r in &plan.memory_nodes {
+        log::info!("  [{:#x}..{:#x}) ({} bytes)", r.gpa, r.gpa + r.size, r.size);
+    }
+    let host_ram = host_total_ram_bytes().unwrap_or(u64::MAX);
+    let overhead = 256u64 << 20;
+    if total_backed.saturating_add(overhead) > host_ram {
+        return Err(RunError::HostRam {
+            requested_mib: total_backed >> 20,
+            overhead_mib: overhead >> 20,
+            available_mib: host_ram >> 20,
+        });
+    }
+
+    let memfd = memory::create_and_size(total_backed).map_err(RunError::MemfdSetup)?;
+    let mut gpa_map = memory::GpaMap::new();
+    let mut host_base: u64 = 0;
+    for r in &plan.memslots {
+        let host = memory::mmap_range(&memfd, host_base, r.size).map_err(RunError::Mmap)?;
+        gpa_map.add(r.gpa, host, r.size);
+        host_base += r.size;
+    }
+    for write in &guest_writes {
+        gpa_map
+            .write(write.gpa, &write.data)
+            .map_err(|source| RunError::SectionWrite {
+                section: write.section.clone(),
+                gpa: write.gpa,
+                source,
+            })?;
+    }
+
+    let mut vm = backend_machine::Vm::try_from(backend_machine::Config {
+        gic: backend_machine::GicParams {
+            dist_base: gic.dist_base,
+            redist_base: gic.redist_base,
+            spi_count: gic.spi_count,
+        },
+    })?;
+    for (slot_idx, r) in plan.memslots.iter().enumerate() {
+        let host_addr = gpa_map
+            .lookup(r.gpa)
+            .ok_or_else(|| RunError::SectionWrite {
+                section: format!("memslot[{slot_idx}]"),
+                gpa: r.gpa,
+                source: anyhow::anyhow!("no host mapping for GPA {:#x}", r.gpa),
+            })?;
+        Attach::attach(
+            &mut vm,
+            backend_machine::Memory::new(slot_idx as u32, r.gpa, host_addr, r.size),
+        )?;
+    }
+    let region_tuples: Vec<(u64, u64, u64)> = plan
+        .memslots
+        .iter()
+        .map(|r| {
+            let host = gpa_map.lookup(r.gpa).expect("memslot has host mapping");
+            (r.gpa, host, r.size)
+        })
+        .collect();
+    let guest_mem =
+        memory::build_guest_memory(&memfd, &region_tuples).map_err(RunError::MemfdSetup)?;
+    vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
+        guest_mem.clone(),
+        SharedAccess::ReadWrite,
+    ))]);
+
+    if let Some(uart) = machine.uart {
+        let interrupt = Interrupt::new(Arc::new(vm.create_spi_interrupt_line(uart.irq)));
+        Attach::attach(
+            &mut vm,
+            Arc::new(dillo_mmio_uart::Ns16550::new(
+                MmioWindow {
+                    name: "ns16550a",
+                    base: uart.base,
+                    size: uart.size,
+                },
+                uart.reg_shift,
+                Some(interrupt),
+                Box::new(std::io::stderr()),
+            )),
+        )?;
+    }
+
+    if machine.has_pcie {
+        let pci_root = Arc::new(PciRoot::new(MmioWindow {
+            name: "pcie-ecam",
+            base: machine.pcie.ecam_base,
+            size: machine.pcie.ecam_size,
+        }));
+        let attachment = Attach::attach(&mut vm, Arc::clone(&pci_root))?;
+        pci_root.set_attachment(attachment);
+    }
+
+    if let Some(slot) = machine.virtio_mmio.first() {
+        let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let irq = dillo_mmio_virtio::WiredIrq::new(
+            slot.irq,
+            Interrupt::new(Arc::new(vm.create_spi_interrupt_line(slot.irq))),
+        );
+        let interrupt_irq = irq.clone();
+        let is = Arc::clone(&int_status);
+        let console: Box<dyn dillo_virtio::VirtioDevice> = Box::new(
+            dillo_virtio_console::VirtioConsole::new(Arc::new(move |_vector| {
+                Some(dillo_mmio_virtio::VirtioMmio::interrupt(
+                    Arc::clone(&is),
+                    interrupt_irq.clone(),
+                ))
+            })),
+        );
+        let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::new(
+            MmioWindow {
+                name: "virtio-mmio-console",
+                base: slot.base,
+                size: slot.size,
+            },
+            console,
+            Arc::clone(&int_status),
+            irq,
+        ));
+        let attachment = Attach::attach(&mut vm, Arc::clone(&transport))?;
+        transport.set_attachment(attachment);
+    }
+
+    let boot_state = match &parsed.vcpu {
+        VcpuState::Aarch64(state) => state.clone(),
+        VcpuState::X86_64(_) => return Err(RunError::ArchMismatch),
+    };
+    let cpu_profile = parsed.cpu_profile.as_str();
+    let mut joins = Vec::with_capacity(vcpus as usize);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    for idx in 0..vcpus {
+        let mut vcpu = Attach::attach(
+            &mut vm,
+            backend_machine::Cpu {
+                idx,
+                cpu_profile: cpu_profile.to_string(),
+                state: (idx == 0).then(|| boot_state.clone()),
+            },
+        )?;
+        let shutdown_c = Arc::clone(&shutdown);
+        let exit_requester = vm.exit_requester();
+        let join = std::thread::spawn(move || -> Result<RunOutcome> {
+            let result = run_vcpu_loop_aarch64(&mut vcpu, &shutdown_c, supervisor_shutdown);
+            shutdown_c.store(true, Ordering::Release);
+            exit_requester.request_vcpu_exit();
+            result
+        });
+        joins.push(join);
+    }
+
+    let mut err: Option<RunError> = None;
+    let mut outcome = RunOutcome::Exit(0);
+    for join in joins {
+        match join.join() {
+            Ok(Ok(thread_outcome)) => {
+                if matches!(thread_outcome, RunOutcome::Reboot) {
+                    outcome = RunOutcome::Reboot;
+                }
+                if shutdown.load(Ordering::Acquire) {
+                    vm.request_vcpu_exit();
+                }
+            }
+            Ok(Err(e)) => {
+                let msg = format!("{e:#}");
+                shutdown.store(true, Ordering::Release);
+                vm.request_vcpu_exit();
+                err = err.or(Some(RunError::VcpuThread(msg)));
+            }
+            Err(_) => {
+                shutdown.store(true, Ordering::Release);
+                vm.request_vcpu_exit();
+                err = err.or(Some(RunError::VcpuPanic));
+            }
+        }
+    }
+    if let Some(e) = err {
+        return Err(e);
+    }
+    match outcome {
+        RunOutcome::Exit(code) => Ok(code),
+        RunOutcome::Reboot => Ok(0),
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn run_vcpu_loop(
     vcpu: &mut backend_machine::Vcpu,
     shutdown: &Arc<AtomicBool>,
@@ -1191,6 +1426,27 @@ fn run_vcpu_loop(
             return Some(action.vcpu_stop());
         }
         // §13.3: supervisor requested orderly shutdown.
+        if supervisor_shutdown.load(Ordering::Acquire) {
+            log::info!("vCPU {index}: supervisor shutdown observed");
+            shutdown.store(true, Ordering::Release);
+            return Some(VcpuStop::Stopped);
+        }
+        None
+    })?;
+    Ok(vcpu_stop_outcome(stop, shutdown))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn run_vcpu_loop_aarch64(
+    vcpu: &mut backend_machine::Vcpu,
+    shutdown: &Arc<AtomicBool>,
+    supervisor_shutdown: &AtomicBool,
+) -> Result<RunOutcome> {
+    let index = vcpu.index();
+    let stop = vcpu.run_until_stop(|| {
+        if shutdown.load(Ordering::Acquire) {
+            return Some(VcpuStop::Stopped);
+        }
         if supervisor_shutdown.load(Ordering::Acquire) {
             log::info!("vCPU {index}: supervisor shutdown observed");
             shutdown.store(true, Ordering::Release);
