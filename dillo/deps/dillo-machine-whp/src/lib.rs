@@ -32,7 +32,7 @@ mod imp {
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt,
-        MmioInterruptRequirement, MmioSpawnError, MmioWindow, SharedMemory,
+        MmioInterruptRequirement, MmioSpawnError, MmioWindow, MmioWriteOutcome, SharedMemory,
     };
     use vm_memory::{GuestAddress, GuestMemoryMmap};
 
@@ -712,6 +712,10 @@ mod imp {
         Interrupted,
 
         Shutdown,
+
+        GuestPoweroff,
+
+        GuestReset,
     }
 
     impl std::fmt::Debug for Vcpu {
@@ -761,18 +765,24 @@ mod imp {
                         let _ = (port, data, size);
                     }
                     VmExit::MmioWrite { addr, data, size } => {
-                        if !self
+                        let outcome = self
                             .mmio_bus
                             .lock()
                             .expect("MMIO bus lock poisoned")
-                            .write(addr, &data[..size as usize])
-                        {
+                            .write(addr, &data[..size as usize]);
+                        let Some(outcome) = outcome else {
                             log::warn!(
                                 "WHP MMIO write to unmapped {:#x} (size {}, data {:02x?})",
                                 addr,
                                 size,
                                 &data[..size as usize],
                             );
+                            return Ok(VcpuExit::MmioWrite { addr, data, size });
+                        };
+                        match outcome {
+                            MmioWriteOutcome::Continue => {}
+                            MmioWriteOutcome::GuestPoweroff => return Ok(VcpuExit::GuestPoweroff),
+                            MmioWriteOutcome::GuestReset => return Ok(VcpuExit::GuestReset),
                         }
                         return Ok(VcpuExit::MmioWrite { addr, data, size });
                     }
@@ -792,6 +802,8 @@ mod imp {
                 match self.run()? {
                     VcpuExit::MmioWrite { .. } => {}
                     VcpuExit::Interrupted => return Ok(VcpuStop::Stopped),
+                    VcpuExit::GuestPoweroff => return Ok(VcpuStop::GuestPoweroff),
+                    VcpuExit::GuestReset => return Ok(VcpuStop::GuestReset),
                     VcpuExit::Shutdown => {
                         log::warn!("guest shutdown via WHP shutdown exit");
                         return Ok(VcpuStop::GuestPoweroff);

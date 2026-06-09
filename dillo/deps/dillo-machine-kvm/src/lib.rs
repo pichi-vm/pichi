@@ -39,7 +39,8 @@ mod imp {
     use dillo_machine::{BootVcpuState, Host, HostArchitecture, LaunchConfig, RamRange, VcpuStop};
     use dillo_mmio::{
         Attach, InterruptError, InterruptLine, MmioAttachment, MmioBus, MmioDevice,
-        MmioDeviceHandle, MmioInterrupt, MmioInterruptRequirement, MmioSpawnError, SharedMemory,
+        MmioDeviceHandle, MmioInterrupt, MmioInterruptRequirement, MmioSpawnError,
+        MmioWriteOutcome, SharedMemory,
     };
     #[cfg(target_arch = "aarch64")]
     use dillo_mmio::{Interrupt, MessageInterrupt, MessageInterruptDomain};
@@ -1070,6 +1071,10 @@ mod imp {
         Interrupted,
 
         Shutdown,
+
+        GuestPoweroff,
+
+        GuestReset,
     }
 
     impl std::fmt::Debug for Vcpu {
@@ -1128,18 +1133,24 @@ mod imp {
                         let _ = (port, data, size);
                     }
                     VmExit::MmioWrite { addr, data, size } => {
-                        if !self
+                        let outcome = self
                             .mmio_bus
                             .lock()
                             .expect("MMIO bus lock poisoned")
-                            .write(addr, &data[..size as usize])
-                        {
+                            .write(addr, &data[..size as usize]);
+                        let Some(outcome) = outcome else {
                             log::warn!(
                                 "MMIO write to unmapped {:#x} (size {}, data {:02x?})",
                                 addr,
                                 size,
                                 &data[..size as usize],
                             );
+                            return Ok(VcpuExit::MmioWrite { addr, data, size });
+                        };
+                        match outcome {
+                            MmioWriteOutcome::Continue => {}
+                            MmioWriteOutcome::GuestPoweroff => return Ok(VcpuExit::GuestPoweroff),
+                            MmioWriteOutcome::GuestReset => return Ok(VcpuExit::GuestReset),
                         }
                         return Ok(VcpuExit::MmioWrite { addr, data, size });
                     }
@@ -1162,6 +1173,8 @@ mod imp {
                 match self.run()? {
                     VcpuExit::MmioWrite { .. } => {}
                     VcpuExit::Interrupted => return Ok(VcpuStop::Stopped),
+                    VcpuExit::GuestPoweroff => return Ok(VcpuStop::GuestPoweroff),
+                    VcpuExit::GuestReset => return Ok(VcpuStop::GuestReset),
                     VcpuExit::Shutdown => {
                         log::warn!(
                             "guest shutdown via KVM_EXIT_SHUTDOWN; treating as guest poweroff"

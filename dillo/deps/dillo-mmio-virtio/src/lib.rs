@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use dillo_mmio::{
     Interrupt, MmioAttachment, MmioDevice, MmioError, MmioInterrupt, MmioInterruptRequirement,
-    MmioJoinError, MmioWindow, SharedMemory,
+    MmioJoinError, MmioWindow, MmioWriteOutcome, SharedMemory,
 };
 use dillo_virtio::queue::Queue;
 use dillo_virtio::{
@@ -364,9 +364,14 @@ impl MmioDevice for VirtioMmio {
             .ok_or(MmioError::Unsupported)
     }
 
-    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
+    fn write(
+        &self,
+        _window: MmioWindow,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<MmioWriteOutcome, MmioError> {
         Self::write(self, offset, data)
-            .then_some(())
+            .then_some(MmioWriteOutcome::Continue)
             .ok_or(MmioError::Unsupported)
     }
 }

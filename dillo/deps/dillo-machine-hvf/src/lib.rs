@@ -13,6 +13,8 @@ enum VmExit {
     Hvc { args: [u64; 8] },
     Smc { args: [u64; 8] },
     Halted,
+    GuestPoweroff,
+    GuestReset,
     Unknown(String),
 }
 
@@ -33,7 +35,7 @@ mod imp {
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt,
-        MmioInterruptRequirement, MmioSpawnError, SharedMemory,
+        MmioInterruptRequirement, MmioSpawnError, MmioWriteOutcome, SharedMemory,
     };
     use vm_memory::mmap::MmapRegionBuilder;
     use vm_memory::{GuestAddress, GuestMemoryMmap, GuestRegionMmap};
@@ -726,18 +728,28 @@ mod imp {
                     }
                     VmExit::MmioWrite { addr, data, size } => {
                         let size = (size as usize).min(8);
-                        if !self
+                        let outcome = self
                             .mmio_bus
                             .lock()
                             .expect("MMIO bus lock poisoned")
-                            .write(addr, &data[..size])
-                        {
+                            .write(addr, &data[..size]);
+                        let Some(outcome) = outcome else {
                             log::warn!(
                                 "HVF MMIO write to unmapped {:#x} (size {}, data {:02x?})",
                                 addr,
                                 size,
                                 &data[..size],
                             );
+                            return Ok(VmExit::MmioWrite {
+                                addr,
+                                data,
+                                size: size as u8,
+                            });
+                        };
+                        match outcome {
+                            MmioWriteOutcome::Continue => {}
+                            MmioWriteOutcome::GuestPoweroff => return Ok(VmExit::GuestPoweroff),
+                            MmioWriteOutcome::GuestReset => return Ok(VmExit::GuestReset),
                         }
                         return Ok(VmExit::MmioWrite {
                             addr,
@@ -806,6 +818,8 @@ mod imp {
                 }
                 match vcpu.run()? {
                     VmExit::MmioRead { .. } | VmExit::MmioWrite { .. } => {}
+                    VmExit::GuestPoweroff => return Ok(VcpuStop::GuestPoweroff),
+                    VmExit::GuestReset => return Ok(VcpuStop::GuestReset),
                     VmExit::Hvc { args } => match psci::dispatch(&args) {
                         psci::PsciAction::SystemOff => {
                             log::info!("guest issued PSCI SYSTEM_OFF (vCPU{idx})");

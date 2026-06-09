@@ -2267,3 +2267,24 @@ Audit fix 22 - move virtio queue interrupt resolution into transports:
 Evidence:
 - `grep -RIn "VirtioConsole::new\\|CallInterruptLookup\\|MsixInterruptLookup\\|set_interrupt_lookup\\|lookup_fn" dillo dillo/deps --include='*.rs'`
   reports only transport-neutral `VirtioConsole::new()` calls in `dillo`.
+
+Audit fix 23 - move syscon stop decisions behind MMIO/backend boundary:
+- `MmioDevice::write` now returns a generic `MmioWriteOutcome`.
+- `SysconDevice` no longer exposes shared state to `dillo`; matching writes
+  return `GuestPoweroff` or `GuestReset` directly through the MMIO write path.
+- KVM, HVF, and WHP map `MmioWriteOutcome` to `VcpuStop` inside their backend
+  run loops. `dillo` only observes the common `Cpu::run() -> VcpuStop` result.
+
+Evidence:
+- `grep -RIn "SysconState\\|syscon_state" dillo dillo/deps --include='*.rs'`
+  reports no top-level state polling.
+
+Local verification:
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+- `ssh -A nathaniel@apollo 'cd /tmp/pichi-codex.ReIeOv && CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`

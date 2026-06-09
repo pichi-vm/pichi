@@ -1230,20 +1230,10 @@ mod machine_select {
         #[derive(Debug)]
         struct SupervisorControl {
             supervisor_shutdown: &'static AtomicBool,
-            syscon_state: Option<Arc<syscon::SysconState>>,
         }
 
         impl SupervisorControl {
             fn stop_requested(&self) -> Option<VcpuStop> {
-                if let Some(state) = &self.syscon_state {
-                    match state.action() {
-                        Some(syscon::SysconAction::Poweroff) => {
-                            return Some(VcpuStop::GuestPoweroff);
-                        }
-                        Some(syscon::SysconAction::Reboot) => return Some(VcpuStop::GuestReset),
-                        None => {}
-                    }
-                }
                 self.supervisor_shutdown
                     .load(Ordering::Acquire)
                     .then_some(VcpuStop::Stopped)
@@ -1411,25 +1401,20 @@ mod machine_select {
             Ok(())
         }
 
-        fn attach_syscon<M, E>(
-            vm: &mut M,
-            platform: &PlatformMachine,
-        ) -> Result<Option<Arc<syscon::SysconState>>, RunError>
+        fn attach_syscon<M, E>(vm: &mut M, platform: &PlatformMachine) -> Result<(), RunError>
         where
             E: std::error::Error + Send + Sync + 'static,
             M: Machine<Error = E>,
             M: Attach<Arc<syscon::SysconDevice>, Error = E>,
         {
             let Some(poweroff) = platform.poweroff else {
-                return Ok(None);
+                return Ok(());
             };
-            let state = Arc::new(syscon::SysconState::default());
             Attach::attach(
                 vm,
                 Arc::new(syscon::SysconDevice::new(
                     syscon_register(poweroff),
                     syscon::SysconAction::Poweroff,
-                    Arc::clone(&state),
                 )),
             )
             .map_err(RunError::machine)?;
@@ -1439,12 +1424,11 @@ mod machine_select {
                     Arc::new(syscon::SysconDevice::new(
                         syscon_register(reboot),
                         syscon::SysconAction::Reboot,
-                        Arc::clone(&state),
                     )),
                 )
                 .map_err(RunError::machine)?;
             }
-            Ok(Some(state))
+            Ok(())
         }
 
         fn apply_load_sections<M: Machine>(
@@ -1616,13 +1600,12 @@ mod machine_select {
             apply_load_sections(&mut vm, &guest_writes)?;
 
             attach_uart(&mut vm, &platform)?;
-            let syscon_state = attach_syscon(&mut vm, &platform)?;
+            attach_syscon(&mut vm, &platform)?;
             attach_pci_console(&mut vm, &platform)?;
             attach_first_virtio_mmio_console(&mut vm, &platform)?;
 
             let control = Arc::new(SupervisorControl {
                 supervisor_shutdown,
-                syscon_state: syscon_state.clone(),
             });
             let cpu_profile = parsed.cpu_profile.as_str();
             let mut outcome = run_vcpus::<M, E>(
@@ -1633,18 +1616,11 @@ mod machine_select {
                 control,
             )?;
             while matches!(outcome, VcpuStop::GuestReset) {
-                if syscon_state.is_some() {
-                    log::warn!(
-                        "guest reboot requested through syscon; exiting until warm reboot is implemented for this machine"
-                    );
-                    return Ok(0);
-                }
                 log::info!("guest requested reboot - replaying launch writes");
                 vm.reset_for_reboot().map_err(RunError::machine)?;
                 apply_load_sections(&mut vm, &guest_writes)?;
                 let control = Arc::new(SupervisorControl {
                     supervisor_shutdown,
-                    syscon_state: None,
                 });
                 outcome = run_vcpus::<M, E>(
                     &mut vm,

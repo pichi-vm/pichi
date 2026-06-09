@@ -143,6 +143,16 @@ pub enum MmioError {
     Unsupported,
 }
 
+/// Device-visible outcome of one guest MMIO write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmioWriteOutcome {
+    Continue,
+
+    GuestPoweroff,
+
+    GuestReset,
+}
+
 /// A device with one or more guest-visible MMIO windows.
 pub trait MmioDevice: Send + Sync {
     fn windows(&self) -> &[MmioWindow];
@@ -157,7 +167,12 @@ pub trait MmioDevice: Send + Sync {
 
     fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError>;
 
-    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError>;
+    fn write(
+        &self,
+        window: MmioWindow,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<MmioWriteOutcome, MmioError>;
 }
 
 /// Generic registration into a constructed owner.
@@ -667,11 +682,11 @@ impl MmioBus {
     }
 
     /// Dispatch a guest MMIO write.
-    pub fn write(&self, addr: u64, data: &[u8]) -> bool {
+    pub fn write(&self, addr: u64, data: &[u8]) -> Option<MmioWriteOutcome> {
         if let Some(r) = self.find(addr, data.len() as u64) {
-            return r.device.write(r.window, addr - r.window.base, data).is_ok();
+            return r.device.write(r.window, addr - r.window.base, data).ok();
         }
-        false
+        None
     }
 
     fn find(&self, addr: u64, len: u64) -> Option<&Range> {
@@ -713,13 +728,18 @@ mod tests {
             Ok(())
         }
 
-        fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
+        fn write(
+            &self,
+            _window: MmioWindow,
+            offset: u64,
+            data: &[u8],
+        ) -> Result<MmioWriteOutcome, MmioError> {
             let mut buf = [0u8; 8];
             let n = data.len().min(8);
             buf[..n].copy_from_slice(&data[..n]);
             self.written
                 .store(offset | (u64::from_le_bytes(buf) << 32), Ordering::SeqCst);
-            Ok(())
+            Ok(MmioWriteOutcome::Continue)
         }
     }
 
@@ -738,7 +758,10 @@ mod tests {
         let device = Arc::new(TestDevice::new(0x2000, 0x100));
         let mut bus = MmioBus::new();
         bus.register_device(Arc::clone(&device));
-        assert!(bus.write(0x2080, &[0xAA, 0xBB]));
+        assert_eq!(
+            bus.write(0x2080, &[0xAA, 0xBB]),
+            Some(MmioWriteOutcome::Continue)
+        );
         assert_eq!(device.written.load(Ordering::SeqCst) & 0xFFFF_FFFF, 0x80);
     }
 
@@ -759,7 +782,10 @@ mod tests {
         let mut bus = MmioBus::new();
         bus.register_device(Arc::clone(&device));
 
-        assert!(bus.write(0x4080, &[0xAA, 0xBB]));
+        assert_eq!(
+            bus.write(0x4080, &[0xAA, 0xBB]),
+            Some(MmioWriteOutcome::Continue)
+        );
         assert_eq!(device.written.load(Ordering::SeqCst) & 0xFFFF_FFFF, 0x80);
     }
 

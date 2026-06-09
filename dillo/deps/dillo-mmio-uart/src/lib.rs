@@ -38,6 +38,7 @@ use vm_superio::serial::NoEvents;
 
 use dillo_mmio::{
     Interrupt, MmioDevice, MmioError, MmioInterrupt, MmioInterruptRequirement, MmioWindow,
+    MmioWriteOutcome,
 };
 
 // 16550 register offsets and bits we post-process on top of vm-superio.
@@ -189,11 +190,16 @@ impl MmioDevice for Ns16550 {
         Ok(())
     }
 
-    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
+    fn write(
+        &self,
+        _window: MmioWindow,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<MmioWriteOutcome, MmioError> {
         if let Ok(mut state) = self.state.lock() {
             state.write(offset, data);
         }
-        Ok(())
+        Ok(MmioWriteOutcome::Continue)
     }
 }
 

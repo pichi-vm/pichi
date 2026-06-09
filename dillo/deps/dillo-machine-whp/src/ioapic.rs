@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use dillo_mmio::{MmioDevice, MmioError, MmioWindow};
+use dillo_mmio::{MmioDevice, MmioError, MmioWindow, MmioWriteOutcome};
 
 /// Minimal x86 IOAPIC register model used by the WHP backend.
 ///
@@ -113,9 +113,14 @@ impl MmioDevice for IoApic {
             .ok_or(MmioError::Unsupported)
     }
 
-    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
+    fn write(
+        &self,
+        _window: MmioWindow,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<MmioWriteOutcome, MmioError> {
         self.write_register(offset, data)
-            .then_some(())
+            .then_some(MmioWriteOutcome::Continue)
             .ok_or(MmioError::Unsupported)
     }
 }

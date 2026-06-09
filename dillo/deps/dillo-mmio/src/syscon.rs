@@ -4,10 +4,7 @@
 //! value to the declared register and the run loop observes the resulting
 //! structured action.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
-
-use crate::{MmioDevice, MmioError, MmioWindow};
+use crate::{MmioDevice, MmioError, MmioWindow, MmioWriteOutcome};
 
 const WINDOW_SIZE: u64 = 0x1000;
 
@@ -17,40 +14,6 @@ pub enum SysconAction {
     Reboot,
 }
 
-impl SysconAction {
-    fn code(self) -> u8 {
-        match self {
-            Self::Poweroff => 1,
-            Self::Reboot => 2,
-        }
-    }
-
-    fn from_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(Self::Poweroff),
-            2 => Some(Self::Reboot),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct SysconState {
-    action: AtomicU8,
-}
-
-impl SysconState {
-    pub fn request(&self, action: SysconAction) {
-        let _ = self
-            .action
-            .compare_exchange(0, action.code(), Ordering::AcqRel, Ordering::Acquire);
-    }
-
-    pub fn action(&self) -> Option<SysconAction> {
-        SysconAction::from_code(self.action.load(Ordering::Acquire))
-    }
-}
-
 #[derive(Debug)]
 pub struct SysconDevice {
     window: MmioWindow,
@@ -58,7 +21,6 @@ pub struct SysconDevice {
     value: u32,
     mask: u32,
     action: SysconAction,
-    state: Arc<SysconState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +32,7 @@ pub struct SysconRegister {
 }
 
 impl SysconDevice {
-    pub fn new(syscon: SysconRegister, action: SysconAction, state: Arc<SysconState>) -> Self {
+    pub fn new(syscon: SysconRegister, action: SysconAction) -> Self {
         Self {
             window: MmioWindow {
                 base: syscon.base,
@@ -80,7 +42,6 @@ impl SysconDevice {
             value: syscon.value,
             mask: syscon.mask,
             action,
-            state,
         }
     }
 
@@ -98,11 +59,7 @@ impl SysconDevice {
     }
 
     pub fn matches_poweroff(poweroff: SysconRegister, addr: u64, data: &[u8]) -> bool {
-        let device = Self::new(
-            poweroff,
-            SysconAction::Poweroff,
-            Arc::new(SysconState::default()),
-        );
+        let device = Self::new(poweroff, SysconAction::Poweroff);
         addr.checked_sub(poweroff.base)
             .is_some_and(|offset| device.matches(offset, data))
     }
@@ -118,12 +75,20 @@ impl MmioDevice for SysconDevice {
         Ok(())
     }
 
-    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
+    fn write(
+        &self,
+        _window: MmioWindow,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<MmioWriteOutcome, MmioError> {
         if self.matches(offset, data) {
             log::info!("guest issued {:?}", self.action);
-            self.state.request(self.action);
+            return Ok(match self.action {
+                SysconAction::Poweroff => MmioWriteOutcome::GuestPoweroff,
+                SysconAction::Reboot => MmioWriteOutcome::GuestReset,
+            });
         }
-        Ok(())
+        Ok(MmioWriteOutcome::Continue)
     }
 }
 
@@ -142,27 +107,25 @@ mod tests {
 
     #[test]
     fn matching_write_records_action() {
-        let state = Arc::new(SysconState::default());
-        let device = SysconDevice::new(syscon(), SysconAction::Poweroff, Arc::clone(&state));
+        let device = SysconDevice::new(syscon(), SysconAction::Poweroff);
         let window = device.windows()[0];
 
-        device
+        let outcome = device
             .write(window, 0x10, &0xCAFEu32.to_le_bytes())
             .expect("syscon write");
 
-        assert_eq!(state.action(), Some(SysconAction::Poweroff));
+        assert_eq!(outcome, MmioWriteOutcome::GuestPoweroff);
     }
 
     #[test]
     fn non_matching_write_is_claimed_without_action() {
-        let state = Arc::new(SysconState::default());
-        let device = SysconDevice::new(syscon(), SysconAction::Reboot, Arc::clone(&state));
+        let device = SysconDevice::new(syscon(), SysconAction::Reboot);
         let window = device.windows()[0];
 
-        device
+        let outcome = device
             .write(window, 0x14, &0xCAFEu32.to_le_bytes())
             .expect("syscon write");
 
-        assert_eq!(state.action(), None);
+        assert_eq!(outcome, MmioWriteOutcome::Continue);
     }
 }

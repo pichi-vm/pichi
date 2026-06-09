@@ -10,7 +10,8 @@ use std::sync::Mutex;
 
 pub use dillo_mmio::{
     MessageInterrupt, MessageInterruptDomain, MmioAttachment, MmioDeviceHandle, MmioDeviceRun,
-    MmioInterrupt, MmioInterruptRequirement, MmioJoinError, MmioSpawnError, SharedMemory,
+    MmioInterrupt, MmioInterruptRequirement, MmioJoinError, MmioSpawnError, MmioWriteOutcome,
+    SharedMemory,
 };
 use dillo_mmio::{MmioDevice, MmioError, MmioWindow};
 
@@ -469,17 +470,22 @@ impl MmioDevice for PciRoot {
         Err(MmioError::Unsupported)
     }
 
-    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
+    fn write(
+        &self,
+        window: MmioWindow,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<MmioWriteOutcome, MmioError> {
         if window.base == self.window.base && window.size == self.window.size {
             let (bus, device, function, reg_idx, in_dword) = Self::decode_ecam(offset);
             self.config_write(bus, device, function, reg_idx, in_dword as u64, data);
-            return Ok(());
+            return Ok(MmioWriteOutcome::Continue);
         }
 
         if let Some((slot, bar_idx)) = self.bar_route(window) {
-            return self
-                .bar_write(slot, bar_idx, offset, data)
-                .map_err(|_| MmioError::Unsupported);
+            self.bar_write(slot, bar_idx, offset, data)
+                .map_err(|_| MmioError::Unsupported)?;
+            return Ok(MmioWriteOutcome::Continue);
         }
 
         Err(MmioError::Unsupported)
