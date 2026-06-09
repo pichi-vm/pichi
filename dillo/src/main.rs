@@ -1504,6 +1504,7 @@ mod machine_select {
                 let mut joins = Vec::with_capacity(cpus.len());
                 for cpu in &cpus {
                     let cpu = Arc::clone(cpu);
+                    let all_cpus = cpus.clone();
                     let shutdown = Arc::clone(&shutdown);
                     joins.push(scope.spawn(move || -> Result<VcpuStop, String> {
                         if shutdown.load(Ordering::Acquire) {
@@ -1511,7 +1512,9 @@ mod machine_select {
                         }
                         let result = cpu.run().map_err(|e| e.to_string());
                         shutdown.store(true, Ordering::Release);
-                        let _ = cpu.stop();
+                        for cpu in &all_cpus {
+                            let _ = cpu.stop();
+                        }
                         result
                     }));
                 }

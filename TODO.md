@@ -2203,3 +2203,30 @@ Local verification:
 - `ssh -A nathaniel@apollo 'cd /tmp/pichi-stage22-api-* && CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
   in a fresh `/tmp` checkout with the local delta applied; Linux/x86 boot
   suite passed 5/5.
+
+CI verification:
+- `27225907049` caught a Linux/x86 KVM boot timeout in
+  `boots_and_reports::mem_mib_2_1024::cpus_2_2`.
+
+Audit fix 19 - stop all vCPUs when one run thread exits:
+- Fixed a supervisor join-order race: a vCPU thread that returned first set the
+  shared shutdown flag, causing the monitor thread to exit before it kicked
+  still-running sibling vCPUs. If the parent was already joining a different
+  vCPU, the process could hang until the boot-test timeout.
+- Each vCPU worker now stops all attached CPUs immediately after its own
+  `Cpu::run()` returns. The stop mechanism remains inside the selected
+  `dillo-machine-*` backend through the common `Cpu::stop()` trait method.
+
+Local verification:
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
+- Fresh `/tmp` checkout on `apollo` at `2391645` with this patch applied:
+  eight sequential
+  `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+  runs passed.
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
