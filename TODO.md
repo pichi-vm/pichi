@@ -988,11 +988,12 @@ Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 
 Boot verification note:
-- Local macOS boot tests were attempted with `target/debug/dillo` signed using
-  `com.apple.security.hypervisor`, but this host still returns
-  `hvf: HypervisorError { code: -85377017, description: "operation not allowed by the system" }`
-  before guest execution. Treat CI boot lanes as the boot signal for this
-  in-progress slice.
+- Running `cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
+  after signing can relink `target/debug/dillo` and strip the local ad hoc HVF
+  entitlement. The verified local macOS flow is to build with `--no-run`, sign
+  `target/debug/dillo`, then run the already-built `target/debug/deps/boot-*`
+  harness directly.
+- That direct signed-harness flow passed all 5 local macOS/HVF boot tests.
 
 CI verification:
 - `27171161018` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
@@ -1015,6 +1016,8 @@ CI verification:
   `d342a4a refactor: remove vhost console backend`.
 - `27175300534` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `b7ba725 refactor: implement machine traits in backends`.
+- `27175898656` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `dee901a refactor: simplify mmio worker attachment`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`

@@ -141,11 +141,27 @@ jobs:
 
       # Real guest boot on every currently scheduled platform. dillo builds its
       # per-OS backend (KVM on Linux, WHP on Windows) and boots an Alpine
-      # same-arch guest; the test asserts the guest's self-report. Restore the
-      # macOS/HVF boot lane before final acceptance.
+      # same-arch guest; the test asserts the guest's self-report.
       - name: Boot tests (KVM / WHP)
+        if: runner.os != 'macOS'
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
           cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture
+
+      # Cargo may relink `target/debug/dillo` when invoked after signing, which
+      # strips the ad hoc Hypervisor.framework entitlement. The macOS boot lane
+      # therefore runs the already-built integration-test harness directly after
+      # the signing step. Restore the macOS/HVF matrix entry before final
+      # acceptance.
+      - name: Boot tests (HVF)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          boot_bin="$(find target/debug/deps -maxdepth 1 -type f -name 'boot-*' -perm -111 | head -n1)"
+          if [ -z "$boot_bin" ]; then
+            echo "boot test binary not found" >&2
+            exit 1
+          fi
+          "$boot_bin" --test-threads=1 --nocapture
