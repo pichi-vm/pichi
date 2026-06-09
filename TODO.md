@@ -1565,33 +1565,21 @@ Success criteria:
 
 Human-review divergences:
 
-1. Launcher cfg structure still exceeds selected-machine binding.
+1. Superseded: launcher cfg structure now matches selected-machine binding.
    - Requirement: target invariants say the only target/OS/arch cfg in the
      top-level launcher is selected-machine binding.
-   - Current behavior: `dillo/src/machine_select/runner.rs` still contains
-     target-specific imports, helper modules, and per-target run paths beyond
-     backend selection.
-   - Why not fixed here: retiring these paths requires moving remaining memory,
-     PIO compatibility, architecture substrate, and boot-loop wiring into
-     backend-owned APIs without regressing boot tests.
-   - Human decision needed: confirm whether to keep collapsing the existing
-     runner incrementally or replace it with one generic runner over
-     `Machine`/`Attach` now that the conformance loops have identified the
-     remaining seams.
-   - Evidence: `grep -R "cfg(.*target\\|target_os\\|target_arch" dillo/src`.
+   - Current behavior: Stage 22 moved the launcher to one generic runner over
+     `Machine`/`Attach`; the only remaining target cfg in `dillo/src` is the
+     selected-machine alias in `main.rs`.
+   - Evidence: `grep -RInE "cfg\\(target_os|cfg\\(target_arch|cfg_attr\\(target_os|cfg_attr\\(target_arch" dillo/src dillo/deps/dillo-mmio dillo/deps/dillo-mmio-uart dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-pci-virtio dillo/deps/dillo-virtio dillo/deps/dillo-virtio-console dillo/deps/dillo-machine/src --include='*.rs' --include='Cargo.toml'`.
 
-2. `Machine` and `Vcpu` are not yet `Send`/`Sync`.
-   - Requirement: `DILLO-CRATE-SPLIT.md` specifies `Machine: Send + Sync` and
-     `Vcpu: Send` so the supervisor can run vCPUs and device hosts through a
+2. Superseded: vCPU execution now uses `Cpu: Send + Sync`.
+   - Requirement: the supervisor must run CPUs and device hosts through a
      backend-neutral parallel model.
-   - Current behavior: `dillo-machine::Machine` and `Vcpu` are only `'static`;
-     HVF/applevisor thread-bound wrappers prevented tightening this bound during
-     the conformance passes.
-   - Why not fixed here: enforcing the bound requires a concrete HVF strategy:
-     construct vCPUs inside worker threads, return a portable run handle, or
-     preserve thread-bound ownership behind a backend-specific supervisor shim.
-   - Human decision needed: choose the HVF execution/ownership model before the
-     trait bound is made normative in code.
+   - Current behavior: `dillo-machine::Cpu` is `Send + Sync`, exposes
+     `run(&self)` and `stop(&self)`, and dillo runs `Arc<Cpu>` values through one
+     generic supervisor. `Machine` itself remains a construction/attachment
+     object and is not required to be `Send + Sync` by the current design.
    - Evidence: `dillo/deps/dillo-machine/src/lib.rs`.
 
 3. Shared-memory is still compatibility-backed, not fully CC-first.
@@ -2370,4 +2358,37 @@ Local verification:
   boot tests.
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
 - `ssh -A nathaniel@apollo 'cd /tmp/pichi-codex.1781036605 && CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
+  in a fresh `/tmp` copy; Linux/x86 boot suite passed 5/5.
+
+CI verification:
+- `27233563898` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
+
+Audit fix 27 - make shared-region handles backend-opaque:
+- Added `dillo_mmio::SharedRegionAccess` as the backend implementation hook for
+  one claimed shared-memory region.
+- Changed `SharedRegion` into an opaque handle over `Arc<dyn SharedRegionAccess>`
+  so the public device-facing capability no longer carries `GuestMemoryMmap`.
+- Kept `MappedSharedMemory` as the standard-VM compatibility implementation by
+  moving the `GuestMemoryMmap` fields into a private `MappedSharedRegion`.
+
+Evidence:
+- `grep -n "pub struct SharedRegion\\|struct MappedSharedRegion\\|memory: GuestMemoryMmap" dillo/deps/dillo-mmio/src/lib.rs`
+  shows `SharedRegion` separately from the private `MappedSharedRegion` backing.
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-mmio -p dillo-virtio -p dillo-virtio-console -p dillo-mmio-virtio -p dillo-pci-virtio`
+  passed, covering MMIO shared-memory access and virtio queue/buffer use.
+
+Local verification:
+- `cargo fmt --all -- --check`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- First local macOS boot run hit HVF `operation not allowed by the system` after
+  three successful boots; immediate isolated rerun of the same command passed
+  all boot tests.
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+- `ssh -A nathaniel@apollo 'cd /tmp/pichi-codex.1781037357 && CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
   in a fresh `/tmp` copy; Linux/x86 boot suite passed 5/5.

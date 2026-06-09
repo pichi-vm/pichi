@@ -211,17 +211,43 @@ pub enum SharedMemoryError {
     Unsupported,
 }
 
+/// Backend implementation for one claimed shared-memory region.
+pub trait SharedRegionAccess: Send + Sync + std::fmt::Debug {
+    fn read(&self, offset: u64, data: &mut [u8]) -> Result<(), SharedMemoryError>;
+
+    fn write(&self, offset: u64, data: &[u8]) -> Result<(), SharedMemoryError>;
+}
+
 /// Opaque shared-memory region handle.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SharedRegion {
+    access: Arc<dyn SharedRegionAccess>,
+}
+
+impl SharedRegion {
+    pub fn new(access: Arc<dyn SharedRegionAccess>) -> Self {
+        Self { access }
+    }
+
+    pub fn read(&self, offset: u64, data: &mut [u8]) -> Result<(), SharedMemoryError> {
+        self.access.read(offset, data)
+    }
+
+    pub fn write(&self, offset: u64, data: &[u8]) -> Result<(), SharedMemoryError> {
+        self.access.write(offset, data)
+    }
+}
+
+#[derive(Debug)]
+struct MappedSharedRegion {
     memory: GuestMemoryMmap,
     gpa: u64,
     size: u64,
     access: SharedAccess,
 }
 
-impl SharedRegion {
-    pub fn read(&self, offset: u64, data: &mut [u8]) -> Result<(), SharedMemoryError> {
+impl SharedRegionAccess for MappedSharedRegion {
+    fn read(&self, offset: u64, data: &mut [u8]) -> Result<(), SharedMemoryError> {
         if !self.access.permits_read() {
             return Err(SharedMemoryError::AccessDenied);
         }
@@ -232,7 +258,7 @@ impl SharedRegion {
             .map(|_| ())
     }
 
-    pub fn write(&self, offset: u64, data: &[u8]) -> Result<(), SharedMemoryError> {
+    fn write(&self, offset: u64, data: &[u8]) -> Result<(), SharedMemoryError> {
         if !self.access.permits_write() {
             return Err(SharedMemoryError::AccessDenied);
         }
@@ -242,7 +268,9 @@ impl SharedRegion {
             .map_err(|e| SharedMemoryError::Backing(e.to_string()))
             .map(|_| ())
     }
+}
 
+impl MappedSharedRegion {
     fn checked_access(&self, offset: u64, len: usize) -> Result<u64, SharedMemoryError> {
         let len = u64::try_from(len).map_err(|_| SharedMemoryError::OutOfRange)?;
         let end = offset
@@ -390,12 +418,12 @@ impl SharedMemory for MappedSharedMemory {
         if !self.shared.contains(range.gpa, range.size) {
             return Err(SharedMemoryError::NotShared);
         }
-        Ok(SharedRegion {
+        Ok(SharedRegion::new(Arc::new(MappedSharedRegion {
             memory: self.memory.clone(),
             gpa: range.gpa,
             size: range.size,
             access: range.access,
-        })
+        })))
     }
 }
 
