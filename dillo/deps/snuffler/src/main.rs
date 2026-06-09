@@ -9,11 +9,13 @@
 //! Output: bracketed JSON on stdout (which is /dev/console / hvc0 for
 //! PID 1 given `console=hvc0`). Free-form debug lines go to stderr.
 
-#![no_main]
+#![cfg_attr(not(test), no_main)]
+#![cfg_attr(test, allow(dead_code))]
 
 use std::ffi::CStr;
 use std::fs;
 use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::ptr;
 
 use snuffler::{
@@ -24,6 +26,7 @@ use snuffler::{
 #[cfg(not(test))]
 const RB_POWER_OFF: libc::c_int = 0x4321_FEDC_u32 as i32;
 
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
 pub extern "C" fn main(
     _: libc::c_int,
@@ -33,6 +36,9 @@ pub extern "C" fn main(
     run();
     0
 }
+
+#[cfg(test)]
+fn main() {}
 
 fn run() {
     setup_mounts();
@@ -49,6 +55,7 @@ fn run() {
     poweroff();
 }
 
+#[cfg(target_os = "linux")]
 fn read_kernel_log() -> KernelLog {
     let size = unsafe { libc::syscall(libc::SYS_syslog, 10, ptr::null_mut::<u8>(), 0) };
     if size <= 0 {
@@ -69,6 +76,14 @@ fn read_kernel_log() -> KernelLog {
     KernelLog {
         entries: text.lines().map(parse_kernel_log_entry).collect(),
         error: None,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_kernel_log() -> KernelLog {
+    KernelLog {
+        entries: Vec::new(),
+        error: Some("kernel log unavailable on non-Linux host".to_string()),
     }
 }
 
@@ -154,7 +169,7 @@ fn write_report(json: &str) {
     // Keep report emission independent of Rust stdio startup. This fixture runs
     // as PID 1 in a minimal initramfs and enters through the C ABI on aarch64.
     write_report_fd(1, json);
-    for path in [c"/dev/hvc0", c"/dev/console", c"/dev/ttyS0"] {
+    for path in [c"/dev/hvc0", c"/dev/console"] {
         // SAFETY: path is NUL-terminated; open/close follow libc contracts.
         unsafe {
             let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK);
@@ -192,6 +207,7 @@ fn write_all_fd(fd: libc::c_int, mut bytes: &[u8]) -> bool {
     true
 }
 
+#[cfg(target_os = "linux")]
 fn mount(src: &CStr, target: &CStr, fstype: &CStr) {
     // SAFETY: PID 1 has CAP_SYS_ADMIN; arguments are NUL-terminated.
     let rc = unsafe {
@@ -215,6 +231,9 @@ fn mount(src: &CStr, target: &CStr, fstype: &CStr) {
         );
     }
 }
+
+#[cfg(not(target_os = "linux"))]
+fn mount(_: &CStr, _: &CStr, _: &CStr) {}
 
 fn observe() -> Report {
     Report {
