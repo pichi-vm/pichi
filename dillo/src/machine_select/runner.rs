@@ -22,8 +22,6 @@ mod memory;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::atomic::Ordering;
@@ -1011,37 +1009,20 @@ pub(crate) fn run(
         )?;
     }
 
-    // Build the device → adapter → bus chain.
-    let irq_mgr = Arc::new(Mutex::new(vm.create_irq_manager().map_err(|e| {
-        RunError::Kvm(backend_machine::Error::RunVcpu(
-            0,
-            std::io::Error::other(format!("irq manager: {e}")),
-        ))
-    })?));
-
     // Machine-driven UART attach (device-model §"Serial port"): the serial
     // port is an MMIO ns16550a. If the Machine declares one, attach it with a
     // KVM irqfd at the declared GSI and map its register window on the MMIO
     // bus. Absent → no UART emulation at all.
     match machine.uart {
         Some(uart) => {
-            let eventfd = {
-                let mut manager = irq_mgr.lock().expect("IRQ manager lock poisoned");
-                manager
-                    .register_irqfd_at_gsi(uart.irq)
-                    .map_err(|e| RunError::SerialInit {
-                        source: anyhow::anyhow!("irqfd for serial GSI {}: {e}", uart.irq),
-                    })?
-            };
+            let interrupt = dillo_machine::Machine::create_line_interrupt(&vm, uart.irq)?;
             let serial = dillo_mmio_uart::Ns16550::new(
                 MmioWindow {
                     base: uart.base,
                     size: uart.size,
                 },
                 uart.reg_shift,
-                Some(dillo_mmio::Interrupt::new(Arc::new(
-                    backend_machine::EventFdInterruptLine::new(eventfd),
-                ))),
+                Some(interrupt),
                 Box::new(std::io::stdout()),
             );
             Attach::attach(&mut vm, Arc::new(serial))?;
@@ -1058,9 +1039,8 @@ pub(crate) fn run(
 
     // num_queues + 1 vector for config-change. Console has 2 queues.
     let msix_vectors: u16 = 3;
-    let irqfd_domain: Arc<dyn dillo_mmio::MessageInterruptDomain> = Arc::new(
-        backend_machine::IrqfdNotifier::new(Arc::clone(&irq_mgr), msix_vectors),
-    );
+    let irqfd_domain: Arc<dyn dillo_mmio::MessageInterruptDomain> =
+        dillo_machine::Machine::create_message_interrupt_domain(&vm, msix_vectors)?;
     let irqfd_notifier = Arc::new(MsixInterruptAdapter::new(Arc::clone(&irqfd_domain)));
 
     let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = {
@@ -1325,11 +1305,11 @@ pub(crate) fn run(
             dillo_machine::Machine::create_message_interrupt_domain(&vm, msix_vectors)?,
         ));
         let lookup_notifier = Arc::clone(&notifier);
-        let console: Arc<Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(Mutex::new(
-            Box::new(dillo_virtio_console::VirtioConsole::new(Arc::new(
-                move |vector| lookup_notifier.interrupt_for(vector),
+        let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
+            std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
+                Arc::new(move |vector| lookup_notifier.interrupt_for(vector)),
             ))),
-        ));
+        );
         let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
             console,
             msix_vectors,

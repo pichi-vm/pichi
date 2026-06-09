@@ -59,14 +59,15 @@ mod imp {
 
     #[cfg(target_arch = "x86_64")]
     use crate::{kvm_regs, kvm_sregs};
-    pub use vmm_sys_util::eventfd::EventFd;
+    #[cfg(target_arch = "x86_64")]
+    use vmm_sys_util::eventfd::EventFd;
 
     use crate::VmExit;
     pub use crate::hypervisor::Error;
     #[cfg(target_arch = "x86_64")]
-    pub use crate::irq::{IrqError, IrqManager};
+    use crate::irq::IrqManager;
     #[cfg(target_arch = "x86_64")]
-    pub use crate::msi::IrqfdNotifier;
+    use crate::msi::KvmMessageInterruptDomain;
 
     #[cfg(target_arch = "x86_64")]
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::X86_64;
@@ -225,6 +226,8 @@ mod imp {
         mmio_bus: Arc<Mutex<MmioBus>>,
         exit_requester: VcpuExitRequester,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
+        #[cfg(target_arch = "x86_64")]
+        irq_manager: Arc<Mutex<IrqManager>>,
     }
 
     impl std::fmt::Debug for Vm {
@@ -234,6 +237,10 @@ mod imp {
                 .field("mmio_bus", &self.mmio_bus)
                 .field("exit_requester", &self.exit_requester)
                 .field("shared_memory", &self.shared_memory.len())
+                .field(
+                    "irq_manager",
+                    &cfg!(target_arch = "x86_64").then_some("<backend-owned>"),
+                )
                 .finish()
         }
     }
@@ -242,15 +249,6 @@ mod imp {
         #[cfg(target_arch = "x86_64")]
         pub fn new() -> Result<Self, Error> {
             Self::try_from(Config {})
-        }
-
-        fn vm_fd_arc(&self) -> Arc<kvm_ioctls::VmFd> {
-            self.inner.vm_fd_arc()
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        pub fn create_irq_manager(&self) -> Result<IrqManager, IrqError> {
-            IrqManager::new(self.vm_fd_arc())
         }
 
         fn add_memslot(&self, slot: u32, gpa: u64, host_addr: u64, size: u64) -> Result<(), Error> {
@@ -322,11 +320,15 @@ mod imp {
                     .ok_or(Error::MissingSubstrate("/interrupt-controller@*"))?;
                 crate::hypervisor::Vm::new_with_gic(&substrate)?
             };
+            #[cfg(target_arch = "x86_64")]
+            let irq_manager = Arc::new(Mutex::new(IrqManager::new(inner.vm_fd_arc())?));
             Ok(Self {
                 inner,
                 mmio_bus: Arc::new(Mutex::new(MmioBus::new())),
                 exit_requester,
                 shared_memory: Vec::new(),
+                #[cfg(target_arch = "x86_64")]
+                irq_manager,
             })
         }
     }
@@ -480,16 +482,20 @@ mod imp {
             #[cfg(target_arch = "aarch64")]
             {
                 return Ok(dillo_mmio::Interrupt::new(Arc::new(SpiInterruptLine::new(
-                    self.vm_fd_arc(),
+                    self.inner.vm_fd_arc(),
                     source,
                 ))));
             }
             #[cfg(target_arch = "x86_64")]
             {
-                let _ = source;
-                Err(Error::UnhandledExit(
-                    "wired interrupt factory is not implemented for KVM x86".into(),
-                ))
+                let eventfd = self
+                    .irq_manager
+                    .lock()
+                    .expect("KVM IRQ manager lock poisoned")
+                    .register_irqfd_at_gsi(source)?;
+                Ok(dillo_mmio::Interrupt::new(Arc::new(
+                    EventFdInterruptLine::new(eventfd),
+                )))
             }
         }
 
@@ -500,16 +506,16 @@ mod imp {
             #[cfg(target_arch = "aarch64")]
             {
                 return Ok(Arc::new(KvmMessageInterruptDomain::new(
-                    self.vm_fd_arc(),
+                    self.inner.vm_fd_arc(),
                     vectors,
                 )));
             }
             #[cfg(target_arch = "x86_64")]
             {
-                let _ = vectors;
-                Err(Error::UnhandledExit(
-                    "message interrupt domain factory is not implemented for KVM x86".into(),
-                ))
+                Ok(Arc::new(KvmMessageInterruptDomain::new(
+                    Arc::clone(&self.irq_manager),
+                    vectors,
+                )))
             }
         }
     }
@@ -599,16 +605,19 @@ mod imp {
     }
 
     #[derive(Debug)]
-    pub struct EventFdInterruptLine {
+    #[cfg(target_arch = "x86_64")]
+    struct EventFdInterruptLine {
         eventfd: EventFd,
     }
 
+    #[cfg(target_arch = "x86_64")]
     impl EventFdInterruptLine {
-        pub fn new(eventfd: EventFd) -> Self {
+        fn new(eventfd: EventFd) -> Self {
             Self { eventfd }
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     impl InterruptLine for EventFdInterruptLine {
         fn signal(&self) {
             if let Err(e) = self.eventfd.write(1) {

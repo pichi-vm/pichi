@@ -1290,7 +1290,7 @@ Local verification:
 
 ## Stage 18 - Conformance loop 2
 
-Status: in progress.
+Status: complete.
 
 Goal: repeat the full conformance pass after the first loop's fixes have landed
 and CI has had a chance to run.
@@ -1315,6 +1315,8 @@ Completed changes:
   message/SPI factory methods directly.
 - Removed the old public KVM/HVF/WHP message/SPI factory methods that were
   superseded by the trait boundary.
+- CI run `27197906398` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
 
 Unresolved mismatches carried to Stage 19:
 - The x86 compatibility paths still expose backend-specific interrupt plumbing:
@@ -1347,7 +1349,7 @@ Local verification note:
 
 ## Stage 19 - Conformance loop 3
 
-Status: pending.
+Status: complete.
 
 Goal: perform the final automated conformance pass before human review.
 
@@ -1363,6 +1365,46 @@ Success criteria:
 - The third loop finds no unrecorded implementation/spec/plan mismatch.
 - All fixable mismatches have been fixed.
 - Default local verification and all restored target checks pass.
+
+Completed changes:
+- Moved KVM x86 wired interrupt creation behind
+  `Machine::create_line_interrupt`; `dillo` no longer constructs KVM
+  `EventFdInterruptLine` values or registers irqfds directly.
+- Moved KVM x86 message-interrupt domain creation behind
+  `Machine::create_message_interrupt_domain`; `dillo` no longer constructs a
+  KVM IRQ manager or backend irqfd notifier.
+- Made KVM IRQ-manager, eventfd-line, and irqfd-message-domain helpers
+  backend-private implementation details.
+- Renamed the KVM x86 irqfd message domain away from MSI-X terminology. KVM
+  now speaks in generic `MessageInterruptDomain` terms; MSI-X table semantics
+  remain in `dillo-pci`.
+
+Remaining divergence carried to Stage 20:
+- WHP wired serial interrupts still depend on a dillo-constructed IOAPIC MMIO
+  device. Moving this correctly requires WHP to own IOAPIC architecture
+  substrate construction/registration from DTB-derived config, not another
+  public backend helper.
+- `Machine`/`Vcpu` `Send`/`Sync` remains unresolved for HVF as recorded in
+  Stage 17.
+- Shared-memory access still uses compatibility guest-memory views; the final
+  CC-first runtime window model remains incomplete.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp -p dillo`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-whp --tests --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+Pushed commit:
+- `refactor: hide kvm x86 interrupt plumbing`
 
 ## Stage 20 - Record remaining divergence for human review
 

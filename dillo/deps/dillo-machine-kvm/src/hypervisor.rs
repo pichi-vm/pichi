@@ -32,6 +32,8 @@ use thiserror::Error;
 use crate::VmExit;
 #[cfg(target_arch = "x86_64")]
 use crate::cpuid_x86;
+#[cfg(target_arch = "x86_64")]
+use crate::irq::IrqError;
 
 /// Hypervisor / VM errors.
 #[derive(Debug, Error)]
@@ -50,6 +52,10 @@ pub enum Error {
 
     #[error("create IRQ chip: {0}")]
     CreateIrqChip(std::io::Error),
+
+    #[cfg(target_arch = "x86_64")]
+    #[error("configure IRQ routing: {0}")]
+    Irq(#[from] IrqError),
 
     #[error("create VGIC: {0}")]
     CreateVgic(std::io::Error),

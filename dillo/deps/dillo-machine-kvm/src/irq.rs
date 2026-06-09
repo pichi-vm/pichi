@@ -44,7 +44,7 @@ const NUM_IOAPIC_PINS: u32 = 24;
 ///
 /// Maintains the full GSI routing table (IOAPIC defaults + MSI entries) and
 /// atomically replaces it via `KVM_SET_GSI_ROUTING` on each change.
-pub struct IrqManager {
+pub(crate) struct IrqManager {
     vm_fd: Arc<VmFd>,
     next_gsi: u32,
     /// Min-heap of released GSIs available for reuse (Reverse makes BinaryHeap a min-heap).
@@ -69,7 +69,7 @@ impl IrqManager {
     ///
     /// GSIs 0-23 are mapped to IOAPIC pins 0-23. This preserves legacy device
     /// routing (e.g., serial UART on IRQ 4) when MSI entries are added later.
-    pub fn new(vm_fd: Arc<VmFd>) -> Result<Self, IrqError> {
+    pub(crate) fn new(vm_fd: Arc<VmFd>) -> Result<Self, IrqError> {
         // Build the default routing table matching KVM's defaults:
         // - PIC master: GSIs 0-7 -> PIC_MASTER pins 0-7
         // - PIC slave: GSIs 8-15 -> PIC_SLAVE pins 0-7
@@ -105,7 +105,7 @@ impl IrqManager {
     /// Creates an `EventFd`, adds an MSI routing entry to the GSI routing table,
     /// commits the table to KVM, and registers the irqfd. Returns the allocated
     /// GSI and an `EventFd` clone that the device can write to fire interrupts.
-    pub fn allocate_irqfd(
+    pub(crate) fn allocate_irqfd(
         &mut self,
         addr_lo: u32,
         addr_hi: u32,
@@ -146,7 +146,7 @@ impl IrqManager {
     /// the existing IOAPIC routing for the GSI.
     ///
     /// Returns an `EventFd` clone the caller can write to fire the interrupt.
-    pub fn register_irqfd_at_gsi(&mut self, gsi: u32) -> Result<EventFd, IrqError> {
+    pub(crate) fn register_irqfd_at_gsi(&mut self, gsi: u32) -> Result<EventFd, IrqError> {
         let eventfd = EventFd::new(libc::EFD_CLOEXEC).map_err(IrqError::EventFdCreate)?;
         self.vm_fd
             .register_irqfd(&eventfd, gsi)
@@ -159,7 +159,7 @@ impl IrqManager {
     /// Update an existing MSI routing entry's address/data fields.
     ///
     /// Finds the route by GSI, updates the MSI fields, and commits the table.
-    pub fn update_route(
+    pub(crate) fn update_route(
         &mut self,
         gsi: u32,
         addr_lo: u32,
@@ -179,7 +179,8 @@ impl IrqManager {
     /// Unregister all irqfds and remove MSI routing entries.
     ///
     /// Keeps the 24 default IOAPIC entries intact. Commits the reduced table.
-    pub fn teardown_irqfds(&mut self) -> Result<(), IrqError> {
+    #[cfg(test)]
+    fn teardown_irqfds(&mut self) -> Result<(), IrqError> {
         for (gsi, fd) in self.irqfds.drain(..) {
             self.vm_fd
                 .unregister_irqfd(&fd, gsi)
@@ -203,7 +204,8 @@ impl IrqManager {
     /// (1) unregister irqfd → (2) remove routing entry → (3) commit routes →
     /// (4) push to free-list. The free-list push is last to ensure the GSI is
     /// only reusable after the kernel has fully torn down the old routing.
-    pub fn release_irqfd(&mut self, gsi: u32) -> Result<(), IrqError> {
+    #[cfg(test)]
+    fn release_irqfd(&mut self, gsi: u32) -> Result<(), IrqError> {
         // Find the irqfd entry for this GSI.
         let pos = self.irqfds.iter().position(|(g, _)| *g == gsi);
         if let Some(idx) = pos {
@@ -241,7 +243,8 @@ impl IrqManager {
     ///
     /// Use this for backend respawn: call with all GSIs allocated for the crashed
     /// backend, then reallocate them for the replacement backend.
-    pub fn teardown_device_irqfds(&mut self, gsis: &[u32]) -> Result<(), IrqError> {
+    #[cfg(test)]
+    fn teardown_device_irqfds(&mut self, gsis: &[u32]) -> Result<(), IrqError> {
         for &gsi in gsis {
             self.release_irqfd(gsi)?;
         }
@@ -249,7 +252,8 @@ impl IrqManager {
     }
 
     /// Returns the current number of routing entries.
-    pub fn route_count(&self) -> usize {
+    #[cfg(test)]
+    fn route_count(&self) -> usize {
         self.routes.len()
     }
 
