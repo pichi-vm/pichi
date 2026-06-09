@@ -167,31 +167,4 @@ mod tests {
         assert_eq!(pstr(&cpu0, "enable-method").as_deref(), Some("psci"));
         assert!(cpu0.property("compatible").is_none());
     }
-
-    /// P2: a base DTB that declares a /cpus node is rejected (merged.md §1) —
-    /// the base must declare nothing CPU-related.
-    #[test]
-    fn base_dtb_with_cpus_node_is_rejected() {
-        let mut fdt = FdtBuilder::new();
-        fdt.begin_node("");
-        fdt.property_u32("#address-cells", 2);
-        fdt.property_u32("#size-cells", 2);
-        fdt.begin_node("cpus");
-        fdt.property_u32("#address-cells", 1);
-        fdt.property_u32("#size-cells", 0);
-        fdt.begin_node("cpu@0");
-        fdt.property_string("device_type", "cpu");
-        fdt.property_u32("reg", 0);
-        fdt.end_node(); // cpu@0
-        fdt.end_node(); // cpus
-        fdt.end_node(); // root
-        let dtb = fdt.finish();
-        let err =
-            dillo_devtree::platform::Machine::survey(&dtb, dillo_devtree::platform::Arch::X86_64)
-                .expect_err("base declaring /cpus must be rejected");
-        assert!(
-            matches!(err, dillo_devtree::platform::SurveyError::BaseHasCpus),
-            "got {err:?}"
-        );
-    }
 }
