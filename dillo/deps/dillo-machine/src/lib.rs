@@ -72,6 +72,12 @@ pub trait Host {
 
     const ARCH: HostArchitecture;
 
+    /// Host-provided CPU `compatible` string for DT overlay CPU nodes, when the
+    /// selected machine can derive one without inventing guest-visible facts.
+    fn cpu_compatible() -> Option<&'static str> {
+        None
+    }
+
     fn enter_raw_stdio_if_tty() -> Self::RawStdioGuard;
 
     fn install_panic_terminal_restore();

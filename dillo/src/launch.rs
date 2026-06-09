@@ -36,6 +36,7 @@ impl LaunchPlan {
     pub fn read(
         pmi_path: &Path,
         host_arch: HostArchitecture,
+        cpu_compatible: Option<&str>,
         memory_mib: u32,
         vcpus: u32,
     ) -> Result<Self, LaunchError> {
@@ -82,7 +83,14 @@ impl LaunchPlan {
             .collect();
         let memory =
             placement::plan_around_regions(&must_cover, memory_mib, platform.placement_regions())?;
-        let guest_writes = guest_writes(&bytes, &parsed, &memory, platform.arch, vcpus)?;
+        let guest_writes = guest_writes(
+            &bytes,
+            &parsed,
+            &memory,
+            platform.arch,
+            cpu_compatible,
+            vcpus,
+        )?;
 
         Ok(Self {
             bytes,
@@ -170,6 +178,7 @@ fn guest_writes(
     parsed: &crate::pmi_parse::ParsedPmi,
     memory: &MemoryPlan,
     arch: Arch,
+    cpu_compatible: Option<&str>,
     vcpus: u32,
 ) -> Result<Vec<GuestWrite>, LaunchError> {
     let mut writes = Vec::new();
@@ -198,7 +207,7 @@ fn guest_writes(
                     &memory.memory_nodes,
                     vcpus,
                     arch.cpu_enable_method(),
-                    crate::cpu_id::host_cpu_compatible(arch),
+                    cpu_compatible,
                     s.virtual_size,
                 )
                 .map_err(LaunchError::DtboSynth)?;

@@ -238,6 +238,17 @@ mod imp {
         #[cfg(target_arch = "aarch64")]
         const ARCH: HostArchitecture = HostArchitecture::Aarch64;
 
+        fn cpu_compatible() -> Option<&'static str> {
+            #[cfg(target_arch = "aarch64")]
+            {
+                host_cpu_compatible()
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                None
+            }
+        }
+
         fn enter_raw_stdio_if_tty() -> Self::RawStdioGuard {
             RawStdio::enter_if_tty()
         }
@@ -248,6 +259,74 @@ mod imp {
 
         fn install_signal_watchers(supervisor_shutdown: &'static AtomicBool) {
             install_signal_watchers(supervisor_shutdown);
+        }
+    }
+
+    /// The host CPU's registered `compatible` for authoring cpu instances in
+    /// the overlay. KVM passes through the host CPU model, so the host MIDR is
+    /// the only source of truth for this guest-visible property.
+    #[cfg(target_arch = "aarch64")]
+    fn host_cpu_compatible() -> Option<&'static str> {
+        let raw =
+            std::fs::read_to_string("/sys/devices/system/cpu/cpu0/regs/identification/midr_el1")
+                .ok()?;
+        let s = raw.trim();
+        let s = s.strip_prefix("0x").unwrap_or(s);
+        let midr = u64::from_str_radix(s, 16).ok()?;
+        midr_to_compatible(midr)
+    }
+
+    /// Map an aarch64 `MIDR_EL1` value to its registered devicetree
+    /// `compatible`. Implementer is bits `[31:24]`, part number `[15:4]`.
+    #[cfg(target_arch = "aarch64")]
+    fn midr_to_compatible(midr: u64) -> Option<&'static str> {
+        let implementer = (midr >> 24) & 0xff;
+        let partnum = (midr >> 4) & 0xfff;
+        match (implementer, partnum) {
+            (0x41, 0xd03) => Some("arm,cortex-a53"),
+            (0x41, 0xd07) => Some("arm,cortex-a57"),
+            (0x41, 0xd08) => Some("arm,cortex-a72"),
+            (0x41, 0xd0b) => Some("arm,cortex-a76"),
+            (0x41, 0xd0c) => Some("arm,neoverse-n1"),
+            (0x41, 0xd40) => Some("arm,neoverse-v1"),
+            (0x41, 0xd49) => Some("arm,neoverse-n2"),
+            (0x41, 0xd4f) => Some("arm,neoverse-v2"),
+            _ => None,
+        }
+    }
+
+    #[cfg(all(test, target_arch = "aarch64"))]
+    mod cpu_compatible_tests {
+        use super::*;
+
+        fn midr(implementer: u64, part: u64) -> u64 {
+            (implementer << 24) | (part << 4)
+        }
+
+        #[test]
+        fn known_cores_map_to_registered_compatibles() {
+            assert_eq!(
+                midr_to_compatible(midr(0x41, 0xd0c)),
+                Some("arm,neoverse-n1")
+            );
+            assert_eq!(
+                midr_to_compatible(midr(0x41, 0xd4f)),
+                Some("arm,neoverse-v2")
+            );
+            assert_eq!(
+                midr_to_compatible(midr(0x41, 0xd08)),
+                Some("arm,cortex-a72")
+            );
+            assert_eq!(
+                midr_to_compatible(midr(0x41, 0xd03)),
+                Some("arm,cortex-a53")
+            );
+        }
+
+        #[test]
+        fn unknown_core_is_none_no_generic() {
+            assert_eq!(midr_to_compatible(midr(0x41, 0xfff)), None);
+            assert_eq!(midr_to_compatible(midr(0x61, 0x022)), None);
         }
     }
 

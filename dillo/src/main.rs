@@ -49,14 +49,19 @@ fn main() {
     let memory = args.memory;
     let cpus = args.cpus;
 
-    let launch =
-        match dillo::launch::LaunchPlan::read(&pmi, <machine::Vm as Host>::ARCH, memory, cpus) {
-            Ok(plan) => plan,
-            Err(e) => {
-                eprintln!("dillo: {e}");
-                std::process::exit(e.exit_code());
-            }
-        };
+    let launch = match dillo::launch::LaunchPlan::read(
+        &pmi,
+        <machine::Vm as Host>::ARCH,
+        <machine::Vm as Host>::cpu_compatible(),
+        memory,
+        cpus,
+    ) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("dillo: {e}");
+            std::process::exit(e.exit_code());
+        }
+    };
     let dillo::launch::LaunchPlan {
         parsed,
         platform,

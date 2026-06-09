@@ -1678,7 +1678,7 @@ Local verification note:
 
 ## Stage 22 - Final acceptance audit
 
-Status: in progress; machine API cleanup local-verified, CI pending.
+Status: in progress; host CPU discovery move local-verified, CI pending.
 
 Goal: prove the implementation satisfies `DILLO-CRATE-SPLIT.md` or that all
 remaining divergence has been recorded for human review after three conformance
@@ -1916,6 +1916,35 @@ Audit fix 10 - selected host services behind common trait:
   type.
 - Moved platform survey selection into target-neutral launch preflight by
   mapping `HostArchitecture` to `dillo_devtree::platform::Arch`.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp -p dillo`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+Audit fix 12 - move host CPU discovery behind machine boundary:
+- Added `Host::cpu_compatible()` as the common selected-machine hook for
+  DT-overlay CPU compatible strings.
+- Moved aarch64 MIDR sysfs probing and MIDR-to-DT-compatible mapping from
+  top-level `dillo` into `dillo-machine-kvm`. KVM derives the guest CPU
+  compatible from the host MIDR it passes through; other machine backends
+  return `None` through the default `Host` implementation.
+- Changed `LaunchPlan::read` to accept the already-selected host CPU
+  compatible string instead of reading host CPU state itself.
+- Removed `dillo/src/cpu_id.rs`; dillo remains responsible for overlay
+  synthesis, but no longer performs host CPU discovery.
+
+Evidence:
+- `grep -RIn "cpu_id\|host_cpu_compatible\|midr_to_compatible" dillo/src dillo/deps/dillo-machine-* --include='*.rs' --include='Cargo.toml'`
+  reports only `dillo-machine-kvm` MIDR code.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
