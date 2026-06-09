@@ -2077,3 +2077,32 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine-kvm -p dillo-machine-whp -p dillo-machine-hvf -p dillo-machine -p dillo --test architecture_cfg`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+Audit fix 15 - flatten dillo orchestration into the binary:
+- Fixed the Windows CI failure from `0cea712`: WHP tests still asserted through
+  the removed private `Vcpu::index()` accessor. The lifecycle tests now verify
+  vCPU creation without restoring that stale API.
+- Flattened dillo's launcher modules into `src/main.rs` so the full composition
+  flow is visible in one file. `src/lib.rs` now contains only the inline
+  `pmi_parse` module needed by integration tests and fuzzing.
+- Updated the architecture-cfg guard so only the exact selected-machine binding
+  cfg lines in `main.rs` are allowed.
+
+Evidence:
+- `find dillo/src -type f | sort` reports only `dillo/src/lib.rs` and
+  `dillo/src/main.rs`.
+- `grep -RInE "cfg\\(target_os|cfg\\(target_arch|cfg_attr\\(target_os|cfg_attr\\(target_arch" dillo/src dillo/deps/dillo-mmio dillo/deps/dillo-pci dillo/deps/dillo-virtio dillo/tests/architecture_cfg.rs`
+  reports only the three selected-machine cfg lines in `main.rs` plus the test's
+  own allowlist.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test pmi_adversarial`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-whp --tests`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`

@@ -1619,18 +1619,15 @@ mod tests {
     fn whp_partition_and_vcpu_lifecycle() {
         let _guard = whp_test_lock();
         let vm = Vm::new().expect("create WHP partition");
-        let vcpu = vm.create_vcpu(0, "x86-64-v2").expect("create WHP vCPU");
-        assert_eq!(vcpu.index(), 0);
+        vm.create_vcpu(0, "x86-64-v2").expect("create WHP vCPU");
     }
 
     #[test]
     fn whp_creates_multiple_vcpus_when_partition_count_allows_it() {
         let _guard = whp_test_lock();
         let vm = Vm::new_x86_64_with_local_apic_count(2).expect("create WHP partition");
-        let vcpu0 = vm.create_vcpu(0, "x86-64-v2").expect("create WHP vCPU 0");
-        let vcpu1 = vm.create_vcpu(1, "x86-64-v2").expect("create WHP vCPU 1");
-        assert_eq!(vcpu0.index(), 0);
-        assert_eq!(vcpu1.index(), 1);
+        vm.create_vcpu(0, "x86-64-v2").expect("create WHP vCPU 0");
+        vm.create_vcpu(1, "x86-64-v2").expect("create WHP vCPU 1");
     }
 
     #[test]

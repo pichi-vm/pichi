@@ -40,9 +40,6 @@ impl SourceScan {
     fn scan_dillo_sources(&self, failures: &mut Vec<String>) {
         let src = self.manifest.join("src");
         self.visit_rust_files(&src, &mut |path| {
-            if is_machine_selection_source(&src, path) {
-                return;
-            }
             self.scan_file(&src, path, failures);
         });
     }
@@ -71,6 +68,9 @@ impl SourceScan {
                 .iter()
                 .any(|pattern| line.contains(pattern))
             {
+                if is_allowed_machine_selection_cfg(root, path, line) {
+                    continue;
+                }
                 let rel = path.strip_prefix(root).unwrap_or(path);
                 failures.push(format!("{}:{}", rel.display(), line_idx + 1));
             }
@@ -91,10 +91,13 @@ impl SourceScan {
     }
 }
 
-fn is_machine_selection_source(src: &Path, path: &Path) -> bool {
-    path.file_name()
-        .is_some_and(|name| name == "machine_select.rs")
-        || path
-            .strip_prefix(src)
-            .is_ok_and(|rel| rel.starts_with("machine_select"))
+fn is_allowed_machine_selection_cfg(root: &Path, path: &Path, line: &str) -> bool {
+    path.strip_prefix(root)
+        .is_ok_and(|rel| rel == Path::new("main.rs"))
+        && matches!(
+            line.trim(),
+            "#[cfg(target_os = \"linux\")]"
+                | "#[cfg(target_os = \"macos\")]"
+                | "#[cfg(target_os = \"windows\")]"
+        )
 }
