@@ -978,7 +978,7 @@ mod imp {
         }
     }
 
-    pub struct Vcpu {
+    struct Vcpu {
         inner: crate::hypervisor::Vcpu,
         mmio_bus: Arc<Mutex<MmioBus>>,
         exit_requester: VcpuExitRequester,

@@ -679,7 +679,7 @@ mod imp {
     }
 
     #[derive(Debug)]
-    pub struct Vcpu {
+    struct Vcpu {
         inner: crate::hypervisor::Vcpu,
         mmio_bus: Arc<Mutex<MmioBus>>,
     }

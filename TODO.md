@@ -2131,3 +2131,36 @@ Local verification:
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-devtree -p dillo-mmio -p dillo-mmio-uart -p dillo-mmio-virtio -p dillo-pci -p dillo-pci-virtio -p dillo-virtio -p dillo-virtio-console -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+Audit fix 17 - stop exporting backend vCPU internals:
+- Made KVM, HVF, and WHP backend `Vcpu` structs private. The public backend
+  surface now exposes the associated `Cpu` type through the common
+  `dillo-machine::Cpu` trait instead of also exporting backend-specific vCPU
+  implementation objects.
+
+Evidence:
+- `grep -RInE "pub (struct|enum|trait|type|fn).*\\b(Kvm|Hvf|Whp|IoApic|Gic|Msi|Msix|Pio|EventFd|IrqFd|RunControl|Vcpu)\\b|\\b(Kvm|Hvf|Whp|IoApic|Gic|Msi|Msix|Pio|EventFd|IrqFd|RunControl|Vcpu)\\b" dillo/deps/dillo-machine/src dillo/src --include='*.rs'`
+  reports no common-trait or dillo launcher exposure.
+- `grep -RInE "dillo_machine_(kvm|hvf|whp)::Vcpu|\\bVcpu\\b" dillo/src dillo/tests dillo/deps/dillo-machine/src --include='*.rs'`
+  reports no caller dependency on backend vCPU implementation types.
+
+Local verification:
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-kvm --target x86_64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-kvm --target aarch64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-hvf --target aarch64-apple-darwin`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-whp --target x86_64-pc-windows-msvc`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp -p dillo --test architecture_cfg`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- First local macOS boot run hit the known HVF `operation not allowed by the
+  system` entitlement failure after two successful boots; immediate rerun of
+  the same command passed.
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+- `ssh -A nathaniel@apollo 'cd /tmp/pichi-stage22-* && CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
+  in a fresh `/tmp` checkout with the local delta applied; Linux/x86 boot
+  suite passed 5/5.
