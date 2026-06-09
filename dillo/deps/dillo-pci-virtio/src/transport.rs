@@ -15,8 +15,8 @@ use dillo_pci::{MmioJoinError, PciDeviceHost};
 use dillo_virtio::Kick;
 use dillo_virtio::queue::Queue;
 use dillo_virtio::{
-    ActivateError, DeviceJoinError, ThreadDeviceHost, VIRTIO_F_VERSION_1, VirtioActivate,
-    VirtioDevice, VirtioDeviceHandle, VirtioDeviceHost, VirtioRunToken,
+    ActivateError, DeviceJoinError, VIRTIO_F_VERSION_1, VirtioActivate, VirtioDevice,
+    VirtioDeviceHandle, VirtioDeviceHost, VirtioRunToken,
 };
 use vm_memory::GuestAddress;
 
@@ -139,7 +139,7 @@ pub struct VirtioPciDevice {
     // Activation state.
     activated: bool,
     activation: Option<VirtioDeviceHandle>,
-    host: Arc<dyn VirtioDeviceHost>,
+    host: Option<Arc<dyn VirtioDeviceHost>>,
 
     // MSI-X notifier (VMM provides real implementation, tests use NoopNotifier).
     notifier: Arc<dyn MsixNotifier>,
@@ -308,7 +308,7 @@ impl VirtioPciDevice {
             bar2_gpa,
             activated: false,
             activation: None,
-            host: Arc::new(ThreadDeviceHost),
+            host: None,
             notifier,
             queue_kicks: Vec::new(),
             device_features,
@@ -318,7 +318,7 @@ impl VirtioPciDevice {
 
     /// Set the host service inherited from the attached PCI root.
     pub fn set_host(&mut self, host: Arc<dyn VirtioDeviceHost>) {
-        self.host = host;
+        self.host = Some(host);
     }
 
     pub fn set_notifier(&mut self, notifier: Arc<dyn MsixNotifier>) {
@@ -639,13 +639,13 @@ impl VirtioPciDevice {
             }
         }
 
+        let Some(host) = self.host.as_ref().map(Arc::clone) else {
+            log::error!("virtio-pci: activate failed: no PCI attachment host");
+            return;
+        };
+
         let handle = match self.device.lock().expect("device mutex").activate(
-            VirtioActivate::with_host_and_queue_interrupts(
-                queues,
-                kicks,
-                Arc::clone(&self.host),
-                queue_interrupts,
-            ),
+            VirtioActivate::with_host_and_queue_interrupts(queues, kicks, host, queue_interrupts),
         ) {
             Ok(handle) => handle,
             Err(e) => {

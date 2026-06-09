@@ -35,7 +35,7 @@ mod imp {
     use dillo_mmio::{
         Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
         MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt,
-        MmioInterruptRequirement, MmioSpawnError, MmioWriteOutcome, SharedMemory,
+        MmioInterruptRequirement, MmioRunToken, MmioSpawnError, MmioWriteOutcome, SharedMemory,
     };
     use vm_memory::mmap::MmapRegionBuilder;
     use vm_memory::{GuestAddress, GuestMemoryMmap, GuestRegionMmap};
@@ -674,7 +674,20 @@ mod imp {
             self: Arc<Self>,
             run: dillo_mmio::MmioDeviceRun,
         ) -> Result<MmioDeviceHandle, MmioSpawnError> {
-            Ok(MmioDeviceHandle::thread(run))
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let token_shutdown = Arc::clone(&shutdown);
+            let token = MmioRunToken::from_fn(move || token_shutdown.load(Ordering::Acquire));
+            let join = std::thread::spawn(move || run(token));
+            Ok(MmioDeviceHandle::new(
+                move || {
+                    shutdown.store(true, Ordering::Release);
+                    Ok(())
+                },
+                move || match join.join() {
+                    Ok(result) => result,
+                    Err(_) => Err(dillo_mmio::MmioJoinError::Panicked),
+                },
+            ))
         }
     }
 

@@ -10,8 +10,6 @@ use crate::memory::{NullVirtioMemory, SharedVirtioMemory, VirtioMemory};
 use crate::queue::{NullQueueMemory, Queue, QueueMemory, SharedQueueMemory};
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 
 /// Transport-resolved activation inputs for one virtio device.
 pub struct VirtioActivate {
@@ -21,7 +19,7 @@ pub struct VirtioActivate {
     queues: Vec<Queue>,
     queue_evts: Vec<Kick>,
     queue_interrupts: Vec<Option<Interrupt>>,
-    host: Arc<dyn VirtioDeviceHost>,
+    host: Option<Arc<dyn VirtioDeviceHost>>,
 }
 
 impl std::fmt::Debug for VirtioActivate {
@@ -33,7 +31,7 @@ impl std::fmt::Debug for VirtioActivate {
             .field("queues", &self.queues)
             .field("queue_evts", &self.queue_evts)
             .field("queue_interrupt_count", &self.queue_interrupts.len())
-            .field("host", &self.host)
+            .field("has_host", &self.host.is_some())
             .finish()
     }
 }
@@ -47,7 +45,7 @@ impl VirtioActivate {
             queues,
             queue_evts,
             queue_interrupts: Vec::new(),
-            host: Arc::new(ThreadDeviceHost),
+            host: None,
         }
     }
 
@@ -66,7 +64,7 @@ impl VirtioActivate {
             queues,
             queue_evts,
             queue_interrupts: Vec::new(),
-            host,
+            host: Some(host),
         }
     }
 
@@ -86,7 +84,7 @@ impl VirtioActivate {
             queues,
             queue_evts,
             queue_interrupts,
-            host,
+            host: Some(host),
         }
     }
 
@@ -105,7 +103,7 @@ impl VirtioActivate {
             queues,
             queue_evts,
             queue_interrupts: Vec::new(),
-            host,
+            host: Some(host),
         }
     }
 
@@ -133,8 +131,11 @@ impl VirtioActivate {
         Arc::clone(&self.buffer_memory)
     }
 
-    pub fn host(&self) -> Arc<dyn VirtioDeviceHost> {
-        Arc::clone(&self.host)
+    pub fn host(&self) -> Result<Arc<dyn VirtioDeviceHost>, ActivateError> {
+        self.host
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or(ActivateError::MissingHost)
     }
 
     pub fn queue_interrupt(&self, index: usize) -> Option<Interrupt> {
@@ -155,6 +156,10 @@ impl VirtioActivate {
 /// Errors returned by [`VirtioDevice::activate`].
 #[derive(Debug, thiserror::Error)]
 pub enum ActivateError {
+    /// The transport attempted to activate a device before machine attachment.
+    #[error("virtio activation requires a machine-provided device host")]
+    MissingHost,
+
     /// The device received an invalid configuration.
     #[error("invalid device configuration: {0}")]
     InvalidConfig(String),
@@ -210,29 +215,6 @@ pub trait VirtioDeviceHost: Send + Sync + std::fmt::Debug {
         &self,
         run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,
     ) -> Result<VirtioDeviceHandle, ActivateError>;
-}
-
-/// Compatibility host that runs virtio device workers as local threads.
-#[derive(Debug)]
-pub struct ThreadDeviceHost;
-
-impl VirtioDeviceHost for ThreadDeviceHost {
-    fn spawn(
-        &self,
-        run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,
-    ) -> Result<VirtioDeviceHandle, ActivateError> {
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let token_shutdown = Arc::clone(&shutdown);
-        let token = VirtioRunToken::from_fn(move || token_shutdown.load(Ordering::Acquire));
-        let join = thread::spawn(move || run(token));
-        Ok(VirtioDeviceHandle::new(
-            move || shutdown.store(true, Ordering::Release),
-            move || match join.join() {
-                Ok(result) => result,
-                Err(_) => Err(DeviceJoinError::Panicked),
-            },
-        ))
-    }
 }
 
 /// Runtime handle for workers started by one virtio device activation.
@@ -342,6 +324,28 @@ mod tests {
 
     use super::*;
 
+    #[derive(Debug)]
+    struct TestDeviceHost;
+
+    impl VirtioDeviceHost for TestDeviceHost {
+        fn spawn(
+            &self,
+            run: Box<dyn FnOnce(VirtioRunToken) -> Result<(), DeviceJoinError> + Send>,
+        ) -> Result<VirtioDeviceHandle, ActivateError> {
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let token_shutdown = Arc::clone(&shutdown);
+            let token = VirtioRunToken::from_fn(move || token_shutdown.load(Ordering::Acquire));
+            let join = std::thread::spawn(move || run(token));
+            Ok(VirtioDeviceHandle::new(
+                move || shutdown.store(true, Ordering::Release),
+                move || match join.join() {
+                    Ok(result) => result,
+                    Err(_) => Err(DeviceJoinError::Panicked),
+                },
+            ))
+        }
+    }
+
     #[test]
     fn handle_shutdown_runs_once_before_join() {
         let stopped = Arc::new(AtomicBool::new(false));
@@ -367,7 +371,7 @@ mod tests {
 
     #[test]
     fn thread_host_reports_shutdown_to_worker() {
-        let host = ThreadDeviceHost;
+        let host = TestDeviceHost;
         let handle = host
             .spawn(Box::new(|token| {
                 while !token.is_shutdown_requested() {
@@ -435,7 +439,7 @@ mod tests {
             vec![shared],
             Vec::new(),
             Vec::new(),
-            Arc::new(ThreadDeviceHost),
+            Arc::new(TestDeviceHost),
         );
 
         activation
@@ -471,7 +475,7 @@ mod tests {
             vec![shared],
             Vec::new(),
             Vec::new(),
-            Arc::new(ThreadDeviceHost),
+            Arc::new(TestDeviceHost),
         );
 
         activation

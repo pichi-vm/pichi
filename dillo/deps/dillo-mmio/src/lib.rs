@@ -6,8 +6,6 @@
 
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 
@@ -509,68 +507,66 @@ pub type MmioDeviceRun =
     Box<dyn FnOnce(MmioRunToken) -> Result<(), MmioJoinError> + Send + 'static>;
 
 /// Token passed to a running MMIO thread host.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct MmioRunToken {
-    shutdown: Arc<AtomicBool>,
+    is_shutdown_requested: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl std::fmt::Debug for MmioRunToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MmioRunToken").finish_non_exhaustive()
+    }
 }
 
 impl MmioRunToken {
+    pub fn from_fn(is_shutdown_requested: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            is_shutdown_requested: Arc::new(is_shutdown_requested),
+        }
+    }
+
     pub fn is_shutdown_requested(&self) -> bool {
-        self.shutdown.load(Ordering::Acquire)
+        (self.is_shutdown_requested)()
     }
 }
 
 /// Handle for one running MMIO device host.
-#[derive(Debug)]
 pub struct MmioDeviceHandle {
-    inner: MmioDeviceHandleInner,
+    shutdown: Box<dyn Fn() -> Result<(), MmioShutdownError> + Send + Sync>,
+    join: Option<Box<dyn FnOnce() -> Result<(), MmioJoinError> + Send>>,
 }
 
-#[derive(Debug)]
-enum MmioDeviceHandleInner {
-    Noop,
-
-    Thread {
-        shutdown: Arc<AtomicBool>,
-        join: thread::JoinHandle<Result<(), MmioJoinError>>,
-    },
+impl std::fmt::Debug for MmioDeviceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MmioDeviceHandle").finish_non_exhaustive()
+    }
 }
 
 impl MmioDeviceHandle {
-    pub fn noop() -> Self {
+    pub fn new(
+        shutdown: impl Fn() -> Result<(), MmioShutdownError> + Send + Sync + 'static,
+        join: impl FnOnce() -> Result<(), MmioJoinError> + Send + 'static,
+    ) -> Self {
         Self {
-            inner: MmioDeviceHandleInner::Noop,
+            shutdown: Box::new(shutdown),
+            join: Some(Box::new(join)),
         }
     }
 
-    pub fn thread(run: MmioDeviceRun) -> Self {
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let token = MmioRunToken {
-            shutdown: Arc::clone(&shutdown),
-        };
-        let join = thread::spawn(move || run(token));
-        Self {
-            inner: MmioDeviceHandleInner::Thread { shutdown, join },
-        }
+    pub fn noop() -> Self {
+        Self::new(|| Ok(()), || Ok(()))
     }
 
     pub fn shutdown(&self) -> Result<(), MmioShutdownError> {
-        match &self.inner {
-            MmioDeviceHandleInner::Noop => {}
-            MmioDeviceHandleInner::Thread { shutdown, .. } => {
-                shutdown.store(true, Ordering::Release);
-            }
-        }
-        Ok(())
+        (self.shutdown)()
     }
 
-    pub fn join(self) -> Result<(), MmioJoinError> {
-        match self.inner {
-            MmioDeviceHandleInner::Noop => Ok(()),
-            MmioDeviceHandleInner::Thread { join, .. } => match join.join() {
-                Ok(result) => result,
-                Err(_) => Err(MmioJoinError::Panicked),
-            },
+    pub fn join(mut self) -> Result<(), MmioJoinError> {
+        let _ = self.shutdown();
+        if let Some(join) = self.join.take() {
+            join()
+        } else {
+            Ok(())
         }
     }
 }
@@ -701,7 +697,6 @@ impl MmioBus {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::mpsc;
     use vm_memory::{Bytes, GuestAddress};
 
     struct TestDevice {
@@ -1032,24 +1027,30 @@ mod tests {
     }
 
     #[test]
-    fn thread_host_observes_shutdown_and_joins() {
-        let (started_tx, started_rx) = mpsc::channel();
-        let handle = MmioDeviceHandle::thread(Box::new(move |token| {
-            started_tx.send(()).expect("send start");
-            while !token.is_shutdown_requested() {
-                std::thread::yield_now();
-            }
-            Ok(())
-        }));
-        started_rx.recv().expect("thread host started");
+    fn handle_shutdown_and_join_are_invoked() {
+        let shutdown_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let join_seen = Arc::clone(&shutdown_seen);
+        let handle = MmioDeviceHandle::new(
+            {
+                let shutdown_seen = Arc::clone(&shutdown_seen);
+                move || {
+                    shutdown_seen.store(true, std::sync::atomic::Ordering::Release);
+                    Ok(())
+                }
+            },
+            move || {
+                assert!(join_seen.load(std::sync::atomic::Ordering::Acquire));
+                Ok(())
+            },
+        );
+
         handle.shutdown().expect("shutdown requested");
-        handle.join().expect("thread host joined");
+        handle.join().expect("joined");
     }
 
     #[test]
-    fn thread_host_error_reaches_join() {
-        let handle =
-            MmioDeviceHandle::thread(Box::new(|_| Err(MmioJoinError::Host("boom".into()))));
+    fn handle_error_reaches_join() {
+        let handle = MmioDeviceHandle::new(|| Ok(()), || Err(MmioJoinError::Host("boom".into())));
 
         let err = handle.join().expect_err("host error");
         assert_eq!(err.to_string(), "MMIO device host failed: boom");

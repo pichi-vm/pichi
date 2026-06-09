@@ -136,7 +136,7 @@ impl VirtioDevice for VirtioConsole {
         let buffer_memory = activation.buffer_memory();
         let mut queues = activation.take_queues();
         let mut queue_evts = activation.take_queue_evts();
-        let host = activation.host();
+        let host = activation.host()?;
         if self.activated {
             return Err(ActivateError::InvalidConfig(
                 "VirtioConsole::activate called twice".into(),

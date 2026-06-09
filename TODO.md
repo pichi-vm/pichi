@@ -2300,3 +2300,35 @@ Audit fix 24 - remove unused device execution model from Machine:
 Evidence:
 - `grep -RIn "DeviceModel\\|DEVICE_MODEL" dillo/src dillo/deps --include='*.rs'`
   reports no references.
+
+Audit fix 25 - keep concrete device execution in machine attachments:
+- Removed the public `dillo-virtio::ThreadDeviceHost` fallback. `VirtioActivate`
+  now carries no host until a transport receives a machine-derived attachment,
+  and devices fail activation with `ActivateError::MissingHost` if activation is
+  attempted before that attachment exists.
+- Removed `MmioDeviceHandle::thread` from `dillo-mmio`. The common MMIO crate
+  now exposes only a neutral callback-backed handle and shutdown token; KVM,
+  HVF, and WHP construct their current thread-backed handles inside their own
+  `MmioAttachment::spawn` implementations.
+- Left `VirtioDeviceHost` and `PciDeviceHost` as abstract transport capability
+  traits only; they no longer provide or select a default execution model.
+
+Evidence:
+- `grep -RIn "ThreadDeviceHost\\|MmioDeviceHandle::thread" dillo dillo/deps --include='*.rs'`
+  reports no production references.
+
+Local verification:
+- `cargo check -p dillo-mmio -p dillo-virtio -p dillo-mmio-virtio -p dillo-pci-virtio -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `cargo test -p dillo-mmio -p dillo-virtio -p dillo-virtio-console -p dillo-mmio-virtio -p dillo-pci-virtio`
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- First concurrent local macOS boot run hit HVF `operation not allowed by the
+  system` on larger-memory cases after two successful boots; immediate isolated
+  rerun of the same command passed all boot tests.
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `ssh -A nathaniel@apollo 'cd /tmp/pichi-codex.8KFGgg && CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
+  in a fresh `/tmp` checkout; Linux/x86 boot suite passed 5/5.

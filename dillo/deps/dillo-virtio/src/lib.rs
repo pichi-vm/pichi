@@ -29,8 +29,8 @@ pub mod memory;
 pub mod queue;
 
 pub use device::{
-    ActivateError, DeviceJoinError, ThreadDeviceHost, VirtioActivate, VirtioDevice,
-    VirtioDeviceHandle, VirtioDeviceHost, VirtioRunToken,
+    ActivateError, DeviceJoinError, VirtioActivate, VirtioDevice, VirtioDeviceHandle,
+    VirtioDeviceHost, VirtioRunToken,
 };
 pub use features::{VIRTIO_F_RING_EVENT_IDX, VIRTIO_F_VERSION_1};
 pub use kick::Kick;
