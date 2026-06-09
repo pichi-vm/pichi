@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicBool;
 
 use argh::FromArgs;
 use machine_select::machine;
+use machine_select::runner;
 
 static SUPERVISOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
@@ -61,21 +62,18 @@ fn main() {
         guest_writes,
         ..
     } = launch;
-    let preflight = dillo_vm::Preflight::new(
+    let preflight = runner::Preflight::new(
         parsed,
         platform,
-        memory_plan.memslots.iter().map(|r| dillo_vm::RunRegion {
+        memory_plan.memslots.iter().map(|r| runner::RunRegion {
             gpa: r.gpa,
             size: r.size,
         }),
-        memory_plan
-            .memory_nodes
-            .iter()
-            .map(|r| dillo_vm::RunRegion {
-                gpa: r.gpa,
-                size: r.size,
-            }),
-        guest_writes.into_iter().map(|w| dillo_vm::RunWrite {
+        memory_plan.memory_nodes.iter().map(|r| runner::RunRegion {
+            gpa: r.gpa,
+            size: r.size,
+        }),
+        guest_writes.into_iter().map(|w| runner::RunWrite {
             section: w.section,
             gpa: w.gpa,
             data: w.data,
@@ -105,7 +103,7 @@ fn main() {
         args.console,
     );
 
-    match dillo_vm::run(preflight, cpus, &SUPERVISOR_SHUTDOWN) {
+    match runner::run(preflight, cpus, &SUPERVISOR_SHUTDOWN) {
         Ok(code) => std::process::exit(code),
         Err(e) => {
             eprintln!("dillo: {e}");

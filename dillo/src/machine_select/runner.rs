@@ -52,21 +52,22 @@ use dillo_x86::pio_pci;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use dillo_x86::syscon;
 
-pub use error::RunError;
+pub(crate) use error::RunError;
 
 /// One launch-derived RAM region passed in by the top-level `dillo` launcher.
 #[derive(Debug, Clone, Copy)]
-pub struct RunRegion {
-    pub gpa: u64,
-    pub size: u64,
+pub(crate) struct RunRegion {
+    pub(crate) gpa: u64,
+    pub(crate) size: u64,
 }
 
 /// One launch-time write into guest RAM, already derived by `dillo`.
 #[derive(Debug)]
-pub struct RunWrite {
-    pub section: String,
-    pub gpa: u64,
-    pub data: Vec<u8>,
+#[allow(dead_code)]
+pub(crate) struct RunWrite {
+    pub(crate) section: String,
+    pub(crate) gpa: u64,
+    pub(crate) data: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -82,7 +83,7 @@ struct RunMemoryPlan {
 /// guest launch writes owned by the top-level launcher instead of duplicating
 /// those decisions here.
 #[derive(Debug)]
-pub struct Preflight {
+pub(crate) struct Preflight {
     parsed: dillo_pmi::ParsedPmi,
     platform: dillo_platform::Machine,
     memslots: Vec<RunRegion>,
@@ -91,7 +92,7 @@ pub struct Preflight {
 }
 
 impl Preflight {
-    pub fn new(
+    pub(crate) fn new(
         parsed: dillo_pmi::ParsedPmi,
         platform: dillo_platform::Machine,
         memslots: impl IntoIterator<Item = RunRegion>,
@@ -141,9 +142,9 @@ use vm_memory::{GuestAddress, GuestMemoryMmap};
 /// Top-level VM-child entry point (Windows / Windows Hypervisor Platform).
 ///
 /// This keeps the binary and workspace build linked through the normal
-/// `dillo-vm` boundary while the WHP memory/vCPU run path is filled in.
+/// selected-runner boundary while the WHP memory/vCPU run path is filled in.
 #[cfg(target_os = "windows")]
-pub fn run(
+pub(crate) fn run(
     preflight: Preflight,
     vcpus: u32,
     supervisor_shutdown: &'static AtomicBool,
@@ -434,7 +435,7 @@ fn run_windows_vcpu_loop(
 /// (ns16550a serial + PCIe ECAM + virtio-console BARs), and runs all vCPUs (thread-per-vCPU
 /// with userspace PSCI). A guest reboot warm-restarts in place; SYSTEM_OFF exits.
 #[cfg(target_os = "macos")]
-pub fn run(
+pub(crate) fn run(
     preflight: Preflight,
     vcpus: u32,
     _supervisor_shutdown: &'static AtomicBool,
@@ -797,7 +798,7 @@ mod macos_tests {
 /// load sections, synthesizes + writes the DTBO, spawns `vcpus`
 /// vCPU threads, and runs until guest shutdown.
 #[cfg(target_os = "linux")]
-pub fn run(
+pub(crate) fn run(
     preflight: Preflight,
     vcpus: u32,
     supervisor_shutdown: &'static AtomicBool,

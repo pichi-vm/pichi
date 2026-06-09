@@ -1002,6 +1002,15 @@ Completed changes:
   thread-backed `MmioDeviceHandle`; `VirtioDeviceHost` no longer exposes
   `adopt_process`, and `dillo_machine::Machine` no longer has a one-value
   `DEVICE_MODEL` constant.
+- Removed the `dillo-vm` package from the workspace and from every crate
+  dependency.
+- Moved the remaining selected runner into `dillo/src/machine_select/runner.rs`
+  and kept `dillo/src/main.rs` target-neutral.
+- Moved `dillo-hypervisor`, `dillo-platform`, `dillo-pmi`, and `vm-pci` out of
+  the old `dillo-vm/deps` path into first-class `dillo/deps/*` crates.
+- Deleted the obsolete `dillo/deps/dillo-vm` directory.
+- Extended the architecture cfg guard so target cfg is confined to the
+  `dillo/src/machine_select` module tree.
 
 Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 cargo check -p dillo-mmio -p dillo-pci -p dillo-virtio -p dillo-mmio-virtio -p dillo-pci-virtio -p dillo-machine`
@@ -1058,23 +1067,14 @@ CI verification:
   `0d6054f refactor: materialize guest writes in dillo`.
 
 Latest local verification:
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target x86_64-unknown-linux-gnu`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target x86_64-pc-windows-msvc`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-hvf --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-mmio-virtio`
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `git diff --check`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-pci`
-- `grep -R "send_msi\|set_spi" -n dillo/deps/dillo-vm/src dillo/src dillo/deps/dillo-mmio-virtio/src || true`
-- `grep -R "target_os\|target_arch\|target_env\|MmioNotifyEvent\|QueueNotifier\|as_eventfd" -n dillo/deps/dillo-pci-virtio dillo/deps/virtio dillo/deps/dillo-mmio dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-mmio-uart --include='*.rs' --include='Cargo.toml'`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
-- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `find dillo/deps -maxdepth 2 -name dillo-vm -print`
+- `grep -R "dillo-vm/deps\|dillo-vm.workspace\|dillo-vm =" -n Cargo.toml dillo --include='Cargo.toml' --include='*.rs' --include='*.md'`
+- `RUSTC_BOOTSTRAP=1 cargo metadata --no-deps --format-version 1 | grep '"name":"dillo-vm"'`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
 

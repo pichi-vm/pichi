@@ -34,7 +34,7 @@ pub use hvf::{
     Error, GicParams, Vcpu, Vm, create_vcpu_current_thread, force_vcpus_exit, send_msi, set_spi,
 };
 
-/// Re-export the KVM debug-control flags so dillo-vm can configure
+/// Re-export the KVM debug-control flags so dillo can configure
 /// guest-debug modes without depending on `kvm-bindings` directly.
 #[cfg(target_os = "linux")]
 pub mod debug_flags {

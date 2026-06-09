@@ -136,7 +136,7 @@ impl Vm {
     /// Register a userspace memory region.
     ///
     /// SAFETY caveat encoded by KVM's API: `host_addr` must remain valid
-    /// for the lifetime of the slot. Caller (dillo-vm) holds the memfd
+    /// for the lifetime of the slot. Caller holds the memfd
     /// mapping for the VM's entire lifetime.
     pub fn add_memslot(&self, slot: u32, gpa: u64, host_addr: u64, size: u64) -> Result<(), Error> {
         let region = kvm_userspace_memory_region {
@@ -146,7 +146,7 @@ impl Vm {
             memory_size: size,
             userspace_addr: host_addr,
         };
-        // SAFETY: dillo-vm keeps the underlying mmap of `host_addr`
+        // SAFETY: dillo keeps the underlying mmap of `host_addr`
         // alive for the VM's entire lifetime (the memfd + its mapping
         // are owned by the VM child process). KVM does not access this
         // memory after the slot is removed.

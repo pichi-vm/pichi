@@ -14,7 +14,7 @@
 //!
 //! aarch64 only for now; x86 still goes through [`crate::extract`] until it is
 //! ported (see `TODO.md`). This module is additive — `extract`/`Platform` stay
-//! until dillo-vm migrates onto `Machine` (Stage 4).
+//! until dillo migrates fully onto the public `Machine` traits.
 
 use devtree::{OwnedNode, OwnedProperty, OwnedTree, Tree};
 use thiserror::Error;

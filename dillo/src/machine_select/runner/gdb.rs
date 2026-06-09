@@ -28,7 +28,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::backend_select::machine::{DebugExit, Vcpu, debug_flags};
+use super::backend_select::machine::{DebugExit, Vcpu, debug_flags};
 use anyhow::{Context, Result};
 use gdbstub::common::Signal;
 use gdbstub::conn::{Connection, ConnectionExt};
@@ -46,7 +46,7 @@ use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::X86_64_SSE;
 use gdbstub_arch::x86::reg::X86_64CoreRegs;
 
-use crate::memory::GpaMap;
+use super::memory::GpaMap;
 
 /// State shared between the gdb stub and the vCPU dispatch loop.
 pub(crate) struct GdbTarget {

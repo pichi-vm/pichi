@@ -1,4 +1,4 @@
-//! Typed errors for `dillo_vm::run`.
+//! Typed errors for the selected dillo runner.
 //!
 //! Each variant maps to one of the ARCHITECTURE.md §13.4 exit codes
 //! via [`RunError::exit_code`]. `main.rs` is responsible for the
@@ -7,12 +7,13 @@
 use thiserror::Error;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use crate::backend_select::machine as backend_machine;
+use super::backend_select::machine as backend_machine;
 
 /// Exit-code-bearing error for the VM-side run loop. Each variant
 /// corresponds to one of ARCH §13.4's documented categories.
 #[derive(Debug, Error)]
-pub enum RunError {
+#[allow(dead_code)]
+pub(crate) enum RunError {
     // ── exit 10 — PMI parse / validation ───────────────────────────
     #[error("read PMI {path}: {source}")]
     ReadPmi {
@@ -127,7 +128,7 @@ pub enum RunError {
 impl RunError {
     /// Map to the documented exit code from ARCH §13.4.
     #[must_use]
-    pub fn exit_code(&self) -> i32 {
+    pub(crate) fn exit_code(&self) -> i32 {
         match self {
             Self::ReadPmi { .. } | Self::PmiParse(_) => 10,
             Self::DtbExtract(_)

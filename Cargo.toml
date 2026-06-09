@@ -13,11 +13,10 @@ members = [
     "arma/deps/tatu/deps/dtb2acpi",
     "arma/deps/tatu/deps/dtb2e820",
     # dillo-owned (nested by sole consumer)
-    "dillo/deps/dillo-vm",
-    "dillo/deps/dillo-vm/deps/dillo-hypervisor",
-    "dillo/deps/dillo-vm/deps/dillo-platform",
-    "dillo/deps/dillo-vm/deps/dillo-pmi",
-    "dillo/deps/dillo-vm/deps/vm-pci",
+    "dillo/deps/dillo-hypervisor",
+    "dillo/deps/dillo-platform",
+    "dillo/deps/dillo-pmi",
+    "dillo/deps/vm-pci",
     "dillo/deps/dillo-machine",
     "dillo/deps/dillo-machine-hvf",
     "dillo/deps/dillo-machine-kvm",
@@ -34,7 +33,7 @@ members = [
 ]
 exclude = [
     # cargo-fuzz harnesses: nightly + libfuzzer-sys, built out-of-band.
-    "dillo/deps/dillo-vm/deps/dillo-pmi/fuzz",
+    "dillo/deps/dillo-pmi/fuzz",
     "deps/devtree/fuzz",
 ]
 
@@ -75,9 +74,9 @@ pmi = { git = "https://github.com/pichi-vm/pmi" }
 devtree = { path = "deps/devtree" }
 
 # dillo-internal crates
-dillo-pmi = { path = "dillo/deps/dillo-vm/deps/dillo-pmi" }
-dillo-platform = { path = "dillo/deps/dillo-vm/deps/dillo-platform" }
-dillo-hypervisor = { path = "dillo/deps/dillo-vm/deps/dillo-hypervisor" }
+dillo-pmi = { path = "dillo/deps/dillo-pmi" }
+dillo-platform = { path = "dillo/deps/dillo-platform" }
+dillo-hypervisor = { path = "dillo/deps/dillo-hypervisor" }
 dillo-machine = { path = "dillo/deps/dillo-machine" }
 dillo-machine-hvf = { path = "dillo/deps/dillo-machine-hvf" }
 dillo-machine-kvm = { path = "dillo/deps/dillo-machine-kvm" }
@@ -90,8 +89,7 @@ dillo-pci-virtio = { path = "dillo/deps/dillo-pci-virtio" }
 dillo-virtio = { path = "dillo/deps/virtio" }
 dillo-virtio-console = { path = "dillo/deps/dillo-virtio-console" }
 dillo-x86 = { path = "dillo/deps/dillo-x86" }
-dillo-vm = { path = "dillo/deps/dillo-vm" }
-vm-pci = { path = "dillo/deps/dillo-vm/deps/vm-pci" }
+vm-pci = { path = "dillo/deps/vm-pci" }
 
 # Error handling
 anyhow = "1"

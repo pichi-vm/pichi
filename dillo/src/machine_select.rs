@@ -6,3 +6,5 @@ pub(crate) use dillo_machine_hvf as machine;
 
 #[cfg(target_os = "windows")]
 pub(crate) use dillo_machine_whp as machine;
+
+pub(crate) mod runner;

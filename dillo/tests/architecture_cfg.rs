@@ -40,10 +40,7 @@ impl SourceScan {
     fn scan_dillo_sources(&self, failures: &mut Vec<String>) {
         let src = self.manifest.join("src");
         self.visit_rust_files(&src, &mut |path| {
-            if path
-                .file_name()
-                .is_some_and(|name| name == "machine_select.rs")
-            {
+            if is_machine_selection_source(&src, path) {
                 return;
             }
             self.scan_file(&src, path, failures);
@@ -92,4 +89,12 @@ impl SourceScan {
             }
         }
     }
+}
+
+fn is_machine_selection_source(src: &Path, path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == "machine_select.rs")
+        || path
+            .strip_prefix(src)
+            .is_ok_and(|rel| rel.starts_with("machine_select"))
 }
