@@ -15,7 +15,7 @@ use crate::pmi_parse::{Action as PmiAction, FillKind, HostArch, ParseOptions};
 pub struct LaunchPlan {
     pub bytes: Vec<u8>,
     pub parsed: crate::pmi_parse::ParsedPmi,
-    pub platform: dillo_platform::Machine,
+    pub platform: crate::platform::Machine,
     pub memory: MemoryPlan,
     pub guest_writes: Vec<GuestWrite>,
 }
@@ -60,7 +60,7 @@ impl LaunchPlan {
         validate_cpu_profile(parsed.cpu_profile.as_str(), pmi_arch)?;
 
         let dtb = merged_dtb(&bytes, &parsed)?;
-        let platform = dillo_platform::Machine::survey(dtb, platform_arch(host_arch))
+        let platform = crate::platform::Machine::survey(dtb, platform_arch(host_arch))
             .map_err(LaunchError::Coverage)?;
 
         let load_ranges: Vec<(String, u64, u64)> = parsed
@@ -106,10 +106,10 @@ fn pmi_arch(host_arch: HostArchitecture) -> HostArch {
     }
 }
 
-fn platform_arch(host_arch: HostArchitecture) -> dillo_platform::Arch {
+fn platform_arch(host_arch: HostArchitecture) -> crate::platform::Arch {
     match host_arch {
-        HostArchitecture::X86_64 => dillo_platform::Arch::X86_64,
-        HostArchitecture::Aarch64 => dillo_platform::Arch::Aarch64,
+        HostArchitecture::X86_64 => crate::platform::Arch::X86_64,
+        HostArchitecture::Aarch64 => crate::platform::Arch::Aarch64,
     }
 }
 
@@ -130,10 +130,10 @@ pub enum LaunchError {
     MissingMergedDtb,
 
     #[error("base DTB coverage: {0}")]
-    Coverage(dillo_platform::SurveyError),
+    Coverage(crate::platform::SurveyError),
 
     #[error("base DTB / PE cross-validation: {0}")]
-    DtbCrossValidate(dillo_platform::SurveyError),
+    DtbCrossValidate(crate::platform::SurveyError),
 
     #[error("merged_dtb section lies outside the PMI file")]
     MalformedMergedDtb,
@@ -172,9 +172,9 @@ impl LaunchError {
 fn guest_writes(
     bytes: &[u8],
     parsed: &crate::pmi_parse::ParsedPmi,
-    platform: &dillo_platform::Machine,
+    platform: &crate::platform::Machine,
     memory: &MemoryPlan,
-    arch: dillo_platform::Arch,
+    arch: crate::platform::Arch,
     vcpus: u32,
 ) -> Result<Vec<GuestWrite>, LaunchError> {
     let mut writes = Vec::new();

@@ -13,7 +13,6 @@ members = [
     "arma/deps/tatu/deps/dtb2acpi",
     "arma/deps/tatu/deps/dtb2e820",
     # dillo-owned (nested by sole consumer)
-    "dillo/deps/dillo-platform",
     "dillo/deps/dillo-machine",
     "dillo/deps/dillo-machine-hvf",
     "dillo/deps/dillo-machine-kvm",
@@ -71,7 +70,6 @@ pmi = { git = "https://github.com/pichi-vm/pmi" }
 devtree = { path = "deps/devtree" }
 
 # dillo-internal crates
-dillo-platform = { path = "dillo/deps/dillo-platform" }
 dillo-machine = { path = "dillo/deps/dillo-machine" }
 dillo-machine-hvf = { path = "dillo/deps/dillo-machine-hvf" }
 dillo-machine-kvm = { path = "dillo/deps/dillo-machine-kvm" }

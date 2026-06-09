@@ -376,7 +376,6 @@ dependencies = [
  "dillo-mmio-virtio",
  "dillo-pci",
  "dillo-pci-virtio",
- "dillo-platform",
  "dillo-virtio",
  "dillo-virtio-console",
  "dillo-x86",
@@ -495,14 +494,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dillo-platform"
-version = "0.1.0"
-dependencies = [
- "devtree",
- "thiserror",
-]
-
-[[package]]
 name = "dillo-virtio"
 version = "0.1.0"
 dependencies = [
@@ -528,7 +519,6 @@ version = "0.1.0"
 dependencies = [
  "dillo-mmio",
  "dillo-pci",
- "dillo-platform",
  "log",
 ]
 

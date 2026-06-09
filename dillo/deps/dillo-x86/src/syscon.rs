@@ -61,10 +61,18 @@ pub struct SysconDevice {
     state: Arc<SysconState>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SysconRegister {
+    pub base: u64,
+    pub offset: u64,
+    pub value: u32,
+    pub mask: u32,
+}
+
 impl SysconDevice {
     pub fn new(
         name: &'static str,
-        syscon: dillo_platform::Syscon,
+        syscon: SysconRegister,
         action: SysconAction,
         state: Arc<SysconState>,
     ) -> Self {
@@ -95,7 +103,7 @@ impl SysconDevice {
         (value & self.mask) == (self.value & self.mask)
     }
 
-    pub fn matches_poweroff(poweroff: dillo_platform::Syscon, addr: u64, data: &[u8]) -> bool {
+    pub fn matches_poweroff(poweroff: SysconRegister, addr: u64, data: &[u8]) -> bool {
         let device = Self::new(
             "syscon-poweroff",
             poweroff,
@@ -130,8 +138,8 @@ impl MmioDevice for SysconDevice {
 mod tests {
     use super::*;
 
-    fn syscon() -> dillo_platform::Syscon {
-        dillo_platform::Syscon {
+    fn syscon() -> SysconRegister {
+        SysconRegister {
             base: 0x901_0000,
             offset: 0x10,
             value: 0xCAFE,

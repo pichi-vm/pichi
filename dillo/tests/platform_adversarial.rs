@@ -1,5 +1,5 @@
 //! ARCHITECTURE.md §27.2 defensive-parsing test corpus for
-//! dillo-platform.
+//! dillo::platform.
 //!
 //! Most adversarial DTB tests need a DTB synthesizer to build the
 //! malformed input; vm-fdt was dropped in Phase 0 (dillo uses a
@@ -8,7 +8,7 @@
 //! below cover what's testable with raw byte arrays today; the
 //! richer corpus is stubbed `#[ignore]` with TODOs.
 
-use dillo_platform::{Arch, Error, extract};
+use dillo::platform::{Arch, Error, extract};
 
 #[test]
 fn empty_dtb_rejected() {

@@ -19,7 +19,7 @@
 use devtree::{OwnedNode, OwnedProperty, OwnedTree, Tree};
 use thiserror::Error;
 
-use crate::{Arch, MmioRegion, Pcie, Psci, PsciMethod, Syscon, Uart, VirtioMmio};
+use super::{Arch, MmioRegion, Pcie, Psci, PsciMethod, Syscon, Uart, VirtioMmio};
 
 /// Failures surveying the base DTB into a [`Machine`].
 #[derive(Debug, Error)]

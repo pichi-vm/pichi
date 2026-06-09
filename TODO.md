@@ -1042,6 +1042,12 @@ Completed changes:
   separate parser crate alive.
 - Removed `dillo-pmi` from workspace members, workspace dependencies, source
   imports, and lockfile package entries.
+- Retired the standalone `dillo-platform` crate by moving its DTB extraction
+  and drain-to-empty survey modules into `dillo::platform`.
+- Decoupled `dillo-x86` from dillo-specific platform survey types; x86 syscon
+  devices now take a `dillo_x86::syscon::SysconRegister` descriptor.
+- Removed `dillo-platform` from workspace members, workspace dependencies,
+  source imports, and lockfile package entries.
 
 Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 cargo check -p dillo-mmio -p dillo-pci -p dillo-virtio -p dillo-mmio-virtio -p dillo-pci-virtio -p dillo-machine`

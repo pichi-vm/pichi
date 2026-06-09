@@ -27,8 +27,8 @@ This design is derived from current code and primary specs.
 | Current `PciRoot` already owns ECAM plus BAR windows and implements `MmioDevice`. | `dillo/deps/dillo-vm/src/pci.rs:188`, `dillo/deps/dillo-vm/src/pci.rs:265` |
 | Current `PciDevice`, `VirtioDevice`, and `MsixNotifier` are already separable traits. | `dillo/deps/dillo-pci/src/lib.rs`, `dillo/deps/dillo-virtio/src/device.rs`, `dillo/deps/dillo-pci/src/msix.rs` |
 | Current `BackendVm` exposes PCI-specific MSI-X notifier construction; the target split must remove that transport leak from the machine boundary. | `dillo/deps/dillo-vm/src/backend.rs:64`, `dillo/deps/dillo-vm/src/backend.rs:74` |
-| Current `dillo-platform::machine` already proves the drain-to-empty DTB survey pattern: materialize an `OwnedTree`, run self-routing `from_tree` constructors, and fail on residual nodes/properties. | `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:1`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:477`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:521` |
-| Current `dillo-platform::machine` already tracks region provenance and distinguishes required properties from acknowledged pass-through properties. | `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:121`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:157`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:1167`, `dillo/deps/dillo-vm/deps/dillo-platform/src/machine.rs:1190` |
+| Current `dillo::platform::machine` already proves the drain-to-empty DTB survey pattern: materialize an `OwnedTree`, run self-routing `from_tree` constructors, and fail on residual nodes/properties. | `dillo/src/platform/machine.rs:1`, `dillo/src/platform/machine.rs:477`, `dillo/src/platform/machine.rs:521` |
+| Current `dillo::platform::machine` already tracks region provenance and distinguishes required properties from acknowledged pass-through properties. | `dillo/src/platform/machine.rs:121`, `dillo/src/platform/machine.rs:157`, `dillo/src/platform/machine.rs:1167`, `dillo/src/platform/machine.rs:1190` |
 | Current `dillo-pmi` already decodes `vm:vcpu` into an arch-erased parsed value; target `dillo-machine` must not invent a universal CPU-state struct. | `dillo/deps/dillo-vm/deps/dillo-pmi/src/parse.rs:47`, `dillo/deps/dillo-vm/deps/dillo-pmi/src/parse.rs:83` |
 | Current vCPU execution still routes MMIO through callbacks owned by `dillo-vm`; the target no-callback `Vcpu::run()` moves MMIO routing below the `Machine` boundary. | `dillo/deps/dillo-vm/src/lib.rs:1701`, `dillo/deps/dillo-vm/src/lib.rs:1713`, `dillo/deps/dillo-vm/src/mmio_bus.rs:49` |
 | vCPU exits are now backend-local implementation details in the selected machine crate; remaining conformance work should ensure only lifecycle stops cross the `dillo-machine` trait boundary. | `dillo/deps/dillo-machine-kvm/src/lib.rs`, `dillo/deps/dillo-machine-hvf/src/lib.rs`, `dillo/deps/dillo-machine-whp/src/lib.rs` |
@@ -48,11 +48,10 @@ Current crates are evidence and migration sources:
 - `dillo-vm` should disappear as a monolith.
 - `dillo-hypervisor` has been retired; its former KVM, HVF, and WHP
   implementation modules now live in the owning `dillo-machine-*` crates.
-- `dillo-pmi` can become a `dillo` module unless reuse justifies a crate.
-- `dillo-platform::machine::Machine` is today's DTB survey result, not the
-  target `dillo-machine::Machine` trait. That name collision must be resolved
-  before both concepts become public in the same API surface. The existing
-  survey code can become a `dillo` DTB-survey module or a renamed crate.
+- `dillo-pmi` has been retired into `dillo::pmi_parse`.
+- `dillo-platform` has been retired into `dillo::platform`; its
+  `platform::machine::Machine` is today's DTB survey result, not the target
+  `dillo-machine::Machine` trait.
 - `dillo-device` is an older process/thread experiment, not the target boundary.
 - current `virtio`, `virtio-pci`, and `vm-pci` may be renamed, split,
   absorbed, or upstreamed depending on the final rust-vmm alignment.
@@ -200,9 +199,8 @@ architecture-specific interrupt decoding. Backend crates may depend on these as
 appropriate. `dillo` should not directly manipulate their internals.
 
 The DTB survey layer consumes base DTB and overlay rules and returns typed
-platform facts with provenance. Today this logic lives in `dillo-platform`, but
-the target design does not require that crate name or that it remain a separate
-crate. It does not know backend crates or concrete device implementations.
+platform facts with provenance. This logic now lives in `dillo::platform`; it
+does not know backend crates or concrete device implementations.
 
 `pmi` is the upstream PMI spec/data crate and must be consumed from
 `https://github.com/pichi-vm/pmi`, not from a dillo-local fork. Today's
@@ -333,7 +331,7 @@ device's constructor parameters: `reg` windows, interrupts, DMA/notification
 facts, and device-specific properties.
 
 This is a publicized/generalized form of today's
-`dillo-platform::machine::*::from_tree(&mut OwnedTree, &mut ResourcePlan, ...)`
+`dillo::platform::machine::*::from_tree(&mut OwnedTree, &mut ResourcePlan, ...)`
 pattern. That code already proves the important mechanics: self-routing
 constructors, `require` for properties that drive host setup, `ack` for claimed
 properties whose values do not drive host setup, `ensure_drained` for per-node
@@ -1163,7 +1161,7 @@ This design is satisfied only when all of the following can be verified:
 
 The target design should build on code that already exists:
 
-- `dillo-platform::machine` already demonstrates the drain-to-empty survey,
+- `dillo::platform::machine` already demonstrates the drain-to-empty survey,
   self-routing `from_tree` constructors, `require` vs `ack`, per-node
   `ensure_drained`, origin-tracked region declarations, and residual-tree
   failure.

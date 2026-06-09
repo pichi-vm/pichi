@@ -27,13 +27,13 @@ pub(crate) enum RunError {
 
     // ── exit 11 — DTB parse / validation ───────────────────────────
     #[error("base DTB extraction: {0}")]
-    DtbExtract(dillo_platform::Error),
+    DtbExtract(dillo::platform::Error),
 
     #[error("base DTB coverage (undeclared hardware / unclaimed node): {0}")]
-    Coverage(dillo_platform::SurveyError),
+    Coverage(dillo::platform::SurveyError),
 
     #[error("base DTB ↔ PE cross-validation: {0}")]
-    DtbCrossValidate(dillo_platform::Error),
+    DtbCrossValidate(dillo::platform::Error),
 
     #[error("base DTB is missing required device `{0}`")]
     MissingRequiredDevice(&'static str),

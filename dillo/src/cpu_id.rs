@@ -33,8 +33,8 @@ pub fn midr_to_compatible(midr: u64) -> Option<&'static str> {
 /// the overlay. `None` on non-aarch64 (x86-64 has no DT cpu-compatible
 /// vocabulary and no consumer for one) and for aarch64 cores not in the
 /// table — in both cases the overlay omits the property.
-pub fn host_cpu_compatible(arch: dillo_platform::Arch) -> Option<&'static str> {
-    if arch != dillo_platform::Arch::Aarch64 {
+pub fn host_cpu_compatible(arch: crate::platform::Arch) -> Option<&'static str> {
+    if arch != crate::platform::Arch::Aarch64 {
         return None;
     }
     // Host MIDR_EL1 via sysfs (equals the guest's under KVM passthrough).
@@ -85,6 +85,6 @@ mod tests {
 
     #[test]
     fn host_compatible_is_none_on_x86() {
-        assert_eq!(host_cpu_compatible(dillo_platform::Arch::X86_64), None);
+        assert_eq!(host_cpu_compatible(crate::platform::Arch::X86_64), None);
     }
 }

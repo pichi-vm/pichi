@@ -85,16 +85,26 @@ struct RunMemoryPlan {
 #[derive(Debug)]
 pub(crate) struct Preflight {
     parsed: dillo::pmi_parse::ParsedPmi,
-    platform: dillo_platform::Machine,
+    platform: dillo::platform::Machine,
     memslots: Vec<RunRegion>,
     memory_nodes: Vec<RunRegion>,
     guest_writes: Vec<RunWrite>,
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn syscon_register(syscon: dillo::platform::Syscon) -> syscon::SysconRegister {
+    syscon::SysconRegister {
+        base: syscon.base,
+        offset: syscon.offset,
+        value: syscon.value,
+        mask: syscon.mask,
+    }
+}
+
 impl Preflight {
     pub(crate) fn new(
         parsed: dillo::pmi_parse::ParsedPmi,
-        platform: dillo_platform::Machine,
+        platform: dillo::platform::Machine,
         memslots: impl IntoIterator<Item = RunRegion>,
         memory_nodes: impl IntoIterator<Item = RunRegion>,
         guest_writes: impl IntoIterator<Item = RunWrite>,
@@ -112,7 +122,7 @@ impl Preflight {
         self,
     ) -> (
         dillo::pmi_parse::ParsedPmi,
-        dillo_platform::Machine,
+        dillo::platform::Machine,
         RunMemoryPlan,
         Vec<RunWrite>,
     ) {
@@ -287,7 +297,7 @@ pub(crate) fn run(
         &mut vm,
         Arc::new(syscon::SysconDevice::new(
             "syscon-poweroff",
-            poweroff,
+            syscon_register(poweroff),
             syscon::SysconAction::Poweroff,
             Arc::clone(&syscon_state),
         )),
@@ -297,7 +307,7 @@ pub(crate) fn run(
             &mut vm,
             Arc::new(syscon::SysconDevice::new(
                 "syscon-reboot",
-                reboot,
+                syscon_register(reboot),
                 syscon::SysconAction::Reboot,
                 Arc::clone(&syscon_state),
             )),
@@ -505,7 +515,7 @@ pub(crate) fn run(
     let gic = machine
         .gic
         .as_ref()
-        .ok_or_else(|| RunError::DtbExtract(dillo_platform::Error::MissingNode("GIC config")))?;
+        .ok_or_else(|| RunError::DtbExtract(dillo::platform::Error::MissingNode("GIC config")))?;
     let gic_params = backend_machine::GicParams {
         dist_base: gic.dist_base,
         redist_base: gic.redist_base,
@@ -934,7 +944,7 @@ pub(crate) fn run(
         &mut vm,
         Arc::new(syscon::SysconDevice::new(
             "syscon-poweroff",
-            poweroff,
+            syscon_register(poweroff),
             syscon::SysconAction::Poweroff,
             Arc::clone(&syscon_state),
         )),
@@ -944,7 +954,7 @@ pub(crate) fn run(
             &mut vm,
             Arc::new(syscon::SysconDevice::new(
                 "syscon-reboot",
-                reboot,
+                syscon_register(reboot),
                 syscon::SysconAction::Reboot,
                 Arc::clone(&syscon_state),
             )),
@@ -1101,7 +1111,12 @@ pub(crate) fn run(
         }
         let stream = gdb::wait_for_gdb(port).map_err(|e| RunError::VcpuThread(e.to_string()))?;
         let gpa_arc = Arc::new(gpa_map);
-        let target = gdb::GdbTarget::new(vcpu0, gpa_arc, poweroff, Arc::clone(&shutdown));
+        let target = gdb::GdbTarget::new(
+            vcpu0,
+            gpa_arc,
+            syscon_register(poweroff),
+            Arc::clone(&shutdown),
+        );
         gdb::run_loop(target, stream);
         return Ok(0);
     }

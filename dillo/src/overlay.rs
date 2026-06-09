@@ -186,10 +186,10 @@ mod tests {
         fdt.end_node(); // cpus
         fdt.end_node(); // root
         let dtb = fdt.finish();
-        let err = dillo_platform::extract(&dtb, dillo_platform::Arch::X86_64)
+        let err = crate::platform::extract(&dtb, crate::platform::Arch::X86_64)
             .expect_err("base declaring /cpus must be rejected");
         assert!(
-            matches!(err, dillo_platform::Error::BaseHasCpus),
+            matches!(err, crate::platform::Error::BaseHasCpus),
             "got {err:?}"
         );
     }
