@@ -47,7 +47,7 @@ use backend_select::machine as backend_machine;
 use dillo_machine::VcpuStop;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_mmio::Attach;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_mmio::Interrupt;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::MsixNotifier;
@@ -571,7 +571,9 @@ pub fn run(
     //     notifier. ECAM + each BAR register on the MMIO bus.
     if machine.has_pcie {
         let msix_vectors: u16 = 3; // 2 queues (rx/tx) + config-change vector
-        let notifier = Arc::new(hvf_devices::HvfMsixNotifier::new(msix_vectors));
+        let notifier = Arc::new(hvf_devices::HvfMsixNotifier::new(
+            vm.create_message_interrupt_domain(msix_vectors),
+        ));
         let lookup_notifier = Arc::clone(&notifier);
         let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
             std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new(
@@ -607,11 +609,7 @@ pub fn run(
         let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let irq = dillo_mmio_virtio::WiredIrq::new(
             slot.irq,
-            Arc::new(|intid, level| {
-                if let Err(e) = backend_machine::set_spi(intid, level) {
-                    log::warn!("HVF wired IRQ set SPI {intid}={level} failed: {e}");
-                }
-            }),
+            Interrupt::new(Arc::new(vm.create_spi_interrupt_line(slot.irq))),
         );
         let interrupt_irq = irq.clone();
         let is = Arc::clone(&int_status);

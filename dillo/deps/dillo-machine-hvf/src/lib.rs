@@ -10,12 +10,13 @@ mod imp {
 
     use dillo_machine::VcpuStop;
     use dillo_mmio::{
-        Attach, MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt,
-        MmioSpawnError, SharedMemory,
+        Attach, Interrupt, InterruptError, InterruptLine, MessageInterrupt, MessageInterruptDomain,
+        MmioAttachment, MmioBus, MmioDevice, MmioDeviceHandle, MmioInterrupt, MmioSpawnError,
+        SharedMemory,
     };
 
     use dillo_hypervisor::VmExit;
-    pub use dillo_hypervisor::{Error, GicParams, VcpuHandle, force_vcpus_exit, send_msi, set_spi};
+    pub use dillo_hypervisor::{Error, GicParams, VcpuHandle, force_vcpus_exit};
 
     pub const HOST_ARCH: dillo_machine::HostArchitecture = dillo_machine::HostArchitecture::Aarch64;
 
@@ -145,11 +146,114 @@ mod imp {
             Arc::clone(&self.mmio_bus)
         }
 
+        pub fn create_spi_interrupt_line(&self, intid: u32) -> SpiInterruptLine {
+            SpiInterruptLine { intid }
+        }
+
+        pub fn create_message_interrupt_domain(
+            &self,
+            count: u16,
+        ) -> Arc<dyn MessageInterruptDomain> {
+            Arc::new(GicMessageInterruptDomain::new(count))
+        }
+
         pub fn set_shared_memory_capabilities(
             &mut self,
             shared_memory: Vec<Arc<dyn SharedMemory>>,
         ) {
             self.shared_memory = shared_memory;
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct SpiInterruptLine {
+        intid: u32,
+    }
+
+    impl InterruptLine for SpiInterruptLine {
+        fn signal(&self) {
+            if let Err(e) = self.set_level(true) {
+                log::warn!("HVF SPI {} interrupt signal failed: {e}", self.intid);
+            }
+        }
+
+        fn set_level(&self, level: bool) -> Result<(), InterruptError> {
+            dillo_hypervisor::set_spi(self.intid, level)
+                .map_err(|e| InterruptError::Delivery(e.to_string()))
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct GicMessageInterruptDomain {
+        inner: Arc<GicMessageInterruptDomainInner>,
+    }
+
+    #[derive(Debug)]
+    struct GicMessageInterruptDomainInner {
+        vectors: Mutex<Vec<MessageInterrupt>>,
+        enabled: AtomicBool,
+    }
+
+    impl GicMessageInterruptDomain {
+        fn new(count: u16) -> Self {
+            Self {
+                inner: Arc::new(GicMessageInterruptDomainInner {
+                    vectors: Mutex::new(vec![
+                        MessageInterrupt {
+                            address: 0,
+                            data: 0,
+                            masked: true,
+                        };
+                        count as usize
+                    ]),
+                    enabled: AtomicBool::new(false),
+                }),
+            }
+        }
+    }
+
+    impl GicMessageInterruptDomainInner {
+        fn message_for(&self, vector: u16) -> Option<MessageInterrupt> {
+            if !self.enabled.load(Ordering::SeqCst) {
+                return None;
+            }
+            let message = *self
+                .vectors
+                .lock()
+                .expect("message interrupt domain poisoned")
+                .get(vector as usize)?;
+            (!message.masked).then_some(message)
+        }
+    }
+
+    impl MessageInterruptDomain for GicMessageInterruptDomain {
+        fn update(&self, vector: u16, msg: MessageInterrupt) -> Result<(), InterruptError> {
+            let mut vectors = self
+                .inner
+                .vectors
+                .lock()
+                .expect("message interrupt domain poisoned");
+            if let Some(slot) = vectors.get_mut(vector as usize) {
+                *slot = msg;
+            }
+            Ok(())
+        }
+
+        fn enabled(&self, enabled: bool) -> Result<(), InterruptError> {
+            self.inner.enabled.store(enabled, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn interrupt(&self, vector: u16) -> Option<Interrupt> {
+            let domain = Arc::clone(&self.inner);
+            Some(Interrupt::from_fn(move || {
+                let Some(message) = domain.message_for(vector) else {
+                    return;
+                };
+                if let Err(e) = dillo_hypervisor::send_msi(message.address, message.data) {
+                    log::warn!("HVF MSI-X inject (vector {vector}) failed: {e}");
+                }
+            }))
         }
     }
 

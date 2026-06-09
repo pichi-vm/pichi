@@ -1,92 +1,56 @@
 //! macOS/HVF device glue for virtio-console over virtio-pci.
 //!
 //! Two pieces the Linux path provides differently:
-//!   - [`HvfMsixNotifier`] — instead of routing irqfds through KVM, it records
-//!     the MSI-X message (address + data) the guest programs per vector, and
-//!     hands out an [`Interrupt`] closure that injects it through the in-kernel
-//!     GIC (`hv_gic_send_msi`) when a queue completes.
+//!   - [`HvfMsixNotifier`] — adapts PCI MSI-X table writes onto a backend-owned
+//!     message-interrupt domain.
 //!   - [`build_guest_memory`] — a `vm-memory` view over HVF-mapped guest RAM,
 //!     built from host pointers (no memfd).
 
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
-use dillo_mmio::Interrupt;
+use dillo_mmio::{Interrupt, MessageInterrupt, MessageInterruptDomain};
 use dillo_pci::{MsixNotifier, MsixTableEntry};
 use vm_memory::mmap::MmapRegionBuilder;
 use vm_memory::{GuestAddress, GuestMemoryMmap, GuestRegionMmap};
 
-use crate::backend_select::machine as backend_machine;
-
-/// One MSI-X table vector as last programmed by the guest.
-#[derive(Clone, Copy, Default)]
-struct Vector {
-    /// Full 64-bit message address (doorbell).
-    addr: u64,
-    /// Message data (the MBI SPI number for our GIC).
-    data: u32,
-    /// Per-vector mask bit.
-    masked: bool,
-}
-
-/// MSI-X notifier for the HVF path: records guest-programmed vectors and
-/// injects them through the in-kernel GIC. Implements [`MsixNotifier`]
-/// (the same interface the KVM `IrqfdNotifier` implements).
+/// MSI-X notifier for the HVF path: converts PCI MSI-X table changes into the
+/// backend-neutral message-interrupt domain that `dillo-machine-hvf` owns.
 pub(crate) struct HvfMsixNotifier {
-    vectors: Mutex<Vec<Vector>>,
-    /// MSI-X effectively enabled (enable bit set AND function-mask clear).
-    enabled: AtomicBool,
+    domain: Arc<dyn MessageInterruptDomain>,
 }
 
 impl HvfMsixNotifier {
-    pub(crate) fn new(count: u16) -> Self {
-        Self {
-            vectors: Mutex::new(vec![Vector::default(); count as usize]),
-            enabled: AtomicBool::new(false),
-        }
+    pub(crate) fn new(domain: Arc<dyn MessageInterruptDomain>) -> Self {
+        Self { domain }
     }
 
     /// An [`Interrupt`] that injects the MSI currently programmed for `vector`.
     /// The table is read at *signal* time, so a vector reprogrammed after the
     /// device is activated is still honored.
     pub(crate) fn interrupt_for(self: &Arc<Self>, vector: u16) -> Option<Interrupt> {
-        let me = Arc::clone(self);
-        Some(Interrupt::from_fn(move || {
-            if let Some((addr, intid)) = me.msi_for(vector) {
-                if let Err(e) = backend_machine::send_msi(addr, intid) {
-                    log::warn!("hvf MSI-X inject (vector {vector}) failed: {e}");
-                }
-            }
-        }))
-    }
-
-    fn msi_for(&self, vector: u16) -> Option<(u64, u32)> {
-        if !self.enabled.load(Ordering::SeqCst) {
-            return None;
-        }
-        let vectors = self.vectors.lock().expect("msix table poisoned");
-        let v = vectors.get(vector as usize)?;
-        if v.masked {
-            return None;
-        }
-        Some((v.addr, v.data))
+        self.domain.interrupt(vector)
     }
 }
 
 impl MsixNotifier for HvfMsixNotifier {
     fn vector_updated(&self, vector: u16, entry: &MsixTableEntry) {
-        let mut vectors = self.vectors.lock().expect("msix table poisoned");
-        if let Some(slot) = vectors.get_mut(vector as usize) {
-            slot.addr = (u64::from(entry.msg_addr_hi) << 32) | u64::from(entry.msg_addr_lo);
-            slot.data = entry.msg_data;
-            slot.masked = entry.is_masked();
+        if let Err(e) = self.domain.update(
+            vector,
+            MessageInterrupt {
+                address: (u64::from(entry.msg_addr_hi) << 32) | u64::from(entry.msg_addr_lo),
+                data: entry.msg_data,
+                masked: entry.is_masked(),
+            },
+        ) {
+            log::warn!("HVF MSI-X vector {vector} update failed: {e}");
         }
     }
 
     fn msix_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::SeqCst);
+        if let Err(e) = self.domain.enabled(enabled) {
+            log::warn!("HVF MSI-X enable={enabled} failed: {e}");
+        }
     }
 }
 

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dillo_mmio::{MmioAttachment, MmioDevice, MmioJoinError, MmioWindow, SharedMemory};
+use dillo_mmio::{Interrupt, MmioAttachment, MmioDevice, MmioJoinError, MmioWindow, SharedMemory};
 use dillo_virtio::queue::Queue;
 use dillo_virtio::{
     ActivateError, DeviceJoinError, Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle,
@@ -55,7 +55,7 @@ const INT_VRING: u32 = 0x1;
 #[derive(Clone)]
 pub struct WiredIrq {
     intid: u32,
-    set_level: Arc<dyn Fn(u32, bool) + Send + Sync>,
+    interrupt: Interrupt,
 }
 
 impl std::fmt::Debug for WiredIrq {
@@ -67,8 +67,8 @@ impl std::fmt::Debug for WiredIrq {
 }
 
 impl WiredIrq {
-    pub fn new(intid: u32, set_level: Arc<dyn Fn(u32, bool) + Send + Sync>) -> Self {
-        Self { intid, set_level }
+    pub fn new(intid: u32, interrupt: Interrupt) -> Self {
+        Self { intid, interrupt }
     }
 
     pub fn intid(&self) -> u32 {
@@ -76,7 +76,12 @@ impl WiredIrq {
     }
 
     fn set(&self, level: bool) {
-        (self.set_level)(self.intid, level);
+        if let Err(e) = self.interrupt.set_level(level) {
+            log::warn!(
+                "virtio-mmio wired IRQ {} set_level({level}) failed: {e}",
+                self.intid
+            );
+        }
     }
 }
 

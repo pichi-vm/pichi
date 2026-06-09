@@ -917,6 +917,11 @@ Completed changes:
   into `dillo-machine-kvm` would make the KVM backend depend on PCI, which
   violates the target crate graph. It must disappear when `dillo` owns final
   composition.
+- Moved HVF wired SPI and message-interrupt injection behind
+  `dillo-machine-hvf` implementations of `dillo-mmio::InterruptLine` and
+  `MessageInterruptDomain`. The remaining macOS PCI MSI-X glue now only adapts
+  PCI table writes into the backend-owned message domain, and virtio-mmio wired
+  IRQs now use a resolved `dillo-mmio::Interrupt` instead of a raw closure.
 - Hid the KVM `VmFd` accessor inside `dillo-machine-kvm`; `dillo-vm` now asks
   the backend crate to create its IRQ manager instead of deriving that state
   from a raw backend handle.
@@ -1030,13 +1035,18 @@ CI verification:
   `88846c4 ci: preserve hvf signing for boot tests`.
 - `27176313907` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
   `e0f8301 test: sign dillo in macos boot fixture`.
+- `27176737608` passed on `cargo fmt`, `ubuntu-24.04`, and `windows-2025` for
+  `6cfc53f refactor: remove private backend vm facade`.
 
 Latest local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-hvf --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-mmio-virtio`
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
 - `git diff --check`
+- `grep -R "send_msi\|set_spi" -n dillo/deps/dillo-vm/src dillo/src dillo/deps/dillo-mmio-virtio/src || true`
 - `grep -R "target_os\|target_arch\|target_env\|MmioNotifyEvent\|QueueNotifier\|as_eventfd" -n dillo/deps/dillo-pci-virtio dillo/deps/virtio dillo/deps/dillo-mmio dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-mmio-uart --include='*.rs' --include='Cargo.toml'`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
