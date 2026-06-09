@@ -1162,7 +1162,7 @@ Completed changes:
 
 ## Stage 16 - Add Linux arm64 KVM CI
 
-Status: in progress.
+Status: complete.
 
 Goal: add native Linux arm64 KVM as an empirical architecture-isolation test
 before conformance loops begin.
@@ -1197,6 +1197,11 @@ Completed changes:
 - Made the Linux hugepage CI step check `vm.nr_hugepages` before trying sudo;
   self-hosted Linux/aarch64 runs without sudo because the host preconfigures
   the required 1024 hugepages.
+- Fixed the `snuffler` guest fixture so host tests use the host test harness
+  while guest boots still use the C ABI entrypoint, and stopped duplicating the
+  full report directly to the serial fallback device.
+- CI run `27194744544` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
@@ -1206,7 +1211,10 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p snuffler`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture`
+- `ssh -A nathaniel@ares.local 'cd ~/Projects/pichi && PATH=... RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test --workspace'`
+- `ssh -A nathaniel@ares.local 'cd ~/Projects/pichi && PATH=... RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
 - `ssh -A nathaniel@ares.local 'pages=$(sysctl -n vm.nr_hugepages); echo pages=$pages; if [ "$pages" -lt 1024 ]; then sudo sysctl -w vm.nr_hugepages=1024; fi; pages=$(sysctl -n vm.nr_hugepages); echo pages_after=$pages; sudo -u github-runner-ares sudo -n true && echo runner-sudo-ok || echo runner-sudo-no'`
 
 Local verification limitation:
@@ -1217,7 +1225,7 @@ Local verification limitation:
 
 ## Stage 17 - Conformance loop 1
 
-Status: pending.
+Status: in progress.
 
 Goal: perform the first full conformance pass over implementation,
 `DILLO-CRATE-SPLIT.md`, and this plan.
@@ -1236,6 +1244,44 @@ Success criteria:
 - Every resolved mismatch has code or doc evidence.
 - Any unresolved mismatch is written down for the next loop.
 - Default local verification and all restored target checks pass.
+
+Completed changes:
+- Removed `MmioWindow::name`; MMIO window identity is now only address/size,
+  matching DTB-derived routing facts instead of caller labels.
+- Converted public `MmioDevice` and `PciDevice` routed access methods from
+  `bool` to typed `Result` errors; compatibility dispatchers still collapse to
+  `bool` internally where old call sites require it.
+- Added `Machine::DEVICE_MODEL` and generic lifecycle hooks
+  `prepare_vcpu_run` / `reset_for_reboot`; `dillo` no longer calls
+  backend-specific GIC lifecycle methods.
+- Removed backend terminology from portable device comments/logs where it was
+  not part of the portable trait contract.
+
+Unresolved mismatches carried to Stage 18:
+- `Machine`/`Vcpu` still cannot require `Send`/`Sync`: the current HVF
+  `applevisor` VM/vCPU wrappers are empirically thread-bound. Stage 18 must
+  decide whether backends construct vCPUs inside worker threads or return a
+  separate portable run handle before tightening this bound.
+- Production `dillo` no longer controls GIC lifecycle directly, but the
+  compatibility runner still has broad OS/arch `cfg` structure. Stage 18 must
+  continue moving non-selection differences into `dillo-machine-*`.
+- Runtime shared-memory window acquisition for virtio descriptor buffers exists
+  through `SharedMemory::region`, but the machine-mediated API remains
+  compatibility-backed and must be reconciled with the final CC-first model.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-mmio -p dillo-pci -p dillo-pci-virtio -p dillo-mmio-virtio -p dillo-mmio-uart -p dillo-machine -p dillo-machine-whp -p dillo-machine-kvm -p dillo-machine-hvf`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p snuffler`
+- `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+- `ssh -A nathaniel@ares.local 'cd /tmp/pichi-stage17 && PATH=... RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test --workspace'`
+- `ssh -A nathaniel@ares.local 'cd /tmp/pichi-stage17 && PATH=... RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
 
 ## Stage 18 - Conformance loop 2
 

@@ -12,6 +12,14 @@ pub enum HostArchitecture {
     Aarch64,
 }
 
+/// Device-host execution model used by one machine backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceModel {
+    Thread,
+
+    Process,
+}
+
 /// A constructed VM capable of accepting DTB-derived resources and vCPUs.
 pub trait Machine: Sized + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -20,8 +28,20 @@ pub trait Machine: Sized + 'static {
     type Cpu: 'static;
     type Memory: 'static;
 
+    const DEVICE_MODEL: DeviceModel;
+
     /// Make every currently running vCPU for this machine leave `Vcpu::run`.
     fn request_vcpu_exit(&self) -> Result<(), Self::Error>;
+
+    /// Prepare backend-owned run state after all vCPUs have been created.
+    fn prepare_vcpu_run(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Reset backend-owned state before replaying launch writes for a guest reboot.
+    fn reset_for_reboot(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 /// One runnable vCPU owned by a machine backend.
@@ -88,6 +108,8 @@ mod tests {
         type Vcpu = TestVcpu;
         type Cpu = TestCpu;
         type Memory = TestMemory;
+
+        const DEVICE_MODEL: DeviceModel = DeviceModel::Thread;
 
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Ok(())

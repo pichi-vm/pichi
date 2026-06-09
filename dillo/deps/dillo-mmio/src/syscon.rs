@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use crate::{MmioDevice, MmioWindow};
+use crate::{MmioDevice, MmioError, MmioWindow};
 
 const WINDOW_SIZE: u64 = 0x1000;
 
@@ -70,15 +70,9 @@ pub struct SysconRegister {
 }
 
 impl SysconDevice {
-    pub fn new(
-        name: &'static str,
-        syscon: SysconRegister,
-        action: SysconAction,
-        state: Arc<SysconState>,
-    ) -> Self {
+    pub fn new(syscon: SysconRegister, action: SysconAction, state: Arc<SysconState>) -> Self {
         Self {
             window: MmioWindow {
-                name,
                 base: syscon.base,
                 size: WINDOW_SIZE,
             },
@@ -105,7 +99,6 @@ impl SysconDevice {
 
     pub fn matches_poweroff(poweroff: SysconRegister, addr: u64, data: &[u8]) -> bool {
         let device = Self::new(
-            "syscon-poweroff",
             poweroff,
             SysconAction::Poweroff,
             Arc::new(SysconState::default()),
@@ -120,17 +113,17 @@ impl MmioDevice for SysconDevice {
         std::slice::from_ref(&self.window)
     }
 
-    fn read(&self, _window: MmioWindow, _offset: u64, data: &mut [u8]) -> bool {
+    fn read(&self, _window: MmioWindow, _offset: u64, data: &mut [u8]) -> Result<(), MmioError> {
         data.fill(0);
-        true
+        Ok(())
     }
 
-    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
+    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
         if self.matches(offset, data) {
-            log::info!("guest issued {:?} via {}", self.action, self.window.name);
+            log::info!("guest issued {:?}", self.action);
             self.state.request(self.action);
         }
-        true
+        Ok(())
     }
 }
 
@@ -150,15 +143,12 @@ mod tests {
     #[test]
     fn matching_write_records_action() {
         let state = Arc::new(SysconState::default());
-        let device = SysconDevice::new(
-            "syscon-poweroff",
-            syscon(),
-            SysconAction::Poweroff,
-            Arc::clone(&state),
-        );
+        let device = SysconDevice::new(syscon(), SysconAction::Poweroff, Arc::clone(&state));
         let window = device.windows()[0];
 
-        assert!(device.write(window, 0x10, &0xCAFEu32.to_le_bytes()));
+        device
+            .write(window, 0x10, &0xCAFEu32.to_le_bytes())
+            .expect("syscon write");
 
         assert_eq!(state.action(), Some(SysconAction::Poweroff));
     }
@@ -166,15 +156,12 @@ mod tests {
     #[test]
     fn non_matching_write_is_claimed_without_action() {
         let state = Arc::new(SysconState::default());
-        let device = SysconDevice::new(
-            "syscon-reboot",
-            syscon(),
-            SysconAction::Reboot,
-            Arc::clone(&state),
-        );
+        let device = SysconDevice::new(syscon(), SysconAction::Reboot, Arc::clone(&state));
         let window = device.windows()[0];
 
-        assert!(device.write(window, 0x14, &0xCAFEu32.to_le_bytes()));
+        device
+            .write(window, 0x14, &0xCAFEu32.to_le_bytes())
+            .expect("syscon write");
 
         assert_eq!(state.action(), None);
     }

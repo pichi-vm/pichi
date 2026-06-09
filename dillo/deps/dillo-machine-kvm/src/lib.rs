@@ -461,8 +461,18 @@ mod imp {
         type Cpu = Cpu;
         type Memory = Memory;
 
+        const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
+
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Vm::request_vcpu_exit(self);
+            Ok(())
+        }
+
+        fn prepare_vcpu_run(&mut self) -> Result<(), Self::Error> {
+            #[cfg(target_arch = "aarch64")]
+            {
+                self.inner.init_gic()?;
+            }
             Ok(())
         }
     }
@@ -702,10 +712,6 @@ mod imp {
             count: u16,
         ) -> Arc<dyn MessageInterruptDomain> {
             Arc::new(KvmMessageInterruptDomain::new(self.vm_fd_arc(), count))
-        }
-
-        pub fn init_gic(&self) -> Result<(), Error> {
-            self.inner.init_gic()
         }
     }
 

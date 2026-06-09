@@ -39,7 +39,7 @@ pub use transport::VirtioPciDevice;
 
 use std::sync::Mutex;
 
-use dillo_pci::{BarRegion, PciDevice, PciDeviceHost};
+use dillo_pci::{BarRegion, PciDevice, PciDeviceHost, PciError};
 
 use crate::transport::PciVirtioHost;
 
@@ -83,11 +83,12 @@ impl PciDevice for VirtioPciAdapter {
             .config_read(reg_idx)
     }
 
-    fn config_write(&self, reg_idx: usize, offset: u64, data: &[u8]) {
+    fn config_write(&self, reg_idx: usize, offset: u64, data: &[u8]) -> Result<(), PciError> {
         self.inner
             .lock()
             .expect("virtio PCI transport poisoned")
             .config_write(reg_idx, offset, data);
+        Ok(())
     }
 
     fn name(&self) -> &str {
@@ -98,18 +99,22 @@ impl PciDevice for VirtioPciAdapter {
         &self.bar_regions
     }
 
-    fn bar_read(&self, bar_idx: u8, offset: u64, data: &mut [u8]) -> bool {
+    fn bar_read(&self, bar_idx: u8, offset: u64, data: &mut [u8]) -> Result<(), PciError> {
         self.inner
             .lock()
             .expect("virtio PCI transport poisoned")
             .bar_read(bar_idx, offset, data)
+            .then_some(())
+            .ok_or(PciError::Unsupported)
     }
 
-    fn bar_write(&self, bar_idx: u8, offset: u64, data: &[u8]) -> bool {
+    fn bar_write(&self, bar_idx: u8, offset: u64, data: &[u8]) -> Result<(), PciError> {
         self.inner
             .lock()
             .expect("virtio PCI transport poisoned")
             .bar_write(bar_idx, offset, data)
+            .then_some(())
+            .ok_or(PciError::Unsupported)
     }
 
     fn set_host(&self, host: std::sync::Arc<dyn PciDeviceHost>) {

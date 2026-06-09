@@ -133,7 +133,6 @@ mod tests {
     fn cf8_latch_accepts_byte_writes() {
         let state = Arc::new(LegacyPciState::new());
         let bus = Arc::new(PciRoot::new(MmioWindow {
-            name: "pcie-ecam",
             base: 0x3000_0000,
             size: 0x1000_0000,
         }));
@@ -149,7 +148,6 @@ mod tests {
     fn legacy_cfc_and_ecam_return_identical_config_bytes() {
         let state = Arc::new(LegacyPciState::new());
         let root = Arc::new(PciRoot::new(MmioWindow {
-            name: "pcie-ecam",
             base: 0x3000_0000,
             size: 0x1000_0000,
         }));
@@ -158,7 +156,8 @@ mod tests {
 
         let mut ecam = [0u8; 4];
         let ecam_window = root.windows()[0];
-        assert!(root.read(ecam_window, 0, &mut ecam));
+        root.read(ecam_window, 0, &mut ecam)
+            .expect("ECAM read routed");
 
         assert_eq!(
             pio_read(&state, &root, CFC_PORT_BASE, 4).to_le_bytes(),

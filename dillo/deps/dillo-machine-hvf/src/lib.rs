@@ -165,10 +165,6 @@ mod imp {
             self.inner.region_mappings()
         }
 
-        pub fn reset_gic(&mut self) -> Result<(), Error> {
-            self.inner.reset_gic()
-        }
-
         pub fn mmio_bus(&self) -> Arc<Mutex<MmioBus>> {
             Arc::clone(&self.mmio_bus)
         }
@@ -447,8 +443,14 @@ mod imp {
         type Cpu = ();
         type Memory = Memory;
 
+        const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
+
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Ok(())
+        }
+
+        fn reset_for_reboot(&mut self) -> Result<(), Self::Error> {
+            self.inner.reset_gic()
         }
     }
 

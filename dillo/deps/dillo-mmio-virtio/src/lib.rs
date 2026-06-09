@@ -1,7 +1,7 @@
 //! virtio-mmio (modern, version 2) transport — the microVM profile's
 //! device-attach path (F6). Mirrors the virtio-pci transport's role but over a
 //! flat MMIO register file at the DTB's `virtio_mmio@…` window, with a wired
-//! GIC SPI for interrupts instead of MSI-X.
+//! interrupt instead of MSI-X.
 //!
 //! The register file is driven from the vCPU thread (via the MMIO bus); the
 //! backing [`VirtioDevice`]'s I/O worker runs on its own thread and raises the
@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dillo_mmio::{Interrupt, MmioAttachment, MmioDevice, MmioJoinError, MmioWindow, SharedMemory};
+use dillo_mmio::{
+    Interrupt, MmioAttachment, MmioDevice, MmioError, MmioJoinError, MmioWindow, SharedMemory,
+};
 use dillo_virtio::queue::Queue;
 use dillo_virtio::{
     ActivateError, DeviceJoinError, Kick, VirtioActivate, VirtioDevice, VirtioDeviceHandle,
@@ -118,7 +120,7 @@ pub struct VirtioMmio {
     /// Shared with the device's interrupt closure (raised on the worker thread,
     /// read here on `INTERRUPT_STATUS`).
     int_status: std::sync::Arc<AtomicU32>,
-    /// Wired GIC SPI number (from the DTB node's `interrupts`).
+    /// Wired interrupt number from the DTB node's `interrupts`.
     irq: WiredIrq,
 }
 
@@ -301,12 +303,16 @@ impl MmioDevice for VirtioMmio {
         std::slice::from_ref(&self.window)
     }
 
-    fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
+    fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError> {
         Self::read(self, offset, data)
+            .then_some(())
+            .ok_or(MmioError::Unsupported)
     }
 
-    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
+    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
         Self::write(self, offset, data)
+            .then_some(())
+            .ok_or(MmioError::Unsupported)
     }
 }
 

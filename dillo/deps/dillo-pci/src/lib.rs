@@ -12,7 +12,7 @@ pub use dillo_mmio::{
     MessageInterrupt, MessageInterruptDomain, MmioAttachment, MmioDeviceHandle, MmioDeviceRun,
     MmioJoinError, MmioSpawnError, SharedMemory,
 };
-use dillo_mmio::{MmioDevice, MmioWindow};
+use dillo_mmio::{MmioDevice, MmioError, MmioWindow};
 
 /// CF8/CFC legacy PIO and ECAM MMIO address decoding.
 pub mod address;
@@ -45,6 +45,21 @@ pub struct BarRegion {
     pub size: u64,
 }
 
+#[derive(Debug)]
+pub enum PciError {
+    Unsupported,
+}
+
+impl std::fmt::Display for PciError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported => f.write_str("PCI access is unsupported by the routed endpoint"),
+        }
+    }
+}
+
+impl std::error::Error for PciError {}
+
 /// PCI device attached to the bus. One per slot.
 pub trait PciDevice: Send + Sync + std::fmt::Debug {
     /// Read a 32-bit configuration register (`reg_idx` is the dword
@@ -54,7 +69,7 @@ pub trait PciDevice: Send + Sync + std::fmt::Debug {
     /// Write to a configuration register. `offset` is the byte offset
     /// within the dword (for unaligned writes like a single u8 to the
     /// command register).
-    fn config_write(&self, reg_idx: usize, offset: u64, data: &[u8]);
+    fn config_write(&self, reg_idx: usize, offset: u64, data: &[u8]) -> Result<(), PciError>;
 
     /// Logging name (e.g. `"virtio-console"`).
     fn name(&self) -> &str;
@@ -65,13 +80,13 @@ pub trait PciDevice: Send + Sync + std::fmt::Debug {
     }
 
     /// MMIO read on a BAR range. Default: ignored.
-    fn bar_read(&self, _bar_idx: u8, _offset: u64, _data: &mut [u8]) -> bool {
-        false
+    fn bar_read(&self, _bar_idx: u8, _offset: u64, _data: &mut [u8]) -> Result<(), PciError> {
+        Err(PciError::Unsupported)
     }
 
     /// MMIO write on a BAR range. Default: ignored.
-    fn bar_write(&self, _bar_idx: u8, _offset: u64, _data: &[u8]) -> bool {
-        false
+    fn bar_write(&self, _bar_idx: u8, _offset: u64, _data: &[u8]) -> Result<(), PciError> {
+        Err(PciError::Unsupported)
     }
 
     /// Attach this endpoint to the root's backend-owned host service.
@@ -216,7 +231,7 @@ impl PciBus {
             return;
         }
         if let Some(device) = &self.slots[device as usize] {
-            device.config_write(reg_idx, offset, data);
+            let _ = device.config_write(reg_idx, offset, data);
         }
     }
 
@@ -240,16 +255,28 @@ impl PciBus {
 
     /// BAR-range MMIO read. Caller has already matched the address to
     /// `(slot, bar_idx, base_gpa)`.
-    pub fn bar_read(&self, slot: u8, bar_idx: u8, offset: u64, data: &mut [u8]) -> bool {
+    pub fn bar_read(
+        &self,
+        slot: u8,
+        bar_idx: u8,
+        offset: u64,
+        data: &mut [u8],
+    ) -> Result<(), PciError> {
         match &self.slots.get(slot as usize).and_then(|s| s.as_ref()) {
-            None => false,
+            None => Err(PciError::Unsupported),
             Some(device) => device.bar_read(bar_idx, offset, data),
         }
     }
 
-    pub fn bar_write(&self, slot: u8, bar_idx: u8, offset: u64, data: &[u8]) -> bool {
+    pub fn bar_write(
+        &self,
+        slot: u8,
+        bar_idx: u8,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), PciError> {
         match &self.slots.get(slot as usize).and_then(|s| s.as_ref()) {
-            None => false,
+            None => Err(PciError::Unsupported),
             Some(device) => device.bar_write(bar_idx, offset, data),
         }
     }
@@ -315,11 +342,23 @@ impl PciRoot {
         self.bus.enumerate_bars()
     }
 
-    pub fn bar_read(&self, slot: u8, bar_idx: u8, offset: u64, data: &mut [u8]) -> bool {
+    pub fn bar_read(
+        &self,
+        slot: u8,
+        bar_idx: u8,
+        offset: u64,
+        data: &mut [u8],
+    ) -> Result<(), PciError> {
         self.bus.bar_read(slot, bar_idx, offset, data)
     }
 
-    pub fn bar_write(&self, slot: u8, bar_idx: u8, offset: u64, data: &[u8]) -> bool {
+    pub fn bar_write(
+        &self,
+        slot: u8,
+        bar_idx: u8,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), PciError> {
         self.bus.bar_write(slot, bar_idx, offset, data)
     }
 
@@ -331,7 +370,6 @@ impl PciRoot {
 
     fn bar_window(_slot: u8, bar: &BarRegion) -> MmioWindow {
         MmioWindow {
-            name: "pci-bar",
             base: bar.base_gpa,
             size: bar.size,
         }
@@ -375,7 +413,7 @@ impl MmioDevice for PciRoot {
         &self.windows
     }
 
-    fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
+    fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError> {
         if window.base == self.window.base && window.size == self.window.size {
             let (bus, device, function, reg_idx, in_dword) = Self::decode_ecam(offset);
             let value = self.config_read(bus, device, function, reg_idx);
@@ -383,28 +421,32 @@ impl MmioDevice for PciRoot {
             for (i, slot) in data.iter_mut().enumerate() {
                 *slot = *bytes.get(in_dword + i).unwrap_or(&0xFF);
             }
-            return true;
+            return Ok(());
         }
 
         if let Some((slot, bar_idx)) = self.bar_route(window) {
-            return self.bar_read(slot, bar_idx, offset, data);
+            return self
+                .bar_read(slot, bar_idx, offset, data)
+                .map_err(|_| MmioError::Unsupported);
         }
 
-        false
+        Err(MmioError::Unsupported)
     }
 
-    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> bool {
+    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
         if window.base == self.window.base && window.size == self.window.size {
             let (bus, device, function, reg_idx, in_dword) = Self::decode_ecam(offset);
             self.config_write(bus, device, function, reg_idx, in_dword as u64, data);
-            return true;
+            return Ok(());
         }
 
         if let Some((slot, bar_idx)) = self.bar_route(window) {
-            return self.bar_write(slot, bar_idx, offset, data);
+            return self
+                .bar_write(slot, bar_idx, offset, data)
+                .map_err(|_| MmioError::Unsupported);
         }
 
-        false
+        Err(MmioError::Unsupported)
     }
 }
 
@@ -447,11 +489,12 @@ impl PciDevice for HostBridge {
             .expect("host bridge config poisoned")
             .read_reg(reg_idx)
     }
-    fn config_write(&self, reg_idx: usize, offset: u64, data: &[u8]) {
+    fn config_write(&self, reg_idx: usize, offset: u64, data: &[u8]) -> Result<(), PciError> {
         self.config
             .lock()
             .expect("host bridge config poisoned")
             .write_reg(reg_idx, offset, data);
+        Ok(())
     }
     fn name(&self) -> &str {
         "host-bridge"
@@ -500,13 +543,13 @@ mod tests {
     #[test]
     fn pci_root_ecam_reads_host_bridge_config() {
         let root = PciRoot::new(MmioWindow {
-            name: "pcie-ecam",
             base: 0x3000_0000,
             size: 0x1000_0000,
         });
         let mut data = [0u8; 4];
 
-        assert!(root.read(root.window, 0, &mut data));
+        root.read(root.window, 0, &mut data)
+            .expect("host bridge read");
 
         assert_eq!(u32::from_le_bytes(data), root.config_read(0, 0, 0, 0));
         assert_eq!(data, [0x86, 0x80, 0x37, 0x12]);
@@ -515,13 +558,13 @@ mod tests {
     #[test]
     fn pci_root_ecam_reads_unaligned_bytes() {
         let root = PciRoot::new(MmioWindow {
-            name: "pcie-ecam",
             base: 0x3000_0000,
             size: 0x1000_0000,
         });
         let mut data = [0u8; 2];
 
-        assert!(root.read(root.window, 1, &mut data));
+        root.read(root.window, 1, &mut data)
+            .expect("unaligned host bridge read");
 
         assert_eq!(data, [0x80, 0x37]);
     }
@@ -541,7 +584,14 @@ mod tests {
                 0
             }
 
-            fn config_write(&self, _reg_idx: usize, _offset: u64, _data: &[u8]) {}
+            fn config_write(
+                &self,
+                _reg_idx: usize,
+                _offset: u64,
+                _data: &[u8],
+            ) -> Result<(), PciError> {
+                Ok(())
+            }
 
             fn name(&self) -> &str {
                 "bar-device"
@@ -553,7 +603,6 @@ mod tests {
         }
 
         let mut root = PciRoot::new(MmioWindow {
-            name: "pcie-ecam",
             base: 0x3000_0000,
             size: 0x1000_0000,
         });
@@ -584,7 +633,14 @@ mod tests {
                 0
             }
 
-            fn config_write(&self, _reg_idx: usize, _offset: u64, _data: &[u8]) {}
+            fn config_write(
+                &self,
+                _reg_idx: usize,
+                _offset: u64,
+                _data: &[u8],
+            ) -> Result<(), PciError> {
+                Ok(())
+            }
 
             fn name(&self) -> &str {
                 "bar-device"
@@ -594,15 +650,14 @@ mod tests {
                 &BAR_REGIONS
             }
 
-            fn bar_read(&self, bar_idx: u8, offset: u64, data: &mut [u8]) -> bool {
+            fn bar_read(&self, bar_idx: u8, offset: u64, data: &mut [u8]) -> Result<(), PciError> {
                 data[0] = bar_idx;
                 data[1] = offset as u8;
-                true
+                Ok(())
             }
         }
 
         let mut root = PciRoot::new(MmioWindow {
-            name: "pcie-ecam",
             base: 0x3000_0000,
             size: 0x1000_0000,
         });
@@ -615,7 +670,8 @@ mod tests {
             .expect("BAR window");
         let mut data = [0u8; 2];
 
-        assert!(root.read(bar_window, 0x42, &mut data));
+        root.read(bar_window, 0x42, &mut data)
+            .expect("BAR read routed");
 
         assert_eq!(data, [2, 0x42]);
     }
@@ -657,7 +713,14 @@ mod tests {
                 0
             }
 
-            fn config_write(&self, _reg_idx: usize, _offset: u64, _data: &[u8]) {}
+            fn config_write(
+                &self,
+                _reg_idx: usize,
+                _offset: u64,
+                _data: &[u8],
+            ) -> Result<(), PciError> {
+                Ok(())
+            }
 
             fn name(&self) -> &str {
                 "host-aware-device"
@@ -670,7 +733,6 @@ mod tests {
 
         let observed_host = Arc::new(AtomicBool::new(false));
         let mut root = PciRoot::new(MmioWindow {
-            name: "pcie-ecam",
             base: 0x3000_0000,
             size: 0x1000_0000,
         });

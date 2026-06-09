@@ -590,7 +590,7 @@ impl VirtioPciDevice {
             self.bar0_gpa,
             self.bar2_gpa
         );
-        // Collect queues and create eventfds.
+        // Collect queues and create portable queue kicks.
         let queues: Vec<Queue> = self
             .queues
             .iter()

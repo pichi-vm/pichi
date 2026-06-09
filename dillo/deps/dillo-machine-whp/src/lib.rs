@@ -171,6 +171,8 @@ mod imp {
         type Cpu = Cpu;
         type Memory = Memory;
 
+        const DEVICE_MODEL: dillo_machine::DeviceModel = dillo_machine::DeviceModel::Thread;
+
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Vm::request_vcpu_exit(self)
         }

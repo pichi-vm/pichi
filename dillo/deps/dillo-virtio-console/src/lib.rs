@@ -296,7 +296,7 @@ fn tx_worker(
     let queue = Arc::new(Mutex::new(queue));
     loop {
         if let Err(e) = kick.read() {
-            log::error!("virtio-console TX: kick eventfd read error: {e}");
+            log::error!("virtio-console TX: kick read error: {e}");
             return;
         }
         if token.is_shutdown_requested() {
@@ -344,7 +344,7 @@ fn rx_worker(
                 continue;
             }
             if let Err(e) = kick.read() {
-                log::error!("virtio-console RX: kick eventfd read error: {e}");
+                log::error!("virtio-console RX: kick read error: {e}");
                 return;
             }
         }

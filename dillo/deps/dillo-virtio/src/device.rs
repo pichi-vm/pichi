@@ -282,15 +282,14 @@ pub trait VirtioDevice: Send {
     /// Device feature bits (including `VIRTIO_F_VERSION_1`).
     fn features(&self) -> u64;
 
-    /// Activate the device with negotiated queues and notification eventfds.
+    /// Activate the device with negotiated queues and notification kicks.
     ///
     /// The transport calls this after feature negotiation and queue setup are
     /// complete. The device typically spawns an I/O thread that blocks on
     /// `queue_evts` and processes descriptors via the provided queues.
     ///
-    /// `queue_evts` are [`Kick`]s: on Linux they wrap KVM-ioeventfd-driven
-    /// eventfds; on macOS/HVF they are in-process condvar notifiers raised by
-    /// the transport's MMIO notify path.
+    /// Queue notifications are [`Kick`]s. Backends may accelerate the guest
+    /// notify path internally, but devices only observe target-neutral kicks.
     fn activate(&mut self, activation: VirtioActivate)
     -> Result<VirtioDeviceHandle, ActivateError>;
 

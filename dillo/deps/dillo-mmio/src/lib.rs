@@ -16,7 +16,6 @@ pub mod syscon;
 /// A guest-physical MMIO window owned by one device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MmioWindow {
-    pub name: &'static str,
     pub base: u64,
     pub size: u64,
 }
@@ -156,9 +155,9 @@ pub trait MmioDevice: Send + Sync {
         &[]
     }
 
-    fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> bool;
+    fn read(&self, window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError>;
 
-    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> bool;
+    fn write(&self, window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError>;
 }
 
 /// Generic registration into a constructed owner.
@@ -648,13 +647,8 @@ impl MmioBus {
                 let overlap = window.base < end && r.window.base < new_end;
                 assert!(
                     !overlap,
-                    "MMIO range overlap: new `{name}` [{:#x}..{:#x}) collides with `{}` [{:#x}..{:#x})",
-                    window.base,
-                    new_end,
-                    r.window.name,
-                    r.window.base,
-                    end,
-                    name = window.name,
+                    "MMIO range overlap: new [{:#x}..{:#x}) collides with [{:#x}..{:#x})",
+                    window.base, new_end, r.window.base, end,
                 );
             }
             self.ranges.push(Range {
@@ -667,7 +661,7 @@ impl MmioBus {
     /// Dispatch a guest MMIO read.
     pub fn read(&self, addr: u64, data: &mut [u8]) -> bool {
         if let Some(r) = self.find(addr, data.len() as u64) {
-            return r.device.read(r.window, addr - r.window.base, data);
+            return r.device.read(r.window, addr - r.window.base, data).is_ok();
         }
         false
     }
@@ -675,7 +669,7 @@ impl MmioBus {
     /// Dispatch a guest MMIO write.
     pub fn write(&self, addr: u64, data: &[u8]) -> bool {
         if let Some(r) = self.find(addr, data.len() as u64) {
-            return r.device.write(r.window, addr - r.window.base, data);
+            return r.device.write(r.window, addr - r.window.base, data).is_ok();
         }
         false
     }
@@ -701,9 +695,9 @@ mod tests {
     }
 
     impl TestDevice {
-        fn new(name: &'static str, base: u64, size: u64) -> Self {
+        fn new(base: u64, size: u64) -> Self {
             Self {
-                window: [MmioWindow { name, base, size }],
+                window: [MmioWindow { base, size }],
                 written: AtomicU64::new(0),
             }
         }
@@ -714,25 +708,25 @@ mod tests {
             &self.window
         }
 
-        fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
+        fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError> {
             data.fill(offset as u8);
-            true
+            Ok(())
         }
 
-        fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
+        fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
             let mut buf = [0u8; 8];
             let n = data.len().min(8);
             buf[..n].copy_from_slice(&data[..n]);
             self.written
                 .store(offset | (u64::from_le_bytes(buf) << 32), Ordering::SeqCst);
-            true
+            Ok(())
         }
     }
 
     #[test]
     fn read_dispatches_with_offset() {
         let mut bus = MmioBus::new();
-        bus.register_device(Arc::new(TestDevice::new("test", 0x1000, 0x100)));
+        bus.register_device(Arc::new(TestDevice::new(0x1000, 0x100)));
         let mut buf = [0u8; 4];
         assert!(bus.read(0x1042, &mut buf));
         assert_eq!(buf, [0x42; 4]);
@@ -741,7 +735,7 @@ mod tests {
 
     #[test]
     fn write_dispatches() {
-        let device = Arc::new(TestDevice::new("test", 0x2000, 0x100));
+        let device = Arc::new(TestDevice::new(0x2000, 0x100));
         let mut bus = MmioBus::new();
         bus.register_device(Arc::clone(&device));
         assert!(bus.write(0x2080, &[0xAA, 0xBB]));
@@ -751,7 +745,7 @@ mod tests {
     #[test]
     fn device_read_dispatches_with_offset() {
         let mut bus = MmioBus::new();
-        bus.register_device(Arc::new(TestDevice::new("device", 0x3000, 0x100)));
+        bus.register_device(Arc::new(TestDevice::new(0x3000, 0x100)));
 
         let mut buf = [0u8; 4];
         assert!(bus.read(0x3042, &mut buf));
@@ -761,7 +755,7 @@ mod tests {
 
     #[test]
     fn device_write_dispatches_with_offset() {
-        let device = Arc::new(TestDevice::new("device", 0x4000, 0x100));
+        let device = Arc::new(TestDevice::new(0x4000, 0x100));
         let mut bus = MmioBus::new();
         bus.register_device(Arc::clone(&device));
 
@@ -773,16 +767,16 @@ mod tests {
     #[should_panic(expected = "MMIO range overlap")]
     fn overlap_panics() {
         let mut bus = MmioBus::new();
-        bus.register_device(Arc::new(TestDevice::new("a", 0x1000, 0x100)));
-        bus.register_device(Arc::new(TestDevice::new("b", 0x1080, 0x100)));
+        bus.register_device(Arc::new(TestDevice::new(0x1000, 0x100)));
+        bus.register_device(Arc::new(TestDevice::new(0x1080, 0x100)));
     }
 
     #[test]
     #[should_panic(expected = "MMIO range overlap")]
     fn device_overlap_panics() {
         let mut bus = MmioBus::new();
-        bus.register_device(Arc::new(TestDevice::new("a", 0x1000, 0x100)));
-        bus.register_device(Arc::new(TestDevice::new("b", 0x1080, 0x100)));
+        bus.register_device(Arc::new(TestDevice::new(0x1000, 0x100)));
+        bus.register_device(Arc::new(TestDevice::new(0x1080, 0x100)));
     }
 
     #[test]

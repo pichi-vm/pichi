@@ -36,7 +36,7 @@ use vm_superio::Serial;
 use vm_superio::Trigger;
 use vm_superio::serial::NoEvents;
 
-use dillo_mmio::{Interrupt, MmioDevice, MmioWindow};
+use dillo_mmio::{Interrupt, MmioDevice, MmioError, MmioWindow};
 
 // 16550 register offsets and bits we post-process on top of vm-superio.
 // Offsets are pre-`reg_shift` register indices (0..=7).
@@ -126,21 +126,21 @@ impl MmioDevice for Ns16550 {
         std::slice::from_ref(&self.window)
     }
 
-    fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
+    fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError> {
         data.fill(0);
         if let Some(slot) = data.first_mut()
             && let Ok(mut state) = self.state.lock()
         {
             *slot = state.read(offset);
         }
-        true
+        Ok(())
     }
 
-    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
+    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
         if let Ok(mut state) = self.state.lock() {
             state.write(offset, data);
         }
-        true
+        Ok(())
     }
 }
 

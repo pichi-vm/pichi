@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use dillo_mmio::{MmioDevice, MmioWindow};
+use dillo_mmio::{MmioDevice, MmioError, MmioWindow};
 
 /// Minimal x86 IOAPIC register model used by the WHP backend.
 ///
@@ -107,12 +107,16 @@ impl MmioDevice for IoApic {
         std::slice::from_ref(&self.window)
     }
 
-    fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> bool {
+    fn read(&self, _window: MmioWindow, offset: u64, data: &mut [u8]) -> Result<(), MmioError> {
         self.read_register(offset, data)
+            .then_some(())
+            .ok_or(MmioError::Unsupported)
     }
 
-    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> bool {
+    fn write(&self, _window: MmioWindow, offset: u64, data: &[u8]) -> Result<(), MmioError> {
         self.write_register(offset, data)
+            .then_some(())
+            .ok_or(MmioError::Unsupported)
     }
 }
 
@@ -155,7 +159,6 @@ mod tests {
 
     fn ioapic() -> IoApic {
         IoApic::new(MmioWindow {
-            name: "ioapic",
             base: 0xFEC0_0000,
             size: 0x1000,
         })
@@ -167,7 +170,7 @@ mod tests {
         let window = ioapic.windows()[0];
         ioapic.write(window, 0, &1u32.to_le_bytes());
         let mut data = [0; 4];
-        ioapic.read(window, 0x10, &mut data);
+        ioapic.read(window, 0x10, &mut data).expect("IOAPIC read");
         assert_eq!(u32::from_le_bytes(data), (23 << 16) | 0x11);
     }
 
@@ -182,10 +185,10 @@ mod tests {
 
         let mut data = [0; 4];
         ioapic.write(window, 0, &0x10u32.to_le_bytes());
-        ioapic.read(window, 0x10, &mut data);
+        ioapic.read(window, 0x10, &mut data).expect("IOAPIC read");
         assert_eq!(u32::from_le_bytes(data), 0x31);
         ioapic.write(window, 0, &0x11u32.to_le_bytes());
-        ioapic.read(window, 0x10, &mut data);
+        ioapic.read(window, 0x10, &mut data).expect("IOAPIC read");
         assert_eq!(u32::from_le_bytes(data), 0x0200_0000);
     }
 

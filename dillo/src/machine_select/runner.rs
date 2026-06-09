@@ -278,7 +278,6 @@ pub(crate) fn run(
         Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
     );
     let mut pci_root = PciRoot::new(MmioWindow {
-        name: "pcie-ecam",
         base: machine.pcie.ecam_base,
         size: machine.pcie.ecam_size,
     });
@@ -289,7 +288,6 @@ pub(crate) fn run(
         .ioapic
         .ok_or(RunError::MissingRequiredDevice("/intc reg[1] ioapic"))?;
     let ioapic = Arc::new(backend_machine::IoApic::new(MmioWindow {
-        name: "ioapic",
         base: ioapic_region.base,
         size: ioapic_region.size,
     }));
@@ -298,7 +296,6 @@ pub(crate) fn run(
         Some(uart) => {
             let serial = dillo_mmio_uart::Ns16550::new(
                 MmioWindow {
-                    name: "ns16550a",
                     base: uart.base,
                     size: uart.size,
                 },
@@ -323,7 +320,6 @@ pub(crate) fn run(
     Attach::attach(
         &mut vm,
         Arc::new(syscon::SysconDevice::new(
-            "syscon-poweroff",
             syscon_register(poweroff),
             syscon::SysconAction::Poweroff,
             Arc::clone(&syscon_state),
@@ -333,7 +329,6 @@ pub(crate) fn run(
         Attach::attach(
             &mut vm,
             Arc::new(syscon::SysconDevice::new(
-                "syscon-reboot",
                 syscon_register(reboot),
                 syscon::SysconAction::Reboot,
                 Arc::clone(&syscon_state),
@@ -534,10 +529,11 @@ pub(crate) fn run(
         });
     }
 
-    // 6. create the HVF VM (in-kernel GICv3 from the DTB) and map guest RAM.
-    //    GIC placement (F7a) and the address-space watermark X (F7) come from
-    //    the machine — never hardcoded. 2^X = the BAR window's burned-buddy
-    //    top when PCIe is present, else enough bits to cover the device island.
+    // 6. create the HVF VM from the DTB-derived platform substrate and map
+    //    guest RAM. Backend-owned platform placement and the address-space
+    //    watermark X (F7) come from the machine — never hardcoded. 2^X = the
+    //    BAR window's burned-buddy top when PCIe is present, else enough bits
+    //    to cover the device island.
     let mut vm = backend_machine::Vm::try_from(backend_machine::Config {
         dtb,
         min_addr_space_bits: machine.min_addr_space_bits(),
@@ -581,7 +577,6 @@ pub(crate) fn run(
                 &mut vm,
                 Arc::new(dillo_mmio_uart::Ns16550::new(
                     MmioWindow {
-                        name: "ns16550a",
                         base: uart.base,
                         size: uart.size,
                     },
@@ -620,7 +615,6 @@ pub(crate) fn run(
             Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
         );
         let mut pci_root = PciRoot::new(MmioWindow {
-            name: "pcie-ecam",
             base: machine.pcie.ecam_base,
             size: machine.pcie.ecam_size,
         });
@@ -633,7 +627,7 @@ pub(crate) fn run(
     // 7c. virtio-mmio (F6): bind a virtio-console to the first transport slot
     //     so a microVM (no PCIe) still gets an hvc console. Remaining slots stay
     //     empty — the guest reads DeviceID 0 (unmapped MMIO ⇒ 0) and skips them.
-    //     The wired GIC SPI is injected through a backend-owned IRQ capability.
+    //     The wired interrupt is injected through a backend-owned capability.
     if let Some(slot) = machine.virtio_mmio.first() {
         let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let irq = dillo_mmio_virtio::WiredIrq::new(
@@ -652,7 +646,6 @@ pub(crate) fn run(
         );
         let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::new(
             MmioWindow {
-                name: "virtio-mmio-console",
                 base: slot.base,
                 size: slot.size,
             },
@@ -680,9 +673,10 @@ pub(crate) fn run(
     // 8. Warm-reboot loop. Each iteration (re-)applies the PMI load plan + DTBO
     //    into the persistent guest RAM and runs all vCPUs (each on its own
     //    thread; vCPU0 boots from the PMI state, secondaries park for PSCI
-    //    CPU_ON). A guest PSCI SYSTEM_RESET resets the GIC and loops to a fresh
-    //    boot image (Phase 2 in-VM restart); SYSTEM_OFF exits. `vm` (and its
-    //    memory mappings) lives across the whole loop on this thread.
+    //    CPU_ON). A guest PSCI SYSTEM_RESET resets backend-owned run state and
+    //    loops to a fresh boot image (Phase 2 in-VM restart); SYSTEM_OFF exits.
+    //    `vm` (and its memory mappings) lives across the whole loop on this
+    //    thread.
     loop {
         apply_load_sections(&mut vm, &guest_writes)?;
         log::info!(
@@ -701,7 +695,7 @@ pub(crate) fn run(
             }
             RunOutcome::Reboot => {
                 log::info!("guest requested reboot — warm in-VM restart");
-                vm.reset_gic()?;
+                dillo_machine::Machine::reset_for_reboot(&mut vm)?;
             }
         }
     }
@@ -796,7 +790,6 @@ mod macos_tests {
         let mut mmio_bus = MmioBus::new();
         mmio_bus.register_device(Arc::new(dillo_mmio_uart::Ns16550::new(
             MmioWindow {
-                name: "ns16550a",
                 base: serial_base,
                 size: 0x1000,
             },
@@ -1005,7 +998,6 @@ pub(crate) fn run(
     Attach::attach(
         &mut vm,
         Arc::new(syscon::SysconDevice::new(
-            "syscon-poweroff",
             syscon_register(poweroff),
             syscon::SysconAction::Poweroff,
             Arc::clone(&syscon_state),
@@ -1015,7 +1007,6 @@ pub(crate) fn run(
         Attach::attach(
             &mut vm,
             Arc::new(syscon::SysconDevice::new(
-                "syscon-reboot",
                 syscon_register(reboot),
                 syscon::SysconAction::Reboot,
                 Arc::clone(&syscon_state),
@@ -1047,7 +1038,6 @@ pub(crate) fn run(
             };
             let serial = dillo_mmio_uart::Ns16550::new(
                 MmioWindow {
-                    name: "ns16550a",
                     base: uart.base,
                     size: uart.size,
                 },
@@ -1099,7 +1089,6 @@ pub(crate) fn run(
     );
 
     let mut pci_root = PciRoot::new(MmioWindow {
-        name: "pcie-ecam",
         base: machine.pcie.ecam_base,
         size: machine.pcie.ecam_size,
     });
@@ -1323,7 +1312,6 @@ pub(crate) fn run(
             &mut vm,
             Arc::new(dillo_mmio_uart::Ns16550::new(
                 MmioWindow {
-                    name: "ns16550a",
                     base: uart.base,
                     size: uart.size,
                 },
@@ -1353,7 +1341,6 @@ pub(crate) fn run(
             Arc::clone(&notifier) as Arc<dyn MsixNotifier>,
         );
         let mut pci_root = PciRoot::new(MmioWindow {
-            name: "pcie-ecam",
             base: machine.pcie.ecam_base,
             size: machine.pcie.ecam_size,
         });
@@ -1381,7 +1368,6 @@ pub(crate) fn run(
         );
         let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::new(
             MmioWindow {
-                name: "virtio-mmio-console",
                 base: slot.base,
                 size: slot.size,
             },
@@ -1410,7 +1396,7 @@ pub(crate) fn run(
         )?;
         created_vcpus.push(vcpu);
     }
-    vm.init_gic()?;
+    dillo_machine::Machine::prepare_vcpu_run(&mut vm)?;
 
     let mut joins = Vec::with_capacity(vcpus as usize);
     let shutdown = Arc::new(AtomicBool::new(false));
