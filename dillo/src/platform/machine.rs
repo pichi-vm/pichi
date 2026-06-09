@@ -436,11 +436,11 @@ impl Topology {
 }
 
 /// A fully surveyed machine: every base-DTB node was claimed, every region
-/// traces to a property, and the regions are pairwise disjoint. Fields populate
-/// per architecture (aarch64: `gic`/`psci`; x86: `lapic`/`ioapic`/`poweroff`/
-/// `reboot`). `uart` (the `ns16550a` serial, present only under `--serial`),
-/// `pcie`, and `plan` are common to both — the serial is the same MMIO
-/// `ns16550a` device on every arch.
+/// traces to a property, and the regions are pairwise disjoint. Backend
+/// substrate nodes are consumed for coverage and provenance here, but the
+/// launch-facing state exposes only the portable device facts that `dillo`
+/// composes: PCI windows, UART, virtio-mmio slots, syscon actions, and the
+/// resource plan.
 #[derive(Debug, Clone)]
 pub struct Machine {
     pub arch: Arch,
@@ -460,16 +460,9 @@ pub struct Machine {
     /// virtio-mmio transport slots declared by the base DTB. The survey claims
     /// all slots whether or not dillo currently plugs a device into each one.
     pub virtio_mmio: Vec<VirtioMmio>,
-    // aarch64
-    pub gic: Option<GicConfig>,
     pub psci: Option<Psci>,
-    // x86-64
-    pub lapic: Option<MmioRegion>,
-    pub ioapic: Option<MmioRegion>,
     pub poweroff: Option<Syscon>,
     pub reboot: Option<Syscon>,
-    pub wired_interrupts: Vec<WiredInterrupt>,
-    pub msi_parentage: Vec<MsiParentage>,
 }
 
 impl Machine {
@@ -479,27 +472,19 @@ impl Machine {
         let mut t = OwnedTree::materialize(&tree);
         let mut plan = ResourcePlan::default();
         let mut topology = Topology::default();
-        let mut wired_interrupts = Vec::new();
-        let mut msi_parentage = Vec::new();
-
-        let mut gic = None;
         let mut psci = None;
-        let mut lapic = None;
-        let mut ioapic = None;
         let mut poweroff = None;
         let mut reboot = None;
 
         // arch-specific substrate (specific → general within the arch).
         match arch {
             Arch::Aarch64 => {
-                gic = Some(GicConfig::from_tree(&mut t, &mut plan, &mut topology)?);
+                GicConfig::from_tree(&mut t, &mut plan, &mut topology)?;
                 Timer::from_tree(&mut t, &mut plan, &topology)?;
                 psci = Some(Psci::from_tree(&mut t, &mut plan)?);
             }
             Arch::X86_64 => {
-                let (l, io) = X86Intc::from_tree(&mut t, &mut plan, &mut topology)?;
-                lapic = Some(l);
-                ioapic = Some(io);
+                X86Intc::from_tree(&mut t, &mut plan, &mut topology)?;
                 let (po, rb) = X86Syscon::from_tree(&mut t, &mut plan)?;
                 poweroff = Some(po);
                 reboot = rb;
@@ -508,14 +493,12 @@ impl Machine {
 
         // Shared devices, then the general device last. The serial is the same
         // MMIO `ns16550a` on both arches (present only under `--serial`).
-        let uart = Uart::from_tree(&mut t, &mut plan, arch, &topology, &mut wired_interrupts)?;
-        let virtio_mmio =
-            VirtioMmioSlots::from_tree(&mut t, &mut plan, arch, &topology, &mut wired_interrupts)?;
-        let (pcie, has_pcie) =
-            match Pcie::from_tree(&mut t, &mut plan, &topology, &mut msi_parentage)? {
-                Some(p) => (p, true),
-                None => (Pcie::ZEROED, false),
-            };
+        let uart = Uart::from_tree(&mut t, &mut plan, arch, &topology)?;
+        let virtio_mmio = VirtioMmioSlots::from_tree(&mut t, &mut plan, arch, &topology)?;
+        let (pcie, has_pcie) = match Pcie::from_tree(&mut t, &mut plan, &topology)? {
+            Some(p) => (p, true),
+            None => (Pcie::ZEROED, false),
+        };
         CoreVm::from_tree(&mut t, &mut plan)?;
 
         // (a) total coverage: nothing left.
@@ -533,14 +516,9 @@ impl Machine {
             plan,
             uart,
             virtio_mmio,
-            gic,
             psci,
-            lapic,
-            ioapic,
             poweroff,
             reboot,
-            wired_interrupts,
-            msi_parentage,
         })
     }
 
@@ -737,7 +715,6 @@ impl Uart {
         plan: &mut ResourcePlan,
         arch: Arch,
         topology: &Topology,
-        wired_interrupts: &mut Vec<WiredInterrupt>,
     ) -> Result<Option<Uart>, SurveyError> {
         let root = t.root_mut();
         let Some(name) = child_name_prefixed(root, "serial@") else {
@@ -756,7 +733,6 @@ impl Uart {
         let interrupt =
             topology.claim_wired_interrupt(&mut serial, "/serial", interrupt_parent_kind(arch)?)?;
         let irq = interrupt.irq;
-        wired_interrupts.push(interrupt);
         serial.ack("reg-io-width");
         serial.ack("clock-frequency");
         serial.ack("current-speed");
@@ -782,7 +758,6 @@ impl VirtioMmioSlots {
         plan: &mut ResourcePlan,
         arch: Arch,
         topology: &Topology,
-        wired_interrupts: &mut Vec<WiredInterrupt>,
     ) -> Result<Vec<VirtioMmio>, SurveyError> {
         let root = t.root_mut();
         let mut slots = Vec::new();
@@ -802,7 +777,6 @@ impl VirtioMmioSlots {
                 interrupt_parent_kind(arch)?,
             )?;
             let irq = interrupt.irq;
-            wired_interrupts.push(interrupt);
             node.ensure_drained()?;
             slots.push(VirtioMmio { base, size, irq });
         }
@@ -819,7 +793,6 @@ impl Pcie {
         t: &mut OwnedTree,
         plan: &mut ResourcePlan,
         topology: &Topology,
-        msi_parentage: &mut Vec<MsiParentage>,
     ) -> Result<Option<Pcie>, SurveyError> {
         let root = t.root_mut();
         let Some(name) = child_name_prefixed(root, "pcie@") else {
@@ -872,11 +845,7 @@ impl Pcie {
         pci.ack("#size-cells");
         pci.ack("dma-coherent");
         pci.reject("dma-ranges", "/pcie")?;
-        if let Some(parentage) =
-            topology.claim_msi_parent(&mut pci, "/pcie", ControllerKind::GicV2mFrame)?
-        {
-            msi_parentage.push(parentage);
-        }
+        let _ = topology.claim_msi_parent(&mut pci, "/pcie", ControllerKind::GicV2mFrame)?;
         pci.ensure_drained()?;
 
         Ok(Some(Pcie {
@@ -1360,48 +1329,23 @@ mod tests {
     }
 
     #[test]
-    fn base_drains_to_empty_and_binds_gic() {
+    fn base_drains_to_empty_and_binds_devices() {
         let m = Machine::survey(&dtb(base_root()), Arch::Aarch64).expect("survey ok");
-
-        let gic = m.gic.expect("gic bound");
-        assert_eq!(gic.dist_base, GICD_BASE);
-        assert_eq!(gic.dist_size, 0x1_0000);
-        assert_eq!(gic.redist_base, GICR_BASE);
-        assert_eq!(gic.redist_size, 0x200_0000);
-        assert_eq!(gic.msi_frame_base, V2M_BASE);
-        assert_eq!(gic.spi_base, 64);
-        assert_eq!(gic.spi_count, 32);
 
         let uart = m.uart.expect("uart present");
         assert_eq!(uart.base, SERIAL_BASE);
         assert_eq!(uart.size, 0x1000);
         assert_eq!(uart.reg_shift, 2);
         assert_eq!(uart.irq, 1);
-        assert_eq!(m.wired_interrupts.len(), 2);
-        assert_eq!(m.wired_interrupts[0].node, "/serial");
-        assert_eq!(m.wired_interrupts[0].controller.kind, ControllerKind::GicV3);
-        assert_eq!(m.wired_interrupts[0].controller.phandle, 1);
-        assert_eq!(m.wired_interrupts[0].controller.interrupt_cells, 3);
-        assert_eq!(m.wired_interrupts[0].cells, vec![0, 1, 4]);
 
         assert_eq!(m.virtio_mmio.len(), 1);
         assert_eq!(m.virtio_mmio[0].base, VIRTIO_BASE);
         assert_eq!(m.virtio_mmio[0].size, 0x200);
         assert_eq!(m.virtio_mmio[0].irq, 16);
-        assert_eq!(m.wired_interrupts[1].node, "/virtio_mmio");
-        assert_eq!(m.wired_interrupts[1].controller.kind, ControllerKind::GicV3);
-        assert_eq!(m.wired_interrupts[1].cells, vec![0, 16, 1]);
 
         assert!(m.has_pcie);
         assert_eq!(m.pcie.ecam_base, ECAM_BASE);
         assert_eq!(m.pcie.mmio_base, PCI_MMIO_BASE);
-        assert_eq!(m.msi_parentage.len(), 1);
-        assert_eq!(m.msi_parentage[0].node, "/pcie");
-        assert_eq!(
-            m.msi_parentage[0].controller.kind,
-            ControllerKind::GicV2mFrame
-        );
-        assert_eq!(m.msi_parentage[0].controller.phandle, 3);
         assert_eq!(m.psci.map(|p| p.method), Some(PsciMethod::Hvc));
 
         // Regions: GICD, GICR, MSI frame, serial, virtio-mmio, ECAM, PCI MMIO.
@@ -1780,8 +1724,6 @@ mod tests {
     fn x86_base_drains_and_binds() {
         let m = Machine::survey(&dtb(x86_base_root()), Arch::X86_64).expect("survey ok");
 
-        assert_eq!(m.lapic.expect("lapic").base, LAPIC_BASE);
-        assert_eq!(m.ioapic.expect("ioapic").base, IOAPIC_BASE);
         let po = m.poweroff.expect("poweroff");
         assert_eq!((po.base, po.value, po.mask), (POWEROFF_BASE, 0x34, 0xFF));
         let rb = m.reboot.expect("reboot");
@@ -1789,20 +1731,10 @@ mod tests {
         // Serial is the shared MMIO ns16550a; on x86 the IRQ is the IO-APIC pin.
         let s = m.uart.expect("serial");
         assert_eq!((s.base, s.irq), (X86_SERIAL_BASE, 4));
-        assert_eq!(m.wired_interrupts.len(), 1);
-        assert_eq!(m.wired_interrupts[0].node, "/serial");
-        assert_eq!(
-            m.wired_interrupts[0].controller.kind,
-            ControllerKind::IoApic
-        );
-        assert_eq!(m.wired_interrupts[0].controller.phandle, 2);
-        assert_eq!(m.wired_interrupts[0].controller.interrupt_cells, 2);
-        assert_eq!(m.wired_interrupts[0].cells, vec![4, 1]);
         assert!(m.has_pcie);
         assert_eq!(m.pcie.ecam_base, X86_ECAM_BASE);
         assert_eq!(m.pcie.mmio_base, X86_PCI_MMIO_BASE);
-        // aarch64-only fields stay empty.
-        assert!(m.gic.is_none() && m.psci.is_none());
+        assert!(m.psci.is_none());
         // LAPIC, IOAPIC, poweroff, reboot, serial, ECAM, PCI MMIO.
         assert_eq!(m.plan.regions().len(), 7);
     }
@@ -1829,11 +1761,6 @@ mod tests {
         let m = Machine::survey(&dtb(root), Arch::X86_64).expect("survey ok");
         assert_eq!(m.virtio_mmio.len(), 1);
         assert_eq!(m.virtio_mmio[0].irq, 16);
-        assert_eq!(
-            m.wired_interrupts[1].controller.kind,
-            ControllerKind::IoApic
-        );
-        assert_eq!(m.wired_interrupts[1].cells, vec![16, 1]);
     }
 
     #[test]

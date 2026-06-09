@@ -856,10 +856,9 @@ pub(crate) fn run(
         .poweroff
         .ok_or(RunError::MissingRequiredDevice("/syscon-poweroff"))?;
     log::info!(
-        "machine: pcie@{:#x} (ecam {:#x}), ioapic={:?}, poweroff @ {:#x}+{:#x} = {:#x} & {:#x}",
+        "machine: pcie@{:#x} (ecam {:#x}), poweroff @ {:#x}+{:#x} = {:#x} & {:#x}",
         machine.pcie.mmio_base,
         machine.pcie.ecam_base,
-        machine.ioapic,
         poweroff.base,
         poweroff.offset,
         poweroff.value,
