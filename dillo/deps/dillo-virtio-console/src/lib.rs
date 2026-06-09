@@ -90,13 +90,8 @@ pub fn flush_output() {
     let _ = done_rx.recv();
 }
 
-/// Resolve the guest [`Interrupt`] for a given MSI-X vector at activate time.
-/// The selected machine backend owns how that interrupt is delivered.
-pub type CallInterruptLookup = Arc<dyn Fn(u16) -> Option<Interrupt> + Send + Sync>;
-
 /// virtio-console: thread-mode device.
 pub struct VirtioConsole {
-    call_interrupt_lookup: CallInterruptLookup,
     activated: bool,
 }
 
@@ -109,11 +104,8 @@ impl std::fmt::Debug for VirtioConsole {
 }
 
 impl VirtioConsole {
-    pub fn new(call_interrupt_lookup: CallInterruptLookup) -> Self {
-        Self {
-            call_interrupt_lookup,
-            activated: false,
-        }
+    pub fn new() -> Self {
+        Self { activated: false }
     }
 }
 
@@ -158,11 +150,13 @@ impl VirtioDevice for VirtioConsole {
             )));
         }
 
+        let tx_call_interrupt = activation.queue_interrupt(1);
+        let rx_call_interrupt = activation.queue_interrupt(0);
+
         // Queue 1 is TX. Pop it out and spawn a worker.
         let tx_queue = queues.remove(1);
         let tx_evt = queue_evts.remove(1);
         let tx_wake = tx_evt.try_clone()?;
-        let tx_call_interrupt = (self.call_interrupt_lookup)(tx_queue.msix_vector);
         let tx_handle = Arc::new(Mutex::new(Some(spawn_tx_worker(
             Arc::clone(&host),
             Arc::clone(&queue_memory),
@@ -176,7 +170,6 @@ impl VirtioDevice for VirtioConsole {
         let rx_queue = queues.remove(0);
         let rx_evt = queue_evts.remove(0);
         let rx_wake = rx_evt.try_clone()?;
-        let rx_call_interrupt = (self.call_interrupt_lookup)(rx_queue.msix_vector);
         let rx_handle = Arc::new(Mutex::new(Some(spawn_rx_worker(
             host,
             queue_memory,

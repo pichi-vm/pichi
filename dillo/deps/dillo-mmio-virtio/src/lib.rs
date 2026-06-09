@@ -314,7 +314,10 @@ impl VirtioMmio {
                     g.activation.take();
                     g.activated = false;
                 } else {
-                    maybe_activate(&mut g);
+                    maybe_activate(
+                        &mut g,
+                        Self::interrupt(Arc::clone(&self.int_status), self.irq.clone()),
+                    );
                 }
             }
             _ => {}
@@ -382,7 +385,7 @@ fn set_hi(g: &mut Inner, sel: usize, field: impl Fn(&mut QueueCfg) -> &mut u64, 
     }
 }
 
-fn maybe_activate(g: &mut Inner) {
+fn maybe_activate(g: &mut Inner, interrupt: Interrupt) {
     if g.activated || g.status & STATUS_DRIVER_OK == 0 {
         return;
     }
@@ -414,10 +417,15 @@ fn maybe_activate(g: &mut Inner) {
         }
     };
     g.kicks = kicks.iter().filter_map(|k| k.try_clone().ok()).collect();
+    let queue_interrupts = queues.iter().map(|_| Some(interrupt.clone())).collect();
     let handle = match g
         .device
-        .activate(VirtioActivate::with_host(queues, kicks, host))
-    {
+        .activate(VirtioActivate::with_host_and_queue_interrupts(
+            queues,
+            kicks,
+            host,
+            queue_interrupts,
+        )) {
         Ok(handle) => handle,
         Err(e) => {
             log::error!("virtio-mmio: activate failed: {e}");

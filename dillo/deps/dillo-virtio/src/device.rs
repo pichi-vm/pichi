@@ -2,6 +2,7 @@
 
 //! VirtioDevice trait defining the device contract for transport layers.
 
+use dillo_mmio::Interrupt;
 use dillo_mmio::SharedMemory;
 
 use crate::kick::Kick;
@@ -19,6 +20,7 @@ pub struct VirtioActivate {
     buffer_memory: Arc<dyn VirtioMemory>,
     queues: Vec<Queue>,
     queue_evts: Vec<Kick>,
+    queue_interrupts: Vec<Option<Interrupt>>,
     host: Arc<dyn VirtioDeviceHost>,
 }
 
@@ -30,6 +32,7 @@ impl std::fmt::Debug for VirtioActivate {
             .field("buffer_memory", &"VirtioMemory")
             .field("queues", &self.queues)
             .field("queue_evts", &self.queue_evts)
+            .field("queue_interrupt_count", &self.queue_interrupts.len())
             .field("host", &self.host)
             .finish()
     }
@@ -43,6 +46,7 @@ impl VirtioActivate {
             buffer_memory: Arc::new(NullVirtioMemory),
             queues,
             queue_evts,
+            queue_interrupts: Vec::new(),
             host: Arc::new(ThreadDeviceHost),
         }
     }
@@ -61,6 +65,27 @@ impl VirtioActivate {
             buffer_memory,
             queues,
             queue_evts,
+            queue_interrupts: Vec::new(),
+            host,
+        }
+    }
+
+    pub fn with_host_and_queue_interrupts(
+        queues: Vec<Queue>,
+        queue_evts: Vec<Kick>,
+        host: Arc<dyn VirtioDeviceHost>,
+        queue_interrupts: Vec<Option<Interrupt>>,
+    ) -> Self {
+        let shared_memory = host.shared_memory();
+        let queue_memory = Self::make_queue_memory(&shared_memory);
+        let buffer_memory = Self::make_buffer_memory(&shared_memory);
+        Self {
+            shared_memory,
+            queue_memory,
+            buffer_memory,
+            queues,
+            queue_evts,
+            queue_interrupts,
             host,
         }
     }
@@ -79,6 +104,7 @@ impl VirtioActivate {
             buffer_memory,
             queues,
             queue_evts,
+            queue_interrupts: Vec::new(),
             host,
         }
     }
@@ -109,6 +135,12 @@ impl VirtioActivate {
 
     pub fn host(&self) -> Arc<dyn VirtioDeviceHost> {
         Arc::clone(&self.host)
+    }
+
+    pub fn queue_interrupt(&self, index: usize) -> Option<Interrupt> {
+        self.queue_interrupts
+            .get(index)
+            .and_then(|interrupt| interrupt.clone())
     }
 
     pub fn take_queues(&mut self) -> Vec<Queue> {

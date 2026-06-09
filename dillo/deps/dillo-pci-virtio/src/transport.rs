@@ -7,9 +7,9 @@
 //! negotiation, and queue notification.
 
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
-use dillo_mmio::{Interrupt, SharedMemory};
+use dillo_mmio::SharedMemory;
 use dillo_pci::{CAP_ID_MSIX, MsixNotifier, MsixTable, NoopNotifier, PciConfiguration};
 use dillo_pci::{MmioJoinError, PciDeviceHost};
 use dillo_virtio::Kick;
@@ -59,49 +59,6 @@ const CC_QUEUE_USED_HI: u64 = 0x34;
 // Device status bits.
 const STATUS_FEATURES_OK: u8 = 8;
 const STATUS_DRIVER_OK: u8 = 4;
-
-pub struct MsixInterruptLookup {
-    notifier: RwLock<Arc<dyn MsixNotifier>>,
-}
-
-impl std::fmt::Debug for MsixInterruptLookup {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MsixInterruptLookup")
-            .finish_non_exhaustive()
-    }
-}
-
-impl MsixInterruptLookup {
-    pub fn new() -> Self {
-        Self {
-            notifier: RwLock::new(Arc::new(NoopNotifier)),
-        }
-    }
-
-    pub fn lookup_fn(self: &Arc<Self>) -> Arc<dyn Fn(u16) -> Option<Interrupt> + Send + Sync> {
-        let lookup = Arc::clone(self);
-        Arc::new(move |vector| {
-            lookup
-                .notifier
-                .read()
-                .expect("MSI-X interrupt lookup lock poisoned")
-                .interrupt_for(vector)
-        })
-    }
-
-    fn set_notifier(&self, notifier: Arc<dyn MsixNotifier>) {
-        *self
-            .notifier
-            .write()
-            .expect("MSI-X interrupt lookup lock poisoned") = notifier;
-    }
-}
-
-impl Default for MsixInterruptLookup {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Per-queue state tracked by the transport layer.
 #[derive(Debug)]
@@ -186,7 +143,6 @@ pub struct VirtioPciDevice {
 
     // MSI-X notifier (VMM provides real implementation, tests use NoopNotifier).
     notifier: Arc<dyn MsixNotifier>,
-    interrupt_lookup: Option<Arc<MsixInterruptLookup>>,
 
     // Retained kick clones so the MMIO notify path can signal queue workers.
     queue_kicks: Vec<Kick>,
@@ -354,16 +310,10 @@ impl VirtioPciDevice {
             activation: None,
             host: Arc::new(ThreadDeviceHost),
             notifier,
-            interrupt_lookup: None,
             queue_kicks: Vec::new(),
             device_features,
             num_queues: num_queues as u16,
         }
-    }
-
-    pub fn set_interrupt_lookup(&mut self, lookup: Arc<MsixInterruptLookup>) {
-        lookup.set_notifier(Arc::clone(&self.notifier));
-        self.interrupt_lookup = Some(lookup);
     }
 
     /// Set the host service inherited from the attached PCI root.
@@ -372,9 +322,6 @@ impl VirtioPciDevice {
     }
 
     pub fn set_notifier(&mut self, notifier: Arc<dyn MsixNotifier>) {
-        if let Some(lookup) = &self.interrupt_lookup {
-            lookup.set_notifier(Arc::clone(&notifier));
-        }
         self.notifier = notifier;
     }
 
@@ -663,11 +610,15 @@ impl VirtioPciDevice {
             self.bar2_gpa
         );
         // Collect queues and create portable queue kicks.
-        let queues: Vec<Queue> = self
-            .queues
+        let enabled_queues: Vec<&QueueConfig> =
+            self.queues.iter().filter(|qc| qc.enabled).collect();
+        let queues: Vec<Queue> = enabled_queues
             .iter()
-            .filter(|qc| qc.enabled)
-            .map(QueueConfig::to_queue)
+            .map(|qc| QueueConfig::to_queue(qc))
+            .collect();
+        let queue_interrupts = enabled_queues
+            .iter()
+            .map(|qc| self.notifier.interrupt_for(qc.msix_vector))
             .collect();
 
         let mut kicks: Vec<Kick> = Vec::new();
@@ -688,22 +639,20 @@ impl VirtioPciDevice {
             }
         }
 
-        let handle =
-            match self
-                .device
-                .lock()
-                .expect("device mutex")
-                .activate(VirtioActivate::with_host(
-                    queues,
-                    kicks,
-                    Arc::clone(&self.host),
-                )) {
-                Ok(handle) => handle,
-                Err(e) => {
-                    log::error!("virtio-pci: device activation failed: {e}");
-                    return;
-                }
-            };
+        let handle = match self.device.lock().expect("device mutex").activate(
+            VirtioActivate::with_host_and_queue_interrupts(
+                queues,
+                kicks,
+                Arc::clone(&self.host),
+                queue_interrupts,
+            ),
+        ) {
+            Ok(handle) => handle,
+            Err(e) => {
+                log::error!("virtio-pci: device activation failed: {e}");
+                return;
+            }
+        };
 
         self.activation = Some(handle);
         self.activated = true;

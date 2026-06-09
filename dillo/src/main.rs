@@ -1313,19 +1313,16 @@ mod machine_select {
             }
 
             let vectors: u16 = 3;
-            let interrupt_lookup = Arc::new(dillo_pci_virtio::MsixInterruptLookup::new());
-            let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> =
-                Arc::new(std::sync::Mutex::new(Box::new(
-                    dillo_virtio_console::VirtioConsole::new(interrupt_lookup.lookup_fn()),
-                )));
+            let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
+                std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new())),
+            );
 
-            let mut virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
+            let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
                 console,
                 vectors,
                 platform.pcie.mmio_base,
                 platform.pcie.mmio_base + 0x1000,
             );
-            virtio_pci_dev.set_interrupt_lookup(interrupt_lookup);
             let ecam = MmioWindow {
                 base: platform.pcie.ecam_base,
                 size: platform.pcie.ecam_size,
@@ -1361,21 +1358,12 @@ mod machine_select {
 
             let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
             let irq = dillo_mmio_virtio::WiredIrq::unresolved(slot.irq);
-            let interrupt_irq = irq.clone();
-            let interrupt_status = Arc::clone(&int_status);
             let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::with_interrupt_requirement(
                 MmioWindow {
                     base: slot.base,
                     size: slot.size,
                 },
-                Box::new(dillo_virtio_console::VirtioConsole::new(Arc::new(
-                    move |_vector| {
-                        Some(dillo_mmio_virtio::VirtioMmio::interrupt(
-                            Arc::clone(&interrupt_status),
-                            interrupt_irq.clone(),
-                        ))
-                    },
-                ))),
+                Box::new(dillo_virtio_console::VirtioConsole::new()),
                 Arc::clone(&int_status),
                 irq.clone(),
                 line_requirement(&slot.interrupt),

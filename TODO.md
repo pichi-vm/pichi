@@ -2254,3 +2254,16 @@ Audit fix 21 - keep DTB decoding behind dillo-devtree:
 Evidence:
 - `grep -RInE "dillo_machine_(kvm|hvf|whp)|dillo-machine-(kvm|hvf|whp)|dillo_machine::|\\bpmi\\b|dillo_devtree|devtree" dillo/deps/dillo-mmio dillo/deps/dillo-mmio-uart dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-pci-virtio dillo/deps/dillo-virtio dillo/deps/dillo-virtio-console --include='*.rs' --include='Cargo.toml'`
   reports no device-crate dependency on backends, PMI, or devtree.
+
+Audit fix 22 - move virtio queue interrupt resolution into transports:
+- Removed the `dillo-pci-virtio::MsixInterruptLookup` bridge from top-level
+  `dillo` orchestration. `VirtioPciDevice` now resolves MSI-X vectors through
+  its PCI notifier while building `VirtioActivate`.
+- `VirtioMmio` now supplies wired queue interrupts while building
+  `VirtioActivate`.
+- `VirtioConsole::new()` is transport-neutral again; the console receives only
+  resolved queue interrupts from activation.
+
+Evidence:
+- `grep -RIn "VirtioConsole::new\\|CallInterruptLookup\\|MsixInterruptLookup\\|set_interrupt_lookup\\|lookup_fn" dillo dillo/deps --include='*.rs'`
+  reports only transport-neutral `VirtioConsole::new()` calls in `dillo`.

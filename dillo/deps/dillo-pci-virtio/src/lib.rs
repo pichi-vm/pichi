@@ -35,7 +35,7 @@ pub(crate) mod capabilities;
 /// PCI transport implementation: device status FSM, feature negotiation, BAR I/O.
 pub mod transport;
 
-pub use transport::{MsixInterruptLookup, VirtioPciDevice};
+pub use transport::VirtioPciDevice;
 
 use std::sync::Mutex;
 
