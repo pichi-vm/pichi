@@ -81,14 +81,7 @@ impl LaunchPlan {
             .collect();
         let memory =
             placement::plan_around_regions(&must_cover, memory_mib, platform.placement_regions())?;
-        let guest_writes = guest_writes(
-            &bytes,
-            &parsed,
-            &platform,
-            &memory,
-            platform_arch(host_arch),
-            vcpus,
-        )?;
+        let guest_writes = guest_writes(&bytes, &parsed, &memory, platform_arch(host_arch), vcpus)?;
 
         Ok(Self {
             bytes,
@@ -174,7 +167,6 @@ impl LaunchError {
 fn guest_writes(
     bytes: &[u8],
     parsed: &crate::pmi_parse::ParsedPmi,
-    platform: &crate::platform::Machine,
     memory: &MemoryPlan,
     arch: crate::platform::Arch,
     vcpus: u32,
@@ -204,7 +196,7 @@ fn guest_writes(
                 let data = crate::overlay::synthesize_dtbo(
                     &memory.memory_nodes,
                     vcpus,
-                    platform.psci.is_some().then_some("psci"),
+                    arch.cpu_enable_method(),
                     crate::cpu_id::host_cpu_compatible(arch),
                     s.virtual_size,
                 )

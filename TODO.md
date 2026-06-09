@@ -1731,10 +1731,7 @@ Audit fix 5 - stop exposing survey-only interrupt-controller state:
   provenance instead of asserting on backend-substrate fields.
 
 Remaining divergence:
-- `platform::Machine` still exposes `psci: Option<Psci>` because DTBO CPU
-  overlay synthesis currently uses it to decide the aarch64 boot method. That
-  remains architecture-specific launch knowledge in `dillo` and needs a later
-  move behind the selected backend/overlay boundary.
+- Superseded by audit fix 6, which removes `platform::Machine::psci`.
 
 Local verification:
 - `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
@@ -1745,5 +1742,36 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
+
+CI verification:
+- `27207606876` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
+
+Audit fix 6 - stop exposing PSCI as launch-facing machine state:
+- Removed `platform::Machine::psci`. The drain-to-empty survey still consumes
+  and validates `/psci` for aarch64, but `dillo` no longer carries PSCI as a
+  composed machine/device fact.
+- Moved DTBO CPU `enable-method` selection onto `platform::Arch`; the aarch64
+  overlay still emits `psci`, and x86 still emits no CPU enable method.
+- Removed the now-unused `platform::Machine` argument from `guest_writes`.
+
+Remaining divergence:
+- The old `platform::Platform` extractor still exposes architecture substrate
+  fields and should be retired once no remaining code or tests depend on it.
+  The active launch path uses `platform::Machine`.
+
+Local verification:
+- `RUSTC_BOOTSTRAP=1 cargo fmt --all -- --check`
+- `git diff --check`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --lib platform::machine`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --lib launch::tests`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --lib overlay::tests`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
 - `RUSTC_BOOTSTRAP=1 cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`

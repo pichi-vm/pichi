@@ -56,6 +56,15 @@ pub enum Arch {
     Aarch64,
 }
 
+impl Arch {
+    pub fn cpu_enable_method(self) -> Option<&'static str> {
+        match self {
+            Arch::Aarch64 => Some("psci"),
+            Arch::X86_64 => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Pcie {
     pub ecam_base: u64,

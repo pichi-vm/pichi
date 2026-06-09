@@ -460,7 +460,6 @@ pub struct Machine {
     /// virtio-mmio transport slots declared by the base DTB. The survey claims
     /// all slots whether or not dillo currently plugs a device into each one.
     pub virtio_mmio: Vec<VirtioMmio>,
-    pub psci: Option<Psci>,
     pub poweroff: Option<Syscon>,
     pub reboot: Option<Syscon>,
 }
@@ -472,7 +471,6 @@ impl Machine {
         let mut t = OwnedTree::materialize(&tree);
         let mut plan = ResourcePlan::default();
         let mut topology = Topology::default();
-        let mut psci = None;
         let mut poweroff = None;
         let mut reboot = None;
 
@@ -481,7 +479,7 @@ impl Machine {
             Arch::Aarch64 => {
                 GicConfig::from_tree(&mut t, &mut plan, &mut topology)?;
                 Timer::from_tree(&mut t, &mut plan, &topology)?;
-                psci = Some(Psci::from_tree(&mut t, &mut plan)?);
+                Psci::from_tree(&mut t, &mut plan)?;
             }
             Arch::X86_64 => {
                 X86Intc::from_tree(&mut t, &mut plan, &mut topology)?;
@@ -516,7 +514,6 @@ impl Machine {
             plan,
             uart,
             virtio_mmio,
-            psci,
             poweroff,
             reboot,
         })
@@ -1346,7 +1343,6 @@ mod tests {
         assert!(m.has_pcie);
         assert_eq!(m.pcie.ecam_base, ECAM_BASE);
         assert_eq!(m.pcie.mmio_base, PCI_MMIO_BASE);
-        assert_eq!(m.psci.map(|p| p.method), Some(PsciMethod::Hvc));
 
         // Regions: GICD, GICR, MSI frame, serial, virtio-mmio, ECAM, PCI MMIO.
         assert_eq!(m.plan.regions().len(), 7);
@@ -1734,7 +1730,6 @@ mod tests {
         assert!(m.has_pcie);
         assert_eq!(m.pcie.ecam_base, X86_ECAM_BASE);
         assert_eq!(m.pcie.mmio_base, X86_PCI_MMIO_BASE);
-        assert!(m.psci.is_none());
         // LAPIC, IOAPIC, poweroff, reboot, serial, ECAM, PCI MMIO.
         assert_eq!(m.plan.regions().len(), 7);
     }
