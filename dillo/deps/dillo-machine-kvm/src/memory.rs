@@ -231,30 +231,6 @@ impl GpaMap {
         }
         None
     }
-    /// Copy guest memory into `dst`, starting at `gpa`. Returns the
-    /// number of bytes actually copied (which may be less than
-    /// `dst.len()` if the request runs off the end of a region).
-    #[cfg(target_arch = "x86_64")]
-    pub fn read(&self, gpa: u64, dst: &mut [u8]) -> usize {
-        for &(rg, ra, rs) in &self.regions {
-            if gpa >= rg && gpa < rg + rs {
-                let off = gpa - rg;
-                let avail = (rs - off) as usize;
-                let n = dst.len().min(avail);
-                // SAFETY: ra+off..+n lies inside the mmap'd region we
-                // registered with KVM; the mapping is alive for the VM's
-                // lifetime, and we hold a single-vCPU debug lock when
-                // this is reached from the gdb stub.
-                #[allow(unsafe_code)]
-                unsafe {
-                    let src = (ra + off) as *const u8;
-                    std::ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), n);
-                }
-                return n;
-            }
-        }
-        0
-    }
     /// Copy `src` into guest memory starting at `gpa`. Errors if the
     /// destination range spans regions or falls outside any region.
     pub fn write(&self, gpa: u64, src: &[u8]) -> Result<()> {

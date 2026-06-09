@@ -21,7 +21,6 @@ enum VmExit {
     Interrupted,
     Halted,
     Unknown(String),
-    Debug,
 }
 
 #[cfg(target_os = "linux")]
@@ -1111,7 +1110,6 @@ mod imp {
                     VmExit::Interrupted => return Ok(VcpuExit::Interrupted),
                     VmExit::Halted => continue,
                     VmExit::Shutdown => return Ok(VcpuExit::Shutdown),
-                    VmExit::Debug => continue,
                     VmExit::Unknown(reason) => return Err(Error::UnhandledExit(reason)),
                 }
             }

@@ -666,7 +666,7 @@ fn translate_exit(exit: VcpuExit<'_>) -> VmExit {
         }
         VcpuExit::Hlt => VmExit::Halted,
         VcpuExit::Shutdown => VmExit::Shutdown,
-        VcpuExit::Debug(_) => VmExit::Debug,
+        VcpuExit::Debug(_) => VmExit::Unknown("debug exit unsupported".to_owned()),
         VcpuExit::SystemEvent(_ty, _data) => VmExit::Shutdown,
         other => VmExit::Unknown(format!("{other:?}")),
     }
