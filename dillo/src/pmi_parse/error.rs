@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// Every failure mode dillo-pmi can produce. All errors map to exit
+/// Every failure mode dillo PMI parsing can produce. All errors map to exit
 /// code 10 (PMI parse / validation error) at the binary level.
 #[derive(Debug, Error)]
 pub enum Error {

@@ -5,16 +5,16 @@ use std::io::Read;
 use std::path::Path;
 
 use dillo_machine::HostArchitecture;
-use dillo_pmi::{Action as PmiAction, FillKind, HostArch, ParseOptions};
 use thiserror::Error;
 
 use crate::placement::{self, MemoryPlan};
+use crate::pmi_parse::{Action as PmiAction, FillKind, HostArch, ParseOptions};
 
 /// Target-neutral launch facts derived before backend construction.
 #[derive(Debug)]
 pub struct LaunchPlan {
     pub bytes: Vec<u8>,
-    pub parsed: dillo_pmi::ParsedPmi,
+    pub parsed: crate::pmi_parse::ParsedPmi,
     pub platform: dillo_platform::Machine,
     pub memory: MemoryPlan,
     pub guest_writes: Vec<GuestWrite>,
@@ -50,7 +50,7 @@ impl LaunchPlan {
             })?;
 
         let pmi_arch = pmi_arch(host_arch);
-        let parsed = dillo_pmi::parse(
+        let parsed = crate::pmi_parse::parse(
             &bytes,
             &ParseOptions {
                 host_arch: pmi_arch,
@@ -124,7 +124,7 @@ pub enum LaunchError {
     },
 
     #[error("PMI parse: {0}")]
-    PmiParse(#[from] dillo_pmi::Error),
+    PmiParse(#[from] crate::pmi_parse::Error),
 
     #[error("merged_dtb section missing from parsed.sections")]
     MissingMergedDtb,
@@ -171,7 +171,7 @@ impl LaunchError {
 
 fn guest_writes(
     bytes: &[u8],
-    parsed: &dillo_pmi::ParsedPmi,
+    parsed: &crate::pmi_parse::ParsedPmi,
     platform: &dillo_platform::Machine,
     memory: &MemoryPlan,
     arch: dillo_platform::Arch,
@@ -218,7 +218,10 @@ fn guest_writes(
     Ok(writes)
 }
 
-fn merged_dtb<'a>(bytes: &'a [u8], parsed: &dillo_pmi::ParsedPmi) -> Result<&'a [u8], LaunchError> {
+fn merged_dtb<'a>(
+    bytes: &'a [u8],
+    parsed: &crate::pmi_parse::ParsedPmi,
+) -> Result<&'a [u8], LaunchError> {
     let dtb_info = parsed
         .sections
         .get(&parsed.merged_dtb_section)

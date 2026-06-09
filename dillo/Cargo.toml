@@ -19,7 +19,6 @@ vm-tests = []
 
 [dependencies]
 dillo-machine.workspace = true
-dillo-pmi.workspace = true
 dillo-platform.workspace = true
 dillo-mmio.workspace = true
 dillo-mmio-uart.workspace = true
@@ -31,6 +30,9 @@ dillo-virtio-console.workspace = true
 dillo-x86.workspace = true
 vm-memory.workspace = true
 pmi.workspace = true
+object.workspace = true
+serde.workspace = true
+ciborium.workspace = true
 argh.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

@@ -35,6 +35,10 @@ use anyhow::Result;
 use backend_machine::Vm;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use backend_select::machine as backend_machine;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use dillo::pmi_parse::VcpuState;
+#[cfg(target_os = "windows")]
+use dillo::pmi_parse::VcpuState;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_machine::VcpuStop;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -43,10 +47,6 @@ use dillo_mmio::Attach;
 use dillo_mmio::Interrupt;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use dillo_pci::{MsixInterruptAdapter, MsixNotifier};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use dillo_pmi::VcpuState;
-#[cfg(target_os = "windows")]
-use dillo_pmi::VcpuState;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use dillo_x86::pio_pci;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -84,7 +84,7 @@ struct RunMemoryPlan {
 /// those decisions here.
 #[derive(Debug)]
 pub(crate) struct Preflight {
-    parsed: dillo_pmi::ParsedPmi,
+    parsed: dillo::pmi_parse::ParsedPmi,
     platform: dillo_platform::Machine,
     memslots: Vec<RunRegion>,
     memory_nodes: Vec<RunRegion>,
@@ -93,7 +93,7 @@ pub(crate) struct Preflight {
 
 impl Preflight {
     pub(crate) fn new(
-        parsed: dillo_pmi::ParsedPmi,
+        parsed: dillo::pmi_parse::ParsedPmi,
         platform: dillo_platform::Machine,
         memslots: impl IntoIterator<Item = RunRegion>,
         memory_nodes: impl IntoIterator<Item = RunRegion>,
@@ -111,7 +111,7 @@ impl Preflight {
     fn into_parts(
         self,
     ) -> (
-        dillo_pmi::ParsedPmi,
+        dillo::pmi_parse::ParsedPmi,
         dillo_platform::Machine,
         RunMemoryPlan,
         Vec<RunWrite>,

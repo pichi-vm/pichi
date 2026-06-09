@@ -1034,6 +1034,14 @@ Completed changes:
   `dillo-machine-whp`.
 - Removed `dillo-hypervisor` from workspace members, workspace dependencies,
   source imports, and lockfile package entries.
+- Retired the `dillo-pmi` parser crate by moving its parser modules into
+  `dillo::pmi_parse`; the upstream git `pmi` crate remains the PMI spec
+  dependency.
+- Moved the dillo PMI adversarial tests to `dillo/tests/pmi_adversarial.rs`.
+- Moved the parser fuzz package to `dillo/fuzz` so fuzzing no longer keeps a
+  separate parser crate alive.
+- Removed `dillo-pmi` from workspace members, workspace dependencies, source
+  imports, and lockfile package entries.
 
 Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 cargo check -p dillo-mmio -p dillo-pci -p dillo-virtio -p dillo-mmio-virtio -p dillo-pci-virtio -p dillo-machine`
@@ -1052,6 +1060,8 @@ Local verification for current in-progress slice:
 - `grep -R "vm-pci\|vm_pci" -n Cargo.toml dillo --include='Cargo.toml' --include='*.rs' --include='*.md'`
 - `RUSTC_BOOTSTRAP=1 cargo metadata --no-deps --format-version 1 | grep -o '"name":"dillo-hypervisor"' || true`
 - `grep -R -n "dillo_hypervisor\|dillo-hypervisor" Cargo.toml Cargo.lock dillo --include='Cargo.toml' --include='*.rs' --include='*.md' || true`
+- `RUSTC_BOOTSTRAP=1 cargo metadata --no-deps --format-version 1 | grep -o '"name":"dillo-pmi"' || true`
+- `grep -R -n "dillo_pmi\|dillo-pmi" Cargo.toml Cargo.lock dillo --include='Cargo.toml' --include='*.rs' --include='*.md' || true`
 
 Local verification limitation:
 - Full `cargo check -p dillo --tests --target x86_64-unknown-linux-gnu` and

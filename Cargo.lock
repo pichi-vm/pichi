@@ -365,6 +365,7 @@ dependencies = [
  "argh",
  "arma",
  "burrow",
+ "ciborium",
  "devtree",
  "dillo-machine",
  "dillo-machine-hvf",
@@ -376,7 +377,6 @@ dependencies = [
  "dillo-pci",
  "dillo-pci-virtio",
  "dillo-platform",
- "dillo-pmi",
  "dillo-virtio",
  "dillo-virtio-console",
  "dillo-x86",
@@ -386,8 +386,10 @@ dependencies = [
  "libc",
  "log",
  "nix",
+ "object",
  "pmi",
  "rstest",
+ "serde",
  "serde_json",
  "snuffler",
  "tempfile",
@@ -497,17 +499,6 @@ name = "dillo-platform"
 version = "0.1.0"
 dependencies = [
  "devtree",
- "thiserror",
-]
-
-[[package]]
-name = "dillo-pmi"
-version = "0.1.0"
-dependencies = [
- "ciborium",
- "object",
- "pmi",
- "serde",
  "thiserror",
 ]
 

@@ -14,8 +14,8 @@ use pmi::Target;
 use pmi::vm::vcpu::{aarch64 as vcpu_aarch64, x86_64 as vcpu_x86_64};
 use pmi::vm::{Action as ManifestAction, FillKind as PmiFillKind, Spec};
 
-use crate::caps;
-use crate::error::Error;
+use crate::pmi_parse::caps;
+use crate::pmi_parse::error::Error;
 
 /// Host architecture selector. The PMI's PE Machine field MUST match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

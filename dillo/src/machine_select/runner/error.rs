@@ -23,7 +23,7 @@ pub(crate) enum RunError {
     },
 
     #[error("PMI parse: {0}")]
-    PmiParse(#[from] dillo_pmi::Error),
+    PmiParse(#[from] dillo::pmi_parse::Error),
 
     // ── exit 11 — DTB parse / validation ───────────────────────────
     #[error("base DTB extraction: {0}")]
