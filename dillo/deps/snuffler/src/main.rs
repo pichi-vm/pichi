@@ -21,6 +21,7 @@ use snuffler::{
     REPORT_BEGIN, REPORT_END, Report, SCHEMA_VERSION, SerialPort,
 };
 
+#[cfg(not(test))]
 const RB_POWER_OFF: libc::c_int = 0x4321_FEDC_u32 as i32;
 
 #[unsafe(no_mangle)]
@@ -44,6 +45,7 @@ fn run() {
     unsafe {
         libc::sync();
     }
+    #[cfg(not(test))]
     poweroff();
 }
 
@@ -541,6 +543,7 @@ fn parse_hex_or_dec_u64(s: String) -> Option<u64> {
     }
 }
 
+#[cfg(not(test))]
 fn poweroff() -> ! {
     // SAFETY: PID 1 invoking the documented poweroff syscall.
     unsafe {
