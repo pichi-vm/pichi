@@ -33,9 +33,9 @@ RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --e
 When a stage changes target-specific code, also run the relevant target checks:
 
 ```sh
-RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-unknown-linux-gnu
-RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target x86_64-pc-windows-msvc
-RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-vm --tests --target aarch64-apple-darwin
+RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --tests --target x86_64-unknown-linux-gnu
+RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --tests --target x86_64-pc-windows-msvc
+RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --tests --target aarch64-apple-darwin
 ```
 
 After each push:
@@ -1011,6 +1011,15 @@ Completed changes:
 - Deleted the obsolete `dillo/deps/dillo-vm` directory.
 - Extended the architecture cfg guard so target cfg is confined to the
   `dillo/src/machine_select` module tree.
+- Replaced direct dillo calls to backend memory-registration methods with
+  backend-owned `Machine::Memory` associated input types attached through
+  `dillo_mmio::Attach`.
+- Replaced direct dillo calls to KVM/WHP vCPU creation and boot-state setup
+  with backend-owned `Machine::Cpu` associated input types attached through
+  `dillo_mmio::Attach`.
+- Kept the `dillo-machine` trait crate generic: the trait still exposes only
+  associated CPU/memory input types, while each backend crate owns the concrete
+  constructor fields needed by that target.
 
 Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 cargo check -p dillo-mmio -p dillo-pci -p dillo-virtio -p dillo-mmio-virtio -p dillo-pci-virtio -p dillo-machine`
@@ -1024,6 +1033,7 @@ Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `grep -R "\.add_memslot\|\.add_memory\|\.set_memory\|create_vcpu_with_pio\|set_x86_64_state(boot_state" -n dillo/src dillo/deps/dillo-machine* --include='*.rs'`
 
 Boot verification note:
 - macOS boot fixtures now sign `env!("CARGO_BIN_EXE_dillo")` with

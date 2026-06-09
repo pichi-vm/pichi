@@ -210,21 +210,11 @@ mod imp {
             IrqManager::new(self.vm_fd_arc())
         }
 
-        pub fn add_memslot(
-            &self,
-            slot: u32,
-            gpa: u64,
-            host_addr: u64,
-            size: u64,
-        ) -> Result<(), Error> {
+        fn add_memslot(&self, slot: u32, gpa: u64, host_addr: u64, size: u64) -> Result<(), Error> {
             self.inner.add_memslot(slot, gpa, host_addr, size)
         }
 
-        pub fn create_vcpu(&self, idx: u32, cpu_profile: &str) -> Result<Vcpu, Error> {
-            self.create_vcpu_with_pio(idx, cpu_profile, Arc::new(|_, _| 0), Arc::new(|_, _| {}))
-        }
-
-        pub fn create_vcpu_with_pio(
+        fn create_vcpu_with_pio(
             &self,
             idx: u32,
             cpu_profile: &str,
@@ -260,12 +250,98 @@ mod imp {
     impl dillo_machine::Machine for Vm {
         type Error = Error;
         type Vcpu = Vcpu;
-        type Cpu = ();
-        type Memory = ();
+        type Cpu = Cpu;
+        type Memory = Memory;
 
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Vm::request_vcpu_exit(self);
             Ok(())
+        }
+    }
+
+    /// One KVM memslot backed by host memory that dillo derived from the
+    /// merged DTB and launch plan.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Memory {
+        slot: u32,
+        gpa: u64,
+        host_addr: u64,
+        size: u64,
+    }
+
+    impl Memory {
+        pub fn new(slot: u32, gpa: u64, host_addr: u64, size: u64) -> Self {
+            Self {
+                slot,
+                gpa,
+                host_addr,
+                size,
+            }
+        }
+    }
+
+    impl Attach<Memory> for Vm {
+        type Error = Error;
+        type Output = ();
+
+        fn attach(&mut self, item: Memory) -> Result<Self::Output, Self::Error> {
+            self.add_memslot(item.slot, item.gpa, item.host_addr, item.size)
+        }
+    }
+
+    /// One x86 vCPU creation request. Backend-specific setup stays inside KVM;
+    /// dillo supplies only the launch facts it derived from PMI/DTB.
+    pub struct Cpu {
+        idx: u32,
+        cpu_profile: String,
+        pio_read: PioRead,
+        pio_write: PioWrite,
+        state: Option<pmi::vm::vcpu::x86_64::CpuState>,
+    }
+
+    impl std::fmt::Debug for Cpu {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Cpu")
+                .field("idx", &self.idx)
+                .field("cpu_profile", &self.cpu_profile)
+                .field("has_state", &self.state.is_some())
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl Cpu {
+        pub fn x86_64(
+            idx: u32,
+            cpu_profile: impl Into<String>,
+            pio_read: Arc<dyn Fn(u16, u8) -> u32 + Send + Sync + 'static>,
+            pio_write: Arc<dyn Fn(u16, &[u8]) + Send + Sync + 'static>,
+            state: Option<pmi::vm::vcpu::x86_64::CpuState>,
+        ) -> Self {
+            Self {
+                idx,
+                cpu_profile: cpu_profile.into(),
+                pio_read,
+                pio_write,
+                state,
+            }
+        }
+    }
+
+    impl Attach<Cpu> for Vm {
+        type Error = Error;
+        type Output = Vcpu;
+
+        fn attach(&mut self, item: Cpu) -> Result<Self::Output, Self::Error> {
+            let mut vcpu = self.create_vcpu_with_pio(
+                item.idx,
+                &item.cpu_profile,
+                item.pio_read,
+                item.pio_write,
+            )?;
+            if let Some(state) = item.state {
+                vcpu.set_x86_64_state(&state)?;
+            }
+            Ok(vcpu)
         }
     }
 

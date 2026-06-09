@@ -126,7 +126,7 @@ mod imp {
             self.inner.max_vcpus()
         }
 
-        pub fn add_memory(&mut self, base: u64, size: u64) -> Result<(), Error> {
+        fn add_memory(&mut self, base: u64, size: u64) -> Result<(), Error> {
             self.inner.add_memory(base, size)
         }
 
@@ -261,10 +261,32 @@ mod imp {
         type Error = Error;
         type Vcpu = Vcpu;
         type Cpu = ();
-        type Memory = ();
+        type Memory = Memory;
 
         fn request_vcpu_exit(&self) -> Result<(), Self::Error> {
             Ok(())
+        }
+    }
+
+    /// HVF RAM range selected by dillo from the merged DTB memory plan.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Memory {
+        base: u64,
+        size: u64,
+    }
+
+    impl Memory {
+        pub fn new(base: u64, size: u64) -> Self {
+            Self { base, size }
+        }
+    }
+
+    impl Attach<Memory> for Vm {
+        type Error = Error;
+        type Output = ();
+
+        fn attach(&mut self, item: Memory) -> Result<Self::Output, Self::Error> {
+            self.add_memory(item.base, item.size)
         }
     }
 

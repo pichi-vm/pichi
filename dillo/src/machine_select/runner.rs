@@ -205,7 +205,7 @@ pub(crate) fn run(
         .map_err(|e| RunError::MemfdSetup(anyhow::anyhow!("GuestMemoryMmap: {e}")))?;
 
     let mut vm = backend_machine::Vm::new_x86_64_with_local_apic_count(vcpus)?;
-    vm.set_memory(guest_mem.clone())?;
+    Attach::attach(&mut vm, backend_machine::Memory::new(guest_mem.clone()))?;
     vm.set_shared_memory_capabilities(vec![Arc::new(MappedSharedMemory::for_guest_memory(
         guest_mem.clone(),
         SharedAccess::ReadWrite,
@@ -329,10 +329,16 @@ pub(crate) fn run(
                 pio_pci::pio_write(&legacy_for_write, &pci_for_write, port, data);
             }
         });
-        let mut vcpu = vm.create_vcpu_with_pio(idx, cpu_profile, pio_read, pio_write)?;
-        if idx == 0 {
-            vcpu.set_x86_64_state(boot_state)?;
-        }
+        let vcpu = Attach::attach(
+            &mut vm,
+            backend_machine::Cpu::x86_64(
+                idx,
+                cpu_profile,
+                pio_read,
+                pio_write,
+                (idx == 0).then(|| boot_state.clone()),
+            ),
+        )?;
         vcpu_handles.push(vcpu);
     }
     log::info!(
@@ -522,7 +528,7 @@ pub(crate) fn run(
             r.gpa + r.size,
             r.size
         );
-        vm.add_memory(r.gpa, r.size)?;
+        Attach::attach(&mut vm, backend_machine::Memory::new(r.gpa, r.size))?;
     }
     let guest_mem =
         hvf_devices::build_guest_memory(&vm.region_mappings()).map_err(RunError::MemfdSetup)?;
@@ -746,7 +752,7 @@ mod macos_tests {
         };
         let mut vm = Vm::new(&gic, 36).expect("vm");
         let code_base = 0x4000_0000u64;
-        vm.add_memory(code_base, 0x1_0000).expect("mem");
+        Attach::attach(&mut vm, backend_machine::Memory::new(code_base, 0x1_0000)).expect("mem");
         // str w2,[x1] ; hvc #0
         let code = [0xB900_0022u32, 0xD400_0002u32];
         let mut bytes = Vec::new();
@@ -891,7 +897,10 @@ pub(crate) fn run(
             r.gpa + r.size,
             host_addr
         );
-        vm.add_memslot(slot_idx as u32, r.gpa, host_addr, r.size)?;
+        Attach::attach(
+            &mut vm,
+            backend_machine::Memory::new(slot_idx as u32, r.gpa, host_addr, r.size),
+        )?;
     }
     let region_tuples: Vec<(u64, u64, u64)> = plan
         .memslots
@@ -1058,10 +1067,16 @@ pub(crate) fn run(
                 pio_pci::pio_write(&legacy_for_write, &pci_for_write, port, data);
             }
         });
-        let mut vcpu = vm.create_vcpu_with_pio(idx, cpu_profile, pio_read, pio_write)?;
-        if idx == 0 {
-            vcpu.set_x86_64_state(boot_state)?;
-        }
+        let vcpu = Attach::attach(
+            &mut vm,
+            backend_machine::Cpu::x86_64(
+                idx,
+                cpu_profile,
+                pio_read,
+                pio_write,
+                (idx == 0).then(|| boot_state.clone()),
+            ),
+        )?;
         vcpu_handles.push(vcpu);
     }
 
