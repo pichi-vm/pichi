@@ -380,7 +380,6 @@ dependencies = [
  "dillo-virtio",
  "dillo-virtio-console",
  "env_logger",
- "libc",
  "log",
  "object",
  "pmi",

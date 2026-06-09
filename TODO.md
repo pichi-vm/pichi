@@ -1674,8 +1674,7 @@ Local verification note:
 
 ## Stage 22 - Final acceptance audit
 
-Status: in progress; stale CPU/memory attach compatibility removed locally, CI
-pending.
+Status: in progress; final boundary audit continuing.
 
 Goal: prove the implementation satisfies `DILLO-CRATE-SPLIT.md` or that all
 remaining divergence has been recorded for human review after three conformance
@@ -2106,3 +2105,29 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+
+Audit fix 16 - remove top-level OS implementation dependency:
+- Removed the unused Linux-only `libc` dependency from the top-level `dillo`
+  crate. Host OS APIs remain in the selected `dillo-machine-*` backend crates;
+  `dillo` only depends on the selected backend binding plus common traits and
+  portable device crates.
+
+Evidence:
+- `grep -RIn "libc::\\|use libc\\|extern crate libc" dillo/src dillo/tests --include='*.rs'`
+  reports no source use.
+- `grep -RInE "dillo_machine_(kvm|hvf|whp)|dillo-machine-(kvm|hvf|whp)|dillo_machine::" dillo/deps/dillo-mmio dillo/deps/dillo-mmio-uart dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-pci-virtio dillo/deps/dillo-virtio dillo/deps/dillo-virtio-console --include='*.rs' --include='Cargo.toml'`
+  reports no device-to-backend edges.
+- `grep -RInE "\\bpmi\\b|dillo_devtree|devtree" dillo/deps/dillo-mmio dillo/deps/dillo-mmio-uart dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-pci-virtio dillo/deps/dillo-virtio dillo/deps/dillo-virtio-console --include='*.rs' --include='Cargo.toml'`
+  reports no device DTB/PMI knowledge.
+
+Local verification:
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-devtree -p dillo-mmio -p dillo-mmio-uart -p dillo-mmio-virtio -p dillo-pci -p dillo-pci-virtio -p dillo-virtio -p dillo-virtio-console -p dillo-machine -p dillo-machine-kvm -p dillo-machine-hvf -p dillo-machine-whp`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
