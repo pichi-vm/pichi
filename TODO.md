@@ -1662,7 +1662,8 @@ Local verification note:
 
 ## Stage 22 - Final acceptance audit
 
-Status: in progress; final boundary audit continuing.
+Status: complete; remaining confidential-computing implementation divergence
+recorded for human review.
 
 Goal: prove the implementation satisfies `DILLO-CRATE-SPLIT.md` or that all
 remaining divergence has been recorded for human review after three conformance
@@ -2386,9 +2387,80 @@ Local verification:
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
-- First local macOS boot run hit HVF `operation not allowed by the system` after
-  three successful boots; immediate isolated rerun of the same command passed
-  all boot tests.
 - `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture`
 - `ssh -A nathaniel@apollo 'cd /tmp/pichi-codex.1781037357 && CARGO_BUILD_RUSTFLAGS="-D warnings" cargo test -p dillo --features vm-tests --test boot -- --test-threads=1 --nocapture'`
   in a fresh `/tmp` copy; Linux/x86 boot suite passed 5/5.
+
+CI verification:
+- `27234255832` passed on `cargo fmt`, `ubuntu-24.04`, `linux-arm64`,
+  `macos-arm64`, and `windows-2025`.
+
+Final acceptance audit:
+- Target cfg confinement:
+  `grep -R -nE "cfg\\(target_os|cfg\\(target_arch|cfg_attr\\(target_os|cfg_attr\\(target_arch" dillo/src dillo/deps/dillo-mmio dillo/deps/dillo-mmio-uart dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-pci-virtio dillo/deps/dillo-virtio dillo/deps/dillo-virtio-console dillo/deps/dillo-machine/src --include='*.rs' --include='Cargo.toml'`
+  reports only the three selected-machine bindings in `dillo/src/main.rs`.
+- Dillo backend knowledge:
+  `grep -R -nE "dillo_machine_(kvm|hvf|whp)|dillo-machine-(kvm|hvf|whp)|kvm_ioctls|kvm_bindings|applevisor|windows::Win32|WHv|Hypervisor|hvf|whp|kvm" dillo/src dillo/Cargo.toml --include='*.rs' --include='Cargo.toml'`
+  reports only target-selected backend aliases/dependencies and a generic
+  error message.
+- Device isolation:
+  `grep -R -nE "dillo_machine_(kvm|hvf|whp)|dillo-machine-(kvm|hvf|whp)|dillo_machine::|\\bpmi\\b|dillo_devtree|devtree" dillo/deps/dillo-mmio dillo/deps/dillo-mmio-uart dillo/deps/dillo-mmio-virtio dillo/deps/dillo-pci dillo/deps/dillo-pci-virtio dillo/deps/dillo-virtio dillo/deps/dillo-virtio-console --include='*.rs' --include='Cargo.toml'`
+  reports no device-crate dependency on backends, PMI, or devtree.
+- Backend isolation:
+  `grep -R -nE "dillo_pci|dillo-pci|dillo_virtio|dillo-virtio|dillo_mmio_uart|dillo-mmio-uart|dillo_mmio_virtio|dillo-mmio-virtio|dillo_pci_virtio|dillo-pci-virtio" dillo/deps/dillo-machine dillo/deps/dillo-machine-kvm dillo/deps/dillo-machine-hvf dillo/deps/dillo-machine-whp --include='*.rs' --include='Cargo.toml'`
+  reports no backend dependency on PCI, virtio transport, UART, or concrete
+  device crates.
+- Retired crates:
+  `cargo metadata --no-deps --format-version 1` lists only the final dillo
+  crate set; `dillo-vm`, `dillo-hypervisor`, `dillo-pmi`, `dillo-platform`,
+  `vm-pci`, `dillo-x86`, `vhost-backend`, and `dillo-device` are absent.
+- Backend public surface:
+  `grep -R -nE "pub (struct|enum|trait|type|fn)|pub use" dillo/deps/dillo-machine-kvm/src dillo/deps/dillo-machine-hvf/src dillo/deps/dillo-machine-whp/src --include='*.rs'`
+  reports only expected public backend surfaces: `Error`, `RawStdio`, `Vm`,
+  `Memory`, `CpuState`, `Cpu`, and target-module `pub use imp::*`.
+- DTB drain/coverage:
+  `dillo-devtree::platform` owns drain-to-empty survey and provenance; tests
+  cover extra node/property residuals, overlap rejection, interrupt-parent and
+  MSI-parent validation, x86/aarch64 platform substrates, and unsupported
+  `dma-ranges` fail-closed behavior.
+- Device implementation:
+  source search finds portable guest-visible device implementations in the
+  device crates: UART in `dillo-mmio-uart`, syscon/shared MMIO traits in
+  `dillo-mmio`, PCI root in `dillo-pci`, virtio transports in
+  `dillo-mmio-virtio`/`dillo-pci-virtio`, and console in
+  `dillo-virtio-console`. The only backend-local `MmioDevice` is WHP IOAPIC
+  substrate inside `dillo-machine-whp`.
+- Shared memory:
+  `SharedRegion` is an opaque `Arc<dyn SharedRegionAccess>` handle. Portable
+  virtio queue metadata and descriptor payload access goes through
+  `SharedMemory::region()`. `MappedSharedMemory` remains the standard-VM
+  backend compatibility implementation over `GuestMemoryMmap`.
+
+Remaining divergence for human review:
+- True confidential-computing memory is not implemented. The public
+  device-facing model is CC-shaped, but KVM/HVF/WHP standard VMs still back
+  shared-memory capabilities with mapped guest RAM and treat all guest RAM as
+  currently shared. A real KVM+TDX or KVM+SEV-SNP backend still needs
+  guest-private memory setup and backend-owned shared/private conversion exit
+  handling.
+
+Audit fix 28 - enforce retired-crate boundaries:
+- Extended `dillo/tests/architecture_cfg.rs` so it now also fails if retired
+  compatibility crates reappear under `dillo/deps` or in the root/dillo
+  manifests and lockfile.
+- Removed empty orphan directories left behind by retired compatibility crates.
+
+Evidence:
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+  now runs both `target_cfg_is_confined_to_machine_selection` and
+  `retired_compatibility_crates_stay_retired`.
+
+Local verification:
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo --test architecture_cfg`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
+- `CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`

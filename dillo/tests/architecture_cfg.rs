@@ -12,6 +12,18 @@ const DISALLOWED_PATTERNS: &[&str] = &[
     "cfg_attr(target_family",
 ];
 
+const RETIRED_CRATES: &[&str] = &[
+    "dillo-device",
+    "dillo-hypervisor",
+    "dillo-machine-backend",
+    "dillo-platform",
+    "dillo-pmi",
+    "dillo-vm",
+    "dillo-x86",
+    "vhost-backend",
+    "vm-pci",
+];
+
 #[test]
 fn target_cfg_is_confined_to_machine_selection() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -24,6 +36,37 @@ fn target_cfg_is_confined_to_machine_selection() {
     assert!(
         failures.is_empty(),
         "target cfg must stay out of portable code; found {}",
+        failures.join(", ")
+    );
+}
+
+#[test]
+fn retired_compatibility_crates_stay_retired() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest.parent().expect("dillo has workspace parent");
+
+    let manifests = [
+        workspace.join("Cargo.toml"),
+        workspace.join("Cargo.lock"),
+        manifest.join("Cargo.toml"),
+    ];
+    let mut failures = Vec::new();
+
+    for krate in RETIRED_CRATES {
+        if workspace.join("dillo/deps").join(krate).exists() {
+            failures.push(format!("retired crate directory exists: {krate}"));
+        }
+        for manifest in manifests.iter().filter(|path| path.exists()) {
+            let text = fs::read_to_string(manifest).expect("read manifest");
+            if text.contains(krate) {
+                failures.push(format!("{} references {krate}", manifest.display()));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "retired compatibility crates must stay out of the workspace: {}",
         failures.join(", ")
     );
 }
