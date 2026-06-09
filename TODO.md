@@ -257,8 +257,8 @@ Success criteria:
 - Default local verification and all target checks pass.
 
 Completed changes:
-- Renamed the transport-neutral package at `dillo/deps/virtio` to
-  `dillo-virtio`.
+- Renamed the transport-neutral package to `dillo-virtio`; it now lives at
+  `dillo/deps/dillo-virtio`.
 - Added `dillo-mmio-virtio` and moved the virtio-mmio transport out of
   `dillo-vm`.
 - Added `dillo-pci-virtio` and moved the virtio PCI transport plus
@@ -1025,6 +1025,9 @@ Completed changes:
   owns those PCI helper types directly.
 - Removed `vm-pci` from the workspace members, workspace dependencies, and disk
   layout.
+- Renamed the transport-neutral virtio crate directory from `dillo/deps/virtio`
+  to `dillo/deps/dillo-virtio` so the on-disk crate graph matches the package
+  and design names.
 
 Local verification for current in-progress slice:
 - `RUSTC_BOOTSTRAP=1 cargo check -p dillo-mmio -p dillo-pci -p dillo-virtio -p dillo-mmio-virtio -p dillo-pci-virtio -p dillo-machine`

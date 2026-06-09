@@ -55,7 +55,7 @@ impl SourceScan {
             "deps/dillo-pci",
             "deps/dillo-pci-virtio",
             "deps/dillo-virtio-console",
-            "deps/virtio",
+            "deps/dillo-virtio",
         ] {
             let root = self.manifest.join(crate_dir);
             self.visit_rust_files(&root.join("src"), &mut |path| {
