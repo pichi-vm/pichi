@@ -700,7 +700,7 @@ Remaining divergence:
 
 ## Stage 12 - Implement CC-first shared-memory capabilities
 
-Status: in progress.
+Status: complete.
 
 Goal: replace whole-guest-memory exposure with attachment-scoped shared-memory
 capabilities.
@@ -837,7 +837,7 @@ Remaining divergence:
 
 ## Stage 14 - Remove compatibility adapters
 
-Status: in progress.
+Status: complete.
 
 Goal: delete bridge code that allowed old and new APIs to coexist.
 
@@ -1136,7 +1136,7 @@ Latest local verification:
 
 ## Stage 15 - Restore macOS CI
 
-Status: pending.
+Status: in progress.
 
 Goal: restore required macOS/HVF CI once the self-hosted runner is online.
 
@@ -1151,6 +1151,11 @@ Success criteria:
 - macOS workspace tests and signed HVF boot tests pass in CI.
 - The temporary quarantine comments are removed.
 - Default local verification passes.
+
+Completed changes:
+- Restored the `macos-arm64` matrix entry using the self-hosted bare-metal M1
+  runner labels.
+- Removed the temporary macOS quarantine comments from the workflow.
 
 ## Stage 16 - Conformance loop 1
 

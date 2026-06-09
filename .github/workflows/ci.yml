@@ -11,9 +11,7 @@ env:
   NIGHTLY: nightly-2026-06-04
 
 # Supported platforms are Linux x86_64 (KVM), Windows x86_64 (WHP), and macOS
-# arm64 (HVF on a bare-metal organization runner). The macOS self-hosted runner
-# is temporarily offline, so this workflow currently schedules only Linux and
-# Windows. Restore the macOS matrix entry before final acceptance.
+# arm64 (HVF on a bare-metal organization runner).
 jobs:
   fmt:
     name: cargo fmt
@@ -46,6 +44,10 @@ jobs:
             os: windows-2025
             runs_on: '["windows-2025"]'
             guest_musl: x86_64-unknown-linux-musl
+          - name: macos-arm64       # macOS arm64 - build + real HVF boot
+            os: macos-arm64
+            runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
+            guest_musl: aarch64-unknown-linux-musl
     runs-on: ${{ fromJSON(matrix.runs_on) }}
     steps:
       - uses: actions/checkout@v6.0.3
@@ -68,7 +70,7 @@ jobs:
           rustc --version
 
       - name: Enable KVM (Linux)
-        # dillo-vm's unit tests (irqchip/irqfd) touch /dev/kvm during the plain
+        # Backend tests and boot fixtures may touch /dev/kvm during the plain
         # workspace test run, so access must be granted before it.
         if: runner.os == 'Linux'
         run: ls -l /dev/kvm && sudo chmod 666 /dev/kvm || true
@@ -82,8 +84,7 @@ jobs:
 
       # All platforms run the workspace unit tests, excluding only snuffler:
       # the Linux guest probe binary is cross-built as a dillo test artifact.
-      # Everything else in the currently scheduled matrix is built and tested
-      # for parity with Linux. Restore the macOS lane when its runner returns.
+      # Everything else in the matrix is built and tested for parity with Linux.
       - name: Test (Linux, full workspace)
         if: runner.os == 'Linux'
         shell: bash
@@ -114,10 +115,9 @@ jobs:
           sudo sysctl -w vm.nr_hugepages=1024
           grep -i huge /proc/meminfo
 
-      # Real guest boot on every currently scheduled platform. dillo builds its
-      # per-OS backend (KVM on Linux, WHP on Windows; HVF on macOS once the
-      # runner is restored) and boots an Alpine same-arch guest; the test
-      # asserts the guest's self-report.
+      # Real guest boot on every platform. dillo builds its per-OS backend
+      # (KVM on Linux, WHP on Windows, HVF on macOS) and boots an Alpine
+      # same-arch guest; the test asserts the guest's self-report.
       - name: Boot tests (KVM / WHP / HVF)
         shell: bash
         env:
