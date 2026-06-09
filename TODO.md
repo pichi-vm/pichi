@@ -1256,6 +1256,8 @@ Completed changes:
   backend-specific GIC lifecycle methods.
 - Removed backend terminology from portable device comments/logs where it was
   not part of the portable trait contract.
+- Fixed the Windows/WHP test-only compile failure from CI run `27196755182` by
+  making IOAPIC tests assert the new routed-write `Result`.
 
 Unresolved mismatches carried to Stage 18:
 - `Machine`/`Vcpu` still cannot require `Send`/`Sync`: the current HVF
@@ -1275,6 +1277,7 @@ Local verification:
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-unknown-linux-gnu`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target x86_64-pc-windows-msvc`
+- `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo-machine-whp --tests --target x86_64-pc-windows-msvc`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo check -p dillo --target aarch64-apple-darwin`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test -p dillo-mmio -p dillo-pci -p dillo-pci-virtio -p dillo-mmio-virtio -p dillo-mmio-uart -p dillo-machine -p dillo-machine-whp -p dillo-machine-kvm -p dillo-machine-hvf`
 - `RUSTC_BOOTSTRAP=1 CARGO_BUILD_RUSTFLAGS='-D warnings' cargo test --workspace --exclude snuffler`

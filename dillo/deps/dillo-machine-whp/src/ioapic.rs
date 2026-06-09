@@ -168,7 +168,9 @@ mod tests {
     fn reports_24_redirection_entries() {
         let ioapic = ioapic();
         let window = ioapic.windows()[0];
-        ioapic.write(window, 0, &1u32.to_le_bytes());
+        ioapic
+            .write(window, 0, &1u32.to_le_bytes())
+            .expect("IOAPIC select version register");
         let mut data = [0; 4];
         ioapic.read(window, 0x10, &mut data).expect("IOAPIC read");
         assert_eq!(u32::from_le_bytes(data), (23 << 16) | 0x11);
@@ -178,16 +180,28 @@ mod tests {
     fn stores_redirection_entry_halves() {
         let ioapic = ioapic();
         let window = ioapic.windows()[0];
-        ioapic.write(window, 0, &0x10u32.to_le_bytes());
-        ioapic.write(window, 0x10, &0x31u32.to_le_bytes());
-        ioapic.write(window, 0, &0x11u32.to_le_bytes());
-        ioapic.write(window, 0x10, &0x0200_0000u32.to_le_bytes());
+        ioapic
+            .write(window, 0, &0x10u32.to_le_bytes())
+            .expect("IOAPIC select redirection low register");
+        ioapic
+            .write(window, 0x10, &0x31u32.to_le_bytes())
+            .expect("IOAPIC write redirection low register");
+        ioapic
+            .write(window, 0, &0x11u32.to_le_bytes())
+            .expect("IOAPIC select redirection high register");
+        ioapic
+            .write(window, 0x10, &0x0200_0000u32.to_le_bytes())
+            .expect("IOAPIC write redirection high register");
 
         let mut data = [0; 4];
-        ioapic.write(window, 0, &0x10u32.to_le_bytes());
+        ioapic
+            .write(window, 0, &0x10u32.to_le_bytes())
+            .expect("IOAPIC select redirection low register");
         ioapic.read(window, 0x10, &mut data).expect("IOAPIC read");
         assert_eq!(u32::from_le_bytes(data), 0x31);
-        ioapic.write(window, 0, &0x11u32.to_le_bytes());
+        ioapic
+            .write(window, 0, &0x11u32.to_le_bytes())
+            .expect("IOAPIC select redirection high register");
         ioapic.read(window, 0x10, &mut data).expect("IOAPIC read");
         assert_eq!(u32::from_le_bytes(data), 0x0200_0000);
     }
