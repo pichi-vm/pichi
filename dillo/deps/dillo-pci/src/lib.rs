@@ -76,6 +76,16 @@ pub trait PciDevice: Send + Sync + std::fmt::Debug {
         &[]
     }
 
+    /// Number of MSI-X table entries this device exposes (0 if none).
+    ///
+    /// The root sums these across slots to size the shared message-interrupt
+    /// domain, and assigns each slot a disjoint vector base so device-local
+    /// vectors `0..N` map to a private sub-range of the domain. See
+    /// [`PciBus::set_host`].
+    fn msix_vectors(&self) -> u16 {
+        0
+    }
+
     /// MMIO read on a BAR range. Default: ignored.
     fn bar_read(&self, _bar_idx: u8, _offset: u64, _data: &mut [u8]) -> Result<(), PciError> {
         Err(PciError::Unsupported)
@@ -204,9 +214,34 @@ impl PciBus {
         self.slots[slot as usize] = Some(device);
     }
 
+    /// Total MSI-X vectors across all populated slots — the size of the shared
+    /// message-interrupt domain the root must request from the machine.
+    pub fn total_msix_vectors(&self) -> u16 {
+        self.slots
+            .iter()
+            .flatten()
+            .map(|d| d.msix_vectors())
+            .fold(0u16, u16::saturating_add)
+    }
+
     pub fn set_host(&self, host: Arc<dyn PciDeviceHost>) {
+        // The whole bus shares one message-interrupt domain (a flat pool of
+        // vectors). Give each slot a disjoint vector base — a running sum in
+        // slot order — so two functions' device-local vectors `0..N` never
+        // alias in that pool. Slots without MSI-X get the host unwrapped.
+        let mut base: u16 = 0;
         for device in self.slots.iter().flatten() {
-            device.set_host(Arc::clone(&host));
+            let n = device.msix_vectors();
+            let host_for_device: Arc<dyn PciDeviceHost> = if n == 0 {
+                Arc::clone(&host)
+            } else {
+                Arc::new(OffsetPciDeviceHost {
+                    inner: Arc::clone(&host),
+                    vector_base: base,
+                })
+            };
+            device.set_host(host_for_device);
+            base = base.saturating_add(n);
         }
     }
 
@@ -333,6 +368,7 @@ impl PciRoot {
     pub fn register(&mut self, slot: u8, device: Box<dyn PciDevice>) {
         self.bus.register(slot, device);
         self.refresh_windows();
+        self.refresh_interrupts();
     }
 
     pub fn set_attachment(&self, attachment: Arc<dyn MmioAttachment>) {
@@ -403,6 +439,18 @@ impl PciRoot {
         );
     }
 
+    /// Size the requested message-interrupt domain to the sum of all populated
+    /// slots' MSI-X tables. Each slot is later handed a disjoint sub-range via
+    /// [`PciBus::set_host`], so the one flat domain backs every function.
+    fn refresh_interrupts(&mut self) {
+        let total = self.bus.total_msix_vectors();
+        for req in &mut self.interrupts {
+            if let MmioInterruptRequirement::MessageDomain { vectors, .. } = req {
+                *vectors = total;
+            }
+        }
+    }
+
     fn bar_route(&self, window: MmioWindow) -> Option<(u8, u8)> {
         self.enumerate_bars()
             .into_iter()
@@ -436,6 +484,65 @@ impl PciDeviceHost for PciRootHost {
 
     fn spawn(&self, run: MmioDeviceRun) -> Result<MmioDeviceHandle, MmioSpawnError> {
         Arc::clone(&self.attachment).spawn(run)
+    }
+}
+
+/// `VIRTIO_MSI_NO_VECTOR` / unprogrammed MSI-X table sentinel.
+const MSI_NO_VECTOR: u16 = 0xFFFF;
+
+/// Per-slot wrapper installed by [`PciBus::set_host`] that shifts a device's
+/// MSI-X vectors into its disjoint sub-range of the root's shared
+/// message-interrupt domain. Config-space and BAR routing already carry the
+/// slot dimension; this extends the same per-slot isolation to MSI-X.
+#[derive(Debug)]
+struct OffsetPciDeviceHost {
+    inner: Arc<dyn PciDeviceHost>,
+    vector_base: u16,
+}
+
+impl PciDeviceHost for OffsetPciDeviceHost {
+    fn shared_memory(&self) -> &[Arc<dyn SharedMemory>] {
+        self.inner.shared_memory()
+    }
+
+    fn msix_notifier(&self) -> Option<Arc<dyn MsixNotifier>> {
+        self.inner.msix_notifier().map(|inner| {
+            Arc::new(OffsetMsixNotifier {
+                inner,
+                vector_base: self.vector_base,
+            }) as Arc<dyn MsixNotifier>
+        })
+    }
+
+    fn spawn(&self, run: MmioDeviceRun) -> Result<MmioDeviceHandle, MmioSpawnError> {
+        self.inner.spawn(run)
+    }
+}
+
+/// MSI-X notifier that shifts device-local vectors by a fixed base before
+/// addressing the shared domain. The no-vector sentinel passes through
+/// unshifted so "no interrupt" stays "no interrupt".
+struct OffsetMsixNotifier {
+    inner: Arc<dyn MsixNotifier>,
+    vector_base: u16,
+}
+
+impl MsixNotifier for OffsetMsixNotifier {
+    fn vector_updated(&self, vector: u16, entry: &MsixTableEntry) {
+        self.inner
+            .vector_updated(vector.saturating_add(self.vector_base), entry);
+    }
+
+    fn msix_enabled(&self, enabled: bool) {
+        self.inner.msix_enabled(enabled);
+    }
+
+    fn interrupt_for(&self, vector: u16) -> Option<dillo_mmio::Interrupt> {
+        if vector == MSI_NO_VECTOR {
+            return None;
+        }
+        self.inner
+            .interrupt_for(vector.saturating_add(self.vector_base))
     }
 }
 
@@ -786,6 +893,150 @@ mod tests {
         root.set_attachment(Arc::new(FakeAttachment));
 
         assert!(observed_host.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn two_msix_functions_get_disjoint_domain_vectors() {
+        use dillo_mmio::{Interrupt, InterruptError, MmioInterrupt};
+
+        // Domain that records the (global) vector index of every update.
+        struct RecordingDomain {
+            updates: Mutex<Vec<u16>>,
+        }
+        impl MessageInterruptDomain for RecordingDomain {
+            fn update(&self, vector: u16, _msg: MessageInterrupt) -> Result<(), InterruptError> {
+                self.updates.lock().unwrap().push(vector);
+                Ok(())
+            }
+            fn enabled(&self, _enabled: bool) -> Result<(), InterruptError> {
+                Ok(())
+            }
+            fn interrupt(&self, _vector: u16) -> Option<Interrupt> {
+                None
+            }
+        }
+
+        #[derive(Debug)]
+        struct FakeAttachment {
+            interrupts: Vec<MmioInterrupt>,
+        }
+        impl MmioAttachment for FakeAttachment {
+            fn interrupts(&self) -> &[MmioInterrupt] {
+                &self.interrupts
+            }
+            fn shared_memory(&self) -> &[Arc<dyn SharedMemory>] {
+                &[]
+            }
+            fn spawn(
+                self: Arc<Self>,
+                _run: dillo_mmio::MmioDeviceRun,
+            ) -> Result<MmioDeviceHandle, MmioSpawnError> {
+                Ok(MmioDeviceHandle::noop())
+            }
+        }
+
+        // Device that reports a configurable MSI-X vector count and captures the
+        // per-slot host it was handed at set_host time.
+        struct RecordingDevice {
+            vectors: u16,
+            host: Arc<Mutex<Option<Arc<dyn PciDeviceHost>>>>,
+        }
+        impl std::fmt::Debug for RecordingDevice {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("RecordingDevice").finish()
+            }
+        }
+        impl PciDevice for RecordingDevice {
+            fn config_read(&self, _reg_idx: usize) -> u32 {
+                0
+            }
+            fn config_write(
+                &self,
+                _reg_idx: usize,
+                _offset: u64,
+                _data: &[u8],
+            ) -> Result<(), PciError> {
+                Ok(())
+            }
+            fn name(&self) -> &str {
+                "rec"
+            }
+            fn msix_vectors(&self) -> u16 {
+                self.vectors
+            }
+            fn set_host(&self, host: Arc<dyn PciDeviceHost>) {
+                *self.host.lock().unwrap() = Some(host);
+            }
+        }
+
+        let domain = Arc::new(RecordingDomain {
+            updates: Mutex::new(Vec::new()),
+        });
+
+        let mut root = PciRoot::with_interrupt_requirement(
+            MmioWindow {
+                base: 0x3000_0000,
+                size: 0x1000_0000,
+            },
+            MmioInterruptRequirement::MessageDomain {
+                source: None,
+                vectors: 0,
+            },
+        );
+
+        let host_a = Arc::new(Mutex::new(None));
+        let host_b = Arc::new(Mutex::new(None));
+        root.register(
+            1,
+            Box::new(RecordingDevice {
+                vectors: 3,
+                host: Arc::clone(&host_a),
+            }),
+        );
+        root.register(
+            2,
+            Box::new(RecordingDevice {
+                vectors: 2,
+                host: Arc::clone(&host_b),
+            }),
+        );
+
+        // The root sized its requested domain to the sum of both functions.
+        assert!(matches!(
+            root.interrupts(),
+            [MmioInterruptRequirement::MessageDomain { vectors: 5, .. }]
+        ));
+
+        root.set_attachment(Arc::new(FakeAttachment {
+            interrupts: vec![MmioInterrupt::MessageDomain(domain.clone())],
+        }));
+
+        // Both functions program their device-local vector 0; they must land on
+        // distinct global vectors (0 for slot 1, base 3 for slot 2) — the alias
+        // bug this design fixes.
+        let entry = MsixTableEntry::default();
+        host_a
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .msix_notifier()
+            .unwrap()
+            .vector_updated(0, &entry);
+        host_b
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .msix_notifier()
+            .unwrap()
+            .vector_updated(0, &entry);
+
+        assert_eq!(
+            domain.updates.lock().unwrap().as_slice(),
+            &[0, 3],
+            "function MSI-X vectors must not alias in the shared domain"
+        );
     }
 
     #[test]

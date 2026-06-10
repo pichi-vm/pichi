@@ -23,6 +23,8 @@ use snuffler::{
     REPORT_BEGIN, REPORT_END, Report, SCHEMA_VERSION, SerialPort,
 };
 
+mod bench;
+
 #[cfg(not(test))]
 const RB_POWER_OFF: libc::c_int = 0x4321_FEDC_u32 as i32;
 
@@ -448,11 +450,16 @@ fn walk_block() -> Vec<BlockDevice> {
             .unwrap_or(0);
         let vendor = read_opt(&path.join("device/vendor"));
         let model = read_opt(&path.join("device/model"));
+        let ro = read_opt(&path.join("ro")).as_deref() == Some("1");
+        let size_bytes = size_sectors.saturating_mul(512);
+        let bench = bench::benchmark_device(&name, size_bytes, ro);
         out.push(BlockDevice {
             name,
-            size_bytes: size_sectors.saturating_mul(512),
+            size_bytes,
             vendor,
             model,
+            ro,
+            bench,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));

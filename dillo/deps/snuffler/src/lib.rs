@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 /// Current schema version. Bumped on any breaking field change.
 /// v4: added [`Report::kernel_log`] (full guest kernel ring buffer).
-pub const SCHEMA_VERSION: u32 = 4;
+/// v5: added [`BlockDevice::ro`] and [`BlockDevice::bench`] (per-device
+///     virtio-blk I/O benchmarks).
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Sentinel pair the fixture brackets the JSON report with on stdout. The
 /// kernel also writes its own printks to hvc0 when `console=hvc0` is in
@@ -87,6 +89,62 @@ pub struct BlockDevice {
     pub size_bytes: u64,
     pub vendor: Option<String>,
     pub model: Option<String>,
+    /// `/sys/block/<name>/ro` (read-only). Default false for older reports.
+    #[serde(default)]
+    pub ro: bool,
+    /// Raw-device I/O benchmark results, when the probe could open and exercise
+    /// the device. `None` if benchmarking was skipped or failed (see
+    /// [`BlkBench::error`] when present).
+    #[serde(default)]
+    pub bench: Option<BlkBench>,
+}
+
+/// Per-device raw I/O benchmark. snuffler measures throughput and verifies the
+/// data path; it asserts nothing — host harnesses decide what matters. Numbers
+/// are useful for finding bottlenecks outside CI; in CI only the correctness
+/// invariants (bytes moved, zero errors, writes verified, RO rejected) are
+/// stable enough to assert.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlkBench {
+    /// `"o_direct"` when the device was opened `O_DIRECT` (I/O bypasses the page
+    /// cache and traverses virtio-blk), else `"buffered"`.
+    pub mode: String,
+    /// Sequential read of up to ~16 MiB in 64 KiB blocks from offset 0.
+    pub seq_read: BlkOp,
+    /// Random 4 KiB reads at aligned offsets.
+    pub rand_read: BlkOp,
+    /// Sequential write (read-write devices only).
+    #[serde(default)]
+    pub seq_write: Option<BlkOp>,
+    /// Random 4 KiB writes at aligned offsets (read-write devices only).
+    #[serde(default)]
+    pub rand_write: Option<BlkOp>,
+    /// Read-only devices only: whether opening the device `O_RDWR` was correctly
+    /// rejected by the kernel (proves `VIRTIO_BLK_F_RO` enforcement).
+    #[serde(default)]
+    pub ro_write_rejected: Option<bool>,
+    /// Set when the device could not be opened / benchmarked.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// One benchmark operation's results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlkOp {
+    /// Total bytes transferred.
+    pub bytes: u64,
+    /// Number of individual read/write calls issued.
+    pub ops: u64,
+    /// Wall-clock duration in microseconds.
+    pub duration_us: u64,
+    /// `bytes / duration` in MiB/s (telemetry — noisy in a VM; do not gate CI).
+    pub throughput_mibps: f64,
+    /// Count of failed read/write calls.
+    pub errors: u64,
+    /// For write ops: whether a full read-back matched the written pattern.
+    /// `None` for read ops.
+    #[serde(default)]
+    pub verified: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -27,9 +27,32 @@ struct Args {
     #[argh(option, default = "1")]
     cpus: u32,
 
-    /// console endpoint (MVP: `stdio`; default: `stdio`)
-    #[argh(option, default = "String::from(\"stdio\")")]
-    console: String,
+    /// console device. `stdio` (default), or key/value with placement, e.g.
+    /// `endpoint=stdio,bus=mmio,slot=0`.
+    #[argh(option)]
+    console: Option<dillo_config::ConsoleSpec>,
+
+    /// default bus for devices that don't pin one, when the DTB exposes both:
+    /// `pci` (default) or `mmio`.
+    #[argh(option)]
+    bus: Option<dillo_config::Bus>,
+
+    /// virtio-blk device (raw image). Repeatable. Key/value:
+    /// `path=P[,readonly][,bus=pci|mmio][,slot=N]`.
+    #[argh(option)]
+    blk: Vec<dillo_config::BlkSpec>,
+
+    /// virtualized-GPT device (one GPT synthesized over its partitions).
+    /// Repeatable. Key/value, e.g.
+    /// `partitions=[[path=P,partuuid=U,typeguid=U,label=S]][,bus=pci|mmio][,slot=N]`;
+    /// `device-id`/`disk-guid` are derived from the PARTUUIDs if omitted.
+    #[argh(option)]
+    gpt: Vec<dillo_config::GptSpec>,
+
+    /// path to a JSON device layout file. Mutually exclusive with
+    /// `--blk`/`--gpt`/`--bus`/`--console`.
+    #[argh(option)]
+    layout: Option<std::path::PathBuf>,
 }
 
 fn main() {
@@ -68,6 +91,18 @@ fn main() {
         guest_writes,
         ..
     } = launch;
+
+    // Resolve the device layout, open backing files, and allocate bus/slots
+    // NOW so config/I/O/placement errors surface before we enter raw terminal
+    // mode (which a process::exit would leave mangled).
+    let placements = match build_placements(&args, &platform) {
+        Ok(placements) => placements,
+        Err(e) => {
+            eprintln!("dillo: {e:#}");
+            std::process::exit(2);
+        }
+    };
+
     let preflight = runner::Preflight::new(
         parsed,
         platform,
@@ -85,6 +120,7 @@ fn main() {
             gpa: w.gpa,
             data: w.data,
         }),
+        placements,
     );
 
     // Per ARCH §13.5: if stdin is a TTY, enter raw mode for the
@@ -103,11 +139,10 @@ fn main() {
     <machine::Vm as Host>::install_signal_watchers(&SUPERVISOR_SHUTDOWN);
 
     log::info!(
-        "dillo starting: pmi={} memory={}MiB cpus={} console={}",
+        "dillo starting: pmi={} memory={}MiB cpus={}",
         pmi.display(),
         memory,
         cpus,
-        args.console,
     );
 
     match runner::run(preflight, cpus, &SUPERVISOR_SHUTDOWN) {
@@ -134,10 +169,144 @@ fn validate(args: &Args) -> Result<(), &'static str> {
     if args.cpus == 0 {
         return Err("--cpus must be >= 1");
     }
-    if args.console != "stdio" {
-        return Err("--console only supports `stdio` in MVP");
-    }
     Ok(())
+}
+
+/// Build the parsed [`dillo_config::Layout`] from the CLI flags or a `--layout` JSON
+/// file. The two are mutually exclusive.
+fn layout_from_args(args: &Args) -> anyhow::Result<dillo_config::Layout> {
+    use anyhow::Context as _;
+    if let Some(path) = &args.layout {
+        anyhow::ensure!(
+            args.blk.is_empty()
+                && args.gpt.is_empty()
+                && args.bus.is_none()
+                && args.console.is_none(),
+            "--layout is mutually exclusive with --blk/--gpt/--bus/--console"
+        );
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading layout file {}", path.display()))?;
+        serde_json::from_str(&text)
+            .with_context(|| format!("parsing layout file {}", path.display()))
+    } else {
+        // argh collects --blk and --gpt into separate vecs, so the interleaved
+        // command-line order is not preserved; blk devices precede gpt devices.
+        // Use `slot=`/`--layout` for exact ordering control.
+        let devices = args
+            .blk
+            .iter()
+            .cloned()
+            .map(dillo_config::Device::Blk)
+            .chain(args.gpt.iter().cloned().map(dillo_config::Device::Gpt))
+            .collect();
+        Ok(dillo_config::Layout {
+            bus: args.bus,
+            console: args.console.clone(),
+            devices,
+        })
+    }
+}
+
+/// Resolve the layout, open backing files, and allocate a bus + slot for the
+/// console and every device. Runs before raw terminal mode so all config / I/O
+/// / placement errors surface cleanly.
+fn build_placements(
+    args: &Args,
+    platform: &dillo_devtree::platform::Machine,
+) -> anyhow::Result<Vec<runner::DevicePlacement>> {
+    use dillo_virtio::VirtioDevice;
+
+    let resolved = dillo_config::resolve(layout_from_args(args)?)?;
+
+    // Requests + constructed devices, console first.
+    let mut requests: Vec<dillo_config::Placement> = Vec::with_capacity(resolved.devices.len() + 1);
+    let mut built: Vec<(u16, &'static str, Box<dyn VirtioDevice>)> = Vec::new();
+
+    requests.push(resolved.console.placement.clone());
+    built.push((
+        3, // 2 queues + config
+        "virtio-console",
+        Box::new(dillo_virtio_console::VirtioConsole::new()),
+    ));
+
+    for device in &resolved.devices {
+        requests.push(device.placement().clone());
+        let (name, blk) = build_block_device(device)?;
+        built.push((2, name, Box::new(blk)));
+    }
+
+    let capacity = capacity_from_platform(platform);
+    let default_bus = resolved.default_bus.unwrap_or(dillo_config::Bus::Pci);
+    let placed = dillo_config::allocate(&capacity, default_bus, &requests)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    Ok(placed
+        .into_iter()
+        .zip(built)
+        .map(
+            |(placed, (msix_vectors, name, device))| runner::DevicePlacement {
+                bus: placed.bus,
+                index: placed.index,
+                msix_vectors,
+                name,
+                device,
+            },
+        )
+        .collect())
+}
+
+/// Construct the `VirtioBlk` for one resolved device (opening its backing files).
+fn build_block_device(
+    device: &dillo_config::ResolvedDevice,
+) -> anyhow::Result<(&'static str, dillo_virtio_blk::VirtioBlk)> {
+    use anyhow::Context as _;
+    use dillo_virtio_blk::VirtioBlk;
+    match device {
+        dillo_config::ResolvedDevice::Blk { path, readonly, .. } => {
+            let blk = VirtioBlk::open_raw(path, *readonly)
+                .with_context(|| format!("opening blk image {}", path.display()))?;
+            Ok(("virtio-blk", blk))
+        }
+        dillo_config::ResolvedDevice::Gpt {
+            device_id,
+            disk_guid,
+            partitions,
+            ..
+        } => {
+            let specs = partitions
+                .iter()
+                .map(|p| dillo_virtio_gpt::PartitionSpec {
+                    path: p.path.clone(),
+                    partuuid: p.partuuid,
+                    typeguid: p.typeguid,
+                    label: p.label.clone(),
+                    attrs: p.attrs,
+                })
+                .collect();
+            let backing = dillo_virtio_gpt::assemble(*device_id, *disk_guid, specs)?;
+            // Virtualized-GPT is read-only by construction (no writable fd).
+            Ok((
+                "virtio-gpt",
+                VirtioBlk::new(std::sync::Arc::new(backing), None, true),
+            ))
+        }
+    }
+}
+
+/// Derive placement capacity from the surveyed platform: PCI functions (device
+/// numbers 1..=N, bounded by the BAR window) when PCIe is present, plus the
+/// declared virtio-mmio slot count.
+fn capacity_from_platform(platform: &dillo_devtree::platform::Machine) -> dillo_config::Capacity {
+    // Each virtio PCI function consumes one 0x2000 BAR stride in the MMIO window.
+    const BAR_STRIDE: u64 = 0x2000;
+    let pci = platform.has_pcie.then(|| {
+        let by_window = (platform.pcie.mmio_size / BAR_STRIDE) as u32;
+        by_window.min(31) // PCI device numbers 1..=31 (slot 0 = host bridge)
+    });
+    dillo_config::Capacity {
+        pci,
+        mmio: platform.virtio_mmio.len() as u32,
+    }
 }
 
 mod fdt_writer {
@@ -1122,7 +1291,7 @@ mod machine_select {
         }
 
         use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         use std::thread;
 
         use super::machine as selected_machine;
@@ -1175,6 +1344,28 @@ mod machine_select {
             }
         }
 
+        /// One device with its allocated bus + slot, ready to attach. Built by
+        /// `build_placements` (console + each virtio-blk/gpt device).
+        pub(crate) struct DevicePlacement {
+            pub(crate) bus: dillo_config::Bus,
+            /// PCI device number (when `bus == Pci`) or virtio-mmio slot index.
+            pub(crate) index: u32,
+            pub(crate) msix_vectors: u16,
+            pub(crate) name: &'static str,
+            pub(crate) device: Box<dyn dillo_virtio::VirtioDevice>,
+        }
+
+        impl std::fmt::Debug for DevicePlacement {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("DevicePlacement")
+                    .field("bus", &self.bus)
+                    .field("index", &self.index)
+                    .field("msix_vectors", &self.msix_vectors)
+                    .field("name", &self.name)
+                    .finish_non_exhaustive()
+            }
+        }
+
         /// Target-neutral launch facts already derived by `dillo`.
         #[derive(Debug)]
         pub(crate) struct Preflight {
@@ -1184,6 +1375,7 @@ mod machine_select {
             memslots: Vec<RunRegion>,
             memory_nodes: Vec<RunRegion>,
             guest_writes: Vec<RunWrite>,
+            placements: Vec<DevicePlacement>,
         }
 
         impl Preflight {
@@ -1194,6 +1386,7 @@ mod machine_select {
                 memslots: impl IntoIterator<Item = RunRegion>,
                 memory_nodes: impl IntoIterator<Item = RunRegion>,
                 guest_writes: impl IntoIterator<Item = RunWrite>,
+                placements: Vec<DevicePlacement>,
             ) -> Self {
                 Self {
                     parsed,
@@ -1202,6 +1395,7 @@ mod machine_select {
                     memslots: memslots.into_iter().collect(),
                     memory_nodes: memory_nodes.into_iter().collect(),
                     guest_writes: guest_writes.into_iter().collect(),
+                    placements,
                 }
             }
 
@@ -1213,6 +1407,7 @@ mod machine_select {
                 Vec<u8>,
                 RunMemoryPlan,
                 Vec<RunWrite>,
+                Vec<DevicePlacement>,
             ) {
                 (
                     self.parsed,
@@ -1223,6 +1418,7 @@ mod machine_select {
                         memory_nodes: self.memory_nodes,
                     },
                     self.guest_writes,
+                    self.placements,
                 )
             }
         }
@@ -1289,84 +1485,103 @@ mod machine_select {
             }
         }
 
-        fn attach_pci_console<M, E>(
+        /// Attach every placed device (console + virtio-blk/gpt) on the bus the
+        /// allocator chose. PCI-assigned devices share one [`PciRoot`] (each at
+        /// its own slot + BAR stride, MSI-X vectors auto-isolated per slot);
+        /// MMIO-assigned devices each get their own virtio-mmio transport with
+        /// an independent wired-line IRQ.
+        fn attach_devices<M, E>(
             vm: &mut M,
             platform: &PlatformMachine,
-        ) -> Result<Option<Arc<PciRoot>>, RunError>
-        where
-            E: std::error::Error + Send + Sync + 'static,
-            M: Machine<Error = E>,
-            M: Attach<Arc<PciRoot>, Error = E, Output = Arc<dyn MmioAttachment>>,
-        {
-            if !platform.has_pcie {
-                return Ok(None);
-            }
-
-            let vectors: u16 = 3;
-            let console: Arc<std::sync::Mutex<Box<dyn dillo_virtio::VirtioDevice>>> = Arc::new(
-                std::sync::Mutex::new(Box::new(dillo_virtio_console::VirtioConsole::new())),
-            );
-
-            let virtio_pci_dev = dillo_pci_virtio::VirtioPciDevice::new(
-                console,
-                vectors,
-                platform.pcie.mmio_base,
-                platform.pcie.mmio_base + 0x1000,
-            );
-            let ecam = MmioWindow {
-                base: platform.pcie.ecam_base,
-                size: platform.pcie.ecam_size,
-            };
-            let mut pci_root = PciRoot::with_interrupt_requirement(
-                ecam,
-                optional_message_requirement(platform.pcie.msi.as_ref(), vectors),
-            );
-            pci_root.register(1, Box::new(VirtioPciAdapter::new(virtio_pci_dev)));
-            let pci_root = Arc::new(pci_root);
-            let attachment =
-                Attach::attach(vm, Arc::clone(&pci_root)).map_err(RunError::machine)?;
-            pci_root.set_attachment(attachment);
-            Ok(Some(pci_root))
-        }
-
-        fn attach_first_virtio_mmio_console<M, E>(
-            vm: &mut M,
-            platform: &PlatformMachine,
+            placements: Vec<DevicePlacement>,
         ) -> Result<(), RunError>
         where
             E: std::error::Error + Send + Sync + 'static,
             M: Machine<Error = E>,
+            M: Attach<Arc<PciRoot>, Error = E, Output = Arc<dyn MmioAttachment>>,
             M: Attach<
                     Arc<dillo_mmio_virtio::VirtioMmio>,
                     Error = E,
                     Output = Arc<dyn MmioAttachment>,
                 >,
         {
-            let Some(slot) = platform.virtio_mmio.first() else {
-                return Ok(());
-            };
+            use dillo_config::Bus;
 
-            let int_status = Arc::new(std::sync::atomic::AtomicU32::new(0));
-            let irq = dillo_mmio_virtio::WiredIrq::unresolved(slot.irq);
-            let transport = Arc::new(dillo_mmio_virtio::VirtioMmio::with_interrupt_requirement(
-                MmioWindow {
-                    base: slot.base,
-                    size: slot.size,
-                },
-                Box::new(dillo_virtio_console::VirtioConsole::new()),
-                Arc::clone(&int_status),
-                irq.clone(),
-                line_requirement(&slot.interrupt),
-            ));
-            let attachment =
-                Attach::attach(vm, Arc::clone(&transport)).map_err(RunError::machine)?;
-            transport.set_attachment(attachment);
-            log::info!(
-                "virtio-mmio console at {:#x} (SPI {}); {} slot(s) total",
-                slot.base,
-                irq.intid(),
-                platform.virtio_mmio.len()
-            );
+            let (mut pci, mmio): (Vec<DevicePlacement>, Vec<DevicePlacement>) =
+                placements.into_iter().partition(|p| p.bus == Bus::Pci);
+
+            // --- PCI: one root, one function per placement ---
+            if !pci.is_empty() {
+                // Each virtio function uses BAR 0 (4 KiB cfg) + BAR 2 (4 KiB
+                // MSI-X) — one 0x2000 stride in the PCI MMIO window. Strides are
+                // packed in registration order; the PCI device number is the
+                // allocator-assigned slot.
+                const BAR_STRIDE: u64 = 0x2000;
+                let mmio_base = platform.pcie.mmio_base;
+                pci.sort_by_key(|p| p.index);
+
+                let ecam = MmioWindow {
+                    base: platform.pcie.ecam_base,
+                    size: platform.pcie.ecam_size,
+                };
+                // PciRoot recomputes the MSI-X domain size from registered
+                // devices, so the seed vector count here is irrelevant.
+                let mut pci_root = PciRoot::with_interrupt_requirement(
+                    ecam,
+                    optional_message_requirement(platform.pcie.msi.as_ref(), 0),
+                );
+
+                for (stride, placement) in pci.into_iter().enumerate() {
+                    let bar0 = mmio_base + (stride as u64) * BAR_STRIDE;
+                    let bar2 = bar0 + 0x1000;
+                    let dev = dillo_pci_virtio::VirtioPciDevice::new(
+                        Arc::new(std::sync::Mutex::new(placement.device)),
+                        placement.msix_vectors,
+                        bar0,
+                        bar2,
+                    );
+                    pci_root.register(placement.index as u8, Box::new(VirtioPciAdapter::new(dev)));
+                    log::info!(
+                        "{} on PCI slot {} (BAR0 {bar0:#x})",
+                        placement.name,
+                        placement.index
+                    );
+                }
+
+                let pci_root = Arc::new(pci_root);
+                let attachment =
+                    Attach::attach(vm, Arc::clone(&pci_root)).map_err(RunError::machine)?;
+                pci_root.set_attachment(attachment);
+            }
+
+            // --- MMIO: one transport per placement ---
+            for placement in mmio {
+                let slot = &platform.virtio_mmio[placement.index as usize];
+                let int_status = Arc::new(AtomicU32::new(0));
+                let irq = dillo_mmio_virtio::WiredIrq::unresolved(slot.irq);
+                let transport =
+                    Arc::new(dillo_mmio_virtio::VirtioMmio::with_interrupt_requirement(
+                        MmioWindow {
+                            base: slot.base,
+                            size: slot.size,
+                        },
+                        placement.device,
+                        Arc::clone(&int_status),
+                        irq.clone(),
+                        line_requirement(&slot.interrupt),
+                    ));
+                let attachment =
+                    Attach::attach(vm, Arc::clone(&transport)).map_err(RunError::machine)?;
+                transport.set_attachment(attachment);
+                log::info!(
+                    "{} on virtio-mmio slot {} ({:#x}, SPI {})",
+                    placement.name,
+                    placement.index,
+                    slot.base,
+                    irq.intid()
+                );
+            }
+
             Ok(())
         }
 
@@ -1566,7 +1781,7 @@ mod machine_select {
             M: Attach<Arc<dillo_mmio_uart::Ns16550>, Error = E, Output = Arc<dyn MmioAttachment>>,
             M: Attach<Arc<syscon::SysconDevice>, Error = E>,
         {
-            let (parsed, platform, dtb, plan, guest_writes) = preflight.into_parts();
+            let (parsed, platform, dtb, plan, guest_writes, placements) = preflight.into_parts();
             log::info!(
                 "PMI parsed: arch={:?}, {} actions, merged_dtb={}",
                 parsed.arch,
@@ -1601,8 +1816,7 @@ mod machine_select {
 
             attach_uart(&mut vm, &platform)?;
             attach_syscon(&mut vm, &platform)?;
-            attach_pci_console(&mut vm, &platform)?;
-            attach_first_virtio_mmio_console(&mut vm, &platform)?;
+            attach_devices(&mut vm, &platform, placements)?;
 
             let control = Arc::new(SupervisorControl {
                 supervisor_shutdown,

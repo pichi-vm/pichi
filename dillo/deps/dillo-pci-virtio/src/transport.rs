@@ -408,6 +408,12 @@ impl VirtioPciDevice {
         vec![(0, self.bar0_gpa, BAR0_SIZE), (2, self.bar2_gpa, BAR2_SIZE)]
     }
 
+    /// Number of MSI-X table entries this device exposes. The PCI root sums
+    /// these across slots to size the shared message-interrupt domain.
+    pub fn msix_vectors(&self) -> u16 {
+        self.msix_table.num_vectors()
+    }
+
     // --- BAR 0 dispatch ---
 
     fn bar0_read(&self, offset: u64, data: &mut [u8]) {

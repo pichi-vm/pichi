@@ -47,6 +47,7 @@ use crate::transport::PciVirtioHost;
 pub struct VirtioPciAdapter {
     inner: Mutex<VirtioPciDevice>,
     bar_regions: Vec<BarRegion>,
+    msix_vectors: u16,
 }
 
 impl std::fmt::Debug for VirtioPciAdapter {
@@ -68,9 +69,11 @@ impl VirtioPciAdapter {
                 size,
             })
             .collect();
+        let msix_vectors = inner.msix_vectors();
         Self {
             inner: Mutex::new(inner),
             bar_regions,
+            msix_vectors,
         }
     }
 }
@@ -97,6 +100,10 @@ impl PciDevice for VirtioPciAdapter {
 
     fn bar_regions(&self) -> &[BarRegion] {
         &self.bar_regions
+    }
+
+    fn msix_vectors(&self) -> u16 {
+        self.msix_vectors
     }
 
     fn bar_read(&self, bar_idx: u8, offset: u64, data: &mut [u8]) -> Result<(), PciError> {

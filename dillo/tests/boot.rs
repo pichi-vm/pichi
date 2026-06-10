@@ -29,14 +29,14 @@ const ALPINE: &str = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releas
 mod host {
     pub(crate) const ARCH: &str = "x86_64";
     pub(crate) const PROFILE: &str = "x86-64-v2";
-    pub(crate) const CONFIG: &str = "CONFIG_PCI=y\nCONFIG_VIRTIO_PCI=y\nCONFIG_VIRTIO_MMIO=y\n";
+    pub(crate) const CONFIG: &str =
+        "CONFIG_PCI=y\nCONFIG_VIRTIO_PCI=y\nCONFIG_VIRTIO_MMIO=y\nCONFIG_VIRTIO_BLK=y\n";
 }
 #[cfg(target_arch = "aarch64")]
 mod host {
     pub(crate) const ARCH: &str = "aarch64";
     pub(crate) const PROFILE: &str = "armv8.0-a";
-    pub(crate) const CONFIG: &str =
-        "CONFIG_PCI=y\nCONFIG_PCI_HOST_GENERIC=y\nCONFIG_VIRTIO_PCI=y\nCONFIG_VIRTIO_MMIO=y\n";
+    pub(crate) const CONFIG: &str = "CONFIG_PCI=y\nCONFIG_PCI_HOST_GENERIC=y\nCONFIG_VIRTIO_PCI=y\nCONFIG_VIRTIO_MMIO=y\nCONFIG_VIRTIO_BLK=y\n";
 }
 
 fn kernel_url() -> String {
@@ -138,6 +138,12 @@ fn build_pmi(dir: &Path, cmdline: &str, serial: bool) -> PathBuf {
 /// child is killed if it overruns the timeout. Cross-platform (no `timeout`
 /// coreutil).
 fn boot(pmi: &Path, mem_mib: u32, cpus: u32, dir: &Path) -> String {
+    boot_with(pmi, mem_mib, cpus, dir, &[])
+}
+
+/// As [`boot`], but appends `extra` to dillo's argv (e.g. `--disk`,
+/// `--partition`). Used by the block-device tests.
+fn boot_with(pmi: &Path, mem_mib: u32, cpus: u32, dir: &Path, extra: &[&str]) -> String {
     sign_dillo_for_hvf();
 
     let out_path = dir.join("console.out");
@@ -147,6 +153,7 @@ fn boot(pmi: &Path, mem_mib: u32, cpus: u32, dir: &Path) -> String {
         .arg(pmi)
         .args(["--memory", &mem_mib.to_string()])
         .args(["--cpus", &cpus.to_string()])
+        .args(extra)
         .stdout(File::create(&out_path).unwrap())
         .stderr(File::create(&err_path).unwrap())
         .spawn()
@@ -267,5 +274,138 @@ fn serial_earlycon_hands_off_to_hvc0() {
     assert!(
         output.contains("earlycon: uart0 at MMIO32") || output.contains("bootconsole"),
         "combined console output did not include early serial output"
+    );
+}
+
+/// Create a zero-filled raw image of exactly `bytes` length under `dir`.
+fn make_raw(dir: &Path, name: &str, bytes: u64) -> PathBuf {
+    let path = dir.join(name);
+    let f = File::create(&path).expect("create raw image");
+    f.set_len(bytes).expect("set image length");
+    path
+}
+
+/// A traditional `--blk` raw image shows up in the guest as a virtio-blk
+/// device whose reported size matches the image.
+#[test]
+fn boots_with_raw_disk() {
+    if !hypervisor_available() {
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    const DISK_BYTES: u64 = 8 * 1024 * 1024; // 8 MiB, sector-aligned
+    let disk = make_raw(tmp.path(), "data.raw", DISK_BYTES);
+    let pmi = build_pmi(tmp.path(), "console=hvc0", false);
+    let blk = format!("path={}", disk.display());
+    let output = boot_with(&pmi, 256, 1, tmp.path(), &["--blk", &blk]);
+    let r = parse_report(&output).unwrap_or_else(|| {
+        panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+    });
+
+    let dev = r
+        .block
+        .iter()
+        .find(|b| b.size_bytes == DISK_BYTES)
+        .unwrap_or_else(|| {
+            panic!(
+                "no virtio-blk device of {DISK_BYTES} bytes among {:?}",
+                r.block
+            )
+        });
+    assert!(!dev.ro, "raw --blk device must be read-write");
+    let bench = dev.bench.as_ref().expect("blk benchmark present");
+    assert!(bench.error.is_none(), "blk bench error: {:?}", bench.error);
+    // Reads exercised the data path without errors.
+    assert!(
+        bench.seq_read.bytes > 0 && bench.seq_read.errors == 0,
+        "seq_read: {:?}",
+        bench.seq_read
+    );
+    assert_eq!(
+        bench.rand_read.errors, 0,
+        "rand_read: {:?}",
+        bench.rand_read
+    );
+    // Writes completed AND read back identical (data path round-trips).
+    let sw = bench
+        .seq_write
+        .as_ref()
+        .expect("seq_write present (rw device)");
+    assert_eq!(sw.errors, 0, "seq_write: {sw:?}");
+    assert_eq!(sw.verified, Some(true), "seq_write not verified: {sw:?}");
+    let rw = bench
+        .rand_write
+        .as_ref()
+        .expect("rand_write present (rw device)");
+    assert_eq!(rw.errors, 0, "rand_write: {rw:?}");
+    assert_eq!(rw.verified, Some(true), "rand_write not verified: {rw:?}");
+}
+
+/// Two backing files combined via one `--gpt` (nested `partitions=[[…],[…]]`)
+/// show up as a single virtio-blk disk whose total size is the synthesized GPT
+/// layout (front-reserved 34 LBAs + partition data + back-reserved 33 LBAs).
+/// device-id/disk-guid are auto-derived from the PARTUUIDs.
+#[test]
+fn boots_with_vgpt_disk() {
+    if !hypervisor_available() {
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    // 512 KiB each (1024 sectors) so the read benchmarks have room.
+    let p0 = make_raw(tmp.path(), "p0.raw", 512 * 1024);
+    let p1 = make_raw(tmp.path(), "p1.raw", 512 * 1024);
+    // total_sectors = 34 (front) + 1024 + 1024 + 33 (back) = 2115 → 1,082,880 bytes.
+    const EXPECTED_BYTES: u64 = 2115 * 512;
+
+    let typeguid = "0fc63daf-8483-4772-8e79-3d69d84330f1";
+    let gpt = format!(
+        "partitions=[\
+           [path={p0},partuuid=11111111-2222-2222-3333-333333334444,typeguid={typeguid},label=alpha],\
+           [path={p1},partuuid=55555555-6666-6666-7777-777777778888,typeguid={typeguid},label=beta]\
+         ]",
+        p0 = p0.display(),
+        p1 = p1.display(),
+    );
+
+    let pmi = build_pmi(tmp.path(), "console=hvc0", false);
+    let output = boot_with(&pmi, 256, 1, tmp.path(), &["--gpt", &gpt]);
+    let r = parse_report(&output).unwrap_or_else(|| {
+        panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+    });
+
+    let dev = r
+        .block
+        .iter()
+        .find(|b| b.size_bytes == EXPECTED_BYTES)
+        .unwrap_or_else(|| {
+            panic!(
+                "no virtualized-GPT disk of {EXPECTED_BYTES} bytes among {:?}",
+                r.block
+            )
+        });
+    assert!(dev.ro, "virtualized-GPT device must be read-only");
+    let bench = dev.bench.as_ref().expect("blk benchmark present");
+    assert!(bench.error.is_none(), "blk bench error: {:?}", bench.error);
+    // Reads work on the synthesized read-only disk.
+    assert!(
+        bench.seq_read.bytes > 0 && bench.seq_read.errors == 0,
+        "seq_read: {:?}",
+        bench.seq_read
+    );
+    assert_eq!(
+        bench.rand_read.errors, 0,
+        "rand_read: {:?}",
+        bench.rand_read
+    );
+    // No writes on a read-only device, and the kernel rejected O_RDWR open
+    // (VIRTIO_BLK_F_RO enforcement).
+    assert!(bench.seq_write.is_none(), "RO device must not write");
+    assert!(bench.rand_write.is_none(), "RO device must not write");
+    assert_eq!(
+        bench.ro_write_rejected,
+        Some(true),
+        "RO device must reject O_RDWR open"
     );
 }
