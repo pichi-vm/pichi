@@ -557,7 +557,6 @@ dependencies = [
  "dillo-mmio",
  "dillo-virtio",
  "log",
- "rustix",
  "thiserror 2.0.18",
  "vm-memory 0.17.2",
 ]
@@ -582,7 +581,6 @@ dependencies = [
  "gpt",
  "hex",
  "log",
- "rustix",
  "tempfile",
  "uuid",
 ]

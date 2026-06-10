@@ -26,7 +26,6 @@ pub use synth_gpt::{SynthResult, build};
 pub use vgpt_backing::VgptBacking;
 
 use std::fs::File;
-use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
@@ -68,7 +67,7 @@ pub fn assemble(
         synth_gpt::MAX_PARTITIONS
     );
 
-    let mut fds: Vec<OwnedFd> = Vec::with_capacity(partitions.len());
+    let mut fds: Vec<File> = Vec::with_capacity(partitions.len());
     let mut sizes_bytes: Vec<u64> = Vec::with_capacity(partitions.len());
     for spec in &partitions {
         let f = File::open(&spec.path)
@@ -79,7 +78,7 @@ pub fn assemble(
             .len();
         anyhow::ensure!(len > 0, "zero-size backing file: {}", spec.path.display());
         sizes_bytes.push(len);
-        fds.push(f.into());
+        fds.push(f);
     }
 
     let synth = synth_gpt::build(&partitions, &sizes_bytes, device_id, disk_guid)

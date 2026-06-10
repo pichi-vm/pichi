@@ -19,7 +19,6 @@
 //! the VMM process, so a per-process syscall filter is not applicable.
 
 use std::fs::File;
-use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +29,30 @@ use dillo_virtio::{
     VirtioMemory, VirtioRunToken,
 };
 use vm_memory::GuestAddress;
+
+/// Cross-platform positional read (`pread`/`seek_read`).
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::FileExt::read_at(file, buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::FileExt::seek_read(file, buf, offset)
+    }
+}
+
+/// Cross-platform positional write (`pwrite`/`seek_write`).
+fn write_at(file: &File, buf: &[u8], offset: u64) -> std::io::Result<usize> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::FileExt::write_at(file, buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::FileExt::seek_write(file, buf, offset)
+    }
+}
 
 /// VIRTIO_F_VERSION_1 from the virtio 1.x spec.
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;
@@ -136,7 +159,7 @@ pub trait BlockBacking: Send + Sync {
 /// [`VirtioBlk`], not through this trait.
 #[derive(Debug)]
 pub struct RawImageBacking {
-    backing_fd: OwnedFd,
+    backing_fd: File,
     len_bytes: u64,
 }
 
@@ -145,7 +168,7 @@ impl RawImageBacking {
     /// from its metadata.
     pub fn new(file: File) -> Self {
         let len_bytes = file.metadata().map_or(0, |m| m.len());
-        let backing_fd: OwnedFd = file.into();
+        let backing_fd = file;
         Self {
             backing_fd,
             len_bytes,
@@ -159,14 +182,12 @@ impl BlockBacking for RawImageBacking {
     }
 
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-        rustix::io::pread(&self.backing_fd, buf, offset)
-            .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))
+        read_at(&self.backing_fd, buf, offset)
     }
 
     fn flush(&self) -> std::io::Result<()> {
         // Raw-image is writable; fdatasync is meaningful.
-        rustix::fs::fdatasync(&self.backing_fd)
-            .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))
+        self.backing_fd.sync_data()
     }
 
     fn get_id(&self) -> [u8; 20] {
@@ -191,7 +212,7 @@ pub struct VirtioBlk {
     backing: Arc<dyn BlockBacking>,
     /// Writable fd for the raw-image path; `None` for RO backings. A guest
     /// write is rejected if EITHER `read_only` is true OR this is `None`.
-    writable_fd: Option<Arc<OwnedFd>>,
+    writable_fd: Option<Arc<File>>,
     /// Capacity in 512-byte sectors.
     capacity: u64,
     read_only: bool,
@@ -221,7 +242,7 @@ impl VirtioBlk {
     /// dispatch.
     pub fn new(
         backing: Arc<dyn BlockBacking>,
-        writable_fd: Option<Arc<OwnedFd>>,
+        writable_fd: Option<Arc<File>>,
         read_only: bool,
     ) -> Self {
         let capacity = backing.len_bytes() / SECTOR_SIZE;
@@ -251,10 +272,10 @@ impl VirtioBlk {
         };
         // For the writable path, dup the fd so the backing and the write
         // side-channel can both hold one (both inherit the open-mode flags).
-        let writable_fd: Option<Arc<OwnedFd>> = if read_only {
+        let writable_fd: Option<Arc<File>> = if read_only {
             None
         } else {
-            Some(Arc::new(file.try_clone()?.into()))
+            Some(Arc::new(file.try_clone()?))
         };
         let backing: Arc<dyn BlockBacking> = Arc::new(RawImageBacking::new(file));
         Ok(Self::new(backing, writable_fd, read_only))
@@ -413,7 +434,7 @@ fn spawn_request_worker(
     kick: Kick,
     call_interrupt: Option<Interrupt>,
     backing: Arc<dyn BlockBacking>,
-    writable_fd: Option<Arc<OwnedFd>>,
+    writable_fd: Option<Arc<File>>,
     read_only: bool,
 ) -> Result<VirtioDeviceHandle, ActivateError> {
     host.spawn(Box::new(move |token| {
@@ -440,7 +461,7 @@ fn request_worker(
     kick: Kick,
     call_interrupt: Option<Interrupt>,
     backing: Arc<dyn BlockBacking>,
-    writable_fd: Option<Arc<OwnedFd>>,
+    writable_fd: Option<Arc<File>>,
     read_only: bool,
     token: VirtioRunToken,
 ) {
@@ -474,7 +495,7 @@ fn drain_requests(
     queue: &Arc<Mutex<Queue>>,
     call_interrupt: Option<&Interrupt>,
     backing: &dyn BlockBacking,
-    writable_fd: Option<&OwnedFd>,
+    writable_fd: Option<&File>,
     read_only: bool,
 ) {
     let mut q = queue.lock().expect("virtio-blk queue mutex");
@@ -531,7 +552,7 @@ fn process_request(
     readable: &[Desc],
     writable: &[Desc],
     backing: &dyn BlockBacking,
-    writable_fd: Option<&OwnedFd>,
+    writable_fd: Option<&File>,
     read_only: bool,
 ) -> (u8, u32) {
     // Request header is the first readable descriptor (16 bytes).
@@ -600,7 +621,7 @@ fn handle_write(
     buffer_memory: &Arc<dyn VirtioMemory>,
     data: &[Desc],
     sector: u64,
-    writable_fd: Option<&OwnedFd>,
+    writable_fd: Option<&File>,
     read_only: bool,
 ) -> (u8, u32) {
     // Defense-in-depth: reject if read-only OR no writable fd (RO backing).
@@ -616,7 +637,7 @@ fn handle_write(
         if buffer_memory.read(addr, &mut buf).is_err() {
             return (VIRTIO_BLK_S_IOERR, 0);
         }
-        let written = match rustix::io::pwrite(fd, &buf, offset) {
+        let written = match write_at(fd, &buf, offset) {
             Ok(n) => n,
             Err(_) => return (VIRTIO_BLK_S_IOERR, 0),
         };

@@ -3,7 +3,7 @@
 //! `VgptBacking` — `BlockBacking` impl with multi-file `pread64` dispatch.
 //!
 //! This is the data-plane half of the vgpt backend: given the synthesized
-//! GPT bytes from [`crate::synth_gpt::build`] plus a `Vec<OwnedFd>` of opened
+//! GPT bytes from [`crate::synth_gpt::build`] plus a `Vec<File>` of opened
 //! partition backing files, expose the assembly to `dillo-virtio-blk`'s
 //! reusable dispatch loop as a single `BlockBacking` trait object.
 //!
@@ -34,10 +34,22 @@
 //! layer's defense-in-depth (`writable_fd: None` rejects writes regardless
 //! of feature negotiation) is preserved by `crate::run`'s pass-through.
 
-use std::os::fd::OwnedFd;
+use std::fs::File;
 use std::sync::Arc;
 
 use dillo_virtio_blk::BlockBacking;
+
+/// Cross-platform positional read (`pread`/`seek_read`).
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::FileExt::read_at(file, buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::FileExt::seek_read(file, buf, offset)
+    }
+}
 
 use crate::synth_gpt::{SECTOR_SIZE, SynthResult};
 
@@ -48,7 +60,7 @@ use crate::synth_gpt::{SECTOR_SIZE, SynthResult};
 pub struct VgptBacking {
     /// One opened fd per partition; index `i` corresponds to
     /// `partition_lba_starts[i]` / `partition_lba_ends[i]`.
-    fds: Vec<OwnedFd>,
+    fds: Vec<File>,
     /// Bytes of the primary-GPT region (LBA 0..=33 inclusive).
     primary_gpt_bytes: Arc<Vec<u8>>,
     /// Bytes of the backup-GPT region (LBA `(N-33)..=(N-1)` inclusive).
@@ -76,7 +88,7 @@ impl VgptBacking {
     /// programming error in the caller (e.g., `crate::run`), not a runtime
     /// condition. Plan 03's `pub fn run` constructs both from the same
     /// `partitions` slice so the lengths agree by construction.
-    pub fn new(fds: Vec<OwnedFd>, synth: SynthResult, device_id: [u8; 20]) -> Self {
+    pub fn new(fds: Vec<File>, synth: SynthResult, device_id: [u8; 20]) -> Self {
         assert_eq!(
             fds.len(),
             synth.partition_lba_starts.len(),
@@ -207,12 +219,8 @@ impl BlockBacking for VgptBacking {
         let avail = (part_end_bytes_exclusive - offset) as usize;
         let n = buf.len().min(avail);
 
-        // pread64 against the per-partition backing fd. Same idiom as
-        // RawImageBacking::read_at (dillo-virtio-blk/src/lib.rs:135-140);
-        // syscall is in the standard blk seccomp allowlist (Plan 04 will
-        // ship the bespoke vgpt allowlist that includes pread64 too).
-        let n_read = rustix::io::pread(&self.fds[i], &mut buf[..n], offset_within)
-            .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
+        // Positional read against the per-partition backing file.
+        let n_read = read_at(&self.fds[i], &mut buf[..n], offset_within)?;
         Ok(n_read)
     }
 }
@@ -247,9 +255,9 @@ mod tests {
         (a, b)
     }
 
-    fn open_fds(a: &tempfile::NamedTempFile, b: &tempfile::NamedTempFile) -> Vec<OwnedFd> {
-        let fa: OwnedFd = File::open(a.path()).expect("open A").into();
-        let fb: OwnedFd = File::open(b.path()).expect("open B").into();
+    fn open_fds(a: &tempfile::NamedTempFile, b: &tempfile::NamedTempFile) -> Vec<File> {
+        let fa = File::open(a.path()).expect("open A");
+        let fb = File::open(b.path()).expect("open B");
         vec![fa, fb]
     }
 
@@ -514,7 +522,7 @@ mod tests {
     /// type compiles.
     #[test]
     fn partition_spec_path_unused_by_vgpt_backing() {
-        let _: fn(Vec<OwnedFd>, SynthResult, [u8; 20]) -> VgptBacking = VgptBacking::new;
+        let _: fn(Vec<File>, SynthResult, [u8; 20]) -> VgptBacking = VgptBacking::new;
         let _ = PathBuf::from("/dev/null"); // silence unused import on `PathBuf`
     }
 

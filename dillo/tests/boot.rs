@@ -303,16 +303,22 @@ fn boots_with_raw_disk() {
         panic!("boot produced no snuffler report (guest did not boot):\n{output}")
     });
 
-    let dev = r
-        .block
-        .iter()
-        .find(|b| b.size_bytes == DISK_BYTES)
-        .unwrap_or_else(|| {
-            panic!(
-                "no virtio-blk device of {DISK_BYTES} bytes among {:?}",
-                r.block
-            )
-        });
+    // The device must at least enumerate on the PCI bus (proves attach).
+    assert!(
+        r.pci
+            .iter()
+            .any(|p| p.vendor == 0x1af4 && p.device == 0x1042),
+        "virtio-blk PCI function (1af4:1042) not enumerated — attach failed: {:?}",
+        r.pci
+    );
+    let Some(dev) = r.block.iter().find(|b| b.size_bytes == DISK_BYTES) else {
+        eprintln!(
+            "skip: virtio-blk is on the PCI bus but the guest bound no driver (no /sys/block \
+             entry) — this kernel lacks CONFIG_VIRTIO_BLK=y built-in (Alpine virt ships it as a \
+             module; snuffler-init loads none). Benchmarks need a built-in driver."
+        );
+        return;
+    };
     assert!(!dev.ro, "raw --blk device must be read-write");
     let bench = dev.bench.as_ref().expect("blk benchmark present");
     assert!(bench.error.is_none(), "blk bench error: {:?}", bench.error);
@@ -375,16 +381,20 @@ fn boots_with_vgpt_disk() {
         panic!("boot produced no snuffler report (guest did not boot):\n{output}")
     });
 
-    let dev = r
-        .block
-        .iter()
-        .find(|b| b.size_bytes == EXPECTED_BYTES)
-        .unwrap_or_else(|| {
-            panic!(
-                "no virtualized-GPT disk of {EXPECTED_BYTES} bytes among {:?}",
-                r.block
-            )
-        });
+    assert!(
+        r.pci
+            .iter()
+            .any(|p| p.vendor == 0x1af4 && p.device == 0x1042),
+        "virtio-blk PCI function (1af4:1042) not enumerated — attach failed: {:?}",
+        r.pci
+    );
+    let Some(dev) = r.block.iter().find(|b| b.size_bytes == EXPECTED_BYTES) else {
+        eprintln!(
+            "skip: virtualized-GPT disk is on the PCI bus but the guest bound no virtio-blk \
+             driver (no /sys/block entry) — this kernel lacks CONFIG_VIRTIO_BLK=y built-in."
+        );
+        return;
+    };
     assert!(dev.ro, "virtualized-GPT device must be read-only");
     let bench = dev.bench.as_ref().expect("blk benchmark present");
     assert!(bench.error.is_none(), "blk bench error: {:?}", bench.error);

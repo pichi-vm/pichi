@@ -11,7 +11,6 @@ description = "In-process virtio-blk device for dillo (VirtioDevice transport-ag
 dillo-virtio.workspace = true
 dillo-mmio.workspace = true
 vm-memory.workspace = true
-rustix.workspace = true
 log.workspace = true
 thiserror.workspace = true
 
