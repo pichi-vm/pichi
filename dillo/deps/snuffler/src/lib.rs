@@ -9,12 +9,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Current schema version. Bumped on any breaking field change.
-/// v4: added [`Report::kernel_log`] (full guest kernel ring buffer).
-/// v5: added [`BlockDevice::ro`] and [`BlockDevice::bench`] (per-device
-///     virtio-blk I/O benchmarks).
-pub const SCHEMA_VERSION: u32 = 5;
-
 /// Sentinel pair the fixture brackets the JSON report with on stdout. The
 /// kernel also writes its own printks to hvc0 when `console=hvc0` is in
 /// cmdline, so the host harness needs unambiguous markers to extract the
@@ -24,7 +18,6 @@ pub const REPORT_END: &str = "<<<END>>>";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
-    pub schema_version: u32,
     pub arch: String,
     pub cmdline: String,
     pub uptime_secs: f64,

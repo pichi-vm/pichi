@@ -1,46 +1,34 @@
 //! snuffler — the guest probe.
 //!
-//! Runs as PID 1 inside a guest booted from a PMI. Mounts /proc + /sys,
+//! Runs as PID 1 inside a guest booted from a PMI. Mounts /proc + /sys + /dev,
 //! snuffles out the system the kernel sees (CPU/memory/cmdline/consoles/
-//! PCI/block/net), emits a [`Report`] JSON bracketed by sentinels, then
-//! poweroffs. The probe contains no test logic — host harnesses assert
-//! whatever they want against the [`Report`] (the crate's library half).
+//! PCI/block/net), benchmarks each block device, emits a [`Report`] JSON
+//! bracketed by sentinels, then poweroffs. The probe contains no test logic —
+//! host harnesses assert whatever they want against the [`Report`] (the crate's
+//! library half).
 //!
-//! Output: bracketed JSON on stdout (which is /dev/console / hvc0 for
-//! PID 1 given `console=hvc0`). Free-form debug lines go to stderr.
+//! Output: bracketed JSON on stdout (which is /dev/console / hvc0 for PID 1
+//! given `console=hvc0`). Free-form debug lines go to stderr.
+//!
+//! Linux-only (it's a Linux guest probe). All syscalls go through `rustix`'s
+//! safe wrappers — no `unsafe`, no `libc`.
 
-#![cfg_attr(not(test), no_main)]
-#![cfg_attr(test, allow(dead_code))]
-
-use std::ffi::CStr;
 use std::fs;
 use std::path::Path;
-#[cfg(target_os = "linux")]
-use std::ptr;
 
+use rustix::fd::{AsFd, BorrowedFd};
+use rustix::fs::{Mode, OFlags};
 use snuffler::{
     BlockDevice, ClockInfo, CpuInfo, KernelLog, KernelLogEntry, MemoryInfo, NetIf, PciDevice,
-    REPORT_BEGIN, REPORT_END, Report, SCHEMA_VERSION, SerialPort,
+    REPORT_BEGIN, REPORT_END, Report, SerialPort,
 };
 
 mod bench;
 
 #[cfg(not(test))]
-const RB_POWER_OFF: libc::c_int = 0x4321_FEDC_u32 as i32;
-
-#[cfg(not(test))]
-#[unsafe(no_mangle)]
-pub extern "C" fn main(
-    _: libc::c_int,
-    _: *const *const libc::c_char,
-    _: *const *const libc::c_char,
-) -> libc::c_int {
+fn main() {
     run();
-    0
 }
-
-#[cfg(test)]
-fn main() {}
 
 fn run() {
     setup_mounts();
@@ -49,119 +37,100 @@ fn run() {
     let json = serde_json::to_string(&report)
         .unwrap_or_else(|e| format!("{{\"error\":\"serialize: {e}\"}}"));
     write_report(&json);
-    // SAFETY: sync() is parameterless and infallible.
-    unsafe {
-        libc::sync();
-    }
+    rustix::fs::sync();
     #[cfg(not(test))]
     poweroff();
 }
 
-#[cfg(target_os = "linux")]
+/// Read the kernel ring buffer from `/dev/kmsg` (non-draining: yields the whole
+/// buffer from the oldest record). Each `read` returns one record formatted as
+/// `priority,seq,ts_usec,flags;message`.
 fn read_kernel_log() -> KernelLog {
-    let size = unsafe { libc::syscall(libc::SYS_syslog, 10, ptr::null_mut::<u8>(), 0) };
-    if size <= 0 {
-        return KernelLog {
-            entries: Vec::new(),
-            error: Some(format!("syslog size unavailable rc={size}")),
-        };
+    let fd = match rustix::fs::open(
+        "/dev/kmsg",
+        OFlags::RDONLY | OFlags::NONBLOCK,
+        Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(e) => {
+            return KernelLog {
+                entries: Vec::new(),
+                error: Some(format!("open /dev/kmsg: {e}")),
+            };
+        }
+    };
+    let mut entries = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match rustix::io::read(&fd, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let line = String::from_utf8_lossy(&buf[..n]);
+                entries.push(parse_kmsg_record(line.trim_end_matches('\n')));
+            }
+            // AGAIN: ring buffer drained. EPIPE: records were overwritten while
+            // reading — stop either way.
+            Err(rustix::io::Errno::AGAIN) => break,
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => break,
+        }
     }
-    let mut buf = vec![0u8; size as usize + 1];
-    let n = unsafe { libc::syscall(libc::SYS_syslog, 3, buf.as_mut_ptr(), buf.len()) };
-    if n <= 0 {
-        return KernelLog {
-            entries: Vec::new(),
-            error: Some(format!("syslog read unavailable rc={n}")),
-        };
-    }
-    let text = String::from_utf8_lossy(&buf[..n as usize]);
     KernelLog {
-        entries: text.lines().map(parse_kernel_log_entry).collect(),
+        entries,
         error: None,
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn read_kernel_log() -> KernelLog {
-    KernelLog {
-        entries: Vec::new(),
-        error: Some("kernel log unavailable on non-Linux host".to_string()),
-    }
-}
-
-fn parse_kernel_log_entry(raw: &str) -> KernelLogEntry {
-    let Some(rest) = raw.strip_prefix('<') else {
-        return KernelLogEntry {
-            raw: raw.to_owned(),
-            level: None,
-            timestamp_secs: None,
-            message: raw.to_owned(),
-        };
-    };
-    let Some((level_text, rest)) = rest.split_once('>') else {
-        return KernelLogEntry {
-            raw: raw.to_owned(),
-            level: None,
-            timestamp_secs: None,
-            message: raw.to_owned(),
-        };
-    };
-    let level = level_text.parse().ok();
-    let rest = rest.trim_start();
-    let Some(rest) = rest.strip_prefix('[') else {
-        return KernelLogEntry {
-            raw: raw.to_owned(),
-            level,
-            timestamp_secs: None,
-            message: rest.to_owned(),
-        };
-    };
-    let Some((timestamp_text, message)) = rest.split_once(']') else {
-        return KernelLogEntry {
-            raw: raw.to_owned(),
-            level,
-            timestamp_secs: None,
-            message: rest.to_owned(),
-        };
-    };
+/// Parse one `/dev/kmsg` record: `priority,seq,ts_usec,flags;message`. The
+/// `message` text matches the printk message (what harnesses grep for); the
+/// level is the printk priority and the timestamp is seconds since boot.
+fn parse_kmsg_record(raw: &str) -> KernelLogEntry {
+    let (meta, message) = raw.split_once(';').unwrap_or(("", raw));
+    let mut fields = meta.split(',');
+    let level = fields
+        .next()
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(|p| p & 0x07);
+    let _seq = fields.next();
+    let timestamp_secs = fields
+        .next()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|us| us / 1_000_000.0);
     KernelLogEntry {
         raw: raw.to_owned(),
         level,
-        timestamp_secs: timestamp_text.trim().parse().ok(),
-        message: message.trim_start().to_owned(),
+        timestamp_secs,
+        message: message.to_owned(),
     }
 }
 
 fn setup_mounts() {
-    // arma's cpio wrapper only stages /init; create every mountpoint
-    // we rely on before calling mount. devtmpfs in particular won't be
-    // auto-mounted by CONFIG_DEVTMPFS_MOUNT because /dev doesn't exist
-    // on the initramfs rootfs.
+    // arma's cpio wrapper only stages /init; create every mountpoint we rely on
+    // before mounting. devtmpfs in particular won't be auto-mounted by
+    // CONFIG_DEVTMPFS_MOUNT because /dev doesn't exist on the initramfs rootfs.
     let _ = fs::create_dir("/proc");
     let _ = fs::create_dir("/sys");
     let _ = fs::create_dir("/dev");
-    mount(c"proc", c"/proc", c"proc");
-    mount(c"sysfs", c"/sys", c"sysfs");
-    mount(c"devtmpfs", c"/dev", c"devtmpfs");
+    mount("proc", "/proc", "proc");
+    mount("sysfs", "/sys", "sysfs");
+    mount("devtmpfs", "/dev", "devtmpfs");
+}
+
+fn mount(src: &str, target: &str, fstype: &str) {
+    use rustix::mount::{MountFlags, mount as do_mount};
+    if let Err(e) = do_mount(src, target, fstype, MountFlags::empty(), None) {
+        eprintln!("fixture: mount {src} -> {target} ({fstype}) failed: {e}");
+    }
 }
 
 fn reopen_console_stdio() {
     // The kernel can start PID 1 with fd 0/1/2 closed if /dev/console was not
-    // available before devtmpfs was mounted. Rebind them after setup_mounts()
-    // so the report has a real console sink.
-    for path in [c"/dev/hvc0", c"/dev/console", c"/dev/ttyS0"] {
-        // SAFETY: path is NUL-terminated; open/dup2/close follow libc contracts.
-        unsafe {
-            let fd = libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NONBLOCK);
-            if fd < 0 {
-                continue;
-            }
-            for target in 0..=2 {
-                let _ = libc::dup2(fd, target);
-            }
-            if fd > 2 {
-                let _ = libc::close(fd);
-            }
+    // available before devtmpfs was mounted. Rebind them after setup_mounts().
+    for path in ["/dev/hvc0", "/dev/console", "/dev/ttyS0"] {
+        if let Ok(fd) = rustix::fs::open(path, OFlags::RDWR | OFlags::NONBLOCK, Mode::empty()) {
+            let _ = rustix::stdio::dup2_stdin(&fd);
+            let _ = rustix::stdio::dup2_stdout(&fd);
+            let _ = rustix::stdio::dup2_stderr(&fd);
             return;
         }
     }
@@ -169,77 +138,37 @@ fn reopen_console_stdio() {
 
 fn write_report(json: &str) {
     // Keep report emission independent of Rust stdio startup. This fixture runs
-    // as PID 1 in a minimal initramfs and enters through the C ABI on aarch64.
-    write_report_fd(1, json);
-    for path in [c"/dev/hvc0", c"/dev/console"] {
-        // SAFETY: path is NUL-terminated; open/close follow libc contracts.
-        unsafe {
-            let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK);
-            if fd < 0 {
-                continue;
-            }
-            write_report_fd(fd, json);
-            let _ = libc::close(fd);
+    // as PID 1 in a minimal initramfs.
+    write_report_fd(rustix::stdio::stdout(), json);
+    for path in ["/dev/hvc0", "/dev/console"] {
+        if let Ok(fd) = rustix::fs::open(path, OFlags::WRONLY | OFlags::NONBLOCK, Mode::empty()) {
+            write_report_fd(fd.as_fd(), json);
         }
     }
 }
 
-fn write_report_fd(fd: libc::c_int, json: &str) {
+fn write_report_fd(fd: BorrowedFd<'_>, json: &str) {
     for bytes in [
         REPORT_BEGIN.as_bytes(),
         json.as_bytes(),
         REPORT_END.as_bytes(),
         b"\n",
     ] {
-        let _ = write_all_fd(fd, bytes);
+        write_all_fd(fd, bytes);
     }
 }
 
-fn write_all_fd(fd: libc::c_int, mut bytes: &[u8]) -> bool {
-    let mut wrote = false;
+fn write_all_fd(fd: BorrowedFd<'_>, mut bytes: &[u8]) {
     while !bytes.is_empty() {
-        // SAFETY: bytes points to a live buffer of the supplied length.
-        let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-        if n <= 0 {
-            return wrote;
+        match rustix::io::write(fd, bytes) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => bytes = &bytes[n..],
         }
-        wrote = true;
-        bytes = &bytes[n as usize..];
-    }
-    true
-}
-
-#[cfg(target_os = "linux")]
-fn mount(src: &CStr, target: &CStr, fstype: &CStr) {
-    // SAFETY: PID 1 has CAP_SYS_ADMIN; arguments are NUL-terminated.
-    let rc = unsafe {
-        libc::mount(
-            src.as_ptr(),
-            target.as_ptr(),
-            fstype.as_ptr(),
-            0,
-            ptr::null(),
-        )
-    };
-    if rc != 0 {
-        // SAFETY: __errno_location returns a thread-local int* the kernel
-        // populated on the failing syscall.
-        let err = unsafe { *libc::__errno_location() };
-        eprintln!(
-            "fixture: mount {} -> {} ({}) failed: errno={err}",
-            src.to_string_lossy(),
-            target.to_string_lossy(),
-            fstype.to_string_lossy(),
-        );
     }
 }
-
-#[cfg(not(target_os = "linux"))]
-fn mount(_: &CStr, _: &CStr, _: &CStr) {}
 
 fn observe() -> Report {
     Report {
-        schema_version: SCHEMA_VERSION,
         arch: uname_machine(),
         cmdline: read_trim("/proc/cmdline"),
         uptime_secs: parse_uptime(),
@@ -260,18 +189,10 @@ fn read_trim(p: &str) -> String {
 }
 
 fn uname_machine() -> String {
-    // SAFETY: uname writes a fully-initialized utsname on success; machine
-    // is a NUL-terminated C string within it.
-    unsafe {
-        let mut u: libc::utsname = std::mem::zeroed();
-        if libc::uname(&mut u) == 0 {
-            CStr::from_ptr(u.machine.as_ptr())
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            String::new()
-        }
-    }
+    rustix::system::uname()
+        .machine()
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn parse_uptime() -> f64 {
@@ -345,7 +266,6 @@ fn read_memory() -> MemoryInfo {
                 continue;
             }
             return v
-                .trim()
                 .split_whitespace()
                 .next()
                 .and_then(|n| n.parse().ok())
@@ -511,25 +431,20 @@ fn walk_serial() -> Vec<SerialPort> {
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_owned();
-        // Only enumerate UART-shaped tty entries — ttyS* (8250).
-        // Skip ttyN (vt), tty, pts/*, etc.
-        let is_uart = name.starts_with("ttyS");
-        if !is_uart {
+        // Only enumerate UART-shaped tty entries — ttyS* (8250). Skip ttyN (vt),
+        // tty, pts/*, etc.
+        if !name.starts_with("ttyS") {
             continue;
         }
-        // /sys/class/tty/<n>/type is the kernel's `tmp.type` value —
-        // 0 means PORT_UNKNOWN, which is what the kernel reports for
-        // every pre-allocated 8250 slot the driver never bound. Skip
-        // those; only emit ports the driver actually owns.
+        // /sys/class/tty/<n>/type is the kernel's `tmp.type` value — 0 means
+        // PORT_UNKNOWN, what the kernel reports for every pre-allocated 8250 slot
+        // the driver never bound. Skip those; only emit ports the driver owns.
         let uart_type_id: Option<u32> = read_opt(&path.join("type")).and_then(|s| s.parse().ok());
         if uart_type_id.is_none_or(|t| t == 0) {
             continue;
         }
-        // io_type is the numeric UPIO_* constant from
-        // include/linux/serial_core.h: 0 = PORT (I/O port), 2 = MEM
-        // (8-bit MMIO), 3 = MEM32 (32-bit MMIO), etc. Map the values
-        // we care about; treat anything else as "unknown" rather
-        // than guessing.
+        // io_type is the numeric UPIO_* constant: 0 = PORT (I/O port), 2 = MEM
+        // (8-bit MMIO), 3 = MEM32 (32-bit MMIO).
         let io_type_raw = read_opt(&path.join("io_type"));
         let (io_type, address) = match io_type_raw.as_deref() {
             Some("0") => (
@@ -571,16 +486,10 @@ fn parse_hex_or_dec_u64(s: String) -> Option<u64> {
 
 #[cfg(not(test))]
 fn poweroff() -> ! {
-    // SAFETY: PID 1 invoking the documented poweroff syscall.
-    unsafe {
-        libc::reboot(RB_POWER_OFF);
-    }
-    // Defensive: if the syscall somehow returns, loop so the kernel
-    // doesn't see PID 1 exit (which would panic).
+    let _ = rustix::system::reboot(rustix::system::RebootCommand::PowerOff);
+    // Defensive: if reboot somehow returns, never let PID 1 exit (the kernel
+    // would panic).
     loop {
-        // SAFETY: pause blocks until a signal is delivered.
-        unsafe {
-            libc::pause();
-        }
+        std::thread::park();
     }
 }
