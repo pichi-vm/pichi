@@ -5,7 +5,9 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use anyhow::{Context as _, anyhow};
+#[cfg(unix)]
+use anyhow::Context as _;
+use anyhow::anyhow;
 
 /// Whether pichi is running as a regular user or as root. Picks between
 /// XDG-rooted and `/var/lib`-rooted cache paths.
@@ -29,18 +31,38 @@ pub struct EnvSnapshot {
     /// `HOME`.
     pub home: Option<OsString>,
     /// EUID (numeric) — only consulted when `XDG_RUNTIME_DIR` is unset and
-    /// we need to scope `/tmp/pichi-<uid>/tmp` safely.
+    /// we need to scope `/tmp/pichi-<uid>/tmp` safely. Unix only.
     pub euid: Option<u32>,
+    /// `LOCALAPPDATA` — the per-user app-data root on Windows. Unset (and
+    /// unused) on Unix.
+    pub local_app_data: Option<OsString>,
 }
 
 impl EnvSnapshot {
     /// Capture the current process environment + EUID.
     pub fn from_process() -> Self {
-        Self {
-            xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
-            xdg_runtime_dir: std::env::var_os("XDG_RUNTIME_DIR"),
-            home: std::env::var_os("HOME"),
-            euid: Some(rustix::process::geteuid().as_raw()),
+        #[cfg(unix)]
+        {
+            Self {
+                xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
+                xdg_runtime_dir: std::env::var_os("XDG_RUNTIME_DIR"),
+                home: std::env::var_os("HOME"),
+                // The sole remaining use of rustix in this crate. std has no
+                // safe effective-uid API (as of std 1.89); drop rustix once
+                // one is stabilized. See pichi-storage/Cargo.toml.
+                euid: Some(rustix::process::geteuid().as_raw()),
+                local_app_data: None,
+            }
+        }
+        #[cfg(windows)]
+        {
+            Self {
+                xdg_data_home: None,
+                xdg_runtime_dir: None,
+                home: None,
+                euid: None,
+                local_app_data: std::env::var_os("LOCALAPPDATA"),
+            }
         }
     }
 }
@@ -59,12 +81,21 @@ pub struct CacheLayout {
 impl CacheLayout {
     /// Resolve cache paths from the live process environment.
     pub fn resolve() -> anyhow::Result<Self> {
+        // `is_root` drives podman's rootful/rootless split on Unix; Windows
+        // has no effective-uid concept and always uses a per-user store.
+        #[cfg(unix)]
         let is_root = rustix::process::geteuid().is_root();
+        #[cfg(windows)]
+        let is_root = false;
         Self::resolve_with_env(is_root, &EnvSnapshot::from_process())
     }
 
     /// Resolve cache paths from injected EUID + environment. Used by tests
     /// to drive every branch without mutating process state.
+    ///
+    /// Follows podman convention: rootful (`euid == 0`) uses the system
+    /// store under `/var/lib`; rootless uses XDG-rooted per-user paths.
+    #[cfg(unix)]
     pub fn resolve_with_env(is_root: bool, env: &EnvSnapshot) -> anyhow::Result<Self> {
         if is_root {
             return Ok(Self {
@@ -106,6 +137,22 @@ impl CacheLayout {
         })
     }
 
+    /// Resolve cache paths on Windows. There is no rootful/rootless split
+    /// (no effective-uid concept), so the store is always per-user under
+    /// `%LOCALAPPDATA%`; the `is_root` argument is ignored.
+    #[cfg(windows)]
+    pub fn resolve_with_env(_is_root: bool, env: &EnvSnapshot) -> anyhow::Result<Self> {
+        let local = env.local_app_data.as_ref().ok_or_else(|| {
+            anyhow!("cannot determine Windows storage root: LOCALAPPDATA is not set")
+        })?;
+        let base = PathBuf::from(local).join("pichi");
+        Ok(Self {
+            graphroot: base.join("storage"),
+            runroot: base.join("run"),
+            mode: Mode::Rootless,
+        })
+    }
+
     /// Path of the blob directory: `<graphroot>/blobs/sha256`.
     pub fn blob_dir(&self) -> PathBuf {
         self.graphroot.join("blobs").join("sha256")
@@ -140,6 +187,7 @@ impl CacheLayout {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn snap(
         xdg: Option<&str>,
         xrd: Option<&str>,
@@ -151,9 +199,11 @@ mod tests {
             xdg_runtime_dir: xrd.map(OsString::from),
             home: home.map(OsString::from),
             euid,
+            local_app_data: None,
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn rootful_uses_var_lib() {
         let l = CacheLayout::resolve_with_env(true, &snap(None, None, None, None)).unwrap();
@@ -162,6 +212,7 @@ mod tests {
         assert_eq!(l.mode, Mode::Rootful);
     }
 
+    #[cfg(unix)]
     #[test]
     fn rootless_xdg_data_home_takes_precedence() {
         let l = CacheLayout::resolve_with_env(
@@ -179,6 +230,7 @@ mod tests {
         assert_eq!(l.mode, Mode::Rootless);
     }
 
+    #[cfg(unix)]
     #[test]
     fn rootless_home_fallback() {
         let l = CacheLayout::resolve_with_env(
@@ -192,6 +244,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn rootless_runtime_dir_fallback_to_uid_scoped_tmp() {
         let l =
@@ -200,6 +253,7 @@ mod tests {
         assert_eq!(l.runroot, PathBuf::from("/tmp/pichi-1234/tmp"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn rootless_no_runtime_dir_no_euid_errors() {
         let err = CacheLayout::resolve_with_env(false, &snap(None, None, Some("/home/u"), None))
@@ -210,6 +264,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn rootless_no_xdg_no_home_errors() {
         let err = CacheLayout::resolve_with_env(
@@ -223,6 +278,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn helpers_match_canonical_paths() {
         let l = CacheLayout::resolve_with_env(true, &snap(None, None, None, None)).unwrap();
@@ -241,15 +297,61 @@ mod tests {
         assert_eq!(l.lock_dir(), PathBuf::from("/var/lib/pichi/storage/locks"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_uses_local_app_data() {
+        let env = EnvSnapshot {
+            xdg_data_home: None,
+            xdg_runtime_dir: None,
+            home: None,
+            euid: None,
+            local_app_data: Some(OsString::from(r"C:\Users\u\AppData\Local")),
+        };
+        let l = CacheLayout::resolve_with_env(false, &env).unwrap();
+        assert_eq!(
+            l.graphroot,
+            PathBuf::from(r"C:\Users\u\AppData\Local\pichi\storage")
+        );
+        assert_eq!(
+            l.runroot,
+            PathBuf::from(r"C:\Users\u\AppData\Local\pichi\run")
+        );
+        assert_eq!(l.mode, Mode::Rootless);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_missing_local_app_data_errors() {
+        let env = EnvSnapshot {
+            xdg_data_home: None,
+            xdg_runtime_dir: None,
+            home: None,
+            euid: None,
+            local_app_data: None,
+        };
+        let err = CacheLayout::resolve_with_env(false, &env).unwrap_err();
+        assert!(
+            err.to_string().contains("LOCALAPPDATA"),
+            "expected 'LOCALAPPDATA' in error, got: {err}"
+        );
+    }
+
     #[test]
     fn resolve_smoke() {
         // Live env — must succeed on any machine where tests run.
         let l = CacheLayout::resolve().unwrap();
-        let expected_mode = if rustix::process::geteuid().is_root() {
-            Mode::Rootful
-        } else {
-            Mode::Rootless
-        };
-        assert_eq!(l.mode, expected_mode);
+        #[cfg(unix)]
+        {
+            let expected_mode = if rustix::process::geteuid().is_root() {
+                Mode::Rootful
+            } else {
+                Mode::Rootless
+            };
+            assert_eq!(l.mode, expected_mode);
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(l.mode, Mode::Rootless);
+        }
     }
 }
