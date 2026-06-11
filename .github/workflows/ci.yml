@@ -97,13 +97,17 @@ jobs:
         run: |
           cargo test --workspace
 
-      - name: Test (Windows, workspace minus Linux-only crates)
+      - name: Test (Windows, workspace minus Unix-only crates)
         if: runner.os == 'Windows'
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          cargo test --workspace --exclude snuffler --exclude carapace
+          # dillo-virtio-vsock bridges vsock to host Unix sockets (UnixStream),
+          # so it is Unix-only; dillo depends on it via cfg(unix) and never
+          # builds it on Windows. Excluded here like snuffler/carapace.
+          cargo test --workspace --exclude snuffler --exclude carapace \
+            --exclude dillo-virtio-vsock
 
       - name: Test (macOS, workspace minus Linux-only crates)
         if: runner.os == 'macOS'
