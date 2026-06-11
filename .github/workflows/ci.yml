@@ -103,7 +103,8 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          cargo test --workspace --exclude snuffler --exclude carapace
+          cargo test --workspace --exclude snuffler --exclude carapace \
+            --exclude pichi --exclude pichi-storage --exclude pichi-import
 
       - name: Test (macOS, workspace minus Linux-only crates)
         if: runner.os == 'macOS'
@@ -111,7 +112,8 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          cargo test --workspace --exclude snuffler --exclude carapace
+          cargo test --workspace --exclude snuffler --exclude carapace \
+            --exclude pichi --exclude pichi-storage --exclude pichi-import
 
       - name: Reserve hugepages for guest RAM (Linux/KVM)
         if: runner.os == 'Linux'
