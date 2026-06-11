@@ -5,6 +5,7 @@ members = [
     "arma",
     "dillo",
     "carapace",
+    "pichi",
     # Cross-product shared libraries (no single owner)
     "deps/devtree",
     # Shared test-support (dev-only): generic caching URL downloader
@@ -168,6 +169,13 @@ oci-client = { version = "0.16", default-features = false, features = ["rustls-t
 http = { version = "1", default-features = false }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 zstd = { version = "0.13", default-features = false }
+
+# pichi CLI + presentation
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+humansize = "2"
+tinytemplate = "1"
+toml = "1"
 
 # tatu must fit its 2 MiB slab (linker ASSERT in tatu/linker/tatu.ld), so it
 # must always be built with release-equivalent codegen even when the rest of

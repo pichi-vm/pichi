@@ -1,0 +1,38 @@
+[package]
+name = "pichi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pichi"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+pichi-artifact.workspace = true
+pichi-import.workspace = true
+pichi-registry = { workspace = true, features = ["http-client"] }
+pichi-storage.workspace = true
+bytes.workspace = true
+env_logger.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+humansize.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tinytemplate.workspace = true
+tokio = { workspace = true, features = ["rt", "io-util", "macros"] }
+tokio-util = { workspace = true, features = ["io", "io-util"] }
+toml.workspace = true
+uuid.workspace = true
+zstd.workspace = true
