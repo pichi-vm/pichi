@@ -353,7 +353,10 @@ mod tests {
         let l = CacheLayout::resolve_with_env(false, &env).unwrap();
         assert_eq!(l.graphroot, PathBuf::from(r"D:\cache\pichi\storage"));
         // runroot falls back to LOCALAPPDATA when XDG_RUNTIME_DIR is unset.
-        assert_eq!(l.runroot, PathBuf::from(r"C:\Users\u\AppData\Local\pichi\run"));
+        assert_eq!(
+            l.runroot,
+            PathBuf::from(r"C:\Users\u\AppData\Local\pichi\run")
+        );
     }
 
     #[cfg(windows)]
