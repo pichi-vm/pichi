@@ -282,6 +282,8 @@ pub enum Site {
     DistanceMap,
     /// A top-level `serial@*` node with `compatible = "ns16550a"`.
     Serial,
+    /// A child of root with `compatible = "virtio,mmio"`.
+    VirtioMmio,
 }
 
 impl fmt::Display for Site {
@@ -297,6 +299,7 @@ impl fmt::Display for Site {
             Self::SysconReboot => "compatible=\"syscon-reboot\"",
             Self::DistanceMap => "/distance-map",
             Self::Serial => "compatible=\"ns16550a\"",
+            Self::VirtioMmio => "compatible=\"virtio,mmio\"",
         })
     }
 }

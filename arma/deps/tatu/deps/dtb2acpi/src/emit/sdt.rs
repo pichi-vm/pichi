@@ -109,7 +109,8 @@ impl SdtHeader {
             .copy_from_slice(&s5_aml(sleep_value));
         let after_motherboard = super::motherboard_resource::emit(slot, s5_end, tree)?;
         let after_pci = super::pci_host::emit(slot, after_motherboard, tree)?;
-        let end = super::serial_device::emit(slot, after_pci, tree)?;
+        let after_serial = super::serial_device::emit(slot, after_pci, tree)?;
+        let end = super::virtio_mmio::emit(slot, after_serial, tree)?;
         if end != slot.len() {
             // Layout-accounting mismatch — count and emit disagreed.
             // Surface as Internal so the test suite catches it.

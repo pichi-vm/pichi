@@ -132,6 +132,9 @@ struct Counts {
     /// Total bytes of DSDT body AML contributed by `Device(SER0)`,
     /// or zero when the DTB has no serial node.
     serial_dsdt_bytes: usize,
+    /// Total bytes of DSDT body AML contributed by `Device(VMnn)` virtio-mmio
+    /// transports — one per `virtio,mmio` root child, zero when none.
+    virtio_mmio_dsdt_bytes: usize,
     /// Whether the tree declares a `ns16550a` serial node — drives
     /// whether the SPCR table is emitted.
     has_serial: bool,
@@ -416,6 +419,7 @@ impl Offsets {
             .and_then(|n| n.checked_add(c.motherboard_dsdt_bytes))
             .and_then(|n| n.checked_add(c.pci_dsdt_bytes))
             .and_then(|n| n.checked_add(c.serial_dsdt_bytes))
+            .and_then(|n| n.checked_add(c.virtio_mmio_dsdt_bytes))
             .ok_or(DtbError::Internal)?;
         let dsdt = Slot::carve(&mut cur, dsdt_size)?;
         let fadt = Slot::carve(&mut cur, FadtTable::SIZE)?;
@@ -525,6 +529,7 @@ pub(crate) fn run<T: TreeView>(
     let motherboard_dsdt_bytes = motherboard_resource::dsdt_total_bytes(tree)?;
     let pci_dsdt_bytes = pci_host::dsdt_total_bytes(tree)?;
     let serial_dsdt_bytes = serial_device::dsdt_total_bytes(tree)?;
+    let virtio_mmio_dsdt_bytes = crate::emit::virtio_mmio::dsdt_total_bytes(tree)?;
     let has_serial = spcr::present(tree)?;
     let (has_numa, memory_region_count, has_distances) = root.count_numa(&cpu_walk, domains)?;
 
@@ -536,6 +541,7 @@ pub(crate) fn run<T: TreeView>(
         motherboard_dsdt_bytes,
         pci_dsdt_bytes,
         serial_dsdt_bytes,
+        virtio_mmio_dsdt_bytes,
         has_serial,
         has_numa,
         memory_region_count,

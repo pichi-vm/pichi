@@ -22,6 +22,7 @@ pub(crate) mod serial_device;
 pub(crate) mod slit;
 pub(crate) mod spcr;
 pub(crate) mod srat;
+pub(crate) mod virtio_mmio;
 pub(crate) mod xsdt;
 
 /// Define a `#[repr(transparent)]` flag-set newtype over a zerocopy
