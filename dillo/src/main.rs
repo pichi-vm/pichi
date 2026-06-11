@@ -49,8 +49,15 @@ struct Args {
     #[argh(option)]
     gpt: Vec<dillo_config::GptSpec>,
 
+    /// virtio-vsock device (host CID 2 ⇄ guest). Repeatable. Key/value:
+    /// `cid=N,uds=PATH[,bus=pci|mmio][,slot=N]`. Guest connections to port N
+    /// bridge to `PATH/N.sock` on the host. Unix hosts only.
+    #[cfg(unix)]
+    #[argh(option)]
+    vsock: Vec<dillo_config::VsockSpec>,
+
     /// path to a JSON device layout file. Mutually exclusive with
-    /// `--blk`/`--gpt`/`--bus`/`--console`.
+    /// `--blk`/`--gpt`/`--vsock`/`--bus`/`--console`.
     #[argh(option)]
     layout: Option<std::path::PathBuf>,
 }
@@ -182,7 +189,12 @@ fn layout_from_args(args: &Args) -> anyhow::Result<dillo_config::Layout> {
                 && args.gpt.is_empty()
                 && args.bus.is_none()
                 && args.console.is_none(),
-            "--layout is mutually exclusive with --blk/--gpt/--bus/--console"
+            "--layout is mutually exclusive with --blk/--gpt/--vsock/--bus/--console"
+        );
+        #[cfg(unix)]
+        anyhow::ensure!(
+            args.vsock.is_empty(),
+            "--layout is mutually exclusive with --blk/--gpt/--vsock/--bus/--console"
         );
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading layout file {}", path.display()))?;
@@ -192,13 +204,15 @@ fn layout_from_args(args: &Args) -> anyhow::Result<dillo_config::Layout> {
         // argh collects --blk and --gpt into separate vecs, so the interleaved
         // command-line order is not preserved; blk devices precede gpt devices.
         // Use `slot=`/`--layout` for exact ordering control.
-        let devices = args
+        let mut devices: Vec<dillo_config::Device> = args
             .blk
             .iter()
             .cloned()
             .map(dillo_config::Device::Blk)
             .chain(args.gpt.iter().cloned().map(dillo_config::Device::Gpt))
             .collect();
+        #[cfg(unix)]
+        devices.extend(args.vsock.iter().cloned().map(dillo_config::Device::Vsock));
         Ok(dillo_config::Layout {
             bus: args.bus,
             console: args.console.clone(),
@@ -231,8 +245,25 @@ fn build_placements(
 
     for device in &resolved.devices {
         requests.push(device.placement().clone());
-        let (name, blk) = build_block_device(device)?;
-        built.push((2, name, Box::new(blk)));
+        match device {
+            #[cfg(unix)]
+            dillo_config::ResolvedDevice::Vsock { cid, uds, .. } => {
+                // 3 queues (rx/tx/event) + 1 config vector.
+                built.push((
+                    4,
+                    "virtio-vsock",
+                    Box::new(dillo_virtio_vsock::VirtioVsock::new(*cid, uds.clone())),
+                ));
+            }
+            #[cfg(not(unix))]
+            dillo_config::ResolvedDevice::Vsock { .. } => {
+                anyhow::bail!("virtio-vsock is only supported on Unix hosts");
+            }
+            other => {
+                let (name, blk) = build_block_device(other)?;
+                built.push((2, name, Box::new(blk)));
+            }
+        }
     }
 
     let capacity = capacity_from_platform(platform);
@@ -289,6 +320,10 @@ fn build_block_device(
                 "virtio-gpt",
                 VirtioBlk::new(std::sync::Arc::new(backing), None, true),
             ))
+        }
+        // vsock devices are dispatched in `build_placements` before reaching here.
+        dillo_config::ResolvedDevice::Vsock { .. } => {
+            anyhow::bail!("internal: build_block_device called for a vsock device")
         }
     }
 }

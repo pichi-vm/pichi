@@ -50,6 +50,11 @@ dillo-machine-hvf.workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 dillo-machine-whp.workspace = true
 
+# virtio-vsock bridges to host Unix sockets, so it is Unix-only. The Windows
+# (WHP) lane builds dillo without it; `--vsock` is `#[cfg(unix)]` in main.rs.
+[target.'cfg(unix)'.dependencies]
+dillo-virtio-vsock.workspace = true
+
 [dev-dependencies]
 # Boot/e2e tests build a PMI with arma and assert on the Report that snuffler
 # emits from inside the guest.
