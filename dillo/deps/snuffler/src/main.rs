@@ -20,7 +20,7 @@ use rustix::fd::{AsFd, BorrowedFd};
 use rustix::fs::{Mode, OFlags};
 use snuffler::{
     BlockDevice, ClockInfo, CpuInfo, KernelLog, KernelLogEntry, MemoryInfo, NetIf, PciDevice,
-    REPORT_BEGIN, REPORT_END, Report, SerialPort,
+    REPORT_BEGIN, REPORT_END, Report, SerialPort, VsockResult,
 };
 
 mod bench;
@@ -168,9 +168,10 @@ fn write_all_fd(fd: BorrowedFd<'_>, mut bytes: &[u8]) {
 }
 
 fn observe() -> Report {
+    let cmdline = read_trim("/proc/cmdline");
+    let vsock = probe_vsock(&cmdline);
     Report {
         arch: uname_machine(),
-        cmdline: read_trim("/proc/cmdline"),
         uptime_secs: parse_uptime(),
         cpu: read_cpu(),
         memory: read_memory(),
@@ -182,7 +183,66 @@ fn observe() -> Report {
         clock: read_clock(),
         kernel_log: read_kernel_log(),
         kaslr_seed: read_kaslr_seed(),
+        vsock,
+        cmdline,
     }
+}
+
+/// Probe virtio-vsock when the cmdline requests it (`dillo.vsock_port=N`):
+/// open an `AF_VSOCK` stream to host CID 2 on port N and round-trip a message.
+/// `None` when the token is absent, so ordinary boots never touch vsock.
+fn probe_vsock(cmdline: &str) -> Option<VsockResult> {
+    let port = cmdline
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("dillo.vsock_port="))
+        .and_then(|v| v.parse::<u32>().ok())?;
+    Some(run_vsock_probe(port))
+}
+
+fn run_vsock_probe(port: u32) -> VsockResult {
+    use std::io::{Read, Write};
+
+    /// Well-known host CID (`VMADDR_CID_HOST`).
+    const VMADDR_CID_HOST: u32 = 2;
+    const MSG: &[u8] = b"dillo-vsock-ping";
+
+    let mut res = VsockResult {
+        port,
+        connected: false,
+        echo_ok: false,
+        error: None,
+    };
+
+    let mut stream =
+        match vsock::VsockStream::connect(&vsock::VsockAddr::new(VMADDR_CID_HOST, port)) {
+            Ok(s) => s,
+            Err(e) => {
+                res.error = Some(format!("connect cid={VMADDR_CID_HOST} port={port}: {e}"));
+                return res;
+            }
+        };
+    res.connected = true;
+
+    // Bound the round-trip so a missing host peer can't hang PID 1 until the
+    // harness's boot timeout.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+
+    if let Err(e) = stream.write_all(MSG) {
+        res.error = Some(format!("write: {e}"));
+        return res;
+    }
+
+    let mut buf = [0u8; 64];
+    match stream.read(&mut buf) {
+        Ok(n) => {
+            res.echo_ok = &buf[..n] == MSG;
+            if !res.echo_ok {
+                res.error = Some(format!("echo mismatch ({n} bytes)"));
+            }
+        }
+        Err(e) => res.error = Some(format!("read: {e}")),
+    }
+    res
 }
 
 /// Read the 8-byte `/chosen/kaslr-seed` the kernel received, as lowercase hex

@@ -49,6 +49,25 @@ pub struct Report {
     /// `None` when the property is absent (x86, which has no device tree).
     #[serde(default)]
     pub kaslr_seed: Option<String>,
+    /// Result of the guest-side virtio-vsock probe. `None` unless the kernel
+    /// cmdline carries `dillo.vsock_port=N`, in which case the probe opens an
+    /// `AF_VSOCK` stream to host CID 2 on that port and round-trips a message.
+    #[serde(default)]
+    pub vsock: Option<VsockResult>,
+}
+
+/// Outcome of the guest-side virtio-vsock connectivity probe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VsockResult {
+    /// Host port the guest dialed (CID 2, `dillo.vsock_port=N`).
+    pub port: u32,
+    /// The `AF_VSOCK` connect succeeded.
+    pub connected: bool,
+    /// The host echoed the probe message back byte-for-byte.
+    pub echo_ok: bool,
+    /// Failure detail, if any stage errored.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

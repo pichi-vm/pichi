@@ -39,3 +39,7 @@ rustix = { version = "1", default-features = false, features = [
     "stdio",
     "process",
 ] }
+# AF_VSOCK has no safe rustix wrapper; the `vsock` crate provides a std::io
+# stream (its unsafe/libc is internal — our code stays unsafe-free). Used only
+# by the guest probe when `dillo.vsock_port=N` is on the cmdline.
+vsock = "0.5"
