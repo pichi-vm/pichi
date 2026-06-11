@@ -1,12 +1,10 @@
-#[cfg(target_os = "windows")]
+#![cfg(target_os = "windows")]
+
 mod cpuid_x86;
-#[cfg(target_os = "windows")]
 mod hypervisor;
-#[cfg(target_os = "windows")]
 mod ioapic;
 
 /// Reasons a WHP vCPU run returned to backend code.
-#[cfg(target_os = "windows")]
 #[derive(Debug)]
 enum VmExit {
     MmioRead { addr: u64, size: u8 },
@@ -19,7 +17,6 @@ enum VmExit {
     Unknown(String),
 }
 
-#[cfg(target_os = "windows")]
 mod imp {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
@@ -858,5 +855,4 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "windows")]
 pub use imp::*;

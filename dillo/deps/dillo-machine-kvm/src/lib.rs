@@ -1,16 +1,15 @@
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(target_os = "linux")]
+
+#[cfg(target_arch = "x86_64")]
 mod cpuid_x86;
-#[cfg(target_os = "linux")]
 mod hypervisor;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 mod irq;
-#[cfg(target_os = "linux")]
 mod memory;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 mod msi;
 
 /// Reasons a KVM vCPU run returned to backend code.
-#[cfg(target_os = "linux")]
 #[derive(Debug)]
 enum VmExit {
     MmioRead { addr: u64, size: u8 },
@@ -23,7 +22,6 @@ enum VmExit {
     Unknown(String),
 }
 
-#[cfg(target_os = "linux")]
 mod imp {
     use std::os::fd::{AsRawFd, RawFd};
     use std::sync::{Arc, Mutex};
@@ -1207,5 +1205,4 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "linux")]
 pub use imp::*;

@@ -8,7 +8,6 @@
 //! Microarchitecture levels per the System V x86-64 psABI. Each level
 //! is a strict superset of the one below.
 
-#[cfg(target_os = "linux")]
 use kvm_bindings::CpuId;
 
 /// Microarchitecture level parsed from a `cpu:profile` string.
@@ -76,7 +75,6 @@ enum Reg {
 }
 
 impl Reg {
-    #[cfg(target_os = "linux")]
     fn extract(self, entry: &kvm_bindings::kvm_cpuid_entry2) -> u32 {
         match self {
             Reg::Eax => entry.eax,
@@ -187,7 +185,6 @@ const _: () = {
 
 /// Return the first mandatory feature the host's supported CPUID
 /// doesn't expose, if any.
-#[cfg(target_os = "linux")]
 pub(crate) fn first_missing(level: X86Level, supported: &CpuId) -> Option<&'static str> {
     for feat in level.cumulative_features() {
         if !host_has_feature(supported, feat) {
@@ -197,7 +194,6 @@ pub(crate) fn first_missing(level: X86Level, supported: &CpuId) -> Option<&'stat
     None
 }
 
-#[cfg(target_os = "linux")]
 fn host_has_feature(supported: &CpuId, feat: &CpuidFeature) -> bool {
     for entry in supported.as_slice() {
         if entry.function == feat.function && entry.index == feat.index {

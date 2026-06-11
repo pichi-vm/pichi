@@ -1,11 +1,10 @@
-#[cfg(target_os = "macos")]
+#![cfg(target_os = "macos")]
+
 mod hypervisor;
 
-#[cfg(target_os = "macos")]
 use applevisor::prelude::VcpuHandle;
 
 /// Reasons an HVF vCPU run returned to backend code.
-#[cfg(target_os = "macos")]
 #[derive(Debug)]
 enum VmExit {
     MmioRead { addr: u64, size: u8 },
@@ -18,7 +17,6 @@ enum VmExit {
     Unknown(String),
 }
 
-#[cfg(target_os = "macos")]
 mod imp {
     use std::sync::OnceLock;
     use std::sync::{Arc, Mutex};
@@ -1141,5 +1139,4 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub use imp::*;
