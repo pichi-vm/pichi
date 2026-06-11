@@ -459,10 +459,13 @@ const LOAD_PHYSICAL_ADDR: u64 = 0x100_0000;
 const KERNEL_IMAGE_SIZE: u64 = 0x4000_0000;
 const KASLR_ALIGN: u64 = 0x20_0000; // PMD (2 MiB)
 
-/// Pre-merge DTB patch hook. x86 randomizes the kernel's virtual base via
-/// applied relocations ([`apply_kaslr`], post-merge), not a DTB seed, so this is
-/// a no-op here — it exists only to give `rust_main` one cross-arch call site.
-pub fn patch_kaslr_seed(_bootinfo: &TatuBootInfo) {}
+/// x86 counterpart of the aarch64 kaslr-seed injection: a no-op that returns the
+/// measured base unchanged. x86 randomizes the kernel's virtual base via applied
+/// relocations ([`apply_kaslr`], post-merge), not a DTB seed — so there is no
+/// first merge here. `scratch` is unused on x86.
+pub fn prepare_merge_base<'a>(base: &'a [u8], _scratch: &'a mut [u8]) -> Result<&'a [u8], ()> {
+    Ok(base)
+}
 
 /// Guest physical-address width in bits, from `CPUID Fn8000_0008` `EAX[7:0]`.
 /// Per pmi spec bc7f581 this is the bound for host-supplied addresses in the

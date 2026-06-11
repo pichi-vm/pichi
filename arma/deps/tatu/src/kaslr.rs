@@ -1,31 +1,46 @@
-//! arm64 KASLR seed patching for the measured base DTB.
+//! arm64 KASLR seed: a trusted overlay tatu merges onto the measured base DTB.
 //!
-//! arma plants an 8-byte zero `/chosen/kaslr-seed` placeholder in the measured
-//! base DTB; tatu overwrites it with guest entropy before the overlay merge, so
-//! a `CONFIG_RANDOMIZE_BASE` kernel reads a fresh, guest-controlled seed from the
-//! merged DTB and randomizes its virtual base. The entropy source (guest `RNDR`)
-//! lives in `arch_aarch64`; the byte-level patch lives here as a pure function so
-//! it can be unit-tested on the host without a guest.
+//! `kaslr-seed` is guest-generated entropy, so it MUST NOT live in the measured
+//! base DTB (it would make the launch measurement non-deterministic). Instead
+//! tatu carries a tiny pre-serialized overlay — [`KASLR_OVERLAY_TEMPLATE`],
+//! compiled from `kaslr_overlay.dts` with `dtc` and committed alongside it —
+//! whose `/chosen/kaslr-seed` is a zero placeholder. At boot tatu patches the
+//! placeholder with guest entropy ([`patch_overlay_seed`]) and merges the
+//! overlay onto the base *before* the host overlay, so a `CONFIG_RANDOMIZE_BASE`
+//! kernel reads a fresh, guest-controlled seed from the final merged DTB.
+//!
+//! The entropy source (guest `RNDR`) and the two-merge orchestration live in
+//! `arch_aarch64`; the byte-level patch lives here as a pure function so it can
+//! be unit-tested on the host without a guest.
 
 use devtree::{NodeView, Tree, TreeView};
 
-/// Overwrite the 8-byte `/chosen/kaslr-seed` value in `blob` with `seed`
+/// Pre-serialized kaslr-seed overlay (see `kaslr_overlay.dts`). Adds
+/// `/chosen/kaslr-seed` via a `target-path` fragment; the seed is a zero
+/// placeholder patched at boot. Regenerate after editing the `.dts`:
+/// `dtc -I dts -O dtb -o kaslr_overlay.dtbo kaslr_overlay.dts`.
+pub const KASLR_OVERLAY_TEMPLATE: &[u8] = include_bytes!("kaslr_overlay.dtbo");
+
+/// Path to the seed-bearing node inside the overlay template.
+const OVERLAY_SEED_NODE: &str = "/fragment@0/__overlay__";
+
+/// Overwrite the 8-byte `kaslr-seed` value in the overlay `blob` with `seed`
 /// (big-endian, the FDT property byte order). Returns `false` and leaves `blob`
 /// unchanged if the property is absent or not exactly 8 bytes.
 ///
 /// Only the property's value bytes are rewritten — the DTB's structure block,
-/// strings, and all offsets are untouched — so the blob stays valid for the
-/// subsequent overlay merge. The parse borrow is confined to a sub-scope so the
+/// strings, and all offsets are untouched — so the blob stays a valid overlay
+/// for the subsequent merge. The parse borrow is confined to a sub-scope so the
 /// in-place write needs no `unsafe` and cannot alias the parsed view.
-pub fn patch_kaslr_seed_bytes(blob: &mut [u8], seed: u64) -> bool {
+pub fn patch_overlay_seed(blob: &mut [u8], seed: u64) -> bool {
     let off = {
         let tree: Tree<'_> = match Tree::parse(blob) {
             Ok(t) => t,
             Err(_) => return false,
         };
         match tree
-            .find_path("/chosen")
-            .and_then(|c| c.property("kaslr-seed"))
+            .find_path(OVERLAY_SEED_NODE)
+            .and_then(|n| n.property("kaslr-seed"))
         {
             // Byte offset of the value within the blob (same allocation).
             Some(p) if p.as_ref().len() == 8 => {
@@ -41,6 +56,7 @@ pub fn patch_kaslr_seed_bytes(blob: &mut [u8], seed: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use devtree::{Overlay, OverlayView, PropertyView};
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -57,58 +73,82 @@ mod tests {
         out.status.success().then_some(out.stdout)
     }
 
-    /// A base DTB shaped like arma's: /chosen with a zero kaslr-seed placeholder.
-    const BASE_WITH_SEED: &str = r#"/dts-v1/;
-/ { #address-cells = <2>; #size-cells = <2>;
-    chosen { bootargs = "console=ttyAMA0"; kaslr-seed = <0x0 0x0>; }; };"#;
-
+    /// A base DTB shaped like arma's post-redesign output: /chosen with bootargs
+    /// and NO kaslr-seed (the seed now comes from the overlay).
     const BASE_NO_SEED: &str = r#"/dts-v1/;
 / { #address-cells = <2>; #size-cells = <2>;
     chosen { bootargs = "console=ttyAMA0"; }; };"#;
 
-    fn read_seed(blob: &[u8]) -> u64 {
+    fn read_overlay_seed(blob: &[u8]) -> u64 {
         let tree: Tree<'_> = Tree::parse(blob).unwrap();
         let p = tree
-            .find_path("/chosen")
+            .find_path(OVERLAY_SEED_NODE)
             .unwrap()
             .property("kaslr-seed")
             .unwrap();
-        let b = p.as_ref();
-        u64::from_be_bytes(b.try_into().unwrap())
+        u64::from_be_bytes(p.as_ref().try_into().unwrap())
     }
 
     #[test]
-    fn patches_seed_in_place_and_stays_parseable() {
-        let Some(mut blob) = dtc_compile(BASE_WITH_SEED) else {
-            eprintln!("skipping: dtc not available");
-            return;
-        };
-        assert_eq!(read_seed(&blob), 0, "placeholder starts zero");
+    fn template_placeholder_starts_zero() {
+        assert_eq!(read_overlay_seed(KASLR_OVERLAY_TEMPLATE), 0);
+    }
+
+    #[test]
+    fn patches_overlay_seed_in_place_and_stays_parseable() {
+        let mut blob = KASLR_OVERLAY_TEMPLATE.to_vec();
         let len_before = blob.len();
         let seed = 0x0123_4567_89AB_CDEF;
-        assert!(patch_kaslr_seed_bytes(&mut blob, seed));
-        // Same length (in-place value rewrite) and the tree still parses with the
-        // new seed — proving the structure/offsets are intact for the merge.
+        assert!(patch_overlay_seed(&mut blob, seed));
+        // Same length (in-place value rewrite); still a valid overlay.
         assert_eq!(blob.len(), len_before);
-        assert_eq!(read_seed(&blob), seed, "seed updated to the patched value");
-        // bootargs (a sibling property) is untouched.
-        let tree: Tree<'_> = Tree::parse(&blob).unwrap();
-        assert!(
-            tree.find_path("/chosen")
-                .unwrap()
-                .property("bootargs")
-                .is_some()
-        );
+        assert_eq!(read_overlay_seed(&blob), seed);
+        let reparsed: Result<Overlay<'_>, _> = Overlay::parse(&blob);
+        assert!(reparsed.is_ok(), "patched blob still parses");
     }
 
     #[test]
     fn no_seed_property_is_a_noop() {
-        let Some(mut blob) = dtc_compile(BASE_NO_SEED) else {
+        // A degenerate overlay with no kaslr-seed: patch is a no-op.
+        let Some(mut blob) = dtc_compile(
+            r#"/dts-v1/;
+/ { fragment@0 { target-path = "/chosen"; __overlay__ { }; }; };"#,
+        ) else {
             eprintln!("skipping: dtc not available");
             return;
         };
         let before = blob.clone();
-        assert!(!patch_kaslr_seed_bytes(&mut blob, 0xDEAD_BEEF));
+        assert!(!patch_overlay_seed(&mut blob, 0xDEAD_BEEF));
         assert_eq!(blob, before, "absent seed leaves the blob unchanged");
+    }
+
+    /// End-to-end of the first merge: patch the committed template, merge it onto
+    /// a seed-free base, and confirm the result carries the patched
+    /// `/chosen/kaslr-seed` while the base's own /chosen content survives.
+    #[test]
+    fn merges_patched_seed_onto_base() {
+        let Some(base_blob) = dtc_compile(BASE_NO_SEED) else {
+            eprintln!("skipping: dtc not available");
+            return;
+        };
+        let base: Tree<'_> = Tree::parse(&base_blob).unwrap();
+
+        let mut tpl = KASLR_OVERLAY_TEMPLATE.to_vec();
+        let seed = 0xCAFE_F00D_1234_5678;
+        assert!(patch_overlay_seed(&mut tpl, seed));
+        let overlay: Overlay<'_> = Overlay::parse(&tpl).unwrap();
+
+        let mut out = [0u8; 16 * 1024];
+        let n = overlay.apply(&base, &mut out).expect("merge ok");
+        let merged: Tree<'_> = Tree::parse(&out[..n]).unwrap();
+
+        let chosen = merged.find_path("/chosen").expect("/chosen present");
+        let p = chosen.property("kaslr-seed").expect("seed merged in");
+        assert_eq!(u64::from_be_bytes(p.as_ref().try_into().unwrap()), seed);
+        // Base content preserved through the merge.
+        assert_eq!(
+            chosen.property("bootargs").unwrap().as_str().unwrap(),
+            "console=ttyAMA0"
+        );
     }
 }

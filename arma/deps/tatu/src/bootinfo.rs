@@ -105,20 +105,6 @@ pub fn kernel_bytes(info: &TatuBootInfo) -> &'static [u8] {
     region(info.kernel_gpa, info.kernel_size)
 }
 
-/// Borrow the measured base-DTB region mutably, for the arm64 KASLR seed patch.
-/// `.tatu.dtb` is a writable loaded section; tatu rewrites the 8-byte
-/// `/chosen/kaslr-seed` value before the merge, then re-parses the blob.
-#[cfg(any(test, target_arch = "aarch64"))]
-#[allow(unsafe_code)]
-pub fn base_dtb_bytes_mut(info: &TatuBootInfo) -> &'static mut [u8] {
-    // SAFETY: same single-vCPU, no-DMA, VMM-loaded-region argument as `region`
-    // (below). tatu is the sole accessor of the base DTB until the merge, so a
-    // unique `&mut` for the in-place seed patch is sound.
-    unsafe {
-        core::slice::from_raw_parts_mut(info.base_dtb_gpa as *mut u8, info.base_dtb_size as usize)
-    }
-}
-
 /// Borrow the loaded kernel image mutably, for x86 KASLR relocation. The image
 /// is a PE section the VMM loaded into guest RAM; tatu patches it in place before
 /// jumping. The byte count is the FILE size (`kernel_size`) — relocation sites

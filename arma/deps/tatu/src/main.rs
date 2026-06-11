@@ -30,8 +30,9 @@ mod bootinfo;
 mod merge;
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 mod validate;
-// arm64 KASLR seed patch (pure byte op + host tests). Compiled for aarch64 bare
-// metal (where it's used) and for host test builds; unused on x86 bare metal.
+// arm64 KASLR seed overlay: the committed template + the byte-level seed patch
+// (host-tested). Compiled for aarch64 bare metal (where it's merged onto the
+// base) and for host test builds; unused on x86 bare metal.
 #[cfg(any(test, target_arch = "aarch64"))]
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 mod kaslr;
@@ -113,15 +114,20 @@ extern "C" fn rust_main(bootinfo: &TatuBootInfo) -> ! {
         panic_halt(b"bootinfo: bad magic");
     }
 
-    // 1b. aarch64 KASLR: overwrite the base DTB's /chosen/kaslr-seed placeholder
-    //     with guest entropy before parsing/merging, so the merged DTB the kernel
-    //     receives carries a fresh, guest-controlled seed. No-op on x86 (which
-    //     randomizes via applied relocations after the merge).
-    arch::patch_kaslr_seed(bootinfo);
-
-    // 2. Parse the measured base DTB (trusted; loaded as a regular
-    //    PE section per the merged extension).
-    let base: Tree<'static> = match Tree::parse(base_dtb_bytes(bootinfo)) {
+    // 2. Prepare the DTB the host overlay merges onto. On aarch64 this performs
+    //    a first merge: a trusted kaslr overlay (with a fresh guest-entropy
+    //    /chosen/kaslr-seed) is merged onto the measured base into a temporary
+    //    stack buffer. The seed is guest-generated, so it never lives in the
+    //    measured base DTB. On x86 this is a no-op (the base is used as-is;
+    //    KASLR is applied via relocations after the merge). `kaslr_scratch` must
+    //    outlive `base` — it backs the intermediate tree.
+    let mut kaslr_scratch = [0u8; 16 * 1024];
+    let base_blob: &[u8] =
+        match arch::prepare_merge_base(base_dtb_bytes(bootinfo), &mut kaslr_scratch) {
+            Ok(b) => b,
+            Err(_) => panic_halt(b"kaslr overlay merge failed"),
+        };
+    let base: Tree<'_> = match Tree::parse(base_blob) {
         Ok(t) => t,
         Err(_) => panic_halt(b"base dtb: structural parse failed"),
     };

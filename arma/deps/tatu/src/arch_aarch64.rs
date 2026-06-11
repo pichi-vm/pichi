@@ -73,24 +73,43 @@ pub fn halt() -> ! {
 }
 
 // ---------------------------------------------------------------------------
-// KASLR: arm64 randomizes its virtual base from `/chosen/kaslr-seed` (a
-// kernel built with CONFIG_RANDOMIZE_BASE reads it and self-relocates). arma
-// plants an 8-byte zero placeholder for that property in the MEASURED base DTB;
-// tatu overwrites it here with guest entropy *before* the overlay merge, so the
-// seed reaches the kernel via the normal merged DTB. Entropy comes from the
-// guest CPU (RNDR), never the host — and the host overlay is forbidden from
-// contributing /chosen/kaslr-seed (validate_host_dtbo rejects it), so the seed
-// stays guest-controlled (a confidential-computing requirement).
+// KASLR: arm64 randomizes its virtual base from `/chosen/kaslr-seed` (a kernel
+// built with CONFIG_RANDOMIZE_BASE reads it and self-relocates). The seed is
+// guest-generated entropy, so it is NOT in the measured base DTB. tatu carries
+// a trusted overlay (`crate::kaslr`) that adds `/chosen/kaslr-seed`; here we
+// patch its placeholder with guest entropy and merge it onto the measured base
+// *before* the host overlay. Entropy comes from the guest CPU (RNDR), never the
+// host — and the host overlay is forbidden from contributing /chosen/kaslr-seed
+// (validate_host_dtbo rejects it), so the seed stays guest-controlled (a
+// confidential-computing requirement).
 // ---------------------------------------------------------------------------
 
-use crate::bootinfo::{TatuBootInfo, base_dtb_bytes_mut};
+use devtree::{Overlay, Tree};
 
-/// Overwrite the base DTB's `/chosen/kaslr-seed` placeholder with guest entropy,
-/// in place, before the overlay merge. No-op if the base carries no 8-byte seed
-/// (a non-KASLR build, or x86). The byte-level patch is in [`crate::kaslr`].
-pub fn patch_kaslr_seed(bootinfo: &TatuBootInfo) {
-    let blob = base_dtb_bytes_mut(bootinfo);
-    let _ = crate::kaslr::patch_kaslr_seed_bytes(blob, rand_u64());
+/// Prepare the DTB the host overlay will be merged onto. aarch64 injects a
+/// guest-entropy `/chosen/kaslr-seed`: it patches the trusted kaslr overlay
+/// template with fresh entropy and merges it onto the measured `base`, writing
+/// the result into `scratch` and returning that slice. (The x86 counterpart is
+/// a no-op that returns `base` unchanged — it randomizes via post-merge
+/// relocations.) `scratch` must be large enough for the base plus the seed
+/// property (the base is at most the `.tatu.dtb` reservation).
+pub fn prepare_merge_base<'a>(base: &'a [u8], scratch: &'a mut [u8]) -> Result<&'a [u8], ()> {
+    // Copy the read-only template into a mutable buffer and patch the seed.
+    let template = crate::kaslr::KASLR_OVERLAY_TEMPLATE;
+    let mut tpl = [0u8; 512];
+    let n = template.len();
+    if n > tpl.len() {
+        return Err(());
+    }
+    tpl[..n].copy_from_slice(template);
+    if !crate::kaslr::patch_overlay_seed(&mut tpl[..n], rand_u64()) {
+        return Err(());
+    }
+
+    let overlay = Overlay::parse(&tpl[..n]).map_err(|_| ())?;
+    let base_tree = Tree::parse(base).map_err(|_| ())?;
+    let written = crate::merge::merge_into(&base_tree, overlay, scratch).map_err(|_| ())?;
+    Ok(&scratch[..written])
 }
 
 /// 64 bits of guest entropy. Prefers `RNDR` (FEAT_RNG); falls back to the
