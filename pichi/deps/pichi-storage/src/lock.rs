@@ -1,35 +1,43 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `flock(2)` helpers using `rustix::fs::flock`.
+//! Cross-platform advisory file-lock helpers built on `std::fs::File`'s
+//! native locking (`File::lock` / `try_lock` / `unlock`, stable since Rust
+//! 1.89). These map to `flock(2)` on Unix and `LockFileEx` on Windows, so
+//! the cache is inter-process-safe on every supported OS without any
+//! platform-specific code here.
 //!
 //! Used by the Phase 44 partial-download path; defined in Phase 41 so the
-//! foundation is stable. Phase 41's `BlobStore` does not require flock
+//! foundation is stable. Phase 41's `BlobStore` does not require locking
 //! because content-addressed atomic rename is sufficient (see RESEARCH
 //! §Focus Area 3 "What to lock in Phase 41").
 
+use std::fs::{File, OpenOptions};
 use std::path::Path;
 
 use anyhow::Context as _;
-use rustix::fd::OwnedFd;
-use rustix::fs::{FlockOperation, Mode as RustixMode, OFlags, flock, open};
 
 use crate::layout::CacheLayout;
 
-/// Take a blocking exclusive flock on `path`. Lock is released when the
-/// returned `OwnedFd` is dropped.
+/// Take a blocking exclusive lock on `path`. The lock is released when the
+/// returned [`File`] is dropped (closing the handle).
 ///
-/// Creates `path` (and only `path` — caller ensures parent dir exists)
-/// with mode 0600 if it does not exist.
-pub fn lock_exclusive(path: &Path) -> anyhow::Result<OwnedFd> {
-    let fd = open(
-        path,
-        OFlags::CREATE | OFlags::RDWR,
-        RustixMode::from_raw_mode(0o600),
-    )
-    .with_context(|| format!("failed to open lock file: {}", path.display()))?;
-    flock(&fd, FlockOperation::LockExclusive)
-        .with_context(|| format!("failed to take exclusive flock on: {}", path.display()))?;
-    Ok(fd)
+/// Creates `path` (and only `path` — caller ensures parent dir exists),
+/// with mode 0600 on Unix, if it does not exist. On Windows the file must
+/// be opened for read or write to be lockable, which `read(true)` ensures.
+pub fn lock_exclusive(path: &Path) -> anyhow::Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let file = opts
+        .open(path)
+        .with_context(|| format!("failed to open lock file: {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("failed to take exclusive lock on: {}", path.display()))?;
+    Ok(file)
 }
 
 /// Run `op` while holding an exclusive flock on `path`. The lock is
@@ -73,7 +81,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustix::fs::FlockOperation;
+    use std::fs::TryLockError;
 
     #[test]
     fn lock_then_release_works() {
@@ -92,19 +100,16 @@ mod tests {
         // First lock — held until the end of this test.
         let _first = lock_exclusive(&lock_path).unwrap();
 
-        // Second non-blocking attempt should fail immediately.
-        let fd = open(
-            &lock_path,
-            OFlags::CREATE | OFlags::RDWR,
-            RustixMode::from_raw_mode(0o600),
-        )
-        .unwrap();
-        let err = flock(&fd, FlockOperation::NonBlockingLockExclusive).unwrap_err();
-        // EWOULDBLOCK / EAGAIN expected.
-        let raw = err.raw_os_error();
-        assert!(
-            raw == libc::EWOULDBLOCK || raw == libc::EAGAIN,
-            "expected EWOULDBLOCK/EAGAIN, got {raw}"
-        );
+        // Second non-blocking attempt should report contention.
+        let second = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        match second.try_lock() {
+            Err(TryLockError::WouldBlock) => {}
+            other => panic!("expected Err(WouldBlock), got {other:?}"),
+        }
     }
 }

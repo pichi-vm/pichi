@@ -13,7 +13,9 @@
 //! - [`BlobStore`] / [`FilesystemBlobStore`]: content-addressed blob storage
 //!   with atomic-rename writes (STORAGE-02, STORAGE-06, STORAGE-10).
 //! - [`with_advisory_lock`] / [`lock_exclusive`] / [`with_index_lock`]:
-//!   `flock(2)` helpers for inter-process safety. `with_index_lock` wraps
+//!   cross-platform advisory file-lock helpers (std `File::lock`, i.e.
+//!   `flock(2)` on Unix / `LockFileEx` on Windows) for inter-process
+//!   safety. `with_index_lock` wraps
 //!   the canonical `<graphroot>/index.json.lock` path for use by callers
 //!   that need to serialise multi-step cache mutations (e.g., `pichi rmi`).
 //!
