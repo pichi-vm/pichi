@@ -414,9 +414,17 @@ mod imp {
     }
 
     impl InterruptLine for SpiInterruptLine {
+        // Edge-style notify (virtio-mmio): pulse the line so the GIC sees a
+        // fresh 0→1 edge each time. Asserting without deasserting leaves the SPI
+        // latched high — the guest takes one interrupt, ACKs the virtio queue,
+        // then storms on the still-asserted line and the device wedges. (The
+        // UART uses `set_level` directly for its level-triggered IRQ.)
         fn signal(&self) {
             if let Err(e) = self.set_level(true) {
-                log::warn!("HVF SPI {} interrupt signal failed: {e}", self.intid);
+                log::warn!("HVF SPI {} interrupt assert failed: {e}", self.intid);
+            }
+            if let Err(e) = self.set_level(false) {
+                log::warn!("HVF SPI {} interrupt deassert failed: {e}", self.intid);
             }
         }
 
