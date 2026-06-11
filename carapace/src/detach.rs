@@ -1,6 +1,7 @@
-//! `carapace detach` — best-effort tear down of a previously-attached chain.
+//! `detach` — best-effort tear down of a previously-attached chain.
 
 use crate::dm::{list_devices_with_prefix, remove_by_name};
+use crate::name::validate_dm_name;
 use crate::CarapaceError;
 
 /// Linux errno 6 — "No such device or address." `dm-ioctl` returns
@@ -11,23 +12,20 @@ use crate::CarapaceError;
 /// been stable since 2.0; carapace is Linux-only.
 const ENXIO: i32 = 6;
 
-pub(crate) fn run(name: &str) -> Result<(), CarapaceError> {
-    // --name validity is enforced by cli::validate_dm_name at parse
-    // time; trust the caller here.
-    //
+/// Best-effort teardown of every dm device prefixed `<name>`, in kernel-safe
+/// order. Returns the residual per-device problems as operator-facing strings
+/// (empty == clean teardown). `Err` only for a hard failure *before* teardown
+/// (the device enumeration); individual device-removal failures are collected,
+/// not propagated — detach is best-effort by design, like `dmsetup remove -f`.
+///
+/// `name` is validated here; see [`validate_dm_name`].
+pub fn detach(name: &str) -> Result<Vec<String>, CarapaceError> {
+    validate_dm_name(name)?;
+
     // Discovery: enumerate dm devices with our `<name>` prefix via
-    // DM_LIST_DEVICES — the kernel's authoritative inventory.
-    // Replaces the previous probe-65-names-and-swallow-misses pattern:
-    //   * 1 enumeration ioctl + ~3N+1 removes (vs. 65 unconditional
-    //     removes regardless of stack size)
-    //   * "Still leaked" becomes a concrete enumeration the operator
-    //     can re-probe rather than a swallow count
-    //   * No swallow-on-miss — every device we attempt to remove was
-    //     just witnessed by the kernel
-    //
-    // Loops are NOT touched — carapace attach no longer creates them.
-    // The operator (or initrd, or test harness) is responsible for
-    // any losetup --partscan / losetup -d lifecycle around carapace.
+    // DM_LIST_DEVICES — the kernel's authoritative inventory. Loops are NOT
+    // touched — carapace attach no longer creates them; the caller (operator,
+    // initrd, or test harness) owns any losetup lifecycle.
     let devices = list_devices_with_prefix(name)?;
     let ordered = sort_for_teardown(name, devices);
 
@@ -35,24 +33,13 @@ pub(crate) fn run(name: &str) -> Result<(), CarapaceError> {
     for dev in &ordered {
         let _ = remove_by_name_tolerant(dev, &mut errors);
     }
-
-    if !errors.is_empty() {
-        // Log every problem (the count alone hides which device leaked
-        // and why). Detach is best-effort by design — like
-        // `dmsetup remove -f` — so we still exit 0. Wrapping scripts
-        // that care about residue can re-probe with
-        // `dmsetup ls | grep ^<name>` or re-run carapace detach.
-        for e in &errors {
-            eprintln!("carapace detach: {e}");
-        }
-    }
-    Ok(())
+    Ok(errors)
 }
 
 /// Sort the carapace dm devices into kernel-safe teardown order, and
 /// **drop any device whose name doesn't match a known carapace shape**.
 ///
-/// Layout produced by attach (see src/dm/activation.rs):
+/// Layout produced by attach (see src/assemble.rs):
 ///   `<base>`        — top alias (dm-linear over top snapshot)
 ///   `<base>-sN`     — per-scute snapshot
 ///   `<base>-vN`     — per-scute dm-verity

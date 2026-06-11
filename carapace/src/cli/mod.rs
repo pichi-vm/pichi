@@ -3,12 +3,14 @@
 //! lane 04 found the `clap` derive feature pulled 16 transitive crates
 //! and ~38% of the release `.text` for two verbs and three flags;
 //! that's the textbook case for not earning its keep.
+//!
+//! This module is the binary's CLI shell only: it parses arguments and
+//! delegates to the `carapace` library ([`carapace::attach`] /
+//! [`carapace::detach`]), then handles process-level concerns (stdout/stderr,
+//! exit codes). No chain or dm logic lives here.
 
-use crate::CarapaceError;
+use carapace::{validate_dm_name, CarapaceError};
 use std::process::ExitCode;
-
-mod attach;
-mod detach;
 
 const HELP: &str = "\
 carapace — assemble carapace block-device chains. Read-only at the operator surface.
@@ -66,11 +68,19 @@ fn parse_and_dispatch(mut args: impl Iterator<Item = String>) -> Result<(), Cara
         }
         "attach" => {
             let (name, root) = parse_attach(args)?;
-            attach::run(&name, &root)
+            let path = carapace::attach(&name, &root)?;
+            println!("{}", path.display());
+            Ok(())
         }
         "detach" => {
             let name = parse_detach(args)?;
-            detach::run(&name)
+            // detach is best-effort; print any residual per-device problems
+            // (the library returns them rather than printing) and still
+            // succeed, matching `dmsetup remove -f`.
+            for problem in carapace::detach(&name)? {
+                eprintln!("carapace detach: {problem}");
+            }
+            Ok(())
         }
         other => Err(CarapaceError::Usage(format!(
             "unknown verb {other:?} (expected `attach`, `detach`, `--help`, or `--version`)"
@@ -127,44 +137,6 @@ fn parse_detach(args: impl Iterator<Item = String>) -> Result<String, CarapaceEr
 
 fn value_for(flag: &str, value: Option<String>) -> Result<String, CarapaceError> {
     value.ok_or_else(|| CarapaceError::Usage(format!("{flag} requires a value")))
-}
-
-/// Reject `--name` values that would smuggle path-traversal, terminal
-/// escapes, dm-table-line tokens, or `/dev/mapper/<…>` lookalikes
-/// into downstream `format!("{name}-…")` and `Path::exists` paths.
-///
-/// The kernel's dm name allowlist is roughly C-identifier-like up to
-/// 127 bytes. We're tighter: alphanumeric + `_` + `-` + `.`, length
-/// 1..=120 (leaving 7 chars headroom for our `-z0` / `-v<NN>` /
-/// `-s<NN>` suffixes which max out at 5 chars at MAX_CHAIN_DEPTH=32).
-///
-/// Specifically rejected: empty, `/`, `..`, `\`, whitespace, control
-/// bytes (incl. ESC for terminal escapes), `%` (printf formats in
-/// downstream tools), shell metacharacters.
-pub(crate) fn validate_dm_name(name: &str) -> Result<(), CarapaceError> {
-    if name.is_empty() {
-        return Err(CarapaceError::Usage("--name must be non-empty".into()));
-    }
-    if name.len() > 120 {
-        return Err(CarapaceError::Usage(format!(
-            "--name too long: {} bytes (max 120)",
-            name.len()
-        )));
-    }
-    if let Some(bad) = name
-        .chars()
-        .find(|c| !(c.is_ascii_alphanumeric() || *c == '_' || *c == '-' || *c == '.'))
-    {
-        return Err(CarapaceError::Usage(format!(
-            "--name contains illegal character {bad:?}; allowed: ASCII alphanumeric, `_`, `-`, `.`"
-        )));
-    }
-    if name == "." || name == ".." {
-        return Err(CarapaceError::Usage(format!(
-            "--name {name:?} is reserved (path-traversal hazard)"
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -235,48 +207,5 @@ mod tests {
             parse_detach(args(&[])),
             Err(CarapaceError::Usage(_))
         ));
-    }
-
-    #[test]
-    fn validate_dm_name_accepts_safe_inputs() {
-        for ok in ["root", "carapace-test-1234", "a", "fs.root.0", "X_Y_Z"] {
-            assert!(validate_dm_name(ok).is_ok(), "{ok:?} should be accepted");
-        }
-    }
-
-    #[test]
-    fn validate_dm_name_rejects_unsafe_inputs() {
-        let bad = [
-            "",                 // empty
-            "..",               // path-traversal sentinel
-            ".",                // ditto
-            "../control",       // path traversal — would alias /dev/mapper/control
-            "/etc/shadow",      // absolute path
-            "name with spaces", // whitespace
-            "tab\there",        // control char
-            "esc\x1b[31m",      // ANSI escape
-            "name\0nul",        // NUL
-            "name%s",           // printf format
-            "name;rm -rf /",    // shell metachar
-            "name\nnewline",    // newline
-        ];
-        for bad in bad {
-            assert!(
-                matches!(validate_dm_name(bad), Err(CarapaceError::Usage(_))),
-                "{bad:?} should be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn validate_dm_name_rejects_overlong() {
-        let long = "a".repeat(121);
-        assert!(matches!(
-            validate_dm_name(&long),
-            Err(CarapaceError::Usage(_))
-        ));
-        // Boundary: exactly 120 is allowed.
-        let max = "a".repeat(120);
-        assert!(validate_dm_name(&max).is_ok());
     }
 }

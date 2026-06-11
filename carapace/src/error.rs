@@ -14,7 +14,8 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub(crate) enum CarapaceError {
+#[non_exhaustive]
+pub enum CarapaceError {
     #[error("usage: {0}")]
     Usage(String),
 
@@ -66,7 +67,7 @@ impl CarapaceError {
     /// declared algorithm, walk structure). False for operational failures
     /// (kernel ioctl, I/O, CLI usage, dm name conflict). Drives the
     /// exit-code split in `cli::run`.
-    pub(crate) fn is_adversary_rejection(&self) -> bool {
+    pub fn is_adversary_rejection(&self) -> bool {
         matches!(
             self,
             Self::SuperblockInvalid { .. }
