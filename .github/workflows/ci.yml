@@ -139,3 +139,104 @@ jobs:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
           cargo test -p dillo --features vm-tests -- --test-threads=1 --nocapture
+
+  # Real network import -> push -> rmi -> pull against an ephemeral zot
+  # registry. Exercises the registry-gated tests that skip in the matrix
+  # above (PICHI_TEST_REGISTRY is unset there). Linux-only: needs a
+  # container runtime to host the registry. No KVM required.
+  registry-zot:
+    name: registry round-trip (zot)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          rustup default "$NIGHTLY"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start zot
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/zot"
+          cat > "$RUNNER_TEMP/zot/config.json" <<'EOF'
+          {"storage":{"rootDirectory":"/var/lib/registry"},"http":{"address":"0.0.0.0","port":"5000"},"log":{"level":"warn"}}
+          EOF
+          docker run -d --name zot -p 5000:5000 \
+            -v "$RUNNER_TEMP/zot/config.json:/etc/zot/config.json:ro" \
+            ghcr.io/project-zot/zot-linux-amd64:latest serve /etc/zot/config.json
+          for _ in $(seq 1 30); do
+            curl -fsS http://localhost:5000/v2/ >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://localhost:5000/v2/ >/dev/null
+
+      - name: Round-trip tests (zot)
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+          PICHI_TEST_REGISTRY: localhost:5000
+          PICHI_TEST_REGISTRY_INSECURE: "1"
+        run: |
+          cargo test -p pichi --test cmd_pull --test cmd_push --test cmd_pull_push_roundtrip
+
+      - name: zot logs (on failure)
+        if: failure()
+        shell: bash
+        run: docker logs zot || true
+
+  # Real network round-trip against ghcr.io, a major production registry.
+  # Validates that pichi's custom OCI artifact format (vnd.pichi.* media
+  # types, empty-config artifact, verity annotations) is accepted and served
+  # bit-identically by a strict, real-world implementation. Runs only on
+  # push/dispatch: fork-PR GITHUB_TOKENs are read-only for packages.
+  registry-ghcr:
+    name: registry round-trip (ghcr.io)
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          rustup default "$NIGHTLY"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Write ghcr.io auth file
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/auth"
+          auth=$(printf '%s:%s' '${{ github.actor }}' "$GHCR_TOKEN" | base64 -w0)
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$auth" > "$RUNNER_TEMP/auth/auth.json"
+
+      - name: Round-trip test (ghcr.io)
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+          PICHI_TEST_REGISTRY: ghcr.io
+          PICHI_TEST_REPO_BASE: ghcr.io/${{ github.repository_owner }}/pichi-ci
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/auth/auth.json
+        run: |
+          cargo test -p pichi --test cmd_pull_push_roundtrip
+
+      - name: Delete test package (cleanup)
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X DELETE \
+            "/orgs/${{ github.repository_owner }}/packages/container/pichi-ci%2Froundtrip" \
+            && echo "deleted pichi-ci/roundtrip" \
+            || echo "cleanup skipped (no package, or token lacks delete:packages)"
