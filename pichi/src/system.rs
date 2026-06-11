@@ -62,20 +62,14 @@ pub fn run(args: InfoArgs, config: &Config) -> Result<()> {
 fn collect_config_file_entries() -> Vec<ConfigFileEntry> {
     let mut files = Vec::new();
 
-    let system_path = PathBuf::from("/etc/pichi/config.toml");
-    files.push(entry(system_path));
-
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        files.push(entry(PathBuf::from(xdg).join("pichi").join("config.toml")));
-    } else if let Some(home) = std::env::var_os("HOME") {
-        files.push(entry(
-            PathBuf::from(home)
-                .join(".config")
-                .join("pichi")
-                .join("config.toml"),
-        ));
+    // Report exactly the paths the loader consults (per-OS), so `system
+    // info` never disagrees with `Config::load`.
+    if let Some(p) = crate::config::system_config_path() {
+        files.push(entry(p));
     }
-
+    if let Some(p) = crate::config::user_config_path() {
+        files.push(entry(p));
+    }
     if let Some(env_path) = std::env::var_os("PICHI_CONFIG") {
         files.push(entry(PathBuf::from(env_path)));
     }

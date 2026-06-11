@@ -69,7 +69,7 @@ pub struct RegistryAuth {
 impl Config {
     /// Load with the production 4-tier precedence chain.
     pub fn load() -> Result<Self> {
-        let system = Some(PathBuf::from("/etc/pichi/config.toml"));
+        let system = system_config_path();
         let user = user_config_path();
         let env_override = std::env::var_os("PICHI_CONFIG").map(PathBuf::from);
         Self::load_from_paths(system.as_deref(), user.as_deref(), env_override.as_deref())
@@ -134,7 +134,23 @@ fn read_optional(path: &Path) -> Result<Option<Config>> {
     }
 }
 
-fn user_config_path() -> Option<PathBuf> {
+/// System-wide config path: `/etc/pichi/config.toml` on Unix,
+/// `%PROGRAMDATA%\pichi\config.toml` on Windows. `pub(crate)` so
+/// `system info` reports the same path the loader consults.
+#[cfg(unix)]
+pub(crate) fn system_config_path() -> Option<PathBuf> {
+    Some(PathBuf::from("/etc/pichi/config.toml"))
+}
+
+#[cfg(windows)]
+pub(crate) fn system_config_path() -> Option<PathBuf> {
+    std::env::var_os("PROGRAMDATA").map(|p| PathBuf::from(p).join("pichi").join("config.toml"))
+}
+
+/// Per-user config path: `$XDG_CONFIG_HOME`/`~/.config` on Unix,
+/// `%APPDATA%\pichi\config.toml` on Windows.
+#[cfg(unix)]
+pub(crate) fn user_config_path() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(xdg).join("pichi").join("config.toml"));
     }
@@ -144,6 +160,11 @@ fn user_config_path() -> Option<PathBuf> {
             .join("pichi")
             .join("config.toml")
     })
+}
+
+#[cfg(windows)]
+pub(crate) fn user_config_path() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|p| PathBuf::from(p).join("pichi").join("config.toml"))
 }
 
 #[cfg(test)]
