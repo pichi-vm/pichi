@@ -29,6 +29,7 @@ members = [
     "dillo/deps/dillo-virtio-blk",
     "dillo/deps/dillo-virtio-console",
     "dillo/deps/dillo-virtio-gpt",
+    "dillo/deps/dillo-virtio-vsock",
     "dillo/deps/dillo-virtio",
     "dillo/deps/snuffler",
     # pichi-owned (nested by sole consumer)
@@ -95,6 +96,7 @@ dillo-virtio = { path = "dillo/deps/dillo-virtio" }
 dillo-virtio-blk = { path = "dillo/deps/dillo-virtio-blk" }
 dillo-virtio-console = { path = "dillo/deps/dillo-virtio-console" }
 dillo-virtio-gpt = { path = "dillo/deps/dillo-virtio-gpt" }
+dillo-virtio-vsock = { path = "dillo/deps/dillo-virtio-vsock" }
 
 # pichi-internal crates
 pichi-artifact = { path = "pichi/deps/pichi-artifact" }

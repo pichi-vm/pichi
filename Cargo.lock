@@ -813,6 +813,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dillo-virtio-vsock"
+version = "0.1.0"
+dependencies = [
+ "dillo-mmio",
+ "dillo-virtio",
+ "log",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
