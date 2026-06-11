@@ -1284,6 +1284,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pichi-import"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "log",
+ "pichi-artifact",
+ "pichi-storage",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "pichi-storage"
 version = "0.1.0"
 dependencies = [

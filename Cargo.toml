@@ -33,6 +33,7 @@ members = [
     # pichi-owned (nested by sole consumer)
     "pichi/deps/pichi-artifact",
     "pichi/deps/pichi-storage",
+    "pichi/deps/pichi-import",
 ]
 exclude = [
     # cargo-fuzz harnesses: nightly + libfuzzer-sys, built out-of-band.
@@ -96,6 +97,7 @@ dillo-virtio-gpt = { path = "dillo/deps/dillo-virtio-gpt" }
 # pichi-internal crates
 pichi-artifact = { path = "pichi/deps/pichi-artifact" }
 pichi-storage = { path = "pichi/deps/pichi-storage" }
+pichi-import = { path = "pichi/deps/pichi-import" }
 # Error handling
 anyhow = "1"
 thiserror = "2"

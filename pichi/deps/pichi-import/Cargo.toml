@@ -1,0 +1,27 @@
+[package]
+name = "pichi-import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+# Library is consumed by the root `pichi` binary's `pichi import`
+# subcommand and (via `pub use` of verity::*) by the `pichi pull`
+# path. No [[bin]] — the binary surface is `pichi import`.
+
+[dependencies]
+anyhow.workspace = true
+pichi-artifact.workspace = true
+pichi-storage.workspace = true
+sha2.workspace = true
+hex.workspace = true
+log.workspace = true
+thiserror.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
