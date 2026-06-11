@@ -57,8 +57,11 @@ impl EnvSnapshot {
         #[cfg(windows)]
         {
             Self {
-                xdg_data_home: None,
-                xdg_runtime_dir: None,
+                // Honored as explicit overrides on Windows too (parity with the
+                // Unix arm; used by the integration tests and power users).
+                // LOCALAPPDATA is the default when these are unset.
+                xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
+                xdg_runtime_dir: std::env::var_os("XDG_RUNTIME_DIR"),
                 home: None,
                 euid: None,
                 local_app_data: std::env::var_os("LOCALAPPDATA"),
@@ -138,17 +141,35 @@ impl CacheLayout {
     }
 
     /// Resolve cache paths on Windows. There is no rootful/rootless split
-    /// (no effective-uid concept), so the store is always per-user under
-    /// `%LOCALAPPDATA%`; the `is_root` argument is ignored.
+    /// (no effective-uid concept), so the store is always per-user. The
+    /// default roots live under `%LOCALAPPDATA%\pichi`; `XDG_DATA_HOME` /
+    /// `XDG_RUNTIME_DIR`, when set, act as explicit overrides (parity with
+    /// the Unix rootless arm). The `is_root` argument is ignored.
     #[cfg(windows)]
     pub fn resolve_with_env(_is_root: bool, env: &EnvSnapshot) -> anyhow::Result<Self> {
-        let local = env.local_app_data.as_ref().ok_or_else(|| {
-            anyhow!("cannot determine Windows storage root: LOCALAPPDATA is not set")
-        })?;
-        let base = PathBuf::from(local).join("pichi");
+        let graphroot = if let Some(xdg) = env.xdg_data_home.as_ref() {
+            PathBuf::from(xdg).join("pichi").join("storage")
+        } else if let Some(local) = env.local_app_data.as_ref() {
+            PathBuf::from(local).join("pichi").join("storage")
+        } else {
+            return Err(anyhow!(
+                "cannot determine Windows storage root: neither XDG_DATA_HOME nor LOCALAPPDATA is set"
+            ));
+        };
+
+        let runroot = if let Some(xrd) = env.xdg_runtime_dir.as_ref() {
+            PathBuf::from(xrd).join("pichi").join("run")
+        } else if let Some(local) = env.local_app_data.as_ref() {
+            PathBuf::from(local).join("pichi").join("run")
+        } else {
+            return Err(anyhow!(
+                "cannot determine Windows runtime root: neither XDG_RUNTIME_DIR nor LOCALAPPDATA is set"
+            ));
+        };
+
         Ok(Self {
-            graphroot: base.join("storage"),
-            runroot: base.join("run"),
+            graphroot,
+            runroot,
             mode: Mode::Rootless,
         })
     }
@@ -317,6 +338,22 @@ mod tests {
             PathBuf::from(r"C:\Users\u\AppData\Local\pichi\run")
         );
         assert_eq!(l.mode, Mode::Rootless);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_xdg_data_home_overrides_local_app_data() {
+        let env = EnvSnapshot {
+            xdg_data_home: Some(OsString::from(r"D:\cache")),
+            xdg_runtime_dir: None,
+            home: None,
+            euid: None,
+            local_app_data: Some(OsString::from(r"C:\Users\u\AppData\Local")),
+        };
+        let l = CacheLayout::resolve_with_env(false, &env).unwrap();
+        assert_eq!(l.graphroot, PathBuf::from(r"D:\cache\pichi\storage"));
+        // runroot falls back to LOCALAPPDATA when XDG_RUNTIME_DIR is unset.
+        assert_eq!(l.runroot, PathBuf::from(r"C:\Users\u\AppData\Local\pichi\run"));
     }
 
     #[cfg(windows)]
