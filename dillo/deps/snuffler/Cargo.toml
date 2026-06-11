@@ -41,5 +41,15 @@ rustix = { version = "1", default-features = false, features = [
 ] }
 # AF_VSOCK has no safe rustix wrapper; the `vsock` crate provides a std::io
 # stream (its unsafe/libc is internal — our code stays unsafe-free). Used only
-# by the guest probe when `dillo.vsock_port=N` is on the cmdline.
+# by the guest probe (src/main.rs) when `dillo.vsock_port=N` is on the cmdline.
+#
+# Unix-only, and TARGET-gated (not feature-gated): the `vsock` crate has no
+# Windows support, and dillo pulls snuffler's *library* as a `lib = true`
+# artifact dep cross-built for its host — including the Windows (WHP) lane.
+# The library half (src/lib.rs) is only the `Report` schema and never touches
+# vsock, so gating the crate behind `cfg(unix)` keeps the Windows host build of
+# the lib clean while the cross-built musl guest bin (always unix) still gets
+# it. Feature-gating would not work here — a feature on the artifact dep lands
+# on the host lib instance, not the cross-built bin (see the rustix note above).
+[target.'cfg(unix)'.dependencies]
 vsock = "0.5"
