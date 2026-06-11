@@ -972,9 +972,10 @@ impl CoreVm {
             chosen.ack("linux,initrd-start");
             chosen.ack("linux,initrd-end");
             chosen.ack("stdout-path");
-            // aarch64 KASLR seed placeholder arma plants in the measured base DTB
-            // (tatu overwrites it with guest entropy before merge). Absent on x86.
-            chosen.ack("kaslr-seed");
+            // No `kaslr-seed` ack: it is guest-generated entropy and MUST NOT
+            // appear in the measured base DTB. tatu injects it at boot via a
+            // trusted overlay (see arma deps/tatu `kaslr.rs`). A seed present
+            // here is non-conformant and `ensure_drained` rejects it.
             chosen.ensure_drained()?;
         }
         if let Some(mut aliases) = root.remove_child("aliases") {
