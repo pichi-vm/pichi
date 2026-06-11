@@ -964,6 +964,9 @@ impl CoreVm {
             chosen.ack("linux,initrd-start");
             chosen.ack("linux,initrd-end");
             chosen.ack("stdout-path");
+            // aarch64 KASLR seed placeholder arma plants in the measured base DTB
+            // (tatu overwrites it with guest entropy before merge). Absent on x86.
+            chosen.ack("kaslr-seed");
             chosen.ensure_drained()?;
         }
         if let Some(mut aliases) = root.remove_child("aliases") {

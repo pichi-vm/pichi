@@ -22,8 +22,6 @@ use snuffler::{REPORT_BEGIN, REPORT_END, Report};
 use tempfile::TempDir;
 use wait_timeout::ChildExt;
 
-const ALPINE: &str = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases";
-
 // dillo boots a same-arch guest, so the host arch picks the kernel.
 #[cfg(target_arch = "x86_64")]
 mod host {
@@ -31,16 +29,235 @@ mod host {
     pub(crate) const PROFILE: &str = "x86-64-v2";
     pub(crate) const CONFIG: &str =
         "CONFIG_PCI=y\nCONFIG_VIRTIO_PCI=y\nCONFIG_VIRTIO_MMIO=y\nCONFIG_VIRTIO_BLK=y\n";
+    /// No-PCI config: arma infers MMIO-only slots (16/0), so the console and
+    /// virtio-blk land on virtio-mmio and no ECAM/PCI window is emitted.
+    pub(crate) const CONFIG_NOPCI: &str = "CONFIG_VIRTIO_MMIO=y\nCONFIG_VIRTIO_BLK=y\n";
 }
 #[cfg(target_arch = "aarch64")]
 mod host {
     pub(crate) const ARCH: &str = "aarch64";
     pub(crate) const PROFILE: &str = "armv8.0-a";
     pub(crate) const CONFIG: &str = "CONFIG_PCI=y\nCONFIG_PCI_HOST_GENERIC=y\nCONFIG_VIRTIO_PCI=y\nCONFIG_VIRTIO_MMIO=y\nCONFIG_VIRTIO_BLK=y\n";
+    pub(crate) const CONFIG_NOPCI: &str = "CONFIG_VIRTIO_MMIO=y\nCONFIG_VIRTIO_BLK=y\n";
 }
 
-fn kernel_url() -> String {
-    format!("{ALPINE}/{}/netboot/vmlinuz-virt", host::ARCH)
+// ---------------------------------------------------------------------------
+// Kernel database.
+//
+// Each entry is a plain kernel image download paired with its plain-text kconfig
+// download (the uniform shape every catalogued kernel uses — no per-kernel
+// unpacking). A test asks for the kconfig symbols it needs (and any it must NOT
+// have); [`require`] finds matching entries for the host arch, downloads the
+// first that fetches (skipping any that 404), then VERIFIES the real config
+// against the believed builtins. A mismatch is a LOUD panic so the cached belief
+// gets fixed rather than silently picking a kernel that doesn't meet the test's
+// needs. We only ever use kernels other projects built — never one we built.
+// ---------------------------------------------------------------------------
+
+/// One catalogued kernel: a plain image URL, the kconfig symbols it is believed
+/// to set to `=y` (named without `CONFIG_`), and a config source. `config` is
+/// `Some(url)` when the project publishes the kconfig as a plain file; the URL
+/// may contain a single `*` wildcard for a version-stamped filename (e.g.
+/// Alpine's `config-<ver>-virt`), resolved by listing the parent directory.
+/// `config` is `None` *only* when the kernel embeds its own config (IKCONFIG),
+/// which arma extracts directly — no catalogued kernel currently does, so every
+/// entry carries a `Some` config today. [`require`] always verifies the believed
+/// builtins against the resolved config (loud panic on a stale belief).
+struct Entry {
+    arch: &'static str,
+    url: &'static str,
+    config: Option<&'static str>,
+    builtins: &'static [&'static str],
+}
+
+// Catalogued kernels, all published by their projects as plain downloads arma
+// accepts directly (raw `vmlinux`/`Image`, gzip/zstd EFI-zboot, or bzImage — no
+// unpacking), each paired with a published kconfig:
+//   * firecracker CI — raw image + a plain `.config`. All virtio built in;
+//     `RANDOMIZE_BASE` is on for x86 (relocation-based KASLR), off on arm64.
+//   * Alpine `vmlinuz-virt` — gzip EFI-zboot arma unwraps; `ACPI_SPCR_TABLE=y`
+//     for the SPCR earlycon test. Config is the version-stamped `config-*-virt`
+//     in the same netboot dir (wildcard-resolved).
+//   * Fedora pxeboot `vmlinuz` — zstd EFI-zboot arma unwraps; `RANDOMIZE_BASE=y`:
+//     the arm64 KASLR consumption kernel. Config is Fedora's published dist-git
+//     `kernel-aarch64-fedora.config`.
+const KERNELS: &[Entry] = &[
+    // ---- x86_64 ----
+    Entry {
+        arch: "x86_64",
+        url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155",
+        config: Some(
+            "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155.config",
+        ),
+        builtins: &[
+            "PCI",
+            "VIRTIO_PCI",
+            "VIRTIO_MMIO",
+            "VIRTIO_BLK",
+            "VIRTIO_CONSOLE",
+            "RANDOMIZE_BASE",
+        ],
+    },
+    Entry {
+        arch: "x86_64",
+        url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.12/x86_64/vmlinux-6.1.128",
+        config: Some(
+            "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.12/x86_64/vmlinux-6.1.128.config",
+        ),
+        builtins: &[
+            "VIRTIO_MMIO",
+            "VIRTIO_BLK",
+            "VIRTIO_CONSOLE",
+            "RANDOMIZE_BASE",
+        ],
+    },
+    Entry {
+        arch: "x86_64",
+        url: "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/netboot/vmlinuz-virt",
+        config: Some(
+            "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/netboot/config-*-virt",
+        ),
+        builtins: &["ACPI_SPCR_TABLE", "VIRTIO_CONSOLE"],
+    },
+    // ---- aarch64 ----
+    Entry {
+        arch: "aarch64",
+        url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/aarch64/vmlinux-6.1.155",
+        config: Some(
+            "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/aarch64/vmlinux-6.1.155.config",
+        ),
+        builtins: &[
+            "PCI",
+            "VIRTIO_PCI",
+            "VIRTIO_MMIO",
+            "VIRTIO_BLK",
+            "VIRTIO_CONSOLE",
+            "ACPI_SPCR_TABLE",
+        ],
+    },
+    Entry {
+        arch: "aarch64",
+        url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.12/aarch64/vmlinux-6.1.128",
+        config: Some(
+            "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.12/aarch64/vmlinux-6.1.128.config",
+        ),
+        builtins: &[
+            "VIRTIO_MMIO",
+            "VIRTIO_BLK",
+            "VIRTIO_CONSOLE",
+            "ACPI_SPCR_TABLE",
+        ],
+    },
+    Entry {
+        arch: "aarch64",
+        url: "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/netboot/vmlinuz-virt",
+        config: Some(
+            "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/netboot/config-*-virt",
+        ),
+        builtins: &["ACPI_SPCR_TABLE", "VIRTIO_CONSOLE"],
+    },
+    // Fedora pxeboot kernel: zstd EFI-zboot arma unwraps to a raw arm64 Image,
+    // RANDOMIZE_BASE=y — the only catalogued arm64 kernel that consumes the KASLR
+    // seed. virtio-console is built in (for the snuffler report). Fedora ships no
+    // IKCONFIG and doesn't tag dist-git, so the config is pinned to the exact
+    // dist-git commit that built this kernel (`kernel-6.19.10-300.fc44`, the GA
+    // build in releases/44), found via Koji's recorded source: the kernel's
+    // embedded version → `koji getBuild` → its source git commit. Both the
+    // releases/44 kernel and a git commit are immutable, so the pair never skews.
+    Entry {
+        arch: "aarch64",
+        url: "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Everything/aarch64/os/images/pxeboot/vmlinuz",
+        config: Some(
+            "https://src.fedoraproject.org/rpms/kernel/raw/e44c3f75126e5490b097372b199562776b3872f6/f/kernel-aarch64-fedora.config",
+        ),
+        builtins: &["RANDOMIZE_BASE", "VIRTIO_CONSOLE"],
+    },
+];
+
+/// True if `text` (a kconfig) sets `CONFIG_<sym>=y`.
+fn config_is_y(text: &str, sym: &str) -> bool {
+    let needle = format!("CONFIG_{sym}=y");
+    text.lines().any(|l| l == needle)
+}
+
+/// Fetch a kconfig given a `config` spec. A plain URL is fetched directly; a URL
+/// containing a single `*` is a version-stamped filename (e.g. Alpine's
+/// `config-<ver>-virt`) — the parent directory is listed and the first entry
+/// matching the `prefix*suffix` pattern is fetched.
+fn fetch_config_text(spec: &str) -> Option<String> {
+    let url = match spec.split_once('*') {
+        None => spec.to_string(),
+        Some((pre, suf)) => {
+            let slash = pre.rfind('/')?;
+            let dir = &pre[..=slash];
+            let name_prefix = &pre[slash + 1..];
+            let listing = std::fs::read_to_string(burrow::fetch(dir).ok()?).ok()?;
+            let file = listing
+                .split('"')
+                .find(|t| t.starts_with(name_prefix) && t.ends_with(suf) && !t.contains('/'))?;
+            format!("{dir}{file}")
+        }
+    };
+    std::fs::read_to_string(burrow::fetch(&url).ok()?).ok()
+}
+
+/// Download an entry's image and (when published) its kconfig, returning
+/// `(image path, Some(kconfig))` or `(image path, None)`; `None` overall if the
+/// image or a published config fails to fetch (caller falls through to the next
+/// entry).
+fn resolve(e: &Entry) -> Option<(PathBuf, Option<String>)> {
+    let image = burrow::fetch(e.url).ok()?;
+    let config = match e.config {
+        Some(spec) => Some(fetch_config_text(spec)?),
+        None => None,
+    };
+    Some((image, config))
+}
+
+/// Find a catalogued kernel for the host arch whose believed builtins include
+/// every symbol in `needs` and none in `forbids`, download it, verify its real
+/// config when one is published, and return the image path. `None` if nothing
+/// downloadable matches.
+///
+/// Verification is strict when a config is available: every believed builtin must
+/// really be `=y`, and every `forbids` symbol must really be absent — otherwise
+/// the cache is stale and we panic loudly with the offending URL so [`KERNELS`]
+/// gets corrected. Entries with no published config are taken on trust; the
+/// selecting test's behavioral assertion is the check for those.
+fn require(needs: &[&str], forbids: &[&str]) -> Option<PathBuf> {
+    for e in KERNELS {
+        if e.arch != host::ARCH {
+            continue;
+        }
+        if !needs.iter().all(|n| e.builtins.contains(n)) {
+            continue;
+        }
+        if forbids.iter().any(|f| e.builtins.contains(f)) {
+            continue;
+        }
+        let Some((image, config)) = resolve(e) else {
+            continue; // download failed — try the next candidate
+        };
+        if let Some(config) = config {
+            let url = e.url;
+            for sym in e.builtins {
+                assert!(
+                    config_is_y(&config, sym),
+                    "kernel DB cache stale: {url} lists CONFIG_{sym}=y but its config disagrees \
+                     — update KERNELS"
+                );
+            }
+            for sym in forbids {
+                assert!(
+                    !config_is_y(&config, sym),
+                    "kernel DB: {url} was selected to exclude CONFIG_{sym}, but its config has \
+                     it =y — update KERNELS"
+                );
+            }
+        }
+        return Some(image);
+    }
+    None
 }
 
 /// Whether the host hypervisor is usable; otherwise these tests no-op skip.
@@ -109,11 +326,27 @@ fn sign_dillo_for_hvf() {
 #[cfg(not(target_os = "macos"))]
 fn sign_dillo_for_hvf() {}
 
-/// Build a PMI: Alpine host kernel + snuffler initrd.
+/// Build a PMI from the firecracker (PCI) kernel + snuffler initrd.
+/// Build a PMI with the default PCI + virtio-blk kernel (selected from the
+/// kernel DB by its built-in config), the snuffler initrd, and `host::CONFIG`.
 fn build_pmi(dir: &Path, cmdline: &str, serial: bool) -> PathBuf {
-    let kernel = burrow::fetch(&kernel_url()).expect("fetch kernel");
+    let kernel = require(&["PCI", "VIRTIO_PCI", "VIRTIO_BLK", "VIRTIO_CONSOLE"], &[])
+        .expect("kernel DB: no PCI + virtio-blk kernel available");
+    build_pmi_from_path(dir, &kernel, host::CONFIG, cmdline, serial)
+}
+
+/// Build a PMI from an on-disk kernel image (one resolved by the kernel DB, or
+/// the Alpine SPCR image), with an explicit arma kernel-config for slot
+/// inference.
+fn build_pmi_from_path(
+    dir: &Path,
+    kernel: &Path,
+    config: &str,
+    cmdline: &str,
+    serial: bool,
+) -> PathBuf {
     let cfg = dir.join("kernel.config");
-    std::fs::write(&cfg, host::CONFIG).unwrap();
+    std::fs::write(&cfg, config).unwrap();
     let pmi = dir.join("boot.pmi");
     let mut cmd = Command::new(env!("CARGO_BIN_FILE_ARMA_arma"));
     cmd.arg("build")
@@ -122,7 +355,7 @@ fn build_pmi(dir: &Path, cmdline: &str, serial: bool) -> PathBuf {
         .arg("--config")
         .arg(&cfg)
         .arg("--kernel")
-        .arg(&kernel)
+        .arg(kernel)
         .arg("--initrd")
         .arg(env!("CARGO_BIN_FILE_SNUFFLER_snuffler"));
     if serial {
@@ -221,6 +454,92 @@ fn boots_and_reports(#[values(256, 1024)] mem_mib: u32, #[values(1, 2)] cpus: u3
     );
 }
 
+/// arm64 KASLR end-to-end: tatu overwrites the measured base DTB's
+/// `/chosen/kaslr-seed` placeholder with guest `RNDR` entropy before the overlay
+/// merge, so the kernel receives a fresh, guest-controlled seed in its device
+/// tree on every boot. snuffler reads it back from
+/// `/proc/device-tree/chosen/kaslr-seed`.
+///
+/// The firecracker arm64 kernel has `CONFIG_RANDOMIZE_BASE` off, so it does not
+/// consume (and zero) the seed — which lets us confirm end-to-end *delivery*: the
+/// seed is nonzero and *differs across boots*, proving it is guest entropy rather
+/// than a host-fixed or build-time constant. (A `CONFIG_RANDOMIZE_BASE=y` kernel
+/// would zero the property after consuming it — see `get_kaslr_seed`.)
+#[test]
+#[cfg(target_arch = "aarch64")]
+fn arm64_kaslr_seed_delivered_fresh_per_boot() {
+    if !hypervisor_available() {
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
+        return;
+    }
+    // A NON-KASLR kernel (so it does not consume/zero the seed): we observe the
+    // exact bytes tatu delivered.
+    let Some(kernel) = require(&["VIRTIO_CONSOLE"], &["RANDOMIZE_BASE"]) else {
+        eprintln!("skip: kernel DB has no non-KASLR arm64 kernel to download");
+        return;
+    };
+    let read_seed = || -> String {
+        let tmp = TempDir::new().unwrap();
+        let pmi = build_pmi_from_path(tmp.path(), &kernel, host::CONFIG, "console=hvc0", false);
+        let output = boot(&pmi, 256, 1, tmp.path());
+        let r = parse_report(&output).unwrap_or_else(|| {
+            panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+        });
+        r.kaslr_seed
+            .expect("/chosen/kaslr-seed absent from guest device tree")
+    };
+    const ZERO: &str = "0000000000000000";
+    let seed1 = read_seed();
+    let seed2 = read_seed();
+    assert_eq!(
+        seed1.len(),
+        16,
+        "kaslr-seed is 8 bytes (16 hex chars): {seed1}"
+    );
+    assert_ne!(
+        seed1, ZERO,
+        "kaslr-seed must be nonzero (tatu wrote guest entropy)"
+    );
+    assert_ne!(
+        seed1, seed2,
+        "kaslr-seed must be fresh per boot (guest RNDR entropy), got {seed1} twice"
+    );
+}
+
+/// arm64 KASLR *consumption*: a `CONFIG_RANDOMIZE_BASE=y` kernel reads
+/// `/chosen/kaslr-seed` and zeroes the property (`get_kaslr_seed`: `*prop = 0`)
+/// before unflattening the device tree. So after such a kernel boots, snuffler
+/// reads the seed back as all-zero — proving the kernel actually *consumed* the
+/// guest-entropy seed tatu patched in (the firecracker arm64 kernels ship KASLR
+/// off, so the consuming kernel comes from the DB: Fedora's pxeboot arm64).
+#[test]
+#[cfg(target_arch = "aarch64")]
+fn arm64_kaslr_seed_consumed_by_randomize_base_kernel() {
+    if !hypervisor_available() {
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
+        return;
+    }
+    let Some(kernel) = require(&["RANDOMIZE_BASE", "VIRTIO_CONSOLE"], &[]) else {
+        eprintln!("skip: kernel DB has no downloadable RANDOMIZE_BASE arm64 kernel");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    // A distro kernel is heavier than firecracker's — give it room.
+    let pmi = build_pmi_from_path(tmp.path(), &kernel, host::CONFIG, "console=hvc0", false);
+    let output = boot(&pmi, 512, 1, tmp.path());
+    let r = parse_report(&output).unwrap_or_else(|| {
+        panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+    });
+    let seed = r
+        .kaslr_seed
+        .expect("/chosen/kaslr-seed absent from guest device tree");
+    assert_eq!(
+        seed, "0000000000000000",
+        "a CONFIG_RANDOMIZE_BASE=y kernel must consume (zero) the seed; got {seed} — \
+         tatu's seed was not consumed"
+    );
+}
+
 #[test]
 fn serial_earlycon_hands_off_to_hvc0() {
     if !hypervisor_available() {
@@ -228,7 +547,13 @@ fn serial_earlycon_hands_off_to_hvc0() {
         return;
     }
     let tmp = TempDir::new().unwrap();
-    let pmi = build_pmi(tmp.path(), "console=hvc0", true);
+    // The SPCR earlycon handoff needs a CONFIG_ACPI_SPCR_TABLE kernel. The DB
+    // picks one for the host arch (Alpine on x86, where firecracker has SPCR off).
+    let Some(kernel) = require(&["ACPI_SPCR_TABLE", "VIRTIO_CONSOLE"], &[]) else {
+        eprintln!("skip: kernel DB has no downloadable ACPI_SPCR_TABLE kernel");
+        return;
+    };
+    let pmi = build_pmi_from_path(tmp.path(), &kernel, host::CONFIG, "console=hvc0", true);
     let output = boot(&pmi, 256, 1, tmp.path());
     let r = parse_report(&output).unwrap_or_else(|| {
         panic!("boot produced no snuffler report (guest did not boot):\n{output}")
@@ -346,6 +671,66 @@ fn boots_with_raw_disk() {
         .expect("rand_write present (rw device)");
     assert_eq!(rw.errors, 0, "rand_write: {rw:?}");
     assert_eq!(rw.verified, Some(true), "rand_write not verified: {rw:?}");
+}
+
+/// A no-PCI firecracker kernel + a no-PCI arma config: the console and a
+/// `--blk` raw disk are placed on virtio-mmio, and the PMI declares no PCI bus
+/// at all. Proves arma can produce a fully-working PMI with no PCI and dillo
+/// supplies devices over MMIO. The guest's built-in virtio_blk binds `vda`.
+///
+/// x86 discovers the virtio-mmio transports via the `_HID "LNRO0005"` ACPI
+/// devices dtb2acpi emits (x86 has no DT); aarch64 would use the DT directly.
+#[test]
+fn boots_with_raw_disk_over_mmio() {
+    if !hypervisor_available() {
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    const DISK_BYTES: u64 = 8 * 1024 * 1024; // 8 MiB, sector-aligned
+    let disk = make_raw(tmp.path(), "data.raw", DISK_BYTES);
+    // A kernel with virtio-blk over MMIO and *no* PCI at all.
+    let kernel = require(&["VIRTIO_MMIO", "VIRTIO_BLK", "VIRTIO_CONSOLE"], &["PCI"])
+        .expect("kernel DB: no MMIO-only (no-PCI) virtio-blk kernel available");
+    let pmi = build_pmi_from_path(
+        tmp.path(),
+        &kernel,
+        host::CONFIG_NOPCI,
+        "console=hvc0",
+        false,
+    );
+    let blk = format!("path={}", disk.display());
+    let output = boot_with(&pmi, 256, 1, tmp.path(), &["--blk", &blk]);
+    let r = parse_report(&output).unwrap_or_else(|| {
+        panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+    });
+
+    // No PCI bus exists at all on a no-PCI PMI (CONFIG_PCI is off).
+    assert!(
+        r.pci.is_empty(),
+        "expected no PCI devices on a no-PCI PMI, got: {:?}",
+        r.pci
+    );
+    // The virtio-blk device bound over virtio-mmio and snuffler benchmarked it.
+    let dev = r
+        .block
+        .iter()
+        .find(|b| b.size_bytes == DISK_BYTES)
+        .unwrap_or_else(|| panic!("virtio-blk (MMIO) not found among {:?}", r.block));
+    assert!(!dev.ro, "raw --blk device must be read-write");
+    let bench = dev.bench.as_ref().expect("blk benchmark present");
+    assert!(bench.error.is_none(), "blk bench error: {:?}", bench.error);
+    assert!(
+        bench.seq_read.bytes > 0 && bench.seq_read.errors == 0,
+        "seq_read: {:?}",
+        bench.seq_read
+    );
+    let sw = bench
+        .seq_write
+        .as_ref()
+        .expect("seq_write present (rw device)");
+    assert_eq!(sw.errors, 0, "seq_write: {sw:?}");
+    assert_eq!(sw.verified, Some(true), "seq_write not verified: {sw:?}");
 }
 
 /// Two backing files combined via one `--gpt` (nested `partitions=[[…],[…]]`)

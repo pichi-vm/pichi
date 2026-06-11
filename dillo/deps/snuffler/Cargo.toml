@@ -17,6 +17,15 @@ description = "Guest probe (PID 1) that snuffles out the booted machine's device
 # instance, not the cross-built bin, so the bin gets skipped. They're cheap and
 # unused by the library, so a host consumer of the lib pays almost nothing.
 
+# The guest init bin has no unit tests — it is validated by real boots (dillo's
+# e2e suite). Skip its test-harness build: under `cargo test`, `fn main` is
+# `#[cfg(not(test))]` and drops out, which would flag every init helper as dead
+# code under `-D warnings`. The library half keeps its normal test harness.
+[[bin]]
+name = "snuffler"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

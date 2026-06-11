@@ -181,7 +181,18 @@ fn observe() -> Report {
         serial: walk_serial(),
         clock: read_clock(),
         kernel_log: read_kernel_log(),
+        kaslr_seed: read_kaslr_seed(),
     }
+}
+
+/// Read the 8-byte `/chosen/kaslr-seed` the kernel received, as lowercase hex
+/// (FDT big-endian order). `None` if absent (x86 / no device tree) or malformed.
+fn read_kaslr_seed() -> Option<String> {
+    let bytes = fs::read("/proc/device-tree/chosen/kaslr-seed").ok()?;
+    if bytes.len() != 8 {
+        return None;
+    }
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn read_trim(p: &str) -> String {

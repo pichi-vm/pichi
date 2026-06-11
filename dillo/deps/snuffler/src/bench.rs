@@ -58,10 +58,19 @@ pub(crate) fn benchmark_device(name: &str, size_bytes: u64, ro: bool) -> Option<
     let mut ro_write_rejected = None;
 
     if ro {
-        // The reads above used an O_RDONLY fd. To prove the *device* (not the fd
-        // mode) enforces read-only, try to open it O_RDWR: the kernel rejects
-        // O_RDWR on a read-only gendisk with EROFS.
-        ro_write_rejected = Some(rustix::fs::open(&path, OFlags::RDWR, Mode::empty()).is_err());
+        // Prove the *device* (not the fd mode) enforces read-only. Linux may
+        // either reject an O_RDWR open outright (older behavior) or allow the
+        // open and refuse the write with EROFS (6.x) — both count as enforced.
+        // A read-only device also rejects the write at the device layer, so the
+        // single buffered sector below never lands even if the kernel let it
+        // through. (Snuffler VMs carry no real data, by contract.)
+        ro_write_rejected = Some(match rustix::fs::open(&path, OFlags::RDWR, Mode::empty()) {
+            Err(_) => true,
+            Ok(rw) => {
+                let sector = [0u8; 512];
+                rustix::io::pwrite(&rw, &sector, 0).is_err()
+            }
+        });
     } else {
         seq_write = Some(seq_op(&fd, total, &mut buf, IoDir::Write, seed));
         rand_write = Some(rand_op(

@@ -42,6 +42,13 @@ pub struct Report {
     /// emits the report.
     #[serde(default)]
     pub kernel_log: KernelLog,
+    /// Lowercase hex of `/proc/device-tree/chosen/kaslr-seed` (8 bytes, the FDT's
+    /// big-endian order) as the kernel received it — the guest-entropy seed tatu
+    /// patched into the measured base DTB. A `CONFIG_RANDOMIZE_BASE` kernel zeroes
+    /// it after consuming it; a non-KASLR kernel leaves tatu's value intact.
+    /// `None` when the property is absent (x86, which has no device tree).
+    #[serde(default)]
+    pub kaslr_seed: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
