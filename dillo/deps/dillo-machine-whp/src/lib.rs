@@ -587,8 +587,10 @@ mod imp {
         const MSI_ADDR_BASE: u64 = 0xFEE0_0000;
         const MSI_ADDR_DEST_SHIFT: u64 = 12;
         const MSI_ADDR_DEST_MASK: u64 = 0xFF;
+        const MSI_ADDR_DEST_MODE_LOGICAL: u64 = 1 << 2;
         const MSI_DATA_VECTOR_MASK: u32 = 0xFF;
         const MSI_DATA_DELIVERY_MODE_MASK: u32 = 0x700;
+        const MSI_DATA_DELIVERY_MODE_SHIFT: u32 = 8;
         const MSI_DATA_LEVEL_ASSERT: u32 = 1 << 14;
         const MSI_DATA_TRIGGER_LEVEL: u32 = 1 << 15;
 
@@ -599,9 +601,12 @@ mod imp {
             );
             return None;
         }
-        if message.data & MSI_DATA_DELIVERY_MODE_MASK != 0 {
+        // Fixed (0) and Lowest-Priority (1) both deliver a fixed vector; Linux
+        // uses lowest-priority with a logical destination for MSI by default.
+        let delivery = (message.data & MSI_DATA_DELIVERY_MODE_MASK) >> MSI_DATA_DELIVERY_MODE_SHIFT;
+        if delivery != 0 && delivery != 1 {
             log::warn!(
-                "WHP MSI entry uses unsupported delivery mode data={:#x}",
+                "WHP MSI entry uses unsupported delivery mode {delivery} data={:#x}",
                 message.data
             );
             return None;
@@ -614,8 +619,15 @@ mod imp {
             return None;
         }
 
+        let dest_field = ((message.address >> MSI_ADDR_DEST_SHIFT) & MSI_ADDR_DEST_MASK) as u32;
+        let destination = if message.address & MSI_ADDR_DEST_MODE_LOGICAL != 0 {
+            crate::ioapic::resolve_logical_destination(dest_field)
+        } else {
+            dest_field
+        };
+
         Some(FixedMsi {
-            destination: ((message.address >> MSI_ADDR_DEST_SHIFT) & MSI_ADDR_DEST_MASK) as u32,
+            destination,
             vector: (message.data & MSI_DATA_VECTOR_MASK) as u8,
         })
     }

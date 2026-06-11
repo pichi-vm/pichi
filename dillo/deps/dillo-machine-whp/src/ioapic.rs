@@ -134,6 +134,7 @@ pub(crate) struct IoApicRoute {
 fn decode_route(entry: u64) -> Option<IoApicRoute> {
     const VECTOR_MASK: u64 = 0xFF;
     const DELIVERY_MODE_MASK: u64 = 0x700;
+    const DELIVERY_MODE_SHIFT: u64 = 8;
     const DESTINATION_MODE_LOGICAL: u64 = 1 << 11;
     const MASKED: u64 = 1 << 16;
     const DESTINATION_SHIFT: u64 = 56;
@@ -142,19 +143,35 @@ fn decode_route(entry: u64) -> Option<IoApicRoute> {
     if entry & MASKED != 0 {
         return None;
     }
-    if entry & DELIVERY_MODE_MASK != 0 {
-        log::warn!("x86 IOAPIC route uses unsupported delivery mode entry={entry:#x}");
-        return None;
-    }
-    if entry & DESTINATION_MODE_LOGICAL != 0 {
-        log::warn!("x86 IOAPIC route uses unsupported logical destination entry={entry:#x}");
+    // Fixed (0) and Lowest-Priority (1) both deliver a fixed vector; Linux uses
+    // lowest-priority with a logical destination for its IOAPIC-routed IRQs.
+    let delivery = (entry & DELIVERY_MODE_MASK) >> DELIVERY_MODE_SHIFT;
+    if delivery != 0 && delivery != 1 {
+        log::warn!("x86 IOAPIC route uses unsupported delivery mode {delivery} entry={entry:#x}");
         return None;
     }
 
+    let dest_field = ((entry >> DESTINATION_SHIFT) & DESTINATION_MASK) as u32;
+    let destination = if entry & DESTINATION_MODE_LOGICAL != 0 {
+        resolve_logical_destination(dest_field)
+    } else {
+        dest_field
+    };
+
     Some(IoApicRoute {
-        destination: ((entry >> DESTINATION_SHIFT) & DESTINATION_MASK) as u32,
+        destination,
         vector: (entry & VECTOR_MASK) as u8,
     })
+}
+
+/// Resolve a logical-flat APIC destination bitmask to a physical APIC ID.
+///
+/// Linux uses logical-flat mode for <= 8 CPUs: CPU `i` carries logical bit `i`.
+/// WHP injects a fixed interrupt to a single physical APIC, so deliver to the
+/// lowest CPU in the set (a valid resolution of both fixed and lowest-priority
+/// delivery). An empty mask falls back to the boot CPU.
+pub(crate) fn resolve_logical_destination(mask: u32) -> u32 {
+    if mask == 0 { 0 } else { mask.trailing_zeros() }
 }
 
 #[cfg(test)]
