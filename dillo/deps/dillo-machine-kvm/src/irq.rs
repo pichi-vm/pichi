@@ -6,9 +6,11 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
 
+use kvm_bindings::{KVM_IRQ_ROUTING_IRQCHIP, kvm_irq_routing_entry, kvm_irq_routing_irqchip};
+#[cfg(target_arch = "x86_64")]
 use kvm_bindings::{
-    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER,
-    KVM_IRQCHIP_PIC_SLAVE, kvm_irq_routing_entry, kvm_irq_routing_irqchip, kvm_irq_routing_msi,
+    KVM_IRQ_ROUTING_MSI, KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
+    kvm_irq_routing_msi,
 };
 use kvm_ioctls::VmFd;
 use vmm_sys_util::eventfd::EventFd;
@@ -32,9 +34,11 @@ pub(crate) enum IrqError {
     EventFdClone(std::io::Error),
 }
 
-/// First GSI available for message-interrupt routing (above IOAPIC range 0-23).
+/// First dynamically-allocated GSI. On x86 this clears the IOAPIC range (0-23);
+/// on aarch64 the GSI is just an opaque routing-table key, so any base works.
 const FIRST_MSI_GSI: u32 = 24;
 /// Number of IOAPIC pins (default routing entries).
+#[cfg(target_arch = "x86_64")]
 const NUM_IOAPIC_PINS: u32 = 24;
 
 /// Manages KVM irqfd registration and GSI routing table.
@@ -48,6 +52,12 @@ pub(crate) struct IrqManager {
     free_gsis: BinaryHeap<Reverse<u32>>,
     routes: Vec<kvm_irq_routing_entry>,
     irqfds: Vec<(u32, EventFd)>,
+    /// aarch64 wired SPIs whose irqfd can't be registered yet: KVM rejects
+    /// KVM_IRQFD until the vGIC is initialized, which needs vCPUs (created after
+    /// device attach). Recorded here as (SPI pin, kernel-side eventfd) and bound
+    /// by [`flush_pending_wired`] once the vGIC is up.
+    #[cfg(target_arch = "aarch64")]
+    pending_wired: Vec<(u32, EventFd)>,
 }
 
 impl std::fmt::Debug for IrqManager {
@@ -67,24 +77,27 @@ impl IrqManager {
     /// GSIs 0-23 are mapped to IOAPIC pins 0-23. This preserves legacy device
     /// routing (e.g., serial UART on IRQ 4) when MSI entries are added later.
     pub(crate) fn new(vm_fd: Arc<VmFd>) -> Result<Self, IrqError> {
-        // Build the default routing table matching KVM's defaults:
-        // - PIC master: GSIs 0-7 -> PIC_MASTER pins 0-7
-        // - PIC slave: GSIs 8-15 -> PIC_SLAVE pins 0-7
-        // - IOAPIC: GSIs 0-23 -> IOAPIC pins 0-23
-        // Total: 8 + 8 + 24 = 40 entries
-        let mut routes = Vec::with_capacity(40 + 8);
-        // PIC master: GSI 0-7
-        for pin in 0..8u32 {
-            routes.push(make_irqchip_entry(pin, KVM_IRQCHIP_PIC_MASTER, pin));
-        }
-        // PIC slave: GSI 8-15
-        for pin in 0..8u32 {
-            routes.push(make_irqchip_entry(8 + pin, KVM_IRQCHIP_PIC_SLAVE, pin));
-        }
-        // IOAPIC: GSI 0-23
-        for pin in 0..NUM_IOAPIC_PINS {
-            routes.push(make_irqchip_entry(pin, KVM_IRQCHIP_IOAPIC, pin));
-        }
+        // x86: KVM's in-kernel IOAPIC + PIC need their default GSI routes
+        // (GSIs 0-23 → IOAPIC pins, plus the PIC mirror), 8 + 8 + 24 = 40 entries.
+        // aarch64's GICv3 has no such defaults — every interrupt is an SPI routed
+        // by an IRQCHIP entry added at device-attach time — so the table starts
+        // empty and is first committed when the first device registers.
+        #[cfg(target_arch = "x86_64")]
+        let routes = {
+            let mut routes = Vec::with_capacity(40 + 8);
+            for pin in 0..8u32 {
+                routes.push(make_irqchip_entry(pin, KVM_IRQCHIP_PIC_MASTER, pin));
+            }
+            for pin in 0..8u32 {
+                routes.push(make_irqchip_entry(8 + pin, KVM_IRQCHIP_PIC_SLAVE, pin));
+            }
+            for pin in 0..NUM_IOAPIC_PINS {
+                routes.push(make_irqchip_entry(pin, KVM_IRQCHIP_IOAPIC, pin));
+            }
+            routes
+        };
+        #[cfg(target_arch = "aarch64")]
+        let routes: Vec<kvm_irq_routing_entry> = Vec::new();
 
         let mut mgr = Self {
             vm_fd,
@@ -92,8 +105,15 @@ impl IrqManager {
             free_gsis: BinaryHeap::new(),
             routes,
             irqfds: Vec::new(),
+            #[cfg(target_arch = "aarch64")]
+            pending_wired: Vec::new(),
         };
-        mgr.commit_routes()?;
+        // Commit only a non-empty initial table. aarch64 starts empty and must
+        // not call KVM_SET_GSI_ROUTING before the vGIC is initialized; its first
+        // commit happens when a device registers its first route.
+        if !mgr.routes.is_empty() {
+            mgr.commit_routes()?;
+        }
         Ok(mgr)
     }
 
@@ -116,9 +136,18 @@ impl IrqManager {
             g
         };
 
-        // Add MSI routing entry
+        // Add the routing entry. x86 routes the MSI message in-kernel; aarch64
+        // has no in-kernel ITS, so the guest-programmed message is a GICv2m
+        // write whose `data` is the SPI INTID — route that GSI to the GIC SPI
+        // (pin = INTID - 32) so the irqfd injects it in-kernel.
+        #[cfg(target_arch = "x86_64")]
         self.routes
             .push(make_msi_entry(gsi, addr_lo, addr_hi, data));
+        #[cfg(target_arch = "aarch64")]
+        {
+            let _ = (addr_lo, addr_hi);
+            self.routes.push(make_spi_irqchip_entry(gsi, data - 32));
+        }
         self.commit_routes()?;
 
         // Create eventfd with EFD_CLOEXEC so it does not leak across exec()
@@ -135,6 +164,45 @@ impl IrqManager {
         Ok((gsi, device_fd))
     }
 
+    /// aarch64: record a wired SPI `pin` (INTID = `pin` + 32) for deferred irqfd
+    /// binding and return the device's eventfd. The IRQCHIP route + KVM_IRQFD are
+    /// installed later by [`flush_pending_wired`]: KVM_IRQFD fails with EAGAIN
+    /// until the vGIC is initialized, and the vGIC needs vCPUs that don't exist
+    /// at device-attach time. (x86 binds eagerly to a pre-existing IOAPIC GSI via
+    /// [`register_irqfd_at_gsi`]; its in-kernel IRQCHIP is ready from VM
+    /// creation.)
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn register_spi_irqfd(&mut self, pin: u32) -> Result<EventFd, IrqError> {
+        let eventfd = EventFd::new(libc::EFD_CLOEXEC).map_err(IrqError::EventFdCreate)?;
+        let device_fd = eventfd.try_clone().map_err(IrqError::EventFdClone)?;
+        self.pending_wired.push((pin, eventfd));
+        Ok(device_fd)
+    }
+
+    /// aarch64: install IRQCHIP routes + KVM_IRQFDs for every wired SPI recorded
+    /// by [`register_spi_irqfd`]. Must be called once after the vGIC is
+    /// initialized (e.g. from `prepare_vcpu_run`).
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn flush_pending_wired(&mut self) -> Result<(), IrqError> {
+        let pending = std::mem::take(&mut self.pending_wired);
+        for (pin, eventfd) in pending {
+            let gsi = if let Some(Reverse(g)) = self.free_gsis.pop() {
+                g
+            } else {
+                let g = self.next_gsi;
+                self.next_gsi += 1;
+                g
+            };
+            self.routes.push(make_spi_irqchip_entry(gsi, pin));
+            self.commit_routes()?;
+            self.vm_fd
+                .register_irqfd(&eventfd, gsi)
+                .map_err(IrqError::KvmIrqfd)?;
+            self.irqfds.push((gsi, eventfd));
+        }
+        Ok(())
+    }
+
     /// Register an irqfd at an existing GSI (no new routing entry needed).
     ///
     /// For GSIs that already have routing entries (e.g., GSI 9 for SCI / ACPI),
@@ -143,6 +211,7 @@ impl IrqManager {
     /// the existing IOAPIC routing for the GSI.
     ///
     /// Returns an `EventFd` clone the caller can write to fire the interrupt.
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn register_irqfd_at_gsi(&mut self, gsi: u32) -> Result<EventFd, IrqError> {
         let eventfd = EventFd::new(libc::EFD_CLOEXEC).map_err(IrqError::EventFdCreate)?;
         self.vm_fd
@@ -166,17 +235,25 @@ impl IrqManager {
         let entry = self
             .routes
             .iter_mut()
-            .find(|e| e.gsi == gsi && e.type_ == KVM_IRQ_ROUTING_MSI)
+            .find(|e| e.gsi == gsi)
             .ok_or(IrqError::RoutingAllocation)?;
 
-        *entry = make_msi_entry(gsi, addr_lo, addr_hi, data);
+        #[cfg(target_arch = "x86_64")]
+        {
+            *entry = make_msi_entry(gsi, addr_lo, addr_hi, data);
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let _ = (addr_lo, addr_hi);
+            *entry = make_spi_irqchip_entry(gsi, data - 32);
+        }
         self.commit_routes()
     }
 
     /// Unregister all irqfds and remove MSI routing entries.
     ///
     /// Keeps the 24 default IOAPIC entries intact. Commits the reduced table.
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64"))]
     fn teardown_irqfds(&mut self) -> Result<(), IrqError> {
         for (gsi, fd) in self.irqfds.drain(..) {
             self.vm_fd
@@ -201,7 +278,7 @@ impl IrqManager {
     /// (1) unregister irqfd → (2) remove routing entry → (3) commit routes →
     /// (4) push to free-list. The free-list push is last to ensure the GSI is
     /// only reusable after the kernel has fully torn down the old routing.
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64"))]
     fn release_irqfd(&mut self, gsi: u32) -> Result<(), IrqError> {
         // Find the irqfd entry for this GSI.
         let pos = self.irqfds.iter().position(|(g, _)| *g == gsi);
@@ -240,7 +317,7 @@ impl IrqManager {
     ///
     /// Use this for backend respawn: call with all GSIs allocated for the crashed
     /// backend, then reallocate them for the replacement backend.
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64"))]
     fn teardown_device_irqfds(&mut self, gsis: &[u32]) -> Result<(), IrqError> {
         for &gsi in gsis {
             self.release_irqfd(gsi)?;
@@ -249,13 +326,13 @@ impl IrqManager {
     }
 
     /// Returns the current number of routing entries.
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64"))]
     fn route_count(&self) -> usize {
         self.routes.len()
     }
 
     /// Returns the current routing table entries (for testing).
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64"))]
     fn routes(&self) -> &[kvm_irq_routing_entry] {
         &self.routes
     }
@@ -275,10 +352,30 @@ impl IrqManager {
 }
 
 /// Number of default irqchip routing entries (PIC master 8 + PIC slave 8 + IOAPIC 24).
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 const NUM_DEFAULT_ROUTES: usize = 40;
 
+/// aarch64: an IRQCHIP routing entry mapping `gsi` to GIC SPI `pin`. KVM's
+/// `vgic_irqfd_set_irq` injects INTID `pin` + 32, so `pin` is the SPI index
+/// (INTID − 32). irqchip 0 is the single GICv3.
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+fn make_spi_irqchip_entry(gsi: u32, pin: u32) -> kvm_irq_routing_entry {
+    // SAFETY: see make_irqchip_entry — the union is zeroed then the `irqchip`
+    // variant written, matching type_ == KVM_IRQ_ROUTING_IRQCHIP.
+    let mut entry = kvm_irq_routing_entry {
+        gsi,
+        type_: KVM_IRQ_ROUTING_IRQCHIP,
+        flags: 0,
+        pad: 0,
+        u: unsafe { std::mem::zeroed() },
+    };
+    entry.u.irqchip = kvm_irq_routing_irqchip { irqchip: 0, pin };
+    entry
+}
+
 /// Create an irqchip routing entry mapping a GSI to a specific irqchip pin.
+#[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 fn make_irqchip_entry(gsi: u32, irqchip: u32, pin: u32) -> kvm_irq_routing_entry {
     // SAFETY: kvm_irq_routing_entry contains a union field `u`. We initialize
@@ -298,6 +395,7 @@ fn make_irqchip_entry(gsi: u32, irqchip: u32, pin: u32) -> kvm_irq_routing_entry
 }
 
 /// Create an MSI routing entry for the given GSI.
+#[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 fn make_msi_entry(gsi: u32, addr_lo: u32, addr_hi: u32, data: u32) -> kvm_irq_routing_entry {
     // SAFETY: Same as make_irqchip_entry above. The union is zeroed then the
@@ -319,7 +417,9 @@ fn make_msi_entry(gsi: u32, addr_lo: u32, addr_hi: u32, data: u32) -> kvm_irq_ro
     entry
 }
 
-#[cfg(test)]
+// These tests drive the x86 in-kernel IRQCHIP (IOAPIC/PIC defaults + MSI
+// routing) via create_irq_chip/set_tss, which are x86-only KVM facilities.
+#[cfg(all(test, target_arch = "x86_64"))]
 #[allow(clippy::unwrap_used, clippy::expect_used, unsafe_code)]
 mod tests {
     use super::*;

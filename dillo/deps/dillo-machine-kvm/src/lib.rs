@@ -3,10 +3,8 @@
 #[cfg(target_arch = "x86_64")]
 mod cpuid_x86;
 mod hypervisor;
-#[cfg(target_arch = "x86_64")]
 mod irq;
 mod memory;
-#[cfg(target_arch = "x86_64")]
 mod msi;
 
 /// Reasons a KVM vCPU run returned to backend code.
@@ -40,18 +38,12 @@ mod imp {
         MmioDeviceHandle, MmioInterrupt, MmioInterruptRequirement, MmioRunToken, MmioSpawnError,
         MmioWriteOutcome, SharedMemory,
     };
-    #[cfg(target_arch = "aarch64")]
-    use dillo_mmio::{Interrupt, MessageInterrupt, MessageInterruptDomain};
-
-    #[cfg(target_arch = "x86_64")]
     use vmm_sys_util::eventfd::EventFd;
 
     use crate::VmExit;
     pub use crate::hypervisor::Error;
-    #[cfg(target_arch = "x86_64")]
     use crate::irq::IrqManager;
     use crate::memory;
-    #[cfg(target_arch = "x86_64")]
     use crate::msi::KvmMessageInterruptDomain;
 
     const VCPU_KICK_SIGNAL: nix::sys::signal::Signal = nix::sys::signal::Signal::SIGUSR1;
@@ -204,7 +196,6 @@ mod imp {
         exit_requester: VcpuExitRequester,
         shared_memory: Vec<Arc<dyn SharedMemory>>,
         mapped_memory: Option<Arc<memory::MappedMemory>>,
-        #[cfg(target_arch = "x86_64")]
         irq_manager: Arc<Mutex<IrqManager>>,
     }
 
@@ -216,10 +207,7 @@ mod imp {
                 .field("exit_requester", &self.exit_requester)
                 .field("shared_memory", &self.shared_memory.len())
                 .field("mapped_memory", &self.mapped_memory.is_some())
-                .field(
-                    "irq_manager",
-                    &cfg!(target_arch = "x86_64").then_some("<backend-owned>"),
-                )
+                .field("irq_manager", &"<backend-owned>")
                 .finish()
         }
     }
@@ -407,45 +395,35 @@ mod imp {
         }
 
         fn create_line_interrupt(&self, source: u32) -> Result<dillo_mmio::Interrupt, Error> {
-            #[cfg(target_arch = "aarch64")]
-            {
-                return Ok(dillo_mmio::Interrupt::new(Arc::new(SpiInterruptLine::new(
-                    self.inner.vm_fd_arc(),
-                    source,
-                ))));
-            }
+            // Both arches deliver via irqfd + an EventFdInterruptLine; only the
+            // routing differs. x86 binds to a pre-existing IOAPIC GSI; aarch64
+            // adds an IRQCHIP route to GIC SPI `source` (no GICv3 defaults).
+            let mut mgr = self
+                .irq_manager
+                .lock()
+                .expect("KVM IRQ manager lock poisoned");
             #[cfg(target_arch = "x86_64")]
-            {
-                let eventfd = self
-                    .irq_manager
-                    .lock()
-                    .expect("KVM IRQ manager lock poisoned")
-                    .register_irqfd_at_gsi(source)
-                    .map_err(|e| Error::Irq(e.to_string()))?;
-                Ok(dillo_mmio::Interrupt::new(Arc::new(
-                    EventFdInterruptLine::new(eventfd),
-                )))
-            }
+            let eventfd = mgr
+                .register_irqfd_at_gsi(source)
+                .map_err(|e| Error::Irq(e.to_string()))?;
+            #[cfg(target_arch = "aarch64")]
+            let eventfd = mgr
+                .register_spi_irqfd(source)
+                .map_err(|e| Error::Irq(e.to_string()))?;
+            drop(mgr);
+            Ok(dillo_mmio::Interrupt::new(Arc::new(
+                EventFdInterruptLine::new(eventfd),
+            )))
         }
 
         fn create_message_interrupt_domain(
             &self,
             vectors: u16,
         ) -> Result<Arc<dyn dillo_mmio::MessageInterruptDomain>, Error> {
-            #[cfg(target_arch = "aarch64")]
-            {
-                return Ok(Arc::new(KvmMessageInterruptDomain::new(
-                    self.inner.vm_fd_arc(),
-                    vectors,
-                )));
-            }
-            #[cfg(target_arch = "x86_64")]
-            {
-                Ok(Arc::new(KvmMessageInterruptDomain::new(
-                    Arc::clone(&self.irq_manager),
-                    vectors,
-                )))
-            }
+            Ok(Arc::new(KvmMessageInterruptDomain::new(
+                Arc::clone(&self.irq_manager),
+                vectors,
+            )))
         }
     }
 
@@ -481,7 +459,6 @@ mod imp {
                     .ok_or(Error::MissingSubstrate("/interrupt-controller@*"))?;
                 crate::hypervisor::Vm::new_with_gic(&substrate)?
             };
-            #[cfg(target_arch = "x86_64")]
             let irq_manager = Arc::new(Mutex::new(
                 IrqManager::new(inner.vm_fd_arc()).map_err(|e| Error::Irq(e.to_string()))?,
             ));
@@ -491,7 +468,6 @@ mod imp {
                 exit_requester,
                 shared_memory: Vec::new(),
                 mapped_memory: None,
-                #[cfg(target_arch = "x86_64")]
                 irq_manager,
             })
         }
@@ -649,7 +625,14 @@ mod imp {
         fn prepare_vcpu_run(&mut self) -> Result<(), Self::Error> {
             #[cfg(target_arch = "aarch64")]
             {
+                // The vGIC needs vCPUs (created just before this) to initialize;
+                // only then can KVM_IRQFD bind the wired SPIs deferred at attach.
                 self.inner.init_gic()?;
+                self.irq_manager
+                    .lock()
+                    .expect("KVM IRQ manager lock poisoned")
+                    .flush_pending_wired()
+                    .map_err(|e| Error::Irq(e.to_string()))?;
             }
             Ok(())
         }
@@ -778,20 +761,20 @@ mod imp {
         }
     }
 
+    // Cross-arch irqfd-backed line: writing the eventfd makes KVM inject the
+    // interrupt in-kernel per the GSI's routing entry (IOAPIC pin on x86, GIC
+    // SPI on aarch64). Same delivery on both arches.
     #[derive(Debug)]
-    #[cfg(target_arch = "x86_64")]
     struct EventFdInterruptLine {
         eventfd: EventFd,
     }
 
-    #[cfg(target_arch = "x86_64")]
     impl EventFdInterruptLine {
         fn new(eventfd: EventFd) -> Self {
             Self { eventfd }
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
     impl InterruptLine for EventFdInterruptLine {
         fn signal(&self) {
             if let Err(e) = self.eventfd.write(1) {
@@ -806,118 +789,6 @@ mod imp {
                     .map_err(|e| InterruptError::Delivery(e.to_string()))?;
             }
             Ok(())
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    #[derive(Debug)]
-    struct SpiInterruptLine {
-        vm: Arc<kvm_ioctls::VmFd>,
-        spi: u32,
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    impl SpiInterruptLine {
-        fn new(vm: Arc<kvm_ioctls::VmFd>, spi: u32) -> Self {
-            Self { vm, spi }
-        }
-
-        fn irq_line(&self) -> u32 {
-            let intid = self.spi + 32;
-            (kvm_bindings::KVM_ARM_IRQ_TYPE_SPI << kvm_bindings::KVM_ARM_IRQ_TYPE_SHIFT)
-                | (intid << kvm_bindings::KVM_ARM_IRQ_NUM_SHIFT)
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    impl InterruptLine for SpiInterruptLine {
-        fn signal(&self) {
-            if let Err(e) = self.set_level(true) {
-                log::warn!("KVM SPI interrupt signal failed: {e}");
-            }
-            if let Err(e) = self.set_level(false) {
-                log::warn!("KVM SPI interrupt deassert failed: {e}");
-            }
-        }
-
-        fn set_level(&self, level: bool) -> Result<(), InterruptError> {
-            self.vm
-                .set_irq_line(self.irq_line(), level)
-                .map_err(|e| InterruptError::Delivery(e.to_string()))
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    #[derive(Debug)]
-    struct KvmMessageInterruptDomain {
-        vm: Arc<kvm_ioctls::VmFd>,
-        vectors: Mutex<Vec<MessageInterrupt>>,
-        enabled: AtomicBool,
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    impl KvmMessageInterruptDomain {
-        fn new(vm: Arc<kvm_ioctls::VmFd>, count: u16) -> Self {
-            Self {
-                vm,
-                vectors: Mutex::new(vec![
-                    MessageInterrupt {
-                        address: 0,
-                        data: 0,
-                        masked: true,
-                    };
-                    count as usize
-                ]),
-                enabled: AtomicBool::new(false),
-            }
-        }
-
-        fn message_for(&self, vector: u16) -> Option<MessageInterrupt> {
-            if !self.enabled.load(Ordering::SeqCst) {
-                return None;
-            }
-            let msg = *self
-                .vectors
-                .lock()
-                .expect("KVM MSI vector table poisoned")
-                .get(vector as usize)?;
-            (!msg.masked).then_some(msg)
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    impl MessageInterruptDomain for KvmMessageInterruptDomain {
-        fn update(&self, vector: u16, msg: MessageInterrupt) -> Result<(), InterruptError> {
-            if let Some(slot) = self
-                .vectors
-                .lock()
-                .expect("KVM MSI vector table poisoned")
-                .get_mut(vector as usize)
-            {
-                *slot = msg;
-            }
-            Ok(())
-        }
-
-        fn enabled(&self, enabled: bool) -> Result<(), InterruptError> {
-            self.enabled.store(enabled, Ordering::SeqCst);
-            Ok(())
-        }
-
-        fn interrupt(&self, vector: u16) -> Option<Interrupt> {
-            let vm = Arc::clone(&self.vm);
-            let msg = self.message_for(vector)?;
-            Some(Interrupt::from_fn(move || {
-                let msi = kvm_bindings::kvm_msi {
-                    address_lo: msg.address as u32,
-                    address_hi: (msg.address >> 32) as u32,
-                    data: msg.data,
-                    ..Default::default()
-                };
-                if let Err(e) = vm.signal_msi(msi) {
-                    log::warn!("KVM MSI signal for vector {vector} failed: {e}");
-                }
-            }))
         }
     }
 
