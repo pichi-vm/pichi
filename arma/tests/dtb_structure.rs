@@ -18,7 +18,7 @@ use common::build_pmi;
 #[cfg(target_arch = "aarch64")]
 use common::synthesize_arm64_image;
 #[cfg(target_arch = "x86_64")]
-use common::synthesize_bzimage;
+use common::synthesize_vmlinux;
 
 fn dtb_bytes_from(pmi_bytes: &[u8]) -> Vec<u8> {
     let pe = goblin::pe::PE::parse(pmi_bytes).unwrap();
@@ -37,7 +37,7 @@ fn build_x86(cmdline: &str, with_initrd: bool) -> (TempDir, Vec<u8>) {
     let tmp = TempDir::new().unwrap();
     let kernel = tmp.path().join("kernel");
     let pmi = tmp.path().join("out.pmi");
-    fs::write(&kernel, synthesize_bzimage(0x1000)).unwrap();
+    fs::write(&kernel, synthesize_vmlinux(0x1000)).unwrap();
     let initrd = if with_initrd {
         let p = tmp.path().join("init");
         // Cpio-magic-prefixed payload — arma's initrd handler passes

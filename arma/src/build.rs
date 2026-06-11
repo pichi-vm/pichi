@@ -57,6 +57,10 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
     // Unwrap an arm64 EFI-zboot kernel to its raw Image (no-op for bzImage /
     // raw Image inputs) so everything downstream sees boot-ready bytes.
     let kernel_bytes = kernel::unwrap_zboot(kernel_bytes).context("kernel decompression")?;
+    // Convert a bzImage (vmlinuz) to its embedded ELF vmlinux so tatu only ever
+    // receives a flat ELF image (no-op for a raw vmlinux / arm64 Image).
+    let kernel_bytes =
+        kernel::extract_vmlinux(kernel_bytes).context("extract vmlinux from bzImage")?;
     let initrd_bytes = match args.initrd_path.as_ref() {
         Some(p) => Some(fs::read(p).with_context(|| format!("read initrd: {}", p.display()))?),
         None => None,
@@ -65,6 +69,28 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
     // ---- Step 2: arch inference + kernel validation ----
     let parsed_kernel = kernel::parse(&kernel_bytes).context("kernel format validation")?;
     let arch = parsed_kernel.arch;
+
+    // An x86 ELF `vmlinux` is lowered here to its flat loaded-segment image so
+    // everything downstream — sizing, the `.linux` section, tatu — sees
+    // boot-ready bytes it can place at the kernel GPA and enter at offset 0,
+    // exactly as for a bzImage / arm64 Image (which pass through unchanged).
+    let kernel_image: std::borrow::Cow<'_, [u8]> = match parsed_kernel.elf {
+        Some(_) => std::borrow::Cow::Owned(
+            kernel::elf_load_image(&kernel_bytes).context("lower ELF vmlinux to loaded image")?,
+        ),
+        None => std::borrow::Cow::Borrowed(kernel_bytes.as_slice()),
+    };
+
+    // x86 KASLR relocation table — extracted from the ELF's `.rela.*` sections so
+    // tatu can randomize the kernel's virtual base. Empty for aarch64 (which
+    // randomizes via a DTB kaslr-seed instead) and for any x86 kernel built
+    // without `--emit-relocs`.
+    let relocs = match parsed_kernel.elf {
+        Some(_) => kernel::extract_relocs(&kernel_bytes).context("extract KASLR relocations")?,
+        None => kernel::Relocs::default(),
+    };
+    let relocs_bytes = relocs.to_section_bytes();
+    let relocs_size = (!relocs_bytes.is_empty()).then_some(relocs_bytes.len() as u64);
 
     // Per-arch device-model defaults (§6). TODO(C4/C4b): drive these from
     // `--mmio-slots`/`--pci-slots`/`--pci-window`/`--min-addr-space` + slot
@@ -98,23 +124,20 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
 
     // ---- Step 6: kernel metadata for placement ----
     //
-    // `kernel_file_size` is the raw byte count we load from disk.
-    // `kernel_alloc_size` is the RAM footprint the kernel needs at runtime —
-    // for bzImage the decompressor scratch buffer, for aarch64 Image the
-    // header's image_size (see compute_kernel_alloc_size).
-    let kernel_file_size = kernel_bytes.len() as u64;
+    // `kernel_file_size` is the loaded-image byte count. `kernel_alloc_size` is
+    // the RAM footprint the kernel needs at runtime — the ELF segment span's
+    // memsz (x86), or the aarch64 Image header's image_size.
+    let kernel_file_size = kernel_image.len() as u64;
     let kernel_alloc_size = compute_kernel_alloc_size(
         kernel_file_size,
-        parsed_kernel.bzimage,
         parsed_kernel.aarch64_image_size,
+        parsed_kernel.elf,
     );
-    let kernel_alignment = parsed_kernel
-        .bzimage
-        .map(|bz| u64::from(bz.kernel_alignment))
-        .unwrap_or(2 * 1024 * 1024);
-    // x86: a relocatable kernel runs at its preferred (link) address if loaded
-    // lower, so the planner floors the load GPA to it. 0 on aarch64.
-    let kernel_pref_addr = parsed_kernel.bzimage.map_or(0, |bz| bz.pref_address);
+    let kernel_alignment = 2 * 1024 * 1024;
+    // x86: floor the load GPA to the ELF's lowest `p_paddr` (entering
+    // `startup_64` below it underflows `phys_base`). 0 on aarch64 (the Image is
+    // position-flexible).
+    let kernel_pref_addr = parsed_kernel.elf.map(|e| e.min_paddr).unwrap_or(0);
 
     // ---- Step 7: plan the guest-physical layout ----
     // The planner avoids tatu's fixed sections plus the architecture
@@ -137,6 +160,7 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
             min_gpa: kernel_pref_addr,
         },
         initrd_size,
+        relocs_size,
     }
     .plan()
     .context("plan guest-physical layout")?;
@@ -180,6 +204,15 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
     // ---- Step 9: TatuBootInfo ----
     // kernel_size here is the FILE size — tatu reads it to find the setup
     // header, NOT the alloc size.
+    // Kernel entry GPA: x86 ELF entry may sit anywhere in the loaded image, so
+    // it is the load base plus the ELF entry offset; otherwise the base.
+    let kernel_entry_gpa = lay.linux.start + parsed_kernel.elf.map_or(0, |e| e.entry_offset);
+    let relocs_header = bootinfo::RelocsHeader {
+        gpa: lay.relocs.as_ref().map_or(0, |r| r.start),
+        relocs64_count: relocs.relocs64.len() as u32,
+        relocs32neg_count: relocs.relocs32neg.len() as u32,
+        relocs32_count: relocs.relocs32.len() as u32,
+    };
     let bi = bootinfo::TatuBootInfo::new(
         dtb_gpa,
         dtb_size as u32,
@@ -187,6 +220,9 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
         dtbo_size as u32,
         lay.linux.start,
         kernel_file_size as u32,
+        kernel_entry_gpa,
+        kernel_alloc_size as u32,
+        relocs_header,
     );
     let bootinfo_section_bytes = bi.to_section_bytes();
 
@@ -201,15 +237,17 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
     let chosen = args.profile.as_deref().unwrap_or(baseline);
     let cpu_profile = kconfig::raise_to_floor(chosen, kcfg.isa_floor(arch), arch);
     let has_initrd = initrd_materialized.is_some();
-    let cbor = manifest::build_pmi_vm(arch, &tatu_img, has_initrd, &cpu_profile)
+    let has_relocs = relocs_size.is_some();
+    let cbor = manifest::build_pmi_vm(arch, &tatu_img, has_initrd, has_relocs, &cpu_profile)
         .context("build CBOR manifest")?;
 
     // ---- Step 11: assemble PE section list ----
     let sections = assemble_sections(
         &tatu_img,
         &bootinfo_section_bytes,
-        &kernel_bytes,
+        kernel_image.as_ref(),
         initrd_materialized.as_deref(),
+        &relocs_bytes,
         &dtb_bytes,
         &lay,
         &cbor,
@@ -307,6 +345,7 @@ fn assemble_sections<'a>(
     bootinfo_bytes: &'a [u8],
     kernel_bytes: &'a [u8],
     initrd_bytes: Option<&'a [u8]>,
+    relocs_bytes: &'a [u8],
     dtb_bytes: &'a [u8],
     lay: &planner::Layout,
     cbor: &'a [u8],
@@ -377,6 +416,19 @@ fn assemble_sections<'a>(
         });
     }
 
+    // .linux.relocs — the x86 KASLR relocation table (borrowed). tatu reads it
+    // at boot, applies the relocations, and the region is then free.
+    if let Some(r) = &lay.relocs {
+        out.push(pe::Section {
+            name: manifest::SECTION_RELOCS.into(),
+            vaddr: r.start,
+            virtual_size: r.end - r.start,
+            data: Cow::Borrowed(relocs_bytes),
+            characteristics: pe::IMAGE_SCN_CNT_INITIALIZED_DATA | pe::IMAGE_SCN_MEM_READ,
+            non_loaded: false,
+        });
+    }
+
     // The measured base DTB, the host-DTBO, and the x86 boot CPU tables
     // (`.tatu.pgt` / `.tatu.gdt`) are NOT synthesized here: they are all
     // tatu-defined sections. arma fills `.tatu.dtb` with the base DTB
@@ -422,36 +474,20 @@ fn tatu_section_characteristics(name: &str, is_nobits: bool) -> u32 {
 
 /// Compute the kernel section's RAM footprint.
 ///
-/// For aarch64 we don't yet parse equivalent metadata, so this is the
-/// file size verbatim. For x86 bzImage, the decompressor (see
-/// `arch/x86/boot/compressed/head_64.S`) relocates the protected-mode
-/// kernel to `rbp = ceil(load_addr + setup_bytes, kernel_alignment)`
-/// and then uses `[rbp, rbp + init_size)` as a scratch buffer that
-/// includes its own stack at the top. The total RAM the kernel will
-/// touch from `load_addr` is therefore `slack + init_size`, where
-/// `slack = rbp − load_addr`.
-///
-/// arma's layout places `.linux` at a `kernel_alignment`-aligned GPA,
-/// so the slack can be computed independently of the final address.
-///
-/// Returns `max(file_size, slack + init_size)` so the section is
-/// always at least big enough to hold the on-disk bytes.
+/// x86 ELF vmlinux: the segment span's memsz extent (file-backed prefix + BSS),
+/// computed from the program headers in [`kernel::ElfMeta`]. aarch64 Image: the
+/// header's `image_size` (text + BSS), which exceeds the file when the BSS isn't
+/// stored. Either way returns at least `file_size` so the section holds the
+/// on-disk bytes.
 fn compute_kernel_alloc_size(
     file_size: u64,
-    bzimage: Option<kernel::BzImageMeta>,
     aarch64_image_size: Option<u64>,
+    elf: Option<kernel::ElfMeta>,
 ) -> u64 {
-    let Some(bz) = bzimage else {
-        // aarch64 Image: the runtime footprint is the header's image_size
-        // (text + BSS), which exceeds the file when the BSS isn't in it. Back
-        // `max(file, image_size)` as RAM or the BSS tail is unmapped.
-        return aarch64_image_size.unwrap_or(0).max(file_size);
-    };
-    let kalign = u64::from(bz.kernel_alignment);
-    let setup = bz.setup_bytes();
-    let slack = setup.div_ceil(kalign).saturating_mul(kalign);
-    let alloc = slack.saturating_add(u64::from(bz.init_size));
-    alloc.max(file_size)
+    if let Some(e) = elf {
+        return e.alloc_size.max(file_size);
+    }
+    aarch64_image_size.unwrap_or(0).max(file_size)
 }
 
 #[cfg(test)]
@@ -459,44 +495,44 @@ mod tests_alloc {
     use super::*;
 
     #[test]
-    fn x86_alloc_matches_decompressor_formula() {
-        // Fedora 6.18 distro kernel observed values.
-        let bz = kernel::BzImageMeta {
-            init_size: 0x048E5000,
-            kernel_alignment: 0x200000,
-            setup_sects: 39,
-            pref_address: 0x100_0000,
-        };
-        let alloc = compute_kernel_alloc_size(0x117E828, Some(bz), None);
-        // slack = ceil(40*512, 2 MiB) = 2 MiB; alloc = 2 MiB + 73 MiB.
-        assert_eq!(alloc, 0x200000 + 0x048E5000);
-    }
-
-    #[test]
     fn aarch64_alloc_is_max_file_and_image_size() {
         // No image_size header info → file size.
         assert_eq!(compute_kernel_alloc_size(0x800000, None, None), 0x800000);
         // image_size > file (BSS not in file, the Firecracker case) → image_size.
         assert_eq!(
-            compute_kernel_alloc_size(0xF84800, None, Some(0x1080000)),
+            compute_kernel_alloc_size(0xF84800, Some(0x1080000), None),
             0x1080000
         );
         // image_size < file (or padded equal) → file size.
         assert_eq!(
-            compute_kernel_alloc_size(0x2110000, None, Some(0x2110000)),
+            compute_kernel_alloc_size(0x2110000, Some(0x2110000), None),
             0x2110000
         );
     }
 
     #[test]
-    fn alloc_never_smaller_than_file_size() {
-        let bz = kernel::BzImageMeta {
-            init_size: 0x1000,
-            kernel_alignment: 0x200000,
-            setup_sects: 1,
-            pref_address: 0x100_0000,
+    fn elf_alloc_is_segment_span_memsz() {
+        let elf = kernel::ElfMeta {
+            alloc_size: 0x123_4000,
+            min_paddr: 0x100_0000,
+            entry_offset: 0,
         };
-        let alloc = compute_kernel_alloc_size(0x10_000_000, Some(bz), None);
+        // ELF span dominates; file-backed image is never larger.
+        assert_eq!(
+            compute_kernel_alloc_size(0x100_0000, None, Some(elf)),
+            0x123_4000
+        );
+    }
+
+    #[test]
+    fn alloc_never_smaller_than_file_size() {
+        // ELF span smaller than the on-disk image → clamp up to file size.
+        let elf = kernel::ElfMeta {
+            alloc_size: 0x1000,
+            min_paddr: 0x100_0000,
+            entry_offset: 0,
+        };
+        let alloc = compute_kernel_alloc_size(0x10_000_000, None, Some(elf));
         assert_eq!(alloc, 0x10_000_000);
     }
 }

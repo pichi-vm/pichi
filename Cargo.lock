@@ -144,6 +144,7 @@ dependencies = [
  "goblin",
  "pmi",
  "rstest",
+ "ruzstd",
  "sha2",
  "tatu",
  "tempfile",
@@ -403,12 +404,14 @@ dependencies = [
  "dillo-virtio-console",
  "dillo-virtio-gpt",
  "env_logger",
+ "hex",
  "log",
  "object",
  "pmi",
  "rstest",
  "serde",
  "serde_json",
+ "sha2",
  "snuffler",
  "tempfile",
  "thiserror 2.0.18",
@@ -1551,6 +1554,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruzstd"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "scroll"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1824,6 +1836,12 @@ checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
 
 [[package]]
 name = "typenum"

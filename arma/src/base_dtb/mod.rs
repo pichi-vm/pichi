@@ -119,6 +119,14 @@ fn chosen_node(fdt: &mut FdtWriter, inputs: &Inputs<'_>) -> Result<(), DtbError>
         fdt.property_u64("linux,initrd-start", gpa)?;
         fdt.property_u64("linux,initrd-end", end)?;
     }
+    // aarch64 KASLR: an 8-byte zero seed placeholder in the MEASURED base DTB.
+    // tatu overwrites it with guest RNDR entropy before merge, so the kernel's
+    // virtual-base randomization is guest-controlled (never host-supplied) — a
+    // confidential-computing requirement. x86 randomizes via applied relocations
+    // and needs no seed.
+    if inputs.arch == Arch::Aarch64 {
+        fdt.property_u64("kaslr-seed", 0)?;
+    }
     fdt.end_node(node)?;
     Ok(())
 }

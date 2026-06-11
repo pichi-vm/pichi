@@ -73,6 +73,73 @@ pub fn halt() -> ! {
 }
 
 // ---------------------------------------------------------------------------
+// KASLR: arm64 randomizes its virtual base from `/chosen/kaslr-seed` (a
+// kernel built with CONFIG_RANDOMIZE_BASE reads it and self-relocates). arma
+// plants an 8-byte zero placeholder for that property in the MEASURED base DTB;
+// tatu overwrites it here with guest entropy *before* the overlay merge, so the
+// seed reaches the kernel via the normal merged DTB. Entropy comes from the
+// guest CPU (RNDR), never the host — and the host overlay is forbidden from
+// contributing /chosen/kaslr-seed (validate_host_dtbo rejects it), so the seed
+// stays guest-controlled (a confidential-computing requirement).
+// ---------------------------------------------------------------------------
+
+use crate::bootinfo::{TatuBootInfo, base_dtb_bytes_mut};
+
+/// Overwrite the base DTB's `/chosen/kaslr-seed` placeholder with guest entropy,
+/// in place, before the overlay merge. No-op if the base carries no 8-byte seed
+/// (a non-KASLR build, or x86). The byte-level patch is in [`crate::kaslr`].
+pub fn patch_kaslr_seed(bootinfo: &TatuBootInfo) {
+    let blob = base_dtb_bytes_mut(bootinfo);
+    let _ = crate::kaslr::patch_kaslr_seed_bytes(blob, rand_u64());
+}
+
+/// 64 bits of guest entropy. Prefers `RNDR` (FEAT_RNG); falls back to the
+/// virtual counter when the CPU lacks it (weak, but avoids trapping on the MRS —
+/// real confidential-computing hosts expose RNDR).
+fn rand_u64() -> u64 {
+    if cpu_has_rndr() {
+        for _ in 0..100 {
+            let val: u64;
+            let fail: u64;
+            // SAFETY: RNDR is `S3_3_C2_C4_0`; it reads a random value into the
+            // destination and updates NZCV (Z set on failure). FEAT_RNG is
+            // present (checked above), so the MRS does not trap.
+            unsafe {
+                core::arch::asm!(
+                    "mrs {v}, S3_3_C2_C4_0",
+                    "cset {f}, eq",
+                    v = out(reg) val,
+                    f = out(reg) fail,
+                    options(nostack),
+                );
+            }
+            if fail == 0 {
+                return val;
+            }
+        }
+    }
+    let cnt: u64;
+    // SAFETY: CNTVCT_EL1 is always readable at EL1; no memory or flag effects.
+    unsafe {
+        // CNTVCT_EL1 by raw encoding (S3_3_C14_C0_2) — the bare-target assembler
+        // rejects the symbolic name here.
+        core::arch::asm!("mrs {c}, S3_3_C14_C0_2", c = out(reg) cnt, options(nostack, nomem, preserves_flags));
+    }
+    // Spread the counter's low-entropy bits with a fixed odd multiplier.
+    cnt.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+/// Whether the CPU implements FEAT_RNG (`ID_AA64ISAR0_EL1.RNDR`, bits 63:60).
+fn cpu_has_rndr() -> bool {
+    let isar0: u64;
+    // SAFETY: ID_AA64ISAR0_EL1 is readable at EL1; no memory or flag effects.
+    unsafe {
+        core::arch::asm!("mrs {r}, ID_AA64ISAR0_EL1", r = out(reg) isar0, options(nostack, nomem, preserves_flags));
+    }
+    (isar0 >> 60) & 0xf != 0
+}
+
+// ---------------------------------------------------------------------------
 // MergedDtb — typed handle for the merged DTB workspace, the
 // argument to `boot_kernel` on aarch64.
 // ---------------------------------------------------------------------------

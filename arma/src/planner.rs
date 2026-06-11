@@ -73,6 +73,9 @@ pub(crate) struct Planner<'a> {
     pub(crate) reserved: &'a [Range<u64>],
     pub(crate) kernel: KernelSpec,
     pub(crate) initrd_size: Option<u64>,
+    /// x86 KASLR relocation table size (bytes); `None`/0 ⇒ not placed. Loaded
+    /// into guest RAM for tatu to consume at boot, then no longer needed.
+    pub(crate) relocs_size: Option<u64>,
 }
 
 /// Everything the Planner decided. tatu's fixed sections are read from the
@@ -85,6 +88,7 @@ pub(crate) struct Layout {
     pub(crate) pci_window: Option<Range<u64>>,
     pub(crate) linux: Range<u64>,
     pub(crate) initrd: Option<Range<u64>>,
+    pub(crate) relocs: Option<Range<u64>>,
 }
 
 #[derive(Debug, Error)]
@@ -152,6 +156,16 @@ impl Planner<'_> {
             _ => None,
         };
 
+        // 3b. relocs table (x86 KASLR) — lowest GRAN-aligned slot, like initrd.
+        let relocs = match self.relocs_size {
+            Some(sz) if sz > 0 => {
+                let r = first_fit(0, sz, GRAN, &occupied, "relocs")?;
+                occupied.push(round_out(&r));
+                Some(r)
+            }
+            _ => None,
+        };
+
         // 4. device band — one contiguous GRAN-aligned block placed in HIGH
         //    MMIO, immediately below the PCI window base (2^(A-1)). Clustering
         //    device MMIO high keeps low RAM contiguous for the guest, and
@@ -186,6 +200,7 @@ impl Planner<'_> {
             pci_window,
             linux,
             initrd,
+            relocs,
         })
     }
 
@@ -316,6 +331,7 @@ mod tests {
                 min_gpa: 0,
             },
             initrd_size: None,
+            relocs_size: None,
         }
         .plan()
         .unwrap();
@@ -337,6 +353,7 @@ mod tests {
                 min_gpa: pref,
             },
             initrd_size: None,
+            relocs_size: None,
         }
         .plan()
         .unwrap();
@@ -356,6 +373,7 @@ mod tests {
                 min_gpa: pref,
             },
             initrd_size: Some(1024 * 1024), // fits in [2M, 16M)
+            relocs_size: None,
         }
         .plan()
         .unwrap();
@@ -375,6 +393,7 @@ mod tests {
                 min_gpa: 0,
             },
             initrd_size: None,
+            relocs_size: None,
         }
         .plan()
         .unwrap();
@@ -395,6 +414,7 @@ mod tests {
                 min_gpa: 0,
             },
             initrd_size: None,
+            relocs_size: None,
         }
         .plan()
         .unwrap();
@@ -434,6 +454,7 @@ mod tests {
                 min_gpa: 0,
             },
             initrd_size: None,
+            relocs_size: None,
         }
         .plan();
         assert!(matches!(r, Err(PlanError::WindowTooLarge { .. })));

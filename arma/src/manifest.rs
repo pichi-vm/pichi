@@ -17,6 +17,8 @@ use crate::tatu::TatuImage;
 /// come straight from tatu's ELF).
 pub(crate) const SECTION_LINUX: &str = ".linux";
 pub(crate) const SECTION_INITRD: &str = ".initrd";
+/// x86 KASLR relocation table (loaded for tatu to consume at boot).
+pub(crate) const SECTION_RELOCS: &str = ".linux.relocs";
 // The base DTB and host-DTBO are tatu-defined sections (arma fills
 // `.tatu.dtb`, dillo fills `.tatu.dtbo`); arma synthesizes neither.
 pub(crate) const SECTION_DTB: &str = ".tatu.dtb";
@@ -37,16 +39,17 @@ pub(crate) fn build_pmi_vm(
     arch: Arch,
     tatu: &TatuImage,
     has_initrd: bool,
+    has_relocs: bool,
     cpu_profile: &str,
 ) -> Result<Vec<u8>> {
     let profile = Profile::new(cpu_profile);
     match arch {
         Arch::X86_64 => {
-            let spec = build_spec_x86(tatu, has_initrd, profile)?;
+            let spec = build_spec_x86(tatu, has_initrd, has_relocs, profile)?;
             encode(&spec)
         }
         Arch::Aarch64 => {
-            let spec = build_spec_aarch64(tatu, has_initrd, profile);
+            let spec = build_spec_aarch64(tatu, has_initrd, has_relocs, profile);
             encode(&spec)
         }
     }
@@ -69,7 +72,7 @@ fn encode<T: pmi::Target>(t: &T) -> Result<Vec<u8>> {
 // Action list builder, shared between arches.
 // ---------------------------------------------------------------------------
 
-fn build_actions(_arch: Arch, tatu: &TatuImage, has_initrd: bool) -> Vec<Action> {
+fn build_actions(_arch: Arch, tatu: &TatuImage, has_initrd: bool, has_relocs: bool) -> Vec<Action> {
     let mut out = Vec::with_capacity(16);
 
     // Tatu sections — one load per SHF_ALLOC section, in vaddr order
@@ -100,6 +103,12 @@ fn build_actions(_arch: Arch, tatu: &TatuImage, has_initrd: bool) -> Vec<Action>
             kind: LoadKind::default(),
         }));
     }
+    if has_relocs {
+        out.push(Action::Load(Load {
+            section: SECTION_RELOCS.into(),
+            kind: LoadKind::default(),
+        }));
+    }
 
     // Host-DTBO fill — the unmeasured half of the merged extension.
     out.push(Action::Fill(Fill {
@@ -117,6 +126,7 @@ fn build_actions(_arch: Arch, tatu: &TatuImage, has_initrd: bool) -> Vec<Action>
 fn build_spec_x86(
     tatu: &TatuImage,
     has_initrd: bool,
+    has_relocs: bool,
     cpu_profile: Profile,
 ) -> Result<Spec<vcpu::x86_64::CpuState>> {
     // cr3 / gdtr.base come straight from tatu's ELF: the boot CPU tables
@@ -132,7 +142,7 @@ fn build_spec_x86(
         .vaddr;
     Ok(Spec {
         version: Version::default(),
-        actions: build_actions(Arch::X86_64, tatu, has_initrd),
+        actions: build_actions(Arch::X86_64, tatu, has_initrd, has_relocs),
         vcpu: x86_vcpu(pgtable_gpa, gdt_gpa),
         cpu_profile,
         merged_dtb: Some(SECTION_DTB.into()),
@@ -207,11 +217,12 @@ fn data_seg(selector: u16, attributes: u16) -> vcpu::x86_64::SegReg {
 fn build_spec_aarch64(
     tatu: &TatuImage,
     has_initrd: bool,
+    has_relocs: bool,
     cpu_profile: Profile,
 ) -> Spec<vcpu::aarch64::CpuState> {
     Spec {
         version: Version::default(),
-        actions: build_actions(Arch::Aarch64, tatu, has_initrd),
+        actions: build_actions(Arch::Aarch64, tatu, has_initrd, has_relocs),
         vcpu: aarch64_vcpu(tatu.entry),
         cpu_profile,
         merged_dtb: Some(SECTION_DTB.into()),
@@ -246,7 +257,7 @@ mod tests {
     fn x86_manifest_round_trips_via_strict_decoder() {
         use crate::TATU_X86_64;
         let tatu = parse_tatu(TATU_X86_64, Arch::X86_64).unwrap();
-        let cbor = build_pmi_vm(Arch::X86_64, &tatu, true, "x86-64-v3").unwrap();
+        let cbor = build_pmi_vm(Arch::X86_64, &tatu, true, true, "x86-64-v3").unwrap();
         let decoded: Spec<vcpu::x86_64::CpuState> =
             from_reader(cbor.as_slice()).expect("strict round-trip decode");
         assert_eq!(decoded.vcpu.rip, 0xFFFF_FFF0);
@@ -274,7 +285,7 @@ mod tests {
     fn aarch64_manifest_pc_matches_tatu_entry() {
         use crate::TATU_AARCH64;
         let tatu = parse_tatu(TATU_AARCH64, Arch::Aarch64).unwrap();
-        let cbor = build_pmi_vm(Arch::Aarch64, &tatu, false, "armv8.2-a").unwrap();
+        let cbor = build_pmi_vm(Arch::Aarch64, &tatu, false, false, "armv8.2-a").unwrap();
         let decoded: Spec<vcpu::aarch64::CpuState> =
             from_reader(cbor.as_slice()).expect("strict round-trip decode");
         assert_eq!(decoded.vcpu.pc, tatu.entry);

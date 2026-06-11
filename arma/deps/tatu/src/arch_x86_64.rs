@@ -304,14 +304,7 @@ impl LinuxBootParams {
     pub const HEADER_MAGIC_VAL: u32 = 0x5372_6448; // "HdrS"
     pub const BOOT_FLAG_VAL: u16 = 0xAA55;
     pub const LOADED_HIGH: u8 = 0x01;
-    pub const KEEP_SEGMENTS: u8 = 0x40;
-    pub const CAN_USE_HEAP: u8 = 0x80;
     pub const LOADER_TYPE_TATU: u8 = 0xE0; // unallocated loader-type tag for tatu
-
-    /// Range of the bzImage file that the Linux x86 boot protocol
-    /// (§1.5) requires the loader to copy verbatim into the
-    /// `setup_header` field.
-    pub const BZIMAGE_SETUP_HEADER_RANGE: core::ops::Range<usize> = 0x1F1..0x270;
 
     pub fn zeroed() -> Self {
         // SAFETY: all-zero is a valid bit pattern for LinuxBootParams
@@ -323,23 +316,6 @@ impl LinuxBootParams {
 
     pub fn as_ptr(&self) -> *const Self {
         self as *const _
-    }
-
-    /// Copy the bzImage's setup header verbatim into [`Self::setup_header`].
-    /// Linux's boot protocol requires the loader to preserve every
-    /// field the bzImage shipped (`version`, `xloadflags`,
-    /// `kernel_alignment`, `init_size`, `pref_address`, ...) — with
-    /// any of these zero, the kernel relocates outside the e820 map
-    /// and triple-faults.
-    pub fn copy_setup_header_from_bzimage(&mut self, kernel_bytes: &[u8]) {
-        let src = &kernel_bytes[Self::BZIMAGE_SETUP_HEADER_RANGE];
-        // SAFETY: the bzImage bytes at this range are (per Linux's
-        // x86 boot protocol) the wire layout of `struct setup_header`.
-        // `SetupHeader` mirrors that layout byte-for-byte (repr(C,
-        // packed), 127 bytes), so reading the bytes as a SetupHeader
-        // value is valid. `read_unaligned` handles any byte alignment.
-        self.setup_header =
-            unsafe { core::ptr::read_unaligned(src.as_ptr().cast::<SetupHeader>()) };
     }
 
     /// Fill the e820 table from `tree` + `acpi`, writing directly
@@ -371,27 +347,21 @@ impl LinuxBootParams {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn fill(
+    /// Populate `boot_params` for an ELF `vmlinux` entered at `startup_64`.
+    ///
+    /// There is no real-mode setup header to copy — arma already lowered the
+    /// ELF to a flat loaded image entered at its first byte. tatu sets only the
+    /// fields the 64-bit boot protocol reads at `startup_64`: a well-formed zero
+    /// page (boot magic + tatu loader id + `LOADED_HIGH`), the command line, the
+    /// initrd, the ACPI RSDP, and the e820 map. `code32_start` / `setup_sects`
+    /// are real-mode-only and stay zero.
+    pub fn fill_elf<T: TreeView>(
         &mut self,
-        kernel_gpa: u64,
-        kernel_bytes: &[u8],
         cmdline: &CmdLine,
         initrd: &Initrd,
         acpi: &AcpiTables,
-        tree: &impl TreeView,
+        tree: &T,
     ) -> Result<(), ValidationError> {
-        self.copy_setup_header_from_bzimage(kernel_bytes);
-
-        let setup_sects = {
-            // setup_sects defaults to 4 if the bzImage shipped 0.
-            let v = self.setup_header.setup_sects;
-            if v == 0 { 4 } else { v }
-        };
-        // code32_start = kernel_gpa + (setup_sects+1)*512.
-        let setup_bytes = u32::from(setup_sects).saturating_add(1) * 512;
-        let code32 = u32::try_from(kernel_gpa.saturating_add(u64::from(setup_bytes)))
-            .map_err(|_| ValidationError::AddressOverflow)?;
         let cmd_line_ptr =
             u32::try_from(cmdline.ptr()).map_err(|_| ValidationError::AddressOverflow)?;
         let ramdisk_image =
@@ -399,16 +369,10 @@ impl LinuxBootParams {
         let ramdisk_size =
             u32::try_from(initrd.size()).map_err(|_| ValidationError::AddressOverflow)?;
 
-        // Required boot-protocol magic + tatu identification. These
-        // overlap with values the bzImage header copy may already
-        // have set (HEADER_MAGIC, BOOT_FLAG); re-writing them
-        // documents the loader's required values.
-        self.setup_header.setup_sects = setup_sects;
         self.setup_header.boot_flag = Self::BOOT_FLAG_VAL;
         self.setup_header.header = Self::HEADER_MAGIC_VAL;
         self.setup_header.type_of_loader = Self::LOADER_TYPE_TATU;
-        self.setup_header.loadflags = Self::LOADED_HIGH | Self::KEEP_SEGMENTS | Self::CAN_USE_HEAP;
-        self.setup_header.code32_start = code32;
+        self.setup_header.loadflags = Self::LOADED_HIGH;
         self.setup_header.ramdisk_image = ramdisk_image;
         self.setup_header.ramdisk_size = ramdisk_size;
         self.setup_header.cmd_line_ptr = cmd_line_ptr;
@@ -455,34 +419,142 @@ impl AcpiTables {
 // per ARCHITECTURE.md §12.6 step 8d.
 // ---------------------------------------------------------------------------
 
-pub fn build_boot_params<T: TreeView>(
-    kernel_bytes: &[u8],
+pub fn build_boot_params_elf<T: TreeView>(
     cmdline: &CmdLine,
     initrd: &Initrd,
     acpi: &AcpiTables,
     tree: &T,
 ) -> Result<LinuxBootParams, ValidationError> {
-    let kernel_gpa = kernel_bytes.as_ptr() as u64;
     let mut bp = LinuxBootParams::zeroed();
-    bp.fill(kernel_gpa, kernel_bytes, cmdline, initrd, acpi, tree)?;
+    bp.fill_elf(cmdline, initrd, acpi, tree)?;
     Ok(bp)
 }
 
 // ---------------------------------------------------------------------------
-// Kernel handoff. Reads setup_sects from the populated boot_params,
-// computes the 64-bit entry point, loads rsi with &boot_params,
-// jmps. Never returns.
+// KASLR: randomize the kernel's *virtual* base by applying the relocation
+// tables arma extracted (see arma `kernel::extract_relocs`). This mirrors the
+// kernel decompressor's `handle_relocations` (arch/x86/boot/compressed/misc.c):
+// a single virtual `delta` is added to every absolute reference into the image.
+//
+// The kernel runs at any *physical* base for free: `__startup_64`
+// (arch/x86/boot/startup/map_kernel.c) derives `p2v_offset` at runtime from
+// where it physically executes vs. its (now-relocated) link-time literal, and
+// builds its own page tables. So tatu performs NO page-table work — it patches
+// the image in place and jumps to the same physical entry as before.
+//
+// Entropy comes from the guest CPU (`RDRAND`), never the host — a hard
+// requirement for confidential-computing guests (the host must not be able to
+// predict the layout). With no relocation tables (a kernel built without
+// `--emit-relocs`) this is a no-op and the kernel boots un-randomized.
+// ---------------------------------------------------------------------------
+
+use crate::bootinfo::TatuBootInfo;
+
+/// The kernel's link-time virtual base offset within the high map
+/// (`LOAD_PHYSICAL_ADDR`, = `CONFIG_PHYSICAL_START`, default 16 MiB) and the
+/// high-map window the page tables cover (`KERNEL_IMAGE_SIZE`, 1 GiB for a KASLR
+/// kernel). The virtual base may move anywhere in `[0, KERNEL_IMAGE_SIZE -
+/// image)` that is `PMD`-aligned (`__startup_64` rejects a non-2 MiB delta).
+const LOAD_PHYSICAL_ADDR: u64 = 0x100_0000;
+const KERNEL_IMAGE_SIZE: u64 = 0x4000_0000;
+const KASLR_ALIGN: u64 = 0x20_0000; // PMD (2 MiB)
+
+/// Pre-merge DTB patch hook. x86 randomizes the kernel's virtual base via
+/// applied relocations ([`apply_kaslr`], post-merge), not a DTB seed, so this is
+/// a no-op here — it exists only to give `rust_main` one cross-arch call site.
+pub fn patch_kaslr_seed(_bootinfo: &TatuBootInfo) {}
+
+/// Apply x86 virtual KASLR to the loaded kernel image, in place. No-op when arma
+/// supplied no relocation tables. Must run before [`boot_kernel`].
+pub fn apply_kaslr(bootinfo: &TatuBootInfo) {
+    let words = crate::bootinfo::relocs_words(bootinfo);
+    if words.is_empty() {
+        return;
+    }
+    let c64 = bootinfo.relocs64_count as usize;
+    let c32n = bootinfo.relocs32neg_count as usize;
+    let c32 = bootinfo.relocs32_count as usize;
+    // Defensive: counts must match the section the words came from.
+    if c64 + c32n + c32 != words.len() {
+        return;
+    }
+    let relocs64 = &words[..c64];
+    let relocs32neg = &words[c64..c64 + c32n];
+    let relocs32 = &words[c64 + c32n..];
+
+    // Choose a PMD-aligned virtual delta in the legal range. `slots` is at least
+    // 1, so the modulo is always defined; `delta == 0` is a valid (un-shifted)
+    // outcome that simply applies no movement.
+    let headroom = KERNEL_IMAGE_SIZE
+        .saturating_sub(bootinfo.kernel_alloc_size as u64)
+        .saturating_sub(LOAD_PHYSICAL_ADDR);
+    let slots = headroom / KASLR_ALIGN + 1;
+    let delta = (rand_u64() % slots) * KASLR_ALIGN;
+    if delta == 0 {
+        return;
+    }
+
+    let img = crate::bootinfo::kernel_bytes_mut(bootinfo);
+    // 64-bit absolute references: `*p += delta`.
+    for &off in relocs64 {
+        let o = off as usize;
+        if let Some(s) = img.get_mut(o..o + 8) {
+            let v = u64::from_le_bytes(s.try_into().unwrap()).wrapping_add(delta);
+            s.copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    // Per-CPU PC-relative references: `*p -= delta` (inverse).
+    for &off in relocs32neg {
+        let o = off as usize;
+        if let Some(s) = img.get_mut(o..o + 4) {
+            let v = i32::from_le_bytes(s.try_into().unwrap()).wrapping_sub(delta as i32);
+            s.copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    // 32-bit absolute references: `*p += delta`.
+    for &off in relocs32 {
+        let o = off as usize;
+        if let Some(s) = img.get_mut(o..o + 4) {
+            let v = u32::from_le_bytes(s.try_into().unwrap()).wrapping_add(delta as u32);
+            s.copy_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
+/// Draw 64 bits of entropy from the guest CPU via `RDRAND`. Retries on the rare
+/// transient failure (CF=0); if the instruction never succeeds the CPU has no
+/// usable RNG, so we halt rather than silently boot without randomization.
+fn rand_u64() -> u64 {
+    for _ in 0..100 {
+        let val: u64;
+        let ok: u8;
+        // SAFETY: RDRAND writes a random value to the destination and sets CF on
+        // success. No memory operands, no stack effect.
+        unsafe {
+            core::arch::asm!(
+                "rdrand {v}",
+                "setc {c}",
+                v = out(reg) val,
+                c = out(reg_byte) ok,
+                options(nomem, nostack),
+            );
+        }
+        if ok != 0 {
+            return val;
+        }
+    }
+    halt()
+}
+
+// ---------------------------------------------------------------------------
+// Kernel handoff. Loads rsi with &boot_params and jumps to the kernel's
+// 64-bit entry (`startup_64`, the first byte of the loaded ELF image — arma
+// enforces entry == image base). Never returns.
 // ---------------------------------------------------------------------------
 
 /// Architecturally final operation: load `&boot_params` into RSI
 /// and jump to the kernel's 64-bit entry point. Never returns.
-pub fn boot_kernel(kernel_bytes: &[u8], bp: LinuxBootParams) -> ! {
-    // Copy out the packed field by value — `&bp.setup_header.setup_sects`
-    // would be UB on the packed struct.
-    let setup_sects: u8 = bp.setup_header.setup_sects;
-    let entry = (kernel_bytes.as_ptr() as u64)
-        .saturating_add(u64::from(setup_sects).saturating_add(1).saturating_mul(512))
-        .saturating_add(0x200);
+pub fn boot_kernel(entry: u64, bp: LinuxBootParams) -> ! {
     let bp_ptr = bp.as_ptr() as u64;
 
     // SAFETY: this is the architecturally final instruction tatu

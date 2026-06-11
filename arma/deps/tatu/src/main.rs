@@ -30,6 +30,11 @@ mod bootinfo;
 mod merge;
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 mod validate;
+// arm64 KASLR seed patch (pure byte op + host tests). Compiled for aarch64 bare
+// metal (where it's used) and for host test builds; unused on x86 bare metal.
+#[cfg(any(test, target_arch = "aarch64"))]
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+mod kaslr;
 
 #[cfg(target_os = "none")]
 mod workspace;
@@ -88,7 +93,7 @@ fn main() {
 
 #[cfg(target_os = "none")]
 use crate::{
-    bootinfo::{MAGIC, TatuBootInfo, base_dtb_bytes, host_dtbo_bytes, kernel_bytes},
+    bootinfo::{MAGIC, TatuBootInfo, base_dtb_bytes, host_dtbo_bytes},
     merge::merge_into,
     validate::{validate_host_dtbo, validate_merged},
 };
@@ -107,6 +112,12 @@ extern "C" fn rust_main(bootinfo: &TatuBootInfo) -> ! {
     if bootinfo.magic != MAGIC {
         panic_halt(b"bootinfo: bad magic");
     }
+
+    // 1b. aarch64 KASLR: overwrite the base DTB's /chosen/kaslr-seed placeholder
+    //     with guest entropy before parsing/merging, so the merged DTB the kernel
+    //     receives carries a fresh, guest-controlled seed. No-op on x86 (which
+    //     randomizes via applied relocations after the merge).
+    arch::patch_kaslr_seed(bootinfo);
 
     // 2. Parse the measured base DTB (trusted; loaded as a regular
     //    PE section per the merged extension).
@@ -170,7 +181,7 @@ fn finalize(
     _merged_gpa: u64,
     _merged_size: usize,
 ) -> ! {
-    use arch::{AcpiTables, CmdLine, Initrd, boot_kernel, build_boot_params};
+    use arch::{AcpiTables, CmdLine, Initrd, apply_kaslr, boot_kernel, build_boot_params_elf};
 
     // a. Generate ACPI tables into the fixed .tatu.acpi workspace (the
     //    reserved [640K,1M) zone). Its GPA becomes the e820 entry and
@@ -190,15 +201,22 @@ fn finalize(
 
     // c. Build boot_params on the stack — dtb2e820 writes the
     //    e820 table directly into the LinuxBootParams.e820_table
-    //    field, no intermediate buffer.
-    let kernel_bytes = kernel_bytes(bootinfo);
-    let bp = match build_boot_params(kernel_bytes, &cmdline, &initrd, &acpi, merged) {
+    //    field, no intermediate buffer. arma always hands tatu a flat ELF
+    //    `vmlinux` image (it converts vmlinuz internally), so there is a
+    //    single x86 boot path: synthesize boot_params, no setup-header copy.
+    let bp = match build_boot_params_elf(&cmdline, &initrd, &acpi, merged) {
         Ok(b) => b,
         Err(_) => panic_halt(b"boot_params build failed"),
     };
 
-    // d. Jump (§12.6 step 7e).
-    boot_kernel(kernel_bytes, bp)
+    // d. Apply x86 virtual KASLR: randomize the kernel's virtual base by
+    //    patching the relocation tables in place (no-op without relocs). The
+    //    physical entry is unaffected — the kernel self-derives `phys_base`.
+    apply_kaslr(bootinfo);
+
+    // e. Jump to the kernel's 64-bit entry. arma records its GPA (the ELF
+    //    `e_entry`, which need not be the image base) (§12.6 step 7e).
+    boot_kernel(bootinfo.kernel_entry_gpa, bp)
 }
 
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
@@ -209,6 +227,8 @@ fn finalize(
     _merged_size: usize,
 ) -> ! {
     use arch::{MergedDtb, boot_kernel};
+
+    use crate::bootinfo::kernel_bytes;
     let dtb = MergedDtb { gpa: merged_gpa };
     boot_kernel(kernel_bytes(bootinfo), dtb)
 }

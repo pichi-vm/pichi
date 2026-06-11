@@ -13,7 +13,7 @@ use tempfile::TempDir;
 #[cfg(target_arch = "aarch64")]
 use common::synthesize_arm64_image;
 #[cfg(target_arch = "x86_64")]
-use common::synthesize_bzimage;
+use common::synthesize_vmlinux;
 use common::{build_pmi, find_pmi_vm};
 
 // ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ fn build_x86_fixture() -> Fixture {
     let kernel = tmp.path().join("kernel");
     let init = tmp.path().join("init");
     let pmi = tmp.path().join("out.pmi");
-    fs::write(&kernel, synthesize_bzimage(0x1000)).unwrap();
+    fs::write(&kernel, synthesize_vmlinux(0x1000)).unwrap();
     // Cpio-magic-prefixed payload — arma passes cpio through unchanged.
     fs::write(&init, b"070701FAKE_CPIO_FOR_X86_FIXTURE").unwrap();
     build_pmi(&kernel, Some(&init), "console=ttyS0", &pmi);
@@ -301,14 +301,28 @@ fn check_tatu_bootinfo_header(pmi_bytes: &[u8]) {
         .find(|s| s.name().unwrap_or("") == ".tatu.bootinfo")
         .expect(".tatu.bootinfo present");
     let off = bi_sec.pointer_to_raw_data as usize;
-    let hdr = &pmi_bytes[off..off + 44];
+    let hdr = &pmi_bytes[off..off + 76];
     assert_eq!(&hdr[..8], b"TATUBOOT");
     let base_dtb_gpa = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
     let host_dtbo_gpa = u64::from_le_bytes(hdr[16..24].try_into().unwrap());
     let kernel_gpa = u64::from_le_bytes(hdr[24..32].try_into().unwrap());
-    let base_dtb_size = u32::from_le_bytes(hdr[32..36].try_into().unwrap());
-    let host_dtbo_size = u32::from_le_bytes(hdr[36..40].try_into().unwrap());
-    let kernel_size = u32::from_le_bytes(hdr[40..44].try_into().unwrap());
+    let kernel_entry_gpa = u64::from_le_bytes(hdr[32..40].try_into().unwrap());
+    let relocs_gpa = u64::from_le_bytes(hdr[40..48].try_into().unwrap());
+    let base_dtb_size = u32::from_le_bytes(hdr[48..52].try_into().unwrap());
+    let host_dtbo_size = u32::from_le_bytes(hdr[52..56].try_into().unwrap());
+    let kernel_size = u32::from_le_bytes(hdr[56..60].try_into().unwrap());
+    let _kernel_alloc_size = u32::from_le_bytes(hdr[60..64].try_into().unwrap());
+    let relocs64_count = u32::from_le_bytes(hdr[64..68].try_into().unwrap());
+    let relocs32neg_count = u32::from_le_bytes(hdr[68..72].try_into().unwrap());
+    let relocs32_count = u32::from_le_bytes(hdr[72..76].try_into().unwrap());
+    // The synthetic vmlinux fixture has entry == load base, so the recorded
+    // entry GPA equals the kernel GPA; in general it lies within the image.
+    assert_eq!(kernel_entry_gpa, kernel_gpa, "entry GPA at image base");
+    // The fixture ELF carries no `.rela.*`, so the KASLR relocs are absent.
+    assert_eq!(relocs_gpa, 0, "no relocs in fixture");
+    assert_eq!(relocs64_count, 0);
+    assert_eq!(relocs32neg_count, 0);
+    assert_eq!(relocs32_count, 0);
     // Bootinfo carries NATURAL byte counts (what tatu/Linux read).
     // `.dtb` is Data-shape padded (VirtSize == RawSize, both ≥ natural).
     // `.linux` is Padded-shape on x86: VirtualSize includes the bzImage
@@ -509,7 +523,7 @@ fn determinism_two_builds_same_inputs_same_output() {
     let init = tmp.path().join("init");
     let pmi1 = tmp.path().join("out1.pmi");
     let pmi2 = tmp.path().join("out2.pmi");
-    fs::write(&kernel, synthesize_bzimage(0x2000)).unwrap();
+    fs::write(&kernel, synthesize_vmlinux(0x2000)).unwrap();
     // Cpio-magic-prefixed payload — arma passes cpio through unchanged.
     fs::write(&init, b"070701DETERMINISTIC_CPIO").unwrap();
     build_pmi(&kernel, Some(&init), "ro", &pmi1);

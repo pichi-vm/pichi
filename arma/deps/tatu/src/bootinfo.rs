@@ -34,10 +34,24 @@ pub struct TatuBootInfo {
     pub base_dtb_gpa: u64,
     pub host_dtbo_gpa: u64,
     pub kernel_gpa: u64,
+    /// GPA of the kernel's entry point (x86: `kernel_gpa + entry_offset`;
+    /// aarch64: the image base). tatu jumps here. Among the `u64`s so the
+    /// layout has no padding and matches arma's packed mirror byte-for-byte.
+    pub kernel_entry_gpa: u64,
+    /// GPA of the x86 KASLR relocation table, or `0` when absent (aarch64, or an
+    /// x86 kernel without relocs). The table is three back-to-back `u32` arrays —
+    /// `relocs64`, `relocs32neg`, `relocs32` — sized by the `*_count` fields.
+    pub relocs_gpa: u64,
     pub base_dtb_size: u32,
     pub host_dtbo_size: u32,
     pub kernel_size: u32,
-    _reserved: [u8; 4096 - 44],
+    /// Kernel runtime RAM footprint (`.linux` VirtualSize: file image + BSS).
+    /// Bounds the KASLR virtual base so the image stays within `KERNEL_IMAGE_SIZE`.
+    pub kernel_alloc_size: u32,
+    pub relocs64_count: u32,
+    pub relocs32neg_count: u32,
+    pub relocs32_count: u32,
+    _reserved: [u8; 4096 - 76],
 }
 
 impl TatuBootInfo {
@@ -50,10 +64,16 @@ impl TatuBootInfo {
         base_dtb_gpa: 0,
         host_dtbo_gpa: 0,
         kernel_gpa: 0,
+        kernel_entry_gpa: 0,
+        relocs_gpa: 0,
         base_dtb_size: 0,
         host_dtbo_size: 0,
         kernel_size: 0,
-        _reserved: [0; 4096 - 44],
+        kernel_alloc_size: 0,
+        relocs64_count: 0,
+        relocs32neg_count: 0,
+        relocs32_count: 0,
+        _reserved: [0; 4096 - 76],
     };
 }
 
@@ -78,9 +98,58 @@ pub fn host_dtbo_bytes(info: &TatuBootInfo) -> &'static [u8] {
     region(info.host_dtbo_gpa, info.host_dtbo_size)
 }
 
-/// Borrow the loaded kernel image.
+/// Borrow the loaded kernel image. aarch64 jumps to the raw Image base; x86
+/// jumps to `kernel_entry_gpa` directly and never needs the slice.
+#[cfg(any(test, target_arch = "aarch64"))]
 pub fn kernel_bytes(info: &TatuBootInfo) -> &'static [u8] {
     region(info.kernel_gpa, info.kernel_size)
+}
+
+/// Borrow the measured base-DTB region mutably, for the arm64 KASLR seed patch.
+/// `.tatu.dtb` is a writable loaded section; tatu rewrites the 8-byte
+/// `/chosen/kaslr-seed` value before the merge, then re-parses the blob.
+#[cfg(any(test, target_arch = "aarch64"))]
+#[allow(unsafe_code)]
+pub fn base_dtb_bytes_mut(info: &TatuBootInfo) -> &'static mut [u8] {
+    // SAFETY: same single-vCPU, no-DMA, VMM-loaded-region argument as `region`
+    // (below). tatu is the sole accessor of the base DTB until the merge, so a
+    // unique `&mut` for the in-place seed patch is sound.
+    unsafe {
+        core::slice::from_raw_parts_mut(info.base_dtb_gpa as *mut u8, info.base_dtb_size as usize)
+    }
+}
+
+/// Borrow the loaded kernel image mutably, for x86 KASLR relocation. The image
+/// is a PE section the VMM loaded into guest RAM; tatu patches it in place before
+/// jumping. The byte count is the FILE size (`kernel_size`) — relocation sites
+/// only ever fall in initialized data, never in the BSS tail beyond it.
+#[cfg(any(test, target_arch = "x86_64"))]
+#[allow(unsafe_code)]
+pub fn kernel_bytes_mut(info: &TatuBootInfo) -> &'static mut [u8] {
+    // SAFETY: same single-vCPU, no-DMA, VMM-loaded-region argument as `region`
+    // (see below). tatu is the sole accessor of the kernel image until it jumps,
+    // so a unique `&mut` for the relocation pass is sound.
+    unsafe {
+        core::slice::from_raw_parts_mut(info.kernel_gpa as *mut u8, info.kernel_size as usize)
+    }
+}
+
+/// Borrow the KASLR relocation table as one `u32` slice (`relocs64`, then
+/// `relocs32neg`, then `relocs32`, back to back). `relocs_gpa` is 2 MiB-aligned,
+/// so the `u32` reinterpret is well-aligned. Empty when there are no relocs.
+#[cfg(any(test, target_arch = "x86_64"))]
+#[allow(unsafe_code)]
+pub fn relocs_words(info: &TatuBootInfo) -> &'static [u32] {
+    let count = info.relocs64_count as usize
+        + info.relocs32neg_count as usize
+        + info.relocs32_count as usize;
+    if count == 0 {
+        return &[];
+    }
+    // SAFETY: arma placed a `.linux.relocs` PE section of exactly `count` u32s at
+    // `relocs_gpa` (2 MiB-aligned), loaded by the VMM before entry. Read-only,
+    // single vCPU, no concurrent writer; lives for the whole boot.
+    unsafe { core::slice::from_raw_parts(info.relocs_gpa as *const u32, count) }
 }
 
 #[allow(unsafe_code)]

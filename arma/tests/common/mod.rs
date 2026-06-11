@@ -56,23 +56,43 @@ fn ikconfig_blob() -> Vec<u8> {
     out
 }
 
-/// Build a synthetic bzImage that passes arma's validation.
-pub fn synthesize_bzimage(payload_size: usize) -> Vec<u8> {
-    let mut v = vec![0u8; payload_size.max(0x1000)];
-    v[0x1F1] = 1; // setup_sects
-    // HdrS at 0x202
-    v[0x202..0x206].copy_from_slice(&0x5372_6448u32.to_le_bytes());
-    // protocol 0x020F
-    v[0x206..0x208].copy_from_slice(&0x020Fu16.to_le_bytes());
-    // loadflags LOADED_HIGH
-    v[0x211] = 0x01;
-    // kernel_alignment at 0x230 (2 MiB)
-    v[0x230..0x234].copy_from_slice(&0x0020_0000u32.to_le_bytes());
-    // init_size at 0x260 (size of compressed image + decompressor
-    // scratch). Pick payload_size + 4 MiB headroom so synthetic
-    // bzImages get a sensible alloc footprint without overflowing.
-    let init_size = (payload_size as u32).saturating_add(0x40_0000);
-    v[0x260..0x264].copy_from_slice(&init_size.to_le_bytes());
+/// Build a synthetic x86 ELF `vmlinux` that passes arma's validation, with the
+/// IKCONFIG blob appended (outside any PT_LOAD) so `arma build` without
+/// `--config` can still infer slots. One PT_LOAD at the conventional 16 MiB
+/// link base, entry at the base.
+pub fn synthesize_vmlinux(payload_size: usize) -> Vec<u8> {
+    const EHSIZE: usize = 64;
+    const PHENTSIZE: usize = 56;
+    const BASE: u64 = 0x100_0000;
+    let filesz = payload_size.max(0x1000) as u64;
+
+    let mut ehdr = [0u8; EHSIZE];
+    ehdr[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+    ehdr[4] = 2; // ELFCLASS64
+    ehdr[5] = 1; // ELFDATA2LSB
+    ehdr[6] = 1; // EI_VERSION
+    ehdr[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+    ehdr[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+    ehdr[20..24].copy_from_slice(&1u32.to_le_bytes()); // e_version
+    ehdr[24..32].copy_from_slice(&BASE.to_le_bytes()); // e_entry (== base)
+    ehdr[32..40].copy_from_slice(&(EHSIZE as u64).to_le_bytes()); // e_phoff
+    ehdr[52..54].copy_from_slice(&(EHSIZE as u16).to_le_bytes()); // e_ehsize
+    ehdr[54..56].copy_from_slice(&(PHENTSIZE as u16).to_le_bytes()); // e_phentsize
+    ehdr[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+
+    let data_off = (EHSIZE + PHENTSIZE) as u64;
+    let mut ph = [0u8; PHENTSIZE];
+    ph[0..4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+    ph[8..16].copy_from_slice(&data_off.to_le_bytes()); // p_offset
+    ph[16..24].copy_from_slice(&BASE.to_le_bytes()); // p_vaddr
+    ph[24..32].copy_from_slice(&BASE.to_le_bytes()); // p_paddr
+    ph[32..40].copy_from_slice(&filesz.to_le_bytes()); // p_filesz
+    ph[40..48].copy_from_slice(&filesz.to_le_bytes()); // p_memsz
+
+    let mut v = Vec::new();
+    v.extend_from_slice(&ehdr);
+    v.extend_from_slice(&ph);
+    v.extend(std::iter::repeat_n(0u8, filesz as usize));
     v.extend_from_slice(&ikconfig_blob());
     v
 }

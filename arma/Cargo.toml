@@ -26,6 +26,7 @@ goblin = { version = "0.10", default-features = false, features = [
 vm-fdt = "0.3"
 devtree = { path = "../deps/devtree" }
 flate2 = "1"
+ruzstd = "0.8"
 zerocopy = { version = "0.8", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"

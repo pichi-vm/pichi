@@ -12,7 +12,7 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-use common::{arma_bin, synthesize_bzimage};
+use common::{arma_bin, synthesize_vmlinux};
 
 fn run_failing(args: &[&std::ffi::OsStr]) -> (i32, String) {
     let out = Command::new(arma_bin())
@@ -79,7 +79,7 @@ fn malformed_kernel_fails_with_unrecognized() {
 fn unwritable_output_path_fails() {
     let tmp = TempDir::new().unwrap();
     let kernel = tmp.path().join("kernel");
-    fs::write(&kernel, synthesize_bzimage(0x1000)).unwrap();
+    fs::write(&kernel, synthesize_vmlinux(0x1000)).unwrap();
     // /proc/1/cannot-write is unwritable from any user.
     let unwritable: std::path::PathBuf = "/proc/1/cannot-write.pmi".into();
     let (_code, stderr) = run_failing(&[
