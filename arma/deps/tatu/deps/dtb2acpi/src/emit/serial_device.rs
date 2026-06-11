@@ -106,10 +106,7 @@ fn write_device<N: NodeView + Copy>(
     let pos = aml::write_bytes(slot, pos, &buffer_size.to_le_bytes())?;
 
     // interrupts = <pin sense>; the trigger lives in the second cell.
-    let int_prop = node
-        .node
-        .property("interrupts")
-        .ok_or(DtbError::Internal)?;
+    let int_prop = node.node.property("interrupts").ok_or(DtbError::Internal)?;
     let mut int_cells = int_prop.as_u32s().ok_or(DtbError::Internal)?;
     let _pin = int_cells.next().ok_or(DtbError::Internal)?;
     let sense = int_cells.next().ok_or(DtbError::Internal)?;
