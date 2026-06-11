@@ -649,7 +649,10 @@ pub mod pmi_parse {
 
     #[derive(Debug, Clone)]
     enum ManifestActionOwned {
-        Load { gpa: u64, section: String },
+        Load {
+            gpa: u64,
+            section: String,
+        },
         Fill {
             gpa: u64,
             section: String,

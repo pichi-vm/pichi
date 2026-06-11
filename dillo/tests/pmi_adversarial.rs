@@ -27,7 +27,9 @@ fn pmi_vm_cbor_range(bytes: &[u8]) -> Option<(usize, usize)> {
     let mut sect_off = pe_off + 24 + opt_size;
     for _ in 0..num_sections {
         let name = &bytes[sect_off..sect_off + 8];
-        let trimmed = std::str::from_utf8(name).unwrap_or("").trim_end_matches('\0');
+        let trimmed = std::str::from_utf8(name)
+            .unwrap_or("")
+            .trim_end_matches('\0');
         if trimmed == ".pmi.vm" {
             let raw_size =
                 u32::from_le_bytes(bytes[sect_off + 16..sect_off + 20].try_into().ok()?) as usize;
