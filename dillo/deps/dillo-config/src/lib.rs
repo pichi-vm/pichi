@@ -59,12 +59,14 @@ pub struct Layout {
     pub devices: Vec<Device>,
 }
 
-/// One device entry. JSON externally-tagged: `{"blk": {…}}` / `{"gpt": {…}}`.
+/// One device entry. JSON externally-tagged: `{"blk": {…}}` / `{"gpt": {…}}` /
+/// `{"vsock": {…}}`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Device {
     Blk(BlkSpec),
     Gpt(GptSpec),
+    Vsock(VsockSpec),
 }
 
 /// Console placement + endpoint.
@@ -112,6 +114,21 @@ pub struct GptSpec {
     pub slot: Option<u32>,
 }
 
+/// virtio-vsock device. Bridges guest connections (to host CID 2, port N) to a
+/// host Unix socket at `<uds>/N.sock`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct VsockSpec {
+    /// Guest context identifier.
+    pub cid: u64,
+    /// Directory holding the per-port `<N>.sock` host bridge sockets.
+    pub uds: PathBuf,
+    #[serde(default)]
+    pub bus: Option<Bus>,
+    #[serde(default)]
+    pub slot: Option<u32>,
+}
+
 /// One GPT partition. Fields are stamped verbatim into the synthesized entry.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -141,7 +158,7 @@ macro_rules! impl_kv_arg {
 }
 
 #[cfg(feature = "argh")]
-impl_kv_arg!(BlkSpec, GptSpec);
+impl_kv_arg!(BlkSpec, GptSpec, VsockSpec);
 
 #[cfg(feature = "argh")]
 impl argh::FromArgValue for ConsoleSpec {
@@ -204,14 +221,19 @@ pub enum ResolvedDevice {
         partitions: Vec<ResolvedPart>,
         placement: Placement,
     },
+    Vsock {
+        cid: u64,
+        uds: PathBuf,
+        placement: Placement,
+    },
 }
 
 impl ResolvedDevice {
     pub fn placement(&self) -> &Placement {
         match self {
-            ResolvedDevice::Blk { placement, .. } | ResolvedDevice::Gpt { placement, .. } => {
-                placement
-            }
+            ResolvedDevice::Blk { placement, .. }
+            | ResolvedDevice::Gpt { placement, .. }
+            | ResolvedDevice::Vsock { placement, .. } => placement,
         }
     }
 }
@@ -274,6 +296,14 @@ fn resolve_device(device: Device) -> anyhow::Result<ResolvedDevice> {
             placement: Placement {
                 bus: b.bus,
                 slot: b.slot,
+            },
+        }),
+        Device::Vsock(v) => Ok(ResolvedDevice::Vsock {
+            cid: v.cid,
+            uds: v.uds,
+            placement: Placement {
+                bus: v.bus,
+                slot: v.slot,
             },
         }),
         Device::Gpt(g) => {
@@ -594,6 +624,19 @@ mod tests {
         assert_eq!(kv.partitions[0].typeguid, json.partitions[0].typeguid);
         assert_eq!(kv.partitions[0].label, json.partitions[0].label);
         assert_eq!(kv.bus, json.bus);
+    }
+
+    #[test]
+    fn vsock_kv_matches_json() {
+        let kv: VsockSpec =
+            serde_keyvalue::from_key_values("cid=3,uds=/tmp/v,bus=pci").expect("kv parse");
+        let json: VsockSpec =
+            serde_json::from_str(r#"{"cid":3,"uds":"/tmp/v","bus":"pci"}"#).expect("json parse");
+        assert_eq!(kv.cid, json.cid);
+        assert_eq!(kv.uds, json.uds);
+        assert_eq!(kv.bus, json.bus);
+        assert_eq!(kv.cid, 3);
+        assert_eq!(kv.bus, Some(Bus::Pci));
     }
 
     #[test]
