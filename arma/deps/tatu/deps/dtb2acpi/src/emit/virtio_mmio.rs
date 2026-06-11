@@ -80,7 +80,7 @@ fn write_one_device<N: NodeView + Copy>(
             site: Site::VirtioMmio,
             property: "reg",
         })?;
-    let gsi = decode_gsi(node)?;
+    let (gsi, sense) = decode_gsi(node)?;
 
     let pos = aml::write_bytes(slot, pos, &[aml::EXT_OP_PREFIX, aml::DEVICE_OP])?;
     let pkg_value = DEVICE_BYTES.checked_sub(2).ok_or(DtbError::Internal)?;
@@ -103,13 +103,14 @@ fn write_one_device<N: NodeView + Copy>(
     let pos = aml::write_bytes(slot, pos, &buffer_size.to_le_bytes())?;
 
     let pos = aml::write_qword_memory(slot, pos, base, size)?;
-    let pos = aml::write_extended_interrupt(slot, pos, gsi)?;
+    let pos = aml::write_extended_interrupt(slot, pos, gsi, sense)?;
     aml::write_end_tag(slot, pos)
 }
 
-/// `interrupts = <pin, sense>` — the first cell is the IO-APIC pin, which under
-/// identity GSI routing IS the global system interrupt (as for the serial node).
-fn decode_gsi<N: NodeView + Copy>(node: &DtbNode<N>) -> Result<u32, DtbError> {
+/// `interrupts = <pin, sense>` — the first cell is the IO-APIC pin (the GSI
+/// under identity routing), the second the trigger/polarity sense. Returns
+/// `(gsi, sense)` so the `_CRS` ExtendedInterrupt declares the right trigger.
+fn decode_gsi<N: NodeView + Copy>(node: &DtbNode<N>) -> Result<(u32, u32), DtbError> {
     let prop = node
         .node
         .property("interrupts")
@@ -121,10 +122,13 @@ fn decode_gsi<N: NodeView + Copy>(node: &DtbNode<N>) -> Result<u32, DtbError> {
         site: Site::VirtioMmio,
         property: "interrupts",
     })?;
-    cells.next().ok_or(DtbError::MalformedProperty {
+    let malformed = || DtbError::MalformedProperty {
         site: Site::VirtioMmio,
         property: "interrupts",
-    })
+    };
+    let gsi = cells.next().ok_or_else(malformed)?;
+    let sense = cells.next().ok_or_else(malformed)?;
+    Ok((gsi, sense))
 }
 
 /// `VMnn` NameSeg (two decimal digits); 16 mmio slots is the planner maximum.

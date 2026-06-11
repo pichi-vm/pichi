@@ -5,7 +5,7 @@
 //! DSDT device gives the ACPI serial driver an MMIO window and GSI so
 //! the 8250 stack can bind a `ttyS*` port without any legacy ISA I/O.
 
-use devtree::{NodeView, TreeView};
+use devtree::{NodeView, PropertyView, TreeView};
 
 use super::aml;
 use crate::dtb::DtbNode;
@@ -105,8 +105,17 @@ fn write_device<N: NodeView + Copy>(
     let pos = aml::write_bytes(slot, pos, &[aml::WORD_PREFIX])?;
     let pos = aml::write_bytes(slot, pos, &buffer_size.to_le_bytes())?;
 
+    // interrupts = <pin sense>; the trigger lives in the second cell.
+    let int_prop = node
+        .node
+        .property("interrupts")
+        .ok_or(DtbError::Internal)?;
+    let mut int_cells = int_prop.as_u32s().ok_or(DtbError::Internal)?;
+    let _pin = int_cells.next().ok_or(DtbError::Internal)?;
+    let sense = int_cells.next().ok_or(DtbError::Internal)?;
+
     let pos = aml::write_qword_memory(slot, pos, base, size)?;
-    let pos = aml::write_extended_interrupt(slot, pos, gsi)?;
+    let pos = aml::write_extended_interrupt(slot, pos, gsi, sense)?;
     let pos = aml::write_end_tag(slot, pos)?;
 
     write_dsd(slot, pos, clock_frequency, reg_shift, reg_io_width)

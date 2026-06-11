@@ -278,19 +278,29 @@ pub(crate) fn write_qword_memory(
 pub(crate) const QWORD_MEMORY_BYTES: usize = 46;
 
 /// Write an `ExtendedInterrupt` resource descriptor for one GSI (9 bytes).
-/// ACPI §6.4.3.6. We use producer/consumer = consumer, level-triggered,
-/// active-high, exclusive. That matches the DT serial binding's
-/// `<pin, sense>` identity-GSI model and the dillo KVM irqfd route.
+/// ACPI §6.4.3.6. The trigger/polarity is derived from the devicetree
+/// interrupt `sense` (IRQ_TYPE_*), not hardcoded: a VMM that delivers the line
+/// edge-triggered (the dillo KVM irqfd route) needs the descriptor to say
+/// edge, or an interrupt-driven consumer (e.g. `ttyS0`) stalls after the first
+/// FIFO drains. Flag bits: bit0 ResourceConsumer, bit1 Edge(1)/Level(0),
+/// bit2 ActiveLow(1)/High(0).
 pub(crate) fn write_extended_interrupt(
     slot: &mut [u8],
     pos: usize,
     gsi: u32,
+    sense: u32,
 ) -> Result<usize, DtbError> {
+    let trigger_polarity: u8 = match sense {
+        2 => 0b110, // EDGE_FALLING: edge,  active-low
+        4 => 0b000, // LEVEL_HIGH  : level, active-high
+        8 => 0b100, // LEVEL_LOW   : level, active-low
+        _ => 0b010, // EDGE_RISING (1) / default: edge, active-high
+    };
     let mut buf = [0u8; EXTENDED_INTERRUPT_BYTES];
     buf[0] = TAG_EXTENDED_INTERRUPT;
     buf[1] = 0x06; // length field = 6: flags + count + one u32 interrupt
     buf[2] = 0x00;
-    buf[3] = 0b0000_0001; // ResourceConsumer, Level, ActiveHigh, Exclusive
+    buf[3] = 0b0000_0001 | trigger_polarity; // ResourceConsumer + trigger/polarity
     buf[4] = 1; // interrupt table length
     buf[5..9].copy_from_slice(&gsi.to_le_bytes());
     write_bytes(slot, pos, &buf)

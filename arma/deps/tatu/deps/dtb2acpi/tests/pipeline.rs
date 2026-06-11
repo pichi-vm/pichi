@@ -234,9 +234,9 @@ fn dsdt_carries_mmio_serial_device() {
     assert!(
         dsdt.windows(9).any(|w| w[0] == 0x89
             && w[1] == 0x06
-            && w[3] == 0x01
+            && w[3] == 0x03
             && u32::from_le_bytes(w[5..9].try_into().unwrap()) == 4),
-        "ExtendedInterrupt GSI 4 present"
+        "ExtendedInterrupt GSI 4, edge + active-high (sense=1) present"
     );
     assert!(
         dsdt.windows("clock-frequency".len())
