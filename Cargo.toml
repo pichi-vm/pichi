@@ -157,6 +157,7 @@ sha2 = "0.10"
 # pichi image-management (cache I/O, import, registry)
 tempfile = "3"
 libc = "0.2"
+assert_cmd = "2"
 
 # pichi async registry I/O (the workspace's first async runtime — pichi is the
 # high-level orchestrator; it execs the synchronous `dillo` launcher, so tokio

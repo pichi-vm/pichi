@@ -36,3 +36,9 @@ tokio-util = { workspace = true, features = ["io", "io-util"] }
 toml.workspace = true
 uuid.workspace = true
 zstd.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+tempfile.workspace = true
+pichi-artifact.workspace = true
+pichi-storage.workspace = true
