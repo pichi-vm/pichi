@@ -1,0 +1,34 @@
+[package]
+name = "carapace"
+version.workspace = true
+edition = "2021"
+# carapace keeps its upstream MIT license (the rest of the workspace is
+# Apache-2.0); see LICENSE-MIT. It does not inherit the workspace license.
+license = "MIT"
+publish.workspace = true
+description = "Assembler for carapace block-device chains (read-side only)"
+repository = "https://github.com/pichi-vm/pichi"
+
+[[bin]]
+name = "carapace"
+path = "src/main.rs"
+
+[dependencies]
+# carapace-only (single consumer): kept local rather than in workspace.deps.
+iocuddle = "0.2"
+# Shared across the workspace.
+thiserror = { workspace = true }
+zerocopy = { workspace = true }
+
+[dev-dependencies]
+# default-features = false drops `async` (which pulls in futures + parking_lot
+# + scc and ~12 transitive crates). carapace's tests use only the synchronous
+# `#[serial]` macro; `async` features are unused.
+serial_test = { version = "3", default-features = false }
+tempfile = "3"
+
+# NOTE: carapace's size-optimized release profile (panic=abort, fat LTO,
+# codegen-units=1, strip, opt-level="z") cannot live here — workspace members
+# inherit the root profile. The per-package-settable parts (opt-level, strip,
+# codegen-units) are preserved in the root Cargo.toml under
+# [profile.release.package.carapace]; panic/LTO are workspace-global.

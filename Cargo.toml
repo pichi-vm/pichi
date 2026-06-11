@@ -4,6 +4,7 @@ members = [
     # Products (consumed by nothing else)
     "arma",
     "dillo",
+    "carapace",
     # Cross-product shared libraries (no single owner)
     "deps/devtree",
     # Shared test-support (dev-only): generic caching URL downloader
@@ -154,3 +155,12 @@ lto = "thin"
 opt-level = 3
 debug-assertions = false
 overflow-checks = false
+
+# carapace ships in a guest initrd where binary size matters. Workspace members
+# can't carry their own [profile], so preserve the per-package-settable parts of
+# its upstream size-optimized release profile here. (panic=abort and fat LTO are
+# workspace-global and cannot be set per-package, so they are not preserved.)
+[profile.release.package.carapace]
+opt-level = "z"
+codegen-units = 1
+strip = true
