@@ -34,6 +34,7 @@ members = [
     "pichi/deps/pichi-artifact",
     "pichi/deps/pichi-storage",
     "pichi/deps/pichi-import",
+    "pichi/deps/pichi-registry",
 ]
 exclude = [
     # cargo-fuzz harnesses: nightly + libfuzzer-sys, built out-of-band.
@@ -98,6 +99,7 @@ dillo-virtio-gpt = { path = "dillo/deps/dillo-virtio-gpt" }
 pichi-artifact = { path = "pichi/deps/pichi-artifact" }
 pichi-storage = { path = "pichi/deps/pichi-storage" }
 pichi-import = { path = "pichi/deps/pichi-import" }
+pichi-registry = { path = "pichi/deps/pichi-registry" }
 # Error handling
 anyhow = "1"
 thiserror = "2"
@@ -154,6 +156,18 @@ sha2 = "0.10"
 # pichi image-management (cache I/O, import, registry)
 tempfile = "3"
 libc = "0.2"
+
+# pichi async registry I/O (the workspace's first async runtime — pichi is the
+# high-level orchestrator; it execs the synchronous `dillo` launcher, so tokio
+# never enters the running VMM).
+tokio = { version = "1", default-features = false }
+tokio-util = { version = "0.7", default-features = false, features = ["io"] }
+futures-util = { version = "0.3", default-features = false }
+bytes = "1"
+oci-client = { version = "0.16", default-features = false, features = ["rustls-tls"] }
+http = { version = "1", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+zstd = { version = "0.13", default-features = false }
 
 # tatu must fit its 2 MiB slab (linker ASSERT in tatu/linker/tatu.ld), so it
 # must always be built with release-equivalent codegen even when the rest of

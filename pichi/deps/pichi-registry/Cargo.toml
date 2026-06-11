@@ -1,0 +1,55 @@
+[package]
+name = "pichi-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pichi-artifact = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+
+# tokio + futures-util are NON-optional — the streaming Registry trait surface
+# (pull_blob<W: AsyncWrite>, push_blob_stream<S: Stream>) requires these types
+# unconditionally.
+tokio         = { workspace = true, features = ["io-util"] }
+futures-util  = { workspace = true }
+
+# Production HTTP impl gated behind the http-client feature. The default build
+# still works for MockRegistry consumers (pichi import tests) without pulling
+# oci-client into their closure.
+oci-client    = { workspace = true, optional = true }
+tokio-util    = { workspace = true, optional = true }
+serde         = { workspace = true, optional = true, features = ["derive"] }
+serde_json    = { workspace = true, optional = true }
+base64        = { workspace = true, optional = true }
+anyhow        = { workspace = true, optional = true }
+# `http::HeaderValue` is consumed by oci-client's push_manifest_raw signature;
+# oci-client does not re-export it.
+http          = { workspace = true, optional = true }
+
+[features]
+default = []
+http-client = [
+    "dep:oci-client",
+    "dep:tokio-util",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:base64",
+    "dep:anyhow",
+    "dep:http",
+]
+
+[dev-dependencies]
+# Spike tests need an actual runtime + bridge. tokio-util "io-util" is
+# required for SyncIoBridge (per tokio-util 0.7 cfg gate); workspace
+# default just enables "io".
+tokio        = { workspace = true, features = ["rt", "io-util", "macros", "rt-multi-thread"] }
+tokio-util   = { workspace = true, features = ["io", "io-util"] }
+futures-util = { workspace = true }
+zstd         = { workspace = true }
+tempfile     = { workspace = true }
