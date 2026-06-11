@@ -222,7 +222,13 @@ mod imp {
         }
 
         fn create_line_interrupt(&self, source: u32) -> Result<Interrupt, Error> {
-            Ok(Interrupt::new(Arc::new(SpiInterruptLine { intid: source })))
+            // `source` is the DTB SPI number (0-based); hv_gic's gic_set_spi
+            // wants the absolute GIC INTID (SPI + 32 — INTIDs 0..31 are SGI/PPI,
+            // so a raw SPI number is rejected as an invalid argument). This
+            // mirrors gic_send_msi, which already uses absolute INTIDs (64-95).
+            Ok(Interrupt::new(Arc::new(SpiInterruptLine {
+                intid: source + 32,
+            })))
         }
 
         fn create_message_interrupt_domain(
