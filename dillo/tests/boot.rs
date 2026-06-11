@@ -95,6 +95,7 @@ const KERNELS: &[Entry] = &[
             "VIRTIO_MMIO",
             "VIRTIO_BLK",
             "VIRTIO_CONSOLE",
+            "VIRTIO_VSOCKETS",
             "RANDOMIZE_BASE",
         ],
     },
@@ -108,6 +109,7 @@ const KERNELS: &[Entry] = &[
             "VIRTIO_MMIO",
             "VIRTIO_BLK",
             "VIRTIO_CONSOLE",
+            "VIRTIO_VSOCKETS",
             "RANDOMIZE_BASE",
         ],
     },
@@ -132,6 +134,7 @@ const KERNELS: &[Entry] = &[
             "VIRTIO_MMIO",
             "VIRTIO_BLK",
             "VIRTIO_CONSOLE",
+            "VIRTIO_VSOCKETS",
             "ACPI_SPCR_TABLE",
         ],
     },
@@ -145,6 +148,7 @@ const KERNELS: &[Entry] = &[
             "VIRTIO_MMIO",
             "VIRTIO_BLK",
             "VIRTIO_CONSOLE",
+            "VIRTIO_VSOCKETS",
             "ACPI_SPCR_TABLE",
         ],
     },
@@ -803,4 +807,77 @@ fn boots_with_vgpt_disk() {
         Some(true),
         "RO device must reject O_RDWR open"
     );
+}
+
+/// A `--vsock` device gives the guest an AF_VSOCK transport. The guest probe
+/// (snuffler, when `dillo.vsock_port=N` is on the cmdline) connects to host
+/// CID 2 on port N; dillo's in-process device bridges that to the host Unix
+/// socket `<uds>/N.sock`, which this test serves with an echo. snuffler reports
+/// the round-trip in `Report.vsock`.
+///
+/// Unix-only: `--vsock` (and the host `UnixListener` bridge) are gated to Unix
+/// hosts, so this test does not run on the Windows/WHP lane.
+#[test]
+#[cfg(unix)]
+fn boots_with_vsock() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+
+    if !hypervisor_available() {
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
+        return;
+    }
+    let kernel = match require(&["VIRTIO_VSOCKETS", "VIRTIO_PCI", "VIRTIO_CONSOLE"], &[]) {
+        Some(k) => k,
+        None => {
+            eprintln!("skip: kernel DB has no downloadable virtio-vsock kernel");
+            return;
+        }
+    };
+
+    let tmp = TempDir::new().unwrap();
+    const PORT: u32 = 1234;
+
+    // Serve the host end of the bridge BEFORE launching dillo: the device's UDS
+    // backend connects to `<uds>/<PORT>.sock` when the guest dials port PORT.
+    let sock_path = tmp.path().join(format!("{PORT}.sock"));
+    let listener = UnixListener::bind(&sock_path).expect("bind host vsock bridge socket");
+    let echo = std::thread::spawn(move || {
+        // One guest connection; echo everything until the guest closes (EOF).
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 256];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if stream.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                        let _ = stream.flush();
+                    }
+                }
+            }
+        }
+    });
+
+    let cmdline = format!("console=hvc0 dillo.vsock_port={PORT}");
+    let pmi = build_pmi_from_path(tmp.path(), &kernel, host::CONFIG, &cmdline, false);
+    let vsock = format!("cid=3,uds={}", tmp.path().display());
+    let output = boot_with(&pmi, 256, 1, tmp.path(), &["--vsock", &vsock]);
+    let r = parse_report(&output).unwrap_or_else(|| {
+        panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+    });
+
+    let v = r
+        .vsock
+        .expect("vsock probe result absent (cmdline requested dillo.vsock_port)");
+    assert_eq!(v.port, PORT, "probed unexpected port");
+    assert!(v.connected, "guest AF_VSOCK connect failed: {:?}", v.error);
+    assert!(
+        v.echo_ok,
+        "guest vsock echo round-trip mismatch: {:?}",
+        v.error
+    );
+
+    let _ = echo.join();
 }
