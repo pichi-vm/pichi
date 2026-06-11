@@ -464,6 +464,19 @@ const KASLR_ALIGN: u64 = 0x20_0000; // PMD (2 MiB)
 /// a no-op here — it exists only to give `rust_main` one cross-arch call site.
 pub fn patch_kaslr_seed(_bootinfo: &TatuBootInfo) {}
 
+/// Guest physical-address width in bits, from `CPUID Fn8000_0008` `EAX[7:0]`.
+/// Per pmi spec bc7f581 this is the bound for host-supplied addresses in the
+/// merged DTB — read from the architectural leaf, never a hardcoded constant.
+pub fn guest_pa_bits() -> u32 {
+    // SAFETY: leaf 0x8000_0008 is architectural on any x86-64 CPU running in
+    // long mode (where tatu executes); `__cpuid` has no memory/flag effects.
+    // (`__cpuid` is safe to call on this target; the `unsafe` is kept for
+    // toolchains that still mark it unsafe.)
+    #[allow(unused_unsafe)]
+    let leaf = unsafe { core::arch::x86_64::__cpuid(0x8000_0008) };
+    leaf.eax & 0xFF
+}
+
 /// Apply x86 virtual KASLR to the loaded kernel image, in place. No-op when arma
 /// supplied no relocation tables. Must run before [`boot_kernel`].
 pub fn apply_kaslr(bootinfo: &TatuBootInfo) {

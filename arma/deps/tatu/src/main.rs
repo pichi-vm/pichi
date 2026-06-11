@@ -126,8 +126,19 @@ extern "C" fn rust_main(bootinfo: &TatuBootInfo) -> ! {
         Err(_) => panic_halt(b"base dtb: structural parse failed"),
     };
 
-    // 3. Parse the host-supplied DTBO (adversarial; filled into the
-    //    .dtbo section via the merged:dtbo fill kind).
+    // 3. Reject an oversized host overlay before parsing (resource-exhaustion
+    //    defense; pmi spec merged.md §2 / commit 3d6753b — the merger MUST
+    //    reject an overlay beyond its accepted bound, recommended ≤ 64 KiB).
+    //    The `.tatu.dtbo` reservation is exactly 64 KiB; a host-controlled
+    //    `host_dtbo_size` larger than that would make `host_dtbo_bytes`
+    //    construct an out-of-bounds slice.
+    const HOST_DTBO_MAX: u32 = 64 * 1024;
+    if bootinfo.host_dtbo_size > HOST_DTBO_MAX {
+        panic_halt(b"host dtbo: oversized");
+    }
+
+    // 3b. Parse the host-supplied DTBO (adversarial; filled into the
+    //     .dtbo section via the merged:dtbo fill kind).
     let overlay: Overlay<'static> = match Overlay::parse(host_dtbo_bytes(bootinfo)) {
         Ok(o) => o,
         Err(_) => panic_halt(b"host dtbo: structural parse failed"),
@@ -166,7 +177,10 @@ extern "C" fn rust_main(bootinfo: &TatuBootInfo) -> ! {
     //    `/memory@*` covering every load/fill range and explicitly
     //    waives consumer-side validation — failures manifest as
     //    kernel boot DoS, observable to the host.
-    if validate_merged(&merged).is_err() {
+    // The address bound for host-supplied regions is the guest's physical
+    // address width (pmi spec bc7f581) — read from the architectural ID
+    // register, never a hardcoded constant.
+    if validate_merged(&merged, arch::guest_pa_bits()).is_err() {
         panic_halt(b"merged dtb: validation failed");
     }
 

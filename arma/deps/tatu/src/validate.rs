@@ -217,7 +217,7 @@ fn check_memory_node<N: NodeView>(node: &N) -> Result<(), ValidationError> {
 // memory-vs-device overlap check 2.
 // ---------------------------------------------------------------------------
 
-pub fn validate_merged<T: TreeView>(tree: &T) -> Result<(), ValidationError> {
+pub fn validate_merged<T: TreeView>(tree: &T, pa_bits: u32) -> Result<(), ValidationError> {
     let mut memory: ArrayVec<Region, MAX_MEMORY_REGIONS> = ArrayVec::new();
     let mut devices: ArrayVec<Region, MAX_DEVICE_RANGES> = ArrayVec::new();
     let mut cpu_count: usize = 0;
@@ -225,7 +225,7 @@ pub fn validate_merged<T: TreeView>(tree: &T) -> Result<(), ValidationError> {
     for child in tree.root().children() {
         match top_segment(child.name()) {
             "cpus" => count_cpus(&child, &mut cpu_count)?,
-            "memory" => extract_memory(&child, &mut memory)?,
+            "memory" => extract_memory(&child, &mut memory, pa_bits)?,
             // Any other top-level node carrying a `reg` is a platform device
             // (E1, §4.4). Matching by structure (has `reg`), not by node name,
             // is robust to the device-model's names (interrupt-controller@,
@@ -233,7 +233,7 @@ pub fn validate_merged<T: TreeView>(tree: &T) -> Result<(), ValidationError> {
             // every device MMIO region rather than a hand-listed subset.
             _ => {
                 if NodeView::property(&child, "reg").is_some() {
-                    extract_device_regs(&child, &mut devices)?;
+                    extract_device_regs(&child, &mut devices, pa_bits)?;
                 }
             }
         }
@@ -262,6 +262,7 @@ fn count_cpus<N: NodeView>(node: &N, count: &mut usize) -> Result<(), Validation
 fn extract_memory<N: NodeView>(
     node: &N,
     regions: &mut ArrayVec<Region, MAX_MEMORY_REGIONS>,
+    pa_bits: u32,
 ) -> Result<(), ValidationError> {
     let Some(reg) = NodeView::property(node, "reg") else {
         return Ok(());
@@ -272,7 +273,7 @@ fn extract_memory<N: NodeView>(
     }
     for chunk in bytes.chunks_exact(16) {
         let r = parse_one_region(chunk);
-        validate_region(r)?;
+        validate_region(r, pa_bits)?;
         regions
             .try_push(r)
             .map_err(|_| ValidationError::TooManyMemoryRegions)?;
@@ -287,6 +288,7 @@ fn extract_memory<N: NodeView>(
 fn extract_device_regs<N: NodeView>(
     node: &N,
     devices: &mut ArrayVec<Region, MAX_DEVICE_RANGES>,
+    pa_bits: u32,
 ) -> Result<(), ValidationError> {
     let Some(reg) = NodeView::property(node, "reg") else {
         return Ok(());
@@ -297,7 +299,7 @@ fn extract_device_regs<N: NodeView>(
     }
     for chunk in bytes.chunks_exact(16) {
         let r = parse_one_region(chunk);
-        validate_region(r)?;
+        validate_region(r, pa_bits)?;
         devices
             .try_push(r)
             .map_err(|_| ValidationError::TooManyDeviceRanges)?;
@@ -337,15 +339,17 @@ impl Region {
     }
 }
 
-/// Validate a region's invariants: nonzero size, no end-overflow,
-/// canonical GPA. Per merged.md §2 the overflow + canonical checks
-/// are required on host-contributed addresses.
-fn validate_region(r: Region) -> Result<(), ValidationError> {
+/// Validate a region's invariants: nonzero size, no end-overflow, and that the
+/// region fits within the guest's physical address space. Per merged.md §2 the
+/// overflow + bound checks are required on host-contributed addresses; the
+/// bound is the guest PA/IPA width (`pa_bits`), not a hardcoded constant (pmi
+/// spec bc7f581).
+fn validate_region(r: Region, pa_bits: u32) -> Result<(), ValidationError> {
     if r.size == 0 {
         return Err(ValidationError::ZeroSize);
     }
     let end = r.end().ok_or(ValidationError::AddressOverflow)?;
-    if end > (1u64 << 48) {
+    if end > (1u64 << pa_bits) {
         return Err(ValidationError::NonCanonicalGpa);
     }
     Ok(())
@@ -397,13 +401,20 @@ mod tests {
     use super::*;
     use devtree::{Overlay, Tree};
 
+    // Representative guest PA/IPA width for tests (aarch64 PARange=5 / x86
+    // typical). The production bound comes from `arch::guest_pa_bits()`.
+    const TEST_PA_BITS: u32 = 48;
+
     #[test]
     fn region_validation_rejects_zero_size() {
         assert_eq!(
-            validate_region(Region {
-                gpa: 0x1000,
-                size: 0
-            }),
+            validate_region(
+                Region {
+                    gpa: 0x1000,
+                    size: 0
+                },
+                TEST_PA_BITS
+            ),
             Err(ValidationError::ZeroSize)
         );
     }
@@ -411,21 +422,39 @@ mod tests {
     #[test]
     fn region_validation_rejects_overflow() {
         assert_eq!(
-            validate_region(Region {
-                gpa: u64::MAX - 0xFFF,
-                size: 0x1000
-            }),
+            validate_region(
+                Region {
+                    gpa: u64::MAX - 0xFFF,
+                    size: 0x1000
+                },
+                TEST_PA_BITS
+            ),
             Err(ValidationError::AddressOverflow)
         );
     }
 
     #[test]
-    fn region_validation_rejects_non_canonical() {
+    fn region_validation_rejects_above_pa_width() {
+        // A region ending past 2^pa_bits is rejected by the derived bound.
         assert_eq!(
-            validate_region(Region {
-                gpa: 1u64 << 48,
-                size: 0x1000
-            }),
+            validate_region(
+                Region {
+                    gpa: 1u64 << TEST_PA_BITS,
+                    size: 0x1000
+                },
+                TEST_PA_BITS
+            ),
+            Err(ValidationError::NonCanonicalGpa)
+        );
+        // A narrower width rejects an address a wider one would accept.
+        assert_eq!(
+            validate_region(
+                Region {
+                    gpa: 1u64 << 39,
+                    size: 0x1000
+                },
+                36
+            ),
             Err(ValidationError::NonCanonicalGpa)
         );
     }
@@ -470,7 +499,7 @@ mod tests {
     fn merged_dtb_basic_fixture_passes() {
         let blob = include_bytes!("../deps/dtb2acpi/tests/data/basic.dtb");
         let tree: devtree::Tree<'_> = devtree::Tree::parse(blob).unwrap();
-        validate_merged(&tree).expect("basic fixture should pass");
+        validate_merged(&tree, TEST_PA_BITS).expect("basic fixture should pass");
     }
 
     // ----- Host-DTBO allowlist tests (merged.md §2) ---------------------
@@ -593,6 +622,9 @@ mod tests {
             return;
         };
         let tree: Tree = Tree::parse(&bb).unwrap();
-        assert_eq!(validate_merged(&tree), Err(ValidationError::TooManyCpus));
+        assert_eq!(
+            validate_merged(&tree, TEST_PA_BITS),
+            Err(ValidationError::TooManyCpus)
+        );
     }
 }

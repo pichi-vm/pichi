@@ -956,7 +956,7 @@ mod launch {
                 .collect();
             platform
                 .plan
-                .cross_validate_loads(&load_ranges)
+                .cross_validate_loads(&load_ranges, platform.min_addr_space_bits())
                 .map_err(LaunchError::DtbCrossValidate)?;
 
             let must_cover: Vec<(u64, u64)> = parsed

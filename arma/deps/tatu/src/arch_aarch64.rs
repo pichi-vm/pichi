@@ -139,6 +139,29 @@ fn cpu_has_rndr() -> bool {
     (isar0 >> 60) & 0xf != 0
 }
 
+/// Guest IPA width in bits, from `ID_AA64MMFR0_EL1.PARange` (bits 3:0). Per pmi
+/// spec bc7f581 this is the bound for host-supplied addresses in the merged DTB
+/// — read from the architectural register, never a hardcoded constant.
+pub fn guest_pa_bits() -> u32 {
+    let mmfr0: u64;
+    // SAFETY: ID_AA64MMFR0_EL1 is readable at EL1; no memory or flag effects.
+    unsafe {
+        core::arch::asm!("mrs {r}, ID_AA64MMFR0_EL1", r = out(reg) mmfr0, options(nostack, nomem, preserves_flags));
+    }
+    match mmfr0 & 0xf {
+        0 => 32,
+        1 => 36,
+        2 => 40,
+        3 => 42,
+        4 => 44,
+        5 => 48,
+        6 => 52,
+        7 => 56,
+        // Reserved encodings: fall back to the AArch64 architectural maximum.
+        _ => 48,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // MergedDtb — typed handle for the merged DTB workspace, the
 // argument to `boot_kernel` on aarch64.

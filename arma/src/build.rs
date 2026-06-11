@@ -236,9 +236,15 @@ pub(crate) fn run(args: &BuildArgs) -> Result<()> {
     };
     let chosen = args.profile.as_deref().unwrap_or(baseline);
     let cpu_profile = kconfig::raise_to_floor(chosen, kcfg.isa_floor(arch), arch);
-    let has_initrd = initrd_materialized.is_some();
-    let has_relocs = relocs_size.is_some();
-    let cbor = manifest::build_pmi_vm(arch, &tatu_img, has_initrd, has_relocs, &cpu_profile)
+    // Explicit action GPAs (pmi spec f6be1eb): the planner's placement for the
+    // kernel/initrd/relocs; tatu sections and the dtbo fill carry their ELF
+    // vaddr (resolved inside build_actions).
+    let action_gpas = manifest::ActionGpas {
+        linux: lay.linux.start,
+        initrd: lay.initrd.as_ref().map(|r| r.start),
+        relocs: lay.relocs.as_ref().map(|r| r.start),
+    };
+    let cbor = manifest::build_pmi_vm(arch, &tatu_img, action_gpas, &cpu_profile)
         .context("build CBOR manifest")?;
 
     // ---- Step 11: assemble PE section list ----

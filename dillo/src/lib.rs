@@ -43,9 +43,6 @@ pub mod pmi_parse {
         /// the typed-Spec level.
         pub const CBOR_MAX_ARRAY_LEN: usize = 64;
 
-        /// Canonical address bound for x86-64 / aarch64 (`< 2^48`).
-        pub const CANONICAL_ADDR_BOUND: u128 = 1u128 << 48;
-
         /// 2 MiB huge-page granularity (large-section alignment + backing).
         pub const HUGE_PAGE: u64 = 2 << 20;
 
@@ -114,17 +111,10 @@ pub mod pmi_parse {
             file_size: u64,
         },
 
-        #[error("section `{name}`: VirtualAddress + VirtualSize overflows u64")]
+        #[error("section `{name}`: gpa + VirtualSize overflows u64")]
         VirtualAddressOverflow { name: String },
 
-        #[error(
-            "section `{name}` GPA range [{start:#x}..{end:#x}) exceeds canonical address bound 2^48"
-        )]
-        GpaOutOfCanonicalBound { name: String, start: u64, end: u64 },
-
-        #[error(
-            "sections `{a}` and `{b}` overlap in [VirtualAddress, VirtualAddress + VirtualSize)"
-        )]
+        #[error("sections `{a}` and `{b}` overlap in [gpa, gpa + VirtualSize)")]
         SectionsOverlap { a: String, b: String },
 
         #[error(
@@ -241,7 +231,8 @@ pub mod pmi_parse {
         pub file_offset: u64,
         /// On-disk byte count (`SizeOfRawData`). Zero for Zero-shape sections.
         pub file_size: u64,
-        /// Guest physical address (`VirtualAddress`).
+        /// Guest physical address — the explicit `gpa` from the load/fill
+        /// action (pmi spec f6be1eb), not the PE `VirtualAddress`.
         pub gpa: u64,
         /// In-guest byte count (`VirtualSize`).
         pub virtual_size: u64,
@@ -323,7 +314,7 @@ pub mod pmi_parse {
         let _ = machine;
 
         // Enumerate sections once into a typed table.
-        let raw_sections = collect_sections(&pe, file_size, bytes)?;
+        let mut raw_sections = collect_sections(&pe, file_size, bytes)?;
 
         // Locate `.pmi.vm` (MVP — only `vm` target is supported).
         let target_section_name = pmi::vm::Spec::<vcpu_x86_64::CpuState>::SECTION;
@@ -346,6 +337,22 @@ pub mod pmi_parse {
         // Strict CBOR decode (depth-limited) into the arch-correct Spec<V>.
         let (vcpu, cpu_profile, actions_raw, merged_dtb) =
             decode_manifest_bytes(&target_section.body, opts.host_arch)?;
+
+        // pmi spec f6be1eb: each load/fill action carries an explicit `gpa`;
+        // the VMM places bytes there verbatim and MUST NOT consult the PE
+        // `VirtualAddress`. Stamp the action GPA over the provisional
+        // PE-derived value so all downstream placement, overlap, and bounds
+        // checks operate on the authoritative address. (Sections not named by
+        // any action — e.g. `.pmi.vm` — keep their PE address and are unused.)
+        for a in &actions_raw {
+            let (name, gpa) = match a {
+                ManifestActionOwned::Load { gpa, section } => (section, *gpa),
+                ManifestActionOwned::Fill { gpa, section, .. } => (section, *gpa),
+            };
+            if let Some(s) = raw_sections.get_mut(name) {
+                s.gpa = gpa;
+            }
+        }
 
         // Resolve actions against the section table.
         let (actions, active_section_names, fill_kinds) =
@@ -642,15 +649,23 @@ pub mod pmi_parse {
 
     #[derive(Debug, Clone)]
     enum ManifestActionOwned {
-        Load { section: String },
-        Fill { section: String, kind: PmiFillKind },
+        Load { gpa: u64, section: String },
+        Fill {
+            gpa: u64,
+            section: String,
+            kind: PmiFillKind,
+        },
     }
 
     impl From<ManifestAction> for ManifestActionOwned {
         fn from(a: ManifestAction) -> Self {
             match a {
-                ManifestAction::Load(l) => Self::Load { section: l.section },
+                ManifestAction::Load(l) => Self::Load {
+                    gpa: l.gpa,
+                    section: l.section,
+                },
                 ManifestAction::Fill(f) => Self::Fill {
+                    gpa: f.gpa,
                     section: f.section,
                     kind: f.kind,
                 },
@@ -667,14 +682,17 @@ pub mod pmi_parse {
         let mut fills = Vec::new();
 
         for a in raw {
+            // The action GPA was already stamped into the section table by the
+            // caller; here we only need the section name + fill kind. Placement
+            // flows through `SectionInfo.gpa`.
             let (name, action) = match a {
-                ManifestActionOwned::Load { section } => (
+                ManifestActionOwned::Load { section, .. } => (
                     section.clone(),
                     Action::Load {
                         section: section.clone(),
                     },
                 ),
-                ManifestActionOwned::Fill { section, kind } => {
+                ManifestActionOwned::Fill { section, kind, .. } => {
                     let translated = translate_fill_kind(*kind)?;
                     fills.push(translated);
                     (
@@ -702,30 +720,28 @@ pub mod pmi_parse {
     }
 
     fn validate_section(name: &str, s: &RawSection) -> Result<(), Error> {
-        // VirtualAddress + VirtualSize doesn't overflow u64.
-        let end =
-            s.gpa
-                .checked_add(s.virtual_size)
-                .ok_or_else(|| Error::VirtualAddressOverflow {
-                    name: name.to_string(),
-                })?;
-
-        // GPA range within canonical 2^48 bound.
-        if u128::from(end) > caps::CANONICAL_ADDR_BOUND {
-            return Err(Error::GpaOutOfCanonicalBound {
+        // gpa + VirtualSize doesn't overflow u64.
+        s.gpa
+            .checked_add(s.virtual_size)
+            .ok_or_else(|| Error::VirtualAddressOverflow {
                 name: name.to_string(),
-                start: s.gpa,
-                end,
-            });
-        }
+            })?;
 
-        // Alignment per PMI granularity (`pmi/spec/granularity.md`).
+        // The guest-address-width bound is no longer a hardcoded 2^48 (pmi
+        // spec bc7f581): it is enforced post-survey in dillo-devtree's
+        // `cross_validate_loads`, which knows the image's declared
+        // address-space width. Parse-time validation here is width-agnostic.
+
+        // Alignment per PMI granularity (`pmi/spec/granularity.md`, commits
+        // 15768cf + 3b2260e): only a section's START is constrained — `gpa`
+        // and `PointerToRawData`. `SizeOfRawData` follows PE `FileAlignment`
+        // and carries no alignment requirement.
         if s.virtual_size >= caps::HUGE_PAGE {
             if !s.gpa.is_multiple_of(caps::HUGE_PAGE) {
                 return Err(Error::AlignmentViolation {
                     name: name.to_string(),
                     virtual_size: s.virtual_size,
-                    rule: "large section: VirtualAddress must be 2 MiB-aligned",
+                    rule: "large section: gpa must be 2 MiB-aligned",
                 });
             }
             if s.file_size > 0 && !s.file_offset.is_multiple_of(caps::HUGE_PAGE) {
@@ -735,19 +751,12 @@ pub mod pmi_parse {
                     rule: "large section: PointerToRawData must be 2 MiB-aligned",
                 });
             }
-            if s.file_size > 0 && !s.file_size.is_multiple_of(caps::HUGE_PAGE) {
-                return Err(Error::AlignmentViolation {
-                    name: name.to_string(),
-                    virtual_size: s.virtual_size,
-                    rule: "large section: SizeOfRawData must be 2 MiB-multiple",
-                });
-            }
         } else if s.virtual_size > 0 {
             if !s.gpa.is_multiple_of(caps::SMALL_PAGE) {
                 return Err(Error::AlignmentViolation {
                     name: name.to_string(),
                     virtual_size: s.virtual_size,
-                    rule: "small section: VirtualAddress must be 4 KiB-aligned",
+                    rule: "small section: gpa must be 4 KiB-aligned",
                 });
             }
             if s.file_size > 0 && !s.file_offset.is_multiple_of(caps::SMALL_PAGE) {
@@ -755,13 +764,6 @@ pub mod pmi_parse {
                     name: name.to_string(),
                     virtual_size: s.virtual_size,
                     rule: "small section: PointerToRawData must be 4 KiB-aligned",
-                });
-            }
-            if s.file_size > 0 && !s.file_size.is_multiple_of(caps::SMALL_PAGE) {
-                return Err(Error::AlignmentViolation {
-                    name: name.to_string(),
-                    virtual_size: s.virtual_size,
-                    rule: "small section: SizeOfRawData must be 4 KiB-multiple",
                 });
             }
         }

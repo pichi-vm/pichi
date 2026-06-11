@@ -32,24 +32,37 @@ pub(crate) const SECTION_GDT: &str = ".tatu.gdt";
 /// target spec section.
 pub(crate) const SECTION_PMI_VM: &str = ".pmi.vm";
 
-/// Build the CBOR bytes for the `.pmi.vm` section. The placement [`Layout`]
-/// isn't needed here — the manifest references sections by name and reads the
-/// boot-CPU-table GPAs from the tatu ELF; GPAs live in the PE section table.
+/// The guest-physical addresses each `load`/`fill` action places its section
+/// at. Per `pmi/spec/granularity.md` (commit `f6be1eb`) every action carries an
+/// explicit `gpa`; the VMM places bytes there verbatim and never consults the
+/// PE `VirtualAddress`. arma's placement and PE `VirtualAddress` happen to
+/// coincide, but the manifest now states the GPA outright. Tatu sections and
+/// the `.tatu.dtbo` fill target are linked at absolute addresses (their GPA is
+/// the ELF `vaddr`); the kernel/initrd/relocs GPAs come from the planner.
+#[derive(Copy, Clone)]
+pub(crate) struct ActionGpas {
+    pub(crate) linux: u64,
+    pub(crate) initrd: Option<u64>,
+    pub(crate) relocs: Option<u64>,
+}
+
+/// Build the CBOR bytes for the `.pmi.vm` section. The placement GPAs come from
+/// the planner; tatu-defined sections (`.tatu.*`, including the base DTB and the
+/// `.tatu.dtbo` fill target) carry their ELF `vaddr` as the explicit action GPA.
 pub(crate) fn build_pmi_vm(
     arch: Arch,
     tatu: &TatuImage,
-    has_initrd: bool,
-    has_relocs: bool,
+    gpas: ActionGpas,
     cpu_profile: &str,
 ) -> Result<Vec<u8>> {
     let profile = Profile::new(cpu_profile);
     match arch {
         Arch::X86_64 => {
-            let spec = build_spec_x86(tatu, has_initrd, has_relocs, profile)?;
+            let spec = build_spec_x86(tatu, gpas, profile)?;
             encode(&spec)
         }
         Arch::Aarch64 => {
-            let spec = build_spec_aarch64(tatu, has_initrd, has_relocs, profile);
+            let spec = build_spec_aarch64(tatu, gpas, profile);
             encode(&spec)
         }
     }
@@ -72,7 +85,7 @@ fn encode<T: pmi::Target>(t: &T) -> Result<Vec<u8>> {
 // Action list builder, shared between arches.
 // ---------------------------------------------------------------------------
 
-fn build_actions(_arch: Arch, tatu: &TatuImage, has_initrd: bool, has_relocs: bool) -> Vec<Action> {
+fn build_actions(tatu: &TatuImage, gpas: ActionGpas) -> Vec<Action> {
     let mut out = Vec::with_capacity(16);
 
     // Tatu sections — one load per SHF_ALLOC section, in vaddr order
@@ -80,38 +93,47 @@ fn build_actions(_arch: Arch, tatu: &TatuImage, has_initrd: bool, has_relocs: bo
     // unmeasured host-DTBO fill target (Fill action below), not loaded
     // from the PMI. Everything else loads here, including `.tatu.dtb`
     // (arma fills it with the measured base DTB) and the x86 boot CPU
-    // tables `.tatu.pgt` / `.tatu.gdt` (const-fn-baked by tatu).
+    // tables `.tatu.pgt` / `.tatu.gdt` (const-fn-baked by tatu). Each tatu
+    // section is linked at an absolute address, so its `vaddr` is the
+    // explicit action GPA.
     for s in &tatu.sections {
         if s.name == SECTION_DTBO {
             continue;
         }
         out.push(Action::Load(Load {
+            gpa: s.vaddr,
             section: s.name.clone(),
             kind: LoadKind::default(),
         }));
     }
 
-    // Kernel, then optional initrd. The base DTB (`.tatu.dtb`) is loaded
-    // by the tatu-sections loop above.
+    // Kernel, then optional initrd / relocs, at their planner-assigned GPAs.
+    // The base DTB (`.tatu.dtb`) is loaded by the tatu-sections loop above.
     out.push(Action::Load(Load {
+        gpa: gpas.linux,
         section: SECTION_LINUX.into(),
         kind: LoadKind::default(),
     }));
-    if has_initrd {
+    if let Some(gpa) = gpas.initrd {
         out.push(Action::Load(Load {
+            gpa,
             section: SECTION_INITRD.into(),
             kind: LoadKind::default(),
         }));
     }
-    if has_relocs {
+    if let Some(gpa) = gpas.relocs {
         out.push(Action::Load(Load {
+            gpa,
             section: SECTION_RELOCS.into(),
             kind: LoadKind::default(),
         }));
     }
 
-    // Host-DTBO fill — the unmeasured half of the merged extension.
+    // Host-DTBO fill — the unmeasured half of the merged extension. Its fill
+    // target is the tatu-defined `.tatu.dtbo` section, placed at its ELF vaddr.
+    let dtbo_gpa = tatu.section(SECTION_DTBO).map_or(0, |s| s.vaddr);
     out.push(Action::Fill(Fill {
+        gpa: dtbo_gpa,
         section: SECTION_DTBO.into(),
         kind: pmi::vm::FillKind::MergedDtbo,
     }));
@@ -125,8 +147,7 @@ fn build_actions(_arch: Arch, tatu: &TatuImage, has_initrd: bool, has_relocs: bo
 
 fn build_spec_x86(
     tatu: &TatuImage,
-    has_initrd: bool,
-    has_relocs: bool,
+    gpas: ActionGpas,
     cpu_profile: Profile,
 ) -> Result<Spec<vcpu::x86_64::CpuState>> {
     // cr3 / gdtr.base come straight from tatu's ELF: the boot CPU tables
@@ -142,7 +163,7 @@ fn build_spec_x86(
         .vaddr;
     Ok(Spec {
         version: Version::default(),
-        actions: build_actions(Arch::X86_64, tatu, has_initrd, has_relocs),
+        actions: build_actions(tatu, gpas),
         vcpu: x86_vcpu(pgtable_gpa, gdt_gpa),
         cpu_profile,
         merged_dtb: Some(SECTION_DTB.into()),
@@ -216,13 +237,12 @@ fn data_seg(selector: u16, attributes: u16) -> vcpu::x86_64::SegReg {
 
 fn build_spec_aarch64(
     tatu: &TatuImage,
-    has_initrd: bool,
-    has_relocs: bool,
+    gpas: ActionGpas,
     cpu_profile: Profile,
 ) -> Spec<vcpu::aarch64::CpuState> {
     Spec {
         version: Version::default(),
-        actions: build_actions(Arch::Aarch64, tatu, has_initrd, has_relocs),
+        actions: build_actions(tatu, gpas),
         vcpu: aarch64_vcpu(tatu.entry),
         cpu_profile,
         merged_dtb: Some(SECTION_DTB.into()),
@@ -257,10 +277,21 @@ mod tests {
     fn x86_manifest_round_trips_via_strict_decoder() {
         use crate::TATU_X86_64;
         let tatu = parse_tatu(TATU_X86_64, Arch::X86_64).unwrap();
-        let cbor = build_pmi_vm(Arch::X86_64, &tatu, true, true, "x86-64-v3").unwrap();
+        let gpas = ActionGpas {
+            linux: 0x20_0000,
+            initrd: Some(0x100_0000),
+            relocs: Some(0x200_0000),
+        };
+        let cbor = build_pmi_vm(Arch::X86_64, &tatu, gpas, "x86-64-v3").unwrap();
         let decoded: Spec<vcpu::x86_64::CpuState> =
             from_reader(cbor.as_slice()).expect("strict round-trip decode");
         assert_eq!(decoded.vcpu.rip, 0xFFFF_FFF0);
+        // The kernel load carries its explicit planner GPA.
+        let linux_gpa = decoded.actions.iter().find_map(|a| match a {
+            Action::Load(l) if l.section == SECTION_LINUX => Some(l.gpa),
+            _ => None,
+        });
+        assert_eq!(linux_gpa, Some(0x20_0000));
         // cr3 / gdtr.base must equal the tatu ELF's boot-CPU-table GPAs.
         let pgt = tatu
             .section(SECTION_PGTABLE)
@@ -285,7 +316,12 @@ mod tests {
     fn aarch64_manifest_pc_matches_tatu_entry() {
         use crate::TATU_AARCH64;
         let tatu = parse_tatu(TATU_AARCH64, Arch::Aarch64).unwrap();
-        let cbor = build_pmi_vm(Arch::Aarch64, &tatu, false, false, "armv8.2-a").unwrap();
+        let gpas = ActionGpas {
+            linux: 0x20_0000,
+            initrd: None,
+            relocs: None,
+        };
+        let cbor = build_pmi_vm(Arch::Aarch64, &tatu, gpas, "armv8.2-a").unwrap();
         let decoded: Spec<vcpu::aarch64::CpuState> =
             from_reader(cbor.as_slice()).expect("strict round-trip decode");
         assert_eq!(decoded.vcpu.pc, tatu.entry);

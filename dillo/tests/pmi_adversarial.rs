@@ -19,6 +19,54 @@ fn opts() -> ParseOptions {
     }
 }
 
+/// Locate the `.pmi.vm` section's raw-data window `[start, end)` in a PMI file.
+fn pmi_vm_cbor_range(bytes: &[u8]) -> Option<(usize, usize)> {
+    let pe_off = u32::from_le_bytes(bytes[0x3C..0x40].try_into().ok()?) as usize;
+    let num_sections = u16::from_le_bytes(bytes[pe_off + 6..pe_off + 8].try_into().ok()?);
+    let opt_size = u16::from_le_bytes(bytes[pe_off + 20..pe_off + 22].try_into().ok()?) as usize;
+    let mut sect_off = pe_off + 24 + opt_size;
+    for _ in 0..num_sections {
+        let name = &bytes[sect_off..sect_off + 8];
+        let trimmed = std::str::from_utf8(name).unwrap_or("").trim_end_matches('\0');
+        if trimmed == ".pmi.vm" {
+            let raw_size =
+                u32::from_le_bytes(bytes[sect_off + 16..sect_off + 20].try_into().ok()?) as usize;
+            let ptr_to_raw =
+                u32::from_le_bytes(bytes[sect_off + 20..sect_off + 24].try_into().ok()?) as usize;
+            return Some((ptr_to_raw, ptr_to_raw + raw_size));
+        }
+        sect_off += 40;
+    }
+    None
+}
+
+/// Overwrite every uint32-encoded action `gpa` in the `.pmi.vm` CBOR with
+/// `value`, returning how many were rewritten. The action `gpa` (pmi spec
+/// f6be1eb) is the authoritative placement address; mutating it is how an
+/// adversary attacks placement now that the PE `VirtualAddress` is ignored.
+/// The key `"gpa"` encodes as CBOR `63 67 70 61`; 2 MiB-aligned addresses use
+/// the `0x1A` uint32 form, so we match `63 67 70 61 1A` and rewrite the 4
+/// big-endian value bytes that follow.
+fn rewrite_gpas(bytes: &mut [u8], value: u32) -> usize {
+    let Some((start, end)) = pmi_vm_cbor_range(bytes) else {
+        return 0;
+    };
+    let key = [0x63u8, 0x67, 0x70, 0x61, 0x1A];
+    let mut count = 0;
+    let mut i = start;
+    while i + key.len() + 4 <= end {
+        if bytes[i..i + key.len()] == key {
+            let v = i + key.len();
+            bytes[v..v + 4].copy_from_slice(&value.to_be_bytes());
+            count += 1;
+            i = v + 4;
+        } else {
+            i += 1;
+        }
+    }
+    count
+}
+
 // ─── PE structural ──────────────────────────────────────────────
 
 #[test]
@@ -96,32 +144,23 @@ fn parse_x86_pmi_as_aarch64_fails() {
 fn pathologically_spread_layout_rejected() {
     // The spec ratio invariant: `footprint_2mib × 2 MiB > 4 × sum`
     // refuses. Building a PMI from scratch is heavyweight; we instead
-    // mutate /tmp/real.pmi to push one section's VirtualAddress far
-    // enough away from the others that the rounded-up 2 MiB
-    // footprint balloons. The error chain will fire either
-    // `SpreadRatioExceeded`, `SpreadAbsoluteExceeded`, or another
-    // related validation — any rejection is the right outcome.
+    // mutate /tmp/real.pmi to push every action's manifest `gpa` (the
+    // placement address under pmi spec f6be1eb — the PE VirtualAddress
+    // is no longer consulted) far up, ballooning the rounded-up 2 MiB
+    // footprint. The error chain will fire `SpreadRatioExceeded`,
+    // `SpreadAbsoluteExceeded`, an overlap, or another related
+    // validation — any rejection (or a clean parse) is acceptable; the
+    // invariant pinned here is no panic.
     let Ok(mut bytes) = std::fs::read("/tmp/real.pmi") else {
         eprintln!("skipping: /tmp/real.pmi not present");
         return;
     };
-    let pe_off = u32::from_le_bytes(bytes[0x3C..0x40].try_into().unwrap()) as usize;
-    let num_sections = u16::from_le_bytes(bytes[pe_off + 6..pe_off + 8].try_into().unwrap());
-    let opt_size = u16::from_le_bytes(bytes[pe_off + 20..pe_off + 22].try_into().unwrap()) as usize;
-    let sect_off = pe_off + 24 + opt_size;
-    if num_sections < 2 {
-        return;
-    }
-    // Move section 1's VirtualAddress 8 GiB up — far beyond any
-    // existing footprint. Mask to u32 since PE VirtualAddress is u32.
-    let huge_va: u32 = 0xC000_0000;
-    bytes[sect_off + 40 + 12..sect_off + 40 + 16].copy_from_slice(&huge_va.to_le_bytes());
-    // The mutation either trips the spread check or some earlier
-    // validation (overlap, canonical bound, etc.). We assert no
-    // panic and that the parser handled the input — either Ok or
-    // Err is acceptable. The cargo-fuzz harness covers broader
-    // mutation space; this test pins the no-panic invariant for
-    // this specific shape.
+    // Push the uint32-encoded gpas to 3 GiB, far beyond the kernel/initrd
+    // footprint, so the 2 MiB footprint span explodes relative to the
+    // loaded byte sum.
+    let _ = rewrite_gpas(&mut bytes, 0xC000_0000);
+    // The cargo-fuzz harness covers broader mutation space; this test pins
+    // the no-panic invariant for this specific shape.
     let _ = parse(&bytes, &opts());
 }
 
@@ -160,25 +199,21 @@ fn section_raw_data_past_file_size_rejected() {
 // ─── Overlapping sections ───────────────────────────────────────
 
 #[test]
-fn overlapping_virtual_address_ranges_rejected() {
+fn overlapping_gpa_ranges_rejected() {
     let Ok(mut bytes) = std::fs::read("/tmp/real.pmi") else {
         eprintln!("skipping: /tmp/real.pmi not present");
         return;
     };
-    let pe_off = u32::from_le_bytes(bytes[0x3C..0x40].try_into().unwrap()) as usize;
-    let num_sections = u16::from_le_bytes(bytes[pe_off + 6..pe_off + 8].try_into().unwrap());
-    let opt_size = u16::from_le_bytes(bytes[pe_off + 20..pe_off + 22].try_into().unwrap()) as usize;
-    let sect_off = pe_off + 24 + opt_size;
-    if num_sections < 2 {
+    // Placement is by the manifest `gpa` (pmi spec f6be1eb), not the PE
+    // VirtualAddress. Force every uint32-encoded action gpa to the same
+    // address: the large sections (kernel + base DTB, both nonzero size)
+    // now collide → overlap rejection.
+    let n = rewrite_gpas(&mut bytes, 0x0020_0000);
+    if n < 2 {
+        eprintln!("skipping: fixture has <2 uint32 gpas to collide");
         return;
     }
-    // VirtualAddress is at offset 12 of each 40-byte section header.
-    // Copy section 0's VirtualAddress into section 1's slot → overlap.
-    let s0_va_off = sect_off + 12;
-    let s1_va_off = sect_off + 40 + 12;
-    let va: [u8; 4] = bytes[s0_va_off..s0_va_off + 4].try_into().unwrap();
-    bytes[s1_va_off..s1_va_off + 4].copy_from_slice(&va);
-    let err = parse(&bytes, &opts()).expect_err("overlapping VA must fail");
+    let err = parse(&bytes, &opts()).expect_err("overlapping gpa must fail");
     assert!(
         matches!(
             err,

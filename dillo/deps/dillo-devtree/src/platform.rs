@@ -273,8 +273,16 @@ impl ResourcePlan {
         Ok(())
     }
 
-    /// Reject loaded sections that overlap any surveyed non-RAM region.
-    pub fn cross_validate_loads(&self, loaded: &[(String, u64, u64)]) -> Result<(), SurveyError> {
+    /// Reject loaded sections that overlap any surveyed non-RAM region, or that
+    /// fall outside the guest's physical address space. Per pmi spec bc7f581 the
+    /// upper bound is the guest address width — `pa_bits` (the image's declared
+    /// address-space width, [`Machine::min_addr_space_bits`]) — never a
+    /// hardcoded 2^48.
+    pub fn cross_validate_loads(
+        &self,
+        loaded: &[(String, u64, u64)],
+        pa_bits: u32,
+    ) -> Result<(), SurveyError> {
         for (section, gpa, size) in loaded {
             if *size == 0 {
                 continue;
@@ -286,7 +294,7 @@ impl ResourcePlan {
                     start: *gpa,
                     end: u64::MAX,
                 })?;
-            if u128::from(end) > (1u128 << 48) {
+            if u128::from(end) > (1u128 << pa_bits) {
                 return Err(SurveyError::LoadAddressOverflow {
                     section: section.clone(),
                     start: *gpa,
@@ -1675,9 +1683,10 @@ mod tests {
     fn cross_validate_loads_rejects_declared_region_overlap() {
         let m = Machine::survey(&dtb(base_root()), Arch::Aarch64).expect("survey ok");
 
+        let pa_bits = m.min_addr_space_bits();
         let err = m
             .plan
-            .cross_validate_loads(&[("kernel".to_string(), SERIAL_BASE, 0x1000)])
+            .cross_validate_loads(&[("kernel".to_string(), SERIAL_BASE, 0x1000)], pa_bits)
             .unwrap_err();
 
         assert!(
@@ -1698,18 +1707,24 @@ mod tests {
     fn cross_validate_loads_accepts_zero_sized_sections() {
         let m = Machine::survey(&dtb(base_root()), Arch::Aarch64).expect("survey ok");
 
+        let pa_bits = m.min_addr_space_bits();
         m.plan
-            .cross_validate_loads(&[("zero".to_string(), SERIAL_BASE, 0)])
+            .cross_validate_loads(&[("zero".to_string(), SERIAL_BASE, 0)], pa_bits)
             .expect("zero-sized section ignored");
     }
 
     #[test]
-    fn cross_validate_loads_rejects_canonical_overflow() {
+    fn cross_validate_loads_rejects_address_above_guest_width() {
         let m = Machine::survey(&dtb(base_root()), Arch::Aarch64).expect("survey ok");
 
+        // An address at 2^48 exceeds the test platform's declared address
+        // width (min_addr_space_bits ≪ 48), so it is rejected by the derived
+        // bound — not a hardcoded constant (pmi spec bc7f581).
+        let pa_bits = m.min_addr_space_bits();
+        assert!(pa_bits < 48);
         let err = m
             .plan
-            .cross_validate_loads(&[("too-high".to_string(), 1u64 << 48, 1)])
+            .cross_validate_loads(&[("too-high".to_string(), 1u64 << 48, 1)], pa_bits)
             .unwrap_err();
 
         assert!(
