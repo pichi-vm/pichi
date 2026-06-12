@@ -121,14 +121,26 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          # Hosted runners start with a fragmented page allocator, so a single
+          # `sysctl -w vm.nr_hugepages=1024` often only secures a fraction (we
+          # have seen ~132). Free the page cache + compact memory and retry a
+          # few times so enough 2 MiB-contiguous regions become available before
+          # giving up. This is allocation flakiness, not a capability gap.
+          want=1024
           pages=$(sysctl -n vm.nr_hugepages)
-          if [ "$pages" -lt 1024 ]; then
-            sudo sysctl -w vm.nr_hugepages=1024
-          fi
+          for attempt in 1 2 3 4 5 6; do
+            if [ "$pages" -ge "$want" ]; then break; fi
+            sync || true
+            echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
+            echo 1 | sudo tee /proc/sys/vm/compact_memory >/dev/null || true
+            sudo sysctl -w vm.nr_hugepages=$want || true
+            pages=$(sysctl -n vm.nr_hugepages)
+            echo "hugepage reservation attempt $attempt: nr_hugepages=$pages (want $want)"
+            sleep 3
+          done
 
-          pages=$(sysctl -n vm.nr_hugepages)
-          if [ "$pages" -lt 1024 ]; then
-            echo "Linux runner must provide vm.nr_hugepages >= 1024; got $pages" >&2
+          if [ "$pages" -lt "$want" ]; then
+            echo "Linux runner must provide vm.nr_hugepages >= $want; got $pages" >&2
             exit 1
           fi
 

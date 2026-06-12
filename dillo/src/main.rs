@@ -208,9 +208,12 @@ fn layout_from_args(args: &Args) -> anyhow::Result<dillo_config::Layout> {
         serde_json::from_str(&text)
             .with_context(|| format!("parsing layout file {}", path.display()))
     } else {
-        // argh collects --blk and --gpt into separate vecs, so the interleaved
-        // command-line order is not preserved; blk devices precede gpt devices.
+        // argh collects --blk/--gpt/--fs into separate vecs, so the interleaved
+        // command-line order is not preserved; blk precede gpt precede fs.
         // Use `slot=`/`--layout` for exact ordering control.
+        // `mut` is only needed for the cfg(unix) vsock extension below; on
+        // non-Unix the binding is never mutated.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut devices: Vec<dillo_config::Device> = args
             .blk
             .iter()
