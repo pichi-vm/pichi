@@ -4,9 +4,9 @@
 //! ecosystem.
 //!
 //! This binary owns image management — pulling, pushing, importing, and
-//! inspecting OCI artifacts in the local content-addressed cache. Actually
-//! booting a VM is delegated to the separate `dillo` launcher (pichi prepares
-//! the environment and `exec()`s it); that path is not yet wired here.
+//! inspecting OCI artifacts in the local content-addressed cache. Booting a
+//! VM is delegated to the separate `dillo` launcher: `pichi run` derives the
+//! device set from the cached artifact, then `exec()`s `dillo`.
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
@@ -45,6 +45,8 @@ enum Command {
     Pull(cli::PullArgs),
     /// Push a cached pichi artifact to an OCI registry.
     Push(cli::PushArgs),
+    /// Boot a cached artifact by preparing the environment and exec'ing dillo.
+    Run(cli::RunArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -66,5 +68,6 @@ fn main() -> anyhow::Result<()> {
         Command::Import(args) => cmd::import::run(args, &config),
         Command::Pull(args) => cmd::pull::run(args, &config),
         Command::Push(args) => cmd::push::run(args, &config),
+        Command::Run(args) => cmd::run::run(args, &config),
     }
 }

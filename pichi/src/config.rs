@@ -28,6 +28,19 @@ pub struct Config {
     /// Registry list (consumed by Phase 44).
     #[serde(default)]
     pub registries: Vec<RegistryConfig>,
+    /// `pichi run` resource defaults.
+    #[serde(default)]
+    pub run: RunConfig,
+}
+
+/// Resource defaults for `pichi run`. CLI flags override these; when both
+/// are unset, `pichi run` omits the flag and dillo applies its own default.
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct RunConfig {
+    /// Default vCPU count.
+    pub cpus: Option<u32>,
+    /// Default guest memory in MiB.
+    pub memory_mib: Option<u32>,
 }
 
 /// Storage paths override block.
@@ -118,6 +131,12 @@ impl Config {
         // Registry list: later REPLACES earlier (not additive).
         if !other.registries.is_empty() {
             self.registries = other.registries;
+        }
+        if other.run.cpus.is_some() {
+            self.run.cpus = other.run.cpus;
+        }
+        if other.run.memory_mib.is_some() {
+            self.run.memory_mib = other.run.memory_mib;
         }
     }
 }

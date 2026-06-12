@@ -42,3 +42,8 @@ assert_cmd.workspace = true
 tempfile.workspace = true
 pichi-artifact.workspace = true
 pichi-storage.workspace = true
+# Test-only: round-trip the `--gpt` kv string `cmd::run` emits back through
+# dillo's device schema to guarantee the format parses as intended. Not a
+# runtime dependency — pichi and dillo are coupled only via dillo's CLI.
+dillo-config.workspace = true
+serde-keyvalue.workspace = true

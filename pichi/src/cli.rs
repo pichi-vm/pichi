@@ -151,6 +151,19 @@ pub struct PushArgs {
     pub quiet: bool,
 }
 
+/// Args for `pichi run <ref>` — boot a cached artifact by exec'ing dillo.
+#[derive(Debug, ClapArgs)]
+pub struct RunArgs {
+    /// Image reference to boot (`image:tag` or `image@sha256:...`).
+    pub reference: String,
+    /// Number of vCPUs. Overrides config; falls back to dillo's default.
+    #[arg(long)]
+    pub cpus: Option<u32>,
+    /// Guest memory in MiB. Overrides config; falls back to dillo's default.
+    #[arg(long)]
+    pub memory: Option<u32>,
+}
+
 /// `--salt` hex decode is fallible — use TryFrom so bad hex is rejected
 /// at the dispatch boundary with `with_context`, not silently swallowed.
 impl TryFrom<ImportArgs> for pichi_import::ImportArgs {

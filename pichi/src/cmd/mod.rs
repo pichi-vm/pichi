@@ -14,5 +14,6 @@ pub mod pull;
 pub mod push;
 pub mod registry_helpers;
 pub mod rmi;
+pub mod run;
 pub mod streaming_sink;
 pub mod tag;
