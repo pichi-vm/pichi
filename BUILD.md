@@ -95,7 +95,7 @@ are implemented today.
 | Command | Status | Purpose |
 |---------|--------|---------|
 | `pichi import <raw> <tag>` | done | Convert a raw GPT image into a base carapace. Pure host-side userspace. |
-| `pichi build [-t <tag>] <dir>` | **this doc** | Build an artifact from `<dir>/pichi.yaml`. Derives from a `from:` carapace. Runs the build VM. |
+| `pichi build [-t <tag>] [--build-image <ref>] <dir>` | **this doc** | Build an artifact from `<dir>/pichi.yaml`. Derives from a `from:` carapace; runs in a build VM (any tagged image; default the official build image). |
 | `pichi run <tag>` | done | Launch a VM from a tag. Errors if not cached; requires a PMI. |
 | `pichi pull` / `push` | done | Move artifacts to/from a registry. |
 | `pichi images` / `inspect` / `rmi` / `tag` | done | Local cache management. |
@@ -293,8 +293,12 @@ everything in hardware-trusted memory with none of this machinery.
 
 The recipe lives in the context, so the host's role is setup + wait:
 
-1. Host reads `pichi.yaml` (from `<dir>`) to resolve `from:`, the output tag,
-   and the build-image ref.
+1. Host reads `pichi.yaml` (from `<dir>`) to resolve `from:` and the output
+   tag, and resolves the **build image** ref (`--build-image` →
+   `PICHI_BUILD_IMAGE` → config → default). The build image is just a tagged
+   artifact — any cached tag works, which is what makes bootstrapping (build the
+   build image with a prior one) and per-project customization free. Its
+   measurement is recorded in provenance (§10) regardless of which image.
 2. Host packs `<dir>` (including `pichi.yaml`) → deterministic erofs →
    `pichi import` → **context carapace** (§6).
 3. Host ensures the **base carapace** (`from:`) and **build image** are cached
@@ -359,12 +363,15 @@ PVALIDATE on SNP, TDX accept — to enter the protected boundary).
 
 **Decision:**
 
-- **v1 = lazy acceptance + a generous `maxmem` ceiling.** `pichi` launches
-  `dillo` with a large ceiling; the guest leaves memory unaccepted and accepts
-  on first touch; with `guest_memfd` the host commits private pages on
-  acceptance → demand-commit up to the ceiling. No virtio-mem, no new device,
-  no hotplug RFC. A high ceiling is cheap (cost is address space/metadata until
-  touched).
+- **v1 = lazy acceptance + an auto-sized `maxmem` ceiling.** `pichi build`
+  sizes the ceiling from the host's currently-available memory (free +
+  reclaimable cache — `MemAvailable` on Linux, the equivalent elsewhere),
+  rounded down; overridable with `--memory`. `dillo` launches with that ceiling;
+  the guest leaves memory unaccepted and accepts on first touch; with
+  `guest_memfd` the host commits private pages on acceptance → demand-commit up
+  to the ceiling. No virtio-mem, no new device, no hotplug RFC. Lazy acceptance
+  means an over-large ceiling never over-commits (cost is address
+  space/metadata until touched).
 - **Exceeding the ceiling at runtime is not supported in v1** (virtio-mem
   deferred; pc-dimm hotplug RFC/constrained). Over-ceiling → honest OOM → raise
   `maxmem` and re-run. Revisit dynamic grow when virtio-mem-in-CVM lands.
@@ -407,7 +414,7 @@ New components:
 | build agent | new guest binary (static musl, like `snuffler`) | Guest PID 1 (§7–8): mount context, read `pichi.yaml`, run steps in tmpfs dm-snapshot, re-emit scutes via `cow.rs` + verity, write to virtiofs, emit signed/attested manifest, power off. **Name: open (§13).** |
 | virtio-fs (output) | `dillo/deps/dillo-virtio-fs` | Output-only host-readable sink (§7.3). |
 | dillo build wiring | `dillo` | Attach context + base carapaces, the virtiofs output, and the memory ceiling / lazy-acceptance config. |
-| build image + bootstrap | new | A pichi artifact carrying the agent (PID 1), build tooling (`mount`, dm/verity tools, package managers, `arma` for PMI), and a kernel with `EROFS`+`DM_VERITY`+`DM_SNAPSHOT`+unaccepted-memory. Plus a one-off bootstrap to build the first build image (compiler-bootstrap pattern). |
+| build image + bootstrap | new | A pichi artifact carrying the agent (PID 1), build tooling (`mount`, dm/verity tools, package managers, `arma` for PMI), and a kernel with `EROFS`+`DM_VERITY`+`DM_SNAPSHOT`+unaccepted-memory. Selectable per build (`--build-image`), so it is just another artifact: bootstrapping = build the build image with a prior one; a one-off raw `pichi import` seeds the first. |
 
 Reused as-is: `pichi-import` (`cow.rs`, `verity.rs`), the `carapace` crate,
 `dillo-virtio-gpt` (vgpt), the `pichi run` device-assembly + exec path, and the
@@ -469,19 +476,33 @@ launch config; `+zstd` scutes in the build path; `env:`/`workdir:`; multi-stage
 reproducibility tooling for non-deterministic `run:` steps (frozen package
 indices, faked time — author's choice today).
 
-**Open questions.**
+**Resolved.**
 
-1. **Build-agent name.** ("corium" was previously conflated with a runtime
-   concept; pick a build-time-only name.)
-2. **Output transport, final call.** virtiofs (chosen; new device) vs. sparse
-   `--blk` (no new device, pre-sized). §7.3.
-3. **Attestation binding details** under SNP/TDX — which measurement register /
-   report field carries the manifest digest; the guest-key-in-measurement
-   alternative. §10.
-4. **Default `maxmem` ceiling** and the build-image kernel's unaccepted-memory
-   configuration. §9.
-5. **First build image's distro base** (affects the userspace tool versions
-   available to user `run:` steps).
-6. **Verify current (mid-2026) status** of the SNP hotplug RFC and the
-   `PrivateSharedManager` 3-state work before relying on §9's conclusions.
+- **Output transport: virtiofs** (untrusted sink, §7.3); a `dillo-virtio-fs`
+  device is on the software list.
+- **Build-VM memory: auto-sized** from host available memory, overridable with
+  `--memory` (§9).
+- **Build image is any tagged artifact** (`--build-image`, precedence in §8) —
+  which makes bootstrapping and per-project customization free.
+
+**Still open.**
+
+1. **Build-agent name.** "corium" has no surviving definition in either repo,
+   the planning docs, or memory — the only trace was the old open-question note,
+   and the runtime concept it once clashed with appears to have been renamed or
+   dropped in the dillo→pichi rework (runtime vocabulary is now scute/carapace
+   only). So the name is effectively free to reclaim, or pick a fresh
+   build-time-only one.
+2. **First build image's distro base** must permit remix/redistribution of a
+   customized image: **Fedora** (Remix trademark allowance) or **Debian**;
+   **Ubuntu is excluded** (Canonical trademark policy restricts redistribution
+   of modified images). Fedora-vs-Debian still open.
+
+**Deferred.**
+
+- **Attestation binding details** under SNP/TDX (which measurement register /
+  report field carries the manifest digest; the guest-key-in-measurement
+  alternative). §10.
+- **Re-verify mid-2026 status** of the SNP pc-dimm hotplug RFC and the
+  `PrivateSharedManager` 3-state work before finalizing §9.
 ```
