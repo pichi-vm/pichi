@@ -19,8 +19,8 @@ use std::path::Path;
 use rustix::fd::{AsFd, BorrowedFd};
 use rustix::fs::{Mode, OFlags};
 use snuffler::{
-    BlockDevice, ClockInfo, CpuInfo, KernelLog, KernelLogEntry, MemoryInfo, NetIf, PciDevice,
-    REPORT_BEGIN, REPORT_END, Report, SerialPort, VsockResult,
+    BlockDevice, ClockInfo, CpuInfo, FsResult, KernelLog, KernelLogEntry, MemoryInfo, NetIf,
+    PciDevice, REPORT_BEGIN, REPORT_END, Report, SerialPort, VsockResult,
 };
 
 mod bench;
@@ -170,6 +170,7 @@ fn write_all_fd(fd: BorrowedFd<'_>, mut bytes: &[u8]) {
 fn observe() -> Report {
     let cmdline = read_trim("/proc/cmdline");
     let vsock = probe_vsock(&cmdline);
+    let virtiofs = probe_virtiofs(&cmdline);
     Report {
         arch: uname_machine(),
         uptime_secs: parse_uptime(),
@@ -184,8 +185,70 @@ fn observe() -> Report {
         kernel_log: read_kernel_log(),
         kaslr_seed: read_kaslr_seed(),
         vsock,
+        virtiofs,
         cmdline,
     }
+}
+
+/// Probe virtio-fs when the cmdline requests it (`dillo.virtiofs_tag=TAG`):
+/// mount that tag with `-t virtiofs`, list the share root, and — when
+/// `dillo.virtiofs_file=NAME` is also set — read that file back. `None` when the
+/// tag token is absent, so ordinary boots never touch virtio-fs.
+fn probe_virtiofs(cmdline: &str) -> Option<FsResult> {
+    let tag = cmdline
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("dillo.virtiofs_tag="))?
+        .to_owned();
+    let file = cmdline
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("dillo.virtiofs_file="))
+        .map(str::to_owned);
+    Some(run_virtiofs_probe(tag, file))
+}
+
+fn run_virtiofs_probe(tag: String, file: Option<String>) -> FsResult {
+    use rustix::mount::{MountFlags, mount as do_mount};
+
+    let mut res = FsResult {
+        tag: tag.clone(),
+        mounted: false,
+        entries: Vec::new(),
+        file: file.clone(),
+        content: None,
+        error: None,
+    };
+
+    let mountpoint = "/mnt-virtiofs";
+    let _ = fs::create_dir(mountpoint);
+    // `mount -t virtiofs <tag> <mountpoint>` read-only (the share is RO).
+    if let Err(e) = do_mount(
+        tag.as_str(),
+        mountpoint,
+        "virtiofs",
+        MountFlags::RDONLY,
+        None,
+    ) {
+        res.error = Some(format!("mount: {e}"));
+        return res;
+    }
+    res.mounted = true;
+
+    if let Ok(rd) = fs::read_dir(mountpoint) {
+        let mut entries: Vec<String> = rd
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        entries.sort();
+        res.entries = entries;
+    }
+
+    if let Some(name) = file {
+        match fs::read_to_string(format!("{mountpoint}/{name}")) {
+            Ok(s) => res.content = Some(s),
+            Err(e) => res.error = Some(format!("read {name}: {e}")),
+        }
+    }
+    res
 }
 
 /// Probe virtio-vsock when the cmdline requests it (`dillo.vsock_port=N`):

@@ -60,13 +60,14 @@ pub struct Layout {
 }
 
 /// One device entry. JSON externally-tagged: `{"blk": {…}}` / `{"gpt": {…}}` /
-/// `{"vsock": {…}}`.
+/// `{"vsock": {…}}` / `{"fs": {…}}`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Device {
     Blk(BlkSpec),
     Gpt(GptSpec),
     Vsock(VsockSpec),
+    Fs(FsSpec),
 }
 
 /// Console placement + endpoint.
@@ -129,6 +130,21 @@ pub struct VsockSpec {
     pub slot: Option<u32>,
 }
 
+/// virtio-fs device: shares a host directory into the guest (read-only) under a
+/// mount `tag`. The guest mounts it with `mount -t virtiofs <tag> <dir>`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct FsSpec {
+    /// Mount tag the guest selects the share by (1..=36 bytes).
+    pub tag: String,
+    /// Host directory served into the guest.
+    pub source: PathBuf,
+    #[serde(default)]
+    pub bus: Option<Bus>,
+    #[serde(default)]
+    pub slot: Option<u32>,
+}
+
 /// One GPT partition. Fields are stamped verbatim into the synthesized entry.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -158,7 +174,7 @@ macro_rules! impl_kv_arg {
 }
 
 #[cfg(feature = "argh")]
-impl_kv_arg!(BlkSpec, GptSpec, VsockSpec);
+impl_kv_arg!(BlkSpec, GptSpec, VsockSpec, FsSpec);
 
 #[cfg(feature = "argh")]
 impl argh::FromArgValue for ConsoleSpec {
@@ -226,6 +242,11 @@ pub enum ResolvedDevice {
         uds: PathBuf,
         placement: Placement,
     },
+    Fs {
+        tag: String,
+        source: PathBuf,
+        placement: Placement,
+    },
 }
 
 impl ResolvedDevice {
@@ -233,7 +254,8 @@ impl ResolvedDevice {
         match self {
             ResolvedDevice::Blk { placement, .. }
             | ResolvedDevice::Gpt { placement, .. }
-            | ResolvedDevice::Vsock { placement, .. } => placement,
+            | ResolvedDevice::Vsock { placement, .. }
+            | ResolvedDevice::Fs { placement, .. } => placement,
         }
     }
 }
@@ -251,6 +273,8 @@ pub struct ResolvedPart {
 const MAX_PARTITIONS: usize = 128;
 /// UEFI partition-name bound (72 bytes = 36 UTF-16 code units).
 const MAX_LABEL_UTF16: usize = 36;
+/// virtio-fs config `tag[36]` bound (`virtio_fs_config.tag`).
+const MAX_FS_TAG: usize = 36;
 
 /// Resolve a parsed [`Layout`] into validated facts.
 pub fn resolve(layout: Layout) -> anyhow::Result<Resolved> {
@@ -306,6 +330,21 @@ fn resolve_device(device: Device) -> anyhow::Result<ResolvedDevice> {
                 slot: v.slot,
             },
         }),
+        Device::Fs(f) => {
+            let tag_len = f.tag.len();
+            anyhow::ensure!(
+                (1..=MAX_FS_TAG).contains(&tag_len),
+                "virtio-fs tag must be 1..={MAX_FS_TAG} bytes (got {tag_len})"
+            );
+            Ok(ResolvedDevice::Fs {
+                tag: f.tag,
+                source: f.source,
+                placement: Placement {
+                    bus: f.bus,
+                    slot: f.slot,
+                },
+            })
+        }
         Device::Gpt(g) => {
             anyhow::ensure!(
                 !g.partitions.is_empty(),
@@ -637,6 +676,47 @@ mod tests {
         assert_eq!(kv.bus, json.bus);
         assert_eq!(kv.cid, 3);
         assert_eq!(kv.bus, Some(Bus::Pci));
+    }
+
+    #[test]
+    fn fs_kv_matches_json() {
+        let kv: FsSpec =
+            serde_keyvalue::from_key_values("tag=ctx,source=/srv/ctx,bus=mmio").expect("kv parse");
+        let json: FsSpec =
+            serde_json::from_str(r#"{"tag":"ctx","source":"/srv/ctx","bus":"mmio"}"#)
+                .expect("json parse");
+        assert_eq!(kv.tag, json.tag);
+        assert_eq!(kv.source, json.source);
+        assert_eq!(kv.bus, json.bus);
+        assert_eq!(kv.tag, "ctx");
+        assert_eq!(kv.bus, Some(Bus::Mmio));
+    }
+
+    #[test]
+    fn fs_tag_length_validated() {
+        let ok = Layout {
+            bus: None,
+            console: None,
+            devices: vec![Device::Fs(FsSpec {
+                tag: "ctx".into(),
+                source: PathBuf::from("/srv/ctx"),
+                bus: None,
+                slot: None,
+            })],
+        };
+        assert!(resolve(ok).is_ok());
+
+        let bad = Layout {
+            bus: None,
+            console: None,
+            devices: vec![Device::Fs(FsSpec {
+                tag: "x".repeat(37),
+                source: PathBuf::from("/srv/ctx"),
+                bus: None,
+                slot: None,
+            })],
+        };
+        assert!(resolve(bad).is_err());
     }
 
     #[test]

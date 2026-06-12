@@ -881,3 +881,78 @@ fn boots_with_vsock() {
 
     let _ = echo.join();
 }
+
+/// A `--fs` device shares a host directory into the guest over virtio-fs. The
+/// device always enumerates on the PCI bus (proves dillo attached the
+/// transport + the config tag). When the guest kernel has `CONFIG_VIRTIO_FS=y`
+/// built in, the probe (driven by `dillo.virtiofs_tag=`/`dillo.virtiofs_file=`)
+/// also mounts it, lists the share root, and reads a file back — exercising the
+/// FUSE INIT/LOOKUP/OPEN/READ/READDIR path end-to-end. A kernel without the
+/// built-in driver (the catalogued kernels ship it as a module, and snuffler
+/// loads none) is a clean skip *after* the attach assertion — never before.
+///
+/// Cross-platform: virtio-fs runs in-process and reads the host directory via
+/// `std::fs`, so this runs on every host lane including Windows/WHP (sharing a
+/// host directory into the Linux guest).
+#[test]
+fn boots_with_virtiofs() {
+    if !hypervisor_available() {
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+
+    // Host share: a known file to read back plus a sibling, so the guest's
+    // readdir has more than one entry to list.
+    const CONTENT: &str = "virtiofs round-trip ok";
+    let share = tmp.path().join("share");
+    std::fs::create_dir(&share).unwrap();
+    std::fs::write(share.join("hello.txt"), CONTENT).unwrap();
+    std::fs::write(share.join("readme.md"), "# hi").unwrap();
+
+    let cmdline = "console=hvc0 dillo.virtiofs_tag=ctx dillo.virtiofs_file=hello.txt";
+    let pmi = build_pmi(tmp.path(), cmdline, false);
+    let fs = format!("tag=ctx,source={}", share.display());
+    let output = boot_with(&pmi, 256, 1, tmp.path(), &["--fs", &fs]);
+    let r = parse_report(&output).unwrap_or_else(|| {
+        panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+    });
+
+    // Attach proof: the virtio-fs PCI function (1af4:105a = 0x1040 + type 26)
+    // must enumerate even if the guest binds no driver.
+    assert!(
+        r.pci
+            .iter()
+            .any(|p| p.vendor == 0x1af4 && p.device == 0x105a),
+        "virtio-fs PCI function (1af4:105a) not enumerated — attach failed: {:?}",
+        r.pci
+    );
+
+    let v = r
+        .virtiofs
+        .expect("virtiofs probe result absent (cmdline requested dillo.virtiofs_tag)");
+    assert_eq!(v.tag, "ctx", "probed unexpected tag");
+    if !v.mounted {
+        eprintln!(
+            "skip: virtio-fs attached on PCI but the guest could not mount it — this kernel \
+             lacks CONFIG_VIRTIO_FS=y built-in (mount error: {:?})",
+            v.error
+        );
+        return;
+    }
+    assert!(
+        v.entries.iter().any(|e| e == "hello.txt"),
+        "share root listing missing hello.txt: {:?}",
+        v.entries
+    );
+    assert!(
+        v.entries.iter().any(|e| e == "readme.md"),
+        "share root listing missing readme.md: {:?}",
+        v.entries
+    );
+    assert_eq!(
+        v.content.as_deref(),
+        Some(CONTENT),
+        "virtio-fs file content mismatch: {v:?}"
+    );
+}

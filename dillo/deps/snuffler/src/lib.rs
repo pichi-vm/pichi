@@ -54,6 +54,33 @@ pub struct Report {
     /// `AF_VSOCK` stream to host CID 2 on that port and round-trips a message.
     #[serde(default)]
     pub vsock: Option<VsockResult>,
+    /// Result of the guest-side virtio-fs probe. `None` unless the kernel
+    /// cmdline carries `dillo.virtiofs_tag=TAG`, in which case the probe mounts
+    /// that tag with `-t virtiofs`, lists the share root, and (when
+    /// `dillo.virtiofs_file=NAME` is also set) reads that file back.
+    #[serde(default)]
+    pub virtiofs: Option<FsResult>,
+}
+
+/// Outcome of the guest-side virtio-fs probe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsResult {
+    /// Mount tag the guest mounted (`dillo.virtiofs_tag=TAG`).
+    pub tag: String,
+    /// The `mount -t virtiofs` succeeded.
+    pub mounted: bool,
+    /// Names in the share root, sorted (proves the READDIR path works).
+    #[serde(default)]
+    pub entries: Vec<String>,
+    /// File the probe was asked to read (`dillo.virtiofs_file=NAME`).
+    #[serde(default)]
+    pub file: Option<String>,
+    /// Contents read back from `file`, when the read succeeded.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Failure detail, if any stage errored.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Outcome of the guest-side virtio-vsock connectivity probe.

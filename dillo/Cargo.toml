@@ -27,6 +27,9 @@ dillo-pci-virtio.workspace = true
 dillo-virtio.workspace = true
 dillo-virtio-blk.workspace = true
 dillo-virtio-console.workspace = true
+# virtio-fs serves a host directory into the Linux guest; it runs in-process and
+# reads files via std::fs, so it works on every host (incl. Windows/WHP).
+dillo-virtio-fs.workspace = true
 dillo-virtio-gpt.workspace = true
 dillo-config.workspace = true
 dillo-devtree.workspace = true

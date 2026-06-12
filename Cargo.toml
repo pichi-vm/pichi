@@ -28,6 +28,7 @@ members = [
     "dillo/deps/dillo-pci-virtio",
     "dillo/deps/dillo-virtio-blk",
     "dillo/deps/dillo-virtio-console",
+    "dillo/deps/dillo-virtio-fs",
     "dillo/deps/dillo-virtio-gpt",
     "dillo/deps/dillo-virtio-vsock",
     "dillo/deps/dillo-virtio",
@@ -95,6 +96,7 @@ dillo-pci-virtio = { path = "dillo/deps/dillo-pci-virtio" }
 dillo-virtio = { path = "dillo/deps/dillo-virtio" }
 dillo-virtio-blk = { path = "dillo/deps/dillo-virtio-blk" }
 dillo-virtio-console = { path = "dillo/deps/dillo-virtio-console" }
+dillo-virtio-fs = { path = "dillo/deps/dillo-virtio-fs" }
 dillo-virtio-gpt = { path = "dillo/deps/dillo-virtio-gpt" }
 dillo-virtio-vsock = { path = "dillo/deps/dillo-virtio-vsock" }
 

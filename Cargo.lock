@@ -626,6 +626,7 @@ dependencies = [
  "dillo-virtio",
  "dillo-virtio-blk",
  "dillo-virtio-console",
+ "dillo-virtio-fs",
  "dillo-virtio-gpt",
  "dillo-virtio-vsock",
  "env_logger",
@@ -796,6 +797,18 @@ dependencies = [
  "dillo-mmio",
  "dillo-virtio",
  "log",
+ "thiserror 2.0.18",
+ "vm-memory 0.17.2",
+]
+
+[[package]]
+name = "dillo-virtio-fs"
+version = "0.1.0"
+dependencies = [
+ "dillo-mmio",
+ "dillo-virtio",
+ "log",
+ "tempfile",
  "thiserror 2.0.18",
  "vm-memory 0.17.2",
 ]
