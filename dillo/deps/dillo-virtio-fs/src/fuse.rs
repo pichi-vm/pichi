@@ -16,9 +16,9 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::backend::{Attr, FsBackend};
+use crate::backend::{Attr, FsBackend, SetAttr};
 
 // --- protocol version we present ------------------------------------------
 const FUSE_KERNEL_VERSION: u32 = 7;
@@ -28,9 +28,16 @@ const FUSE_KERNEL_MINOR_VERSION: u32 = 31;
 const FUSE_LOOKUP: u32 = 1;
 const FUSE_FORGET: u32 = 2;
 const FUSE_GETATTR: u32 = 3;
+const FUSE_SETATTR: u32 = 4;
 const FUSE_READLINK: u32 = 5;
+const FUSE_SYMLINK: u32 = 6;
+const FUSE_MKDIR: u32 = 9;
+const FUSE_UNLINK: u32 = 10;
+const FUSE_RMDIR: u32 = 11;
+const FUSE_RENAME: u32 = 12;
 const FUSE_OPEN: u32 = 14;
 const FUSE_READ: u32 = 15;
+const FUSE_WRITE: u32 = 16;
 const FUSE_STATFS: u32 = 17;
 const FUSE_RELEASE: u32 = 18;
 const FUSE_FSYNC: u32 = 20;
@@ -42,12 +49,14 @@ const FUSE_OPENDIR: u32 = 27;
 const FUSE_READDIR: u32 = 28;
 const FUSE_RELEASEDIR: u32 = 29;
 const FUSE_FSYNCDIR: u32 = 30;
-const FUSE_ACCESS: u32 = 34;
+const FUSE_CREATE: u32 = 35;
 const FUSE_INTERRUPT: u32 = 36;
 const FUSE_DESTROY: u32 = 38;
 const FUSE_BATCH_FORGET: u32 = 42;
+const FUSE_RENAME2: u32 = 45;
 const FUSE_LSEEK: u32 = 46;
 const FUSE_SYNCFS: u32 = 50;
+const FUSE_ACCESS: u32 = 34;
 
 // --- errno values returned to the guest (negated on the wire) -------------
 const EPERM: i32 = 1;
@@ -58,6 +67,10 @@ const EACCES: i32 = 13;
 const EINVAL: i32 = 22;
 const EROFS: i32 = 30;
 const ENOSYS: i32 = 38;
+const EEXIST: i32 = 17;
+const ENOTDIR: i32 = 20;
+const EISDIR: i32 = 21;
+const ENOTEMPTY: i32 = 39;
 
 const FUSE_IN_HEADER_LEN: usize = 40;
 const FUSE_OUT_HEADER_LEN: usize = 16;
@@ -66,6 +79,16 @@ const FUSE_ROOT_ID: u64 = 1;
 
 /// `open(2)` access-mode mask; a nonzero masked value means write intent.
 const O_ACCMODE: u32 = 0o3;
+/// `open(2)` O_TRUNC.
+const O_TRUNC: u32 = 0o1000;
+
+// --- fuse_setattr_in `valid` bits -----------------------------------------
+const FATTR_MODE: u32 = 1 << 0;
+const FATTR_SIZE: u32 = 1 << 3;
+const FATTR_ATIME: u32 = 1 << 4;
+const FATTR_MTIME: u32 = 1 << 5;
+const FATTR_ATIME_NOW: u32 = 1 << 7;
+const FATTR_MTIME_NOW: u32 = 1 << 8;
 
 /// Cap a single READ/READDIR payload so a hostile descriptor length can't make
 /// us allocate without bound. Larger than any realistic FUSE max_read.
@@ -133,10 +156,16 @@ fn errno_of(e: &io::Error) -> i32 {
     if let Some(raw) = e.raw_os_error() {
         return raw;
     }
+    // No OS errno (e.g. a synthesized error on a non-Unix host); map the kind.
     match e.kind() {
         io::ErrorKind::NotFound => ENOENT,
         io::ErrorKind::PermissionDenied => EACCES,
+        io::ErrorKind::AlreadyExists => EEXIST,
         io::ErrorKind::InvalidInput => EINVAL,
+        io::ErrorKind::NotADirectory => ENOTDIR,
+        io::ErrorKind::IsADirectory => EISDIR,
+        io::ErrorKind::DirectoryNotEmpty => ENOTEMPTY,
+        io::ErrorKind::ReadOnlyFilesystem => EROFS,
         _ => EIO,
     }
 }
@@ -158,6 +187,25 @@ fn write_attr(w: &mut Writer, a: &Attr) {
     w.u32(a.rdev);
     w.u32(4096); // blksize
     w.u32(0); // flags
+}
+
+/// Write a `fuse_entry_out` (nodeid + 1s timeouts + attr).
+fn write_entry_out(w: &mut Writer, nodeid: u64, a: &Attr) {
+    w.u64(nodeid); // nodeid
+    w.u64(0); // generation
+    w.u64(1); // entry_valid (seconds)
+    w.u64(1); // attr_valid (seconds)
+    w.u32(0); // entry_valid_nsec
+    w.u32(0); // attr_valid_nsec
+    write_attr(w, a);
+}
+
+/// Write a `fuse_attr_out` (1s timeout + attr).
+fn write_attr_out(w: &mut Writer, a: &Attr) {
+    w.u64(1); // attr_valid (seconds)
+    w.u32(0); // attr_valid_nsec
+    w.u32(0); // dummy
+    write_attr(w, a);
 }
 
 // ---------------------------------------------------------------------------
@@ -187,10 +235,12 @@ pub(crate) struct FsState {
     next_node: u64,
     handles: HashMap<u64, Handle>,
     next_fh: u64,
+    /// When true, every mutating opcode is rejected with EROFS.
+    readonly: bool,
 }
 
 impl FsState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(readonly: bool) -> Self {
         let mut nodes = HashMap::new();
         nodes.insert(
             FUSE_ROOT_ID,
@@ -207,6 +257,7 @@ impl FsState {
             next_node: 2,
             handles: HashMap::new(),
             next_fh: 1,
+            readonly,
         }
     }
 
@@ -249,6 +300,14 @@ impl FsState {
         self.next_fh += 1;
         self.handles.insert(fh, h);
         fh
+    }
+
+    /// Drop any cached nodeid for `rel` (after the path is removed/renamed) so a
+    /// stale handle can't resolve to a vanished or recycled path.
+    fn invalidate(&mut self, rel: &Path) {
+        if let Some(id) = self.by_path.remove(rel) {
+            self.nodes.remove(&id);
+        }
     }
 }
 
@@ -297,28 +356,57 @@ pub(crate) fn dispatch(
         FUSE_READDIR => Some(handle_readdir(state, unique, args)),
         FUSE_READLINK => Some(handle_readlink(state, backend, unique, nodeid)),
         FUSE_STATFS => Some(handle_statfs(unique)),
-        // Nothing to do on a read-only share; acknowledge success.
+        // Nothing to do beyond acknowledging.
         FUSE_FLUSH | FUSE_FSYNC | FUSE_FSYNCDIR | FUSE_SYNCFS | FUSE_ACCESS | FUSE_DESTROY => {
             Some(Writer::with_header().finish(unique))
         }
         FUSE_INTERRUPT => None, // best-effort: we never leave a request pending
         // xattrs unsupported → ENOSYS so the kernel stops asking.
         FUSE_GETXATTR | FUSE_LISTXATTR | FUSE_LSEEK => Some(error_reply(unique, ENOSYS)),
-        // Every mutating opcode: read-only share.
-        op if is_mutating(op) => Some(error_reply(unique, EROFS)),
+
+        // --- write path: EROFS up front when the share is read-only ---------
+        _ if state.readonly && is_write_opcode(opcode) => Some(error_reply(unique, EROFS)),
+        FUSE_WRITE => Some(handle_write(state, backend, unique, args)),
+        FUSE_CREATE => Some(handle_create(state, backend, unique, nodeid, args)),
+        FUSE_SETATTR => Some(handle_setattr(state, backend, unique, nodeid, args)),
+        FUSE_MKDIR => Some(handle_mkdir(state, backend, unique, nodeid, args)),
+        FUSE_UNLINK => Some(handle_unlink(state, backend, unique, nodeid, args)),
+        FUSE_RMDIR => Some(handle_rmdir(state, backend, unique, nodeid, args)),
+        FUSE_RENAME => Some(handle_rename(state, backend, unique, nodeid, args, 0)),
+        FUSE_RENAME2 => Some(handle_rename(state, backend, unique, nodeid, args, 8)),
+        FUSE_SYMLINK => Some(handle_symlink(state, backend, unique, nodeid, args)),
+
+        // Mutating opcodes we don't implement (MKNOD/LINK/SETXATTR/FALLOCATE/…):
+        // EROFS on a read-only share, otherwise ENOSYS (unsupported).
+        op if is_other_mutating(op) => Some(error_reply(
+            unique,
+            if state.readonly { EROFS } else { ENOSYS },
+        )),
         _ => Some(error_reply(unique, ENOSYS)),
     }
 }
 
-/// Opcodes that would modify the filesystem; all rejected with EROFS.
-fn is_mutating(op: u32) -> bool {
-    // SETATTR=4, SYMLINK=6, MKNOD=8, MKDIR=9, UNLINK=10, RMDIR=11, RENAME=12,
-    // LINK=13, WRITE=16, SETXATTR=21, REMOVEXATTR=24, CREATE=35, FALLOCATE=43,
-    // RENAME2=45, COPY_FILE_RANGE=47, SETUPMAPPING=48, REMOVEMAPPING=49.
+/// Write opcodes this server implements (used for the read-only gate).
+fn is_write_opcode(op: u32) -> bool {
     matches!(
         op,
-        4 | 6 | 8 | 9 | 10 | 11 | 12 | 13 | 16 | 21 | 24 | 35 | 43 | 45 | 47 | 48 | 49
+        FUSE_WRITE
+            | FUSE_CREATE
+            | FUSE_SETATTR
+            | FUSE_MKDIR
+            | FUSE_UNLINK
+            | FUSE_RMDIR
+            | FUSE_RENAME
+            | FUSE_RENAME2
+            | FUSE_SYMLINK
     )
+}
+
+/// Mutating opcodes we do NOT implement: MKNOD=8, LINK=13, SETXATTR=21,
+/// REMOVEXATTR=24, FALLOCATE=43, COPY_FILE_RANGE=47, SETUPMAPPING=48,
+/// REMOVEMAPPING=49.
+fn is_other_mutating(op: u32) -> bool {
+    matches!(op, 8 | 13 | 21 | 24 | 43 | 47 | 48 | 49)
 }
 
 fn handle_init(unique: u64, args: &[u8]) -> Vec<u8> {
@@ -355,10 +443,7 @@ fn handle_getattr(
     match backend.stat(&rel) {
         Ok(attr) => {
             let mut w = Writer::with_header();
-            w.u64(1); // attr_valid (seconds)
-            w.u32(0); // attr_valid_nsec
-            w.u32(0); // dummy
-            write_attr(&mut w, &attr);
+            write_attr_out(&mut w, &attr);
             w.finish(unique)
         }
         Err(e) => error_reply(unique, errno_of(&e)),
@@ -391,17 +476,24 @@ fn handle_lookup(
         Ok(attr) => {
             let child = state.intern(rel);
             let mut w = Writer::with_header();
-            w.u64(child); // nodeid
-            w.u64(0); // generation
-            w.u64(1); // entry_valid (seconds)
-            w.u64(1); // attr_valid (seconds)
-            w.u32(0); // entry_valid_nsec
-            w.u32(0); // attr_valid_nsec
-            write_attr(&mut w, &attr);
+            write_entry_out(&mut w, child, &attr);
             w.finish(unique)
         }
         Err(e) => error_reply(unique, errno_of(&e)),
     }
+}
+
+/// Extract a single NUL-terminated component name from `args` starting at
+/// `offset`, rejecting empty, `/`-containing, and `.`/`..` names. Returns the
+/// validated owned name and the index just past its NUL terminator.
+fn read_name(args: &[u8], offset: usize) -> Option<(String, usize)> {
+    let rest = args.get(offset..)?;
+    let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+    let name = std::str::from_utf8(&rest[..end]).ok()?;
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return None;
+    }
+    Some((name.to_owned(), offset + end + 1))
 }
 
 fn handle_batch_forget(state: &mut FsState, args: &[u8]) {
@@ -424,9 +516,11 @@ fn handle_open(
     nodeid: u64,
     args: &[u8],
 ) -> Vec<u8> {
-    // fuse_open_in { flags u32, open_flags u32 }; reject any write intent.
+    // fuse_open_in { flags u32, open_flags u32 }. Reject write intent on a
+    // read-only share.
     let flags = rd_u32(args, 0).unwrap_or(0);
-    if flags & O_ACCMODE != 0 {
+    let wants_write = flags & O_ACCMODE != 0;
+    if wants_write && state.readonly {
         return error_reply(unique, EROFS);
     }
     let Some(rel) = state.rel_of(nodeid) else {
@@ -436,6 +530,16 @@ fn handle_open(
         Ok(attr) if attr.is_dir() => return error_reply(unique, EPERM),
         Ok(_) => {}
         Err(e) => return error_reply(unique, errno_of(&e)),
+    }
+    // O_TRUNC on a writable open: truncate to zero now.
+    if wants_write && flags & O_TRUNC != 0 {
+        let set = SetAttr {
+            size: Some(0),
+            ..Default::default()
+        };
+        if let Err(e) = backend.setattr(&rel, &set) {
+            return error_reply(unique, errno_of(&e));
+        }
     }
     let fh = state.add_handle(Handle::File(rel));
     open_reply(unique, fh)
@@ -572,6 +676,264 @@ fn handle_readlink(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Write-path handlers (reached only when the share is writable).
+// ---------------------------------------------------------------------------
+
+/// `fuse_write_in` fixed header length (data follows it).
+const FUSE_WRITE_IN_LEN: usize = 40;
+
+fn handle_write(state: &mut FsState, backend: &dyn FsBackend, unique: u64, args: &[u8]) -> Vec<u8> {
+    // fuse_write_in { fh, offset, size, write_flags, lock_owner, flags, padding }.
+    let (Some(fh), Some(offset), Some(size)) = (rd_u64(args, 0), rd_u64(args, 8), rd_u32(args, 16))
+    else {
+        return error_reply(unique, EINVAL);
+    };
+    let size = size.min(MAX_PAYLOAD) as usize;
+    let available = args.len().saturating_sub(FUSE_WRITE_IN_LEN);
+    let take = size.min(available);
+    let data = &args[FUSE_WRITE_IN_LEN..FUSE_WRITE_IN_LEN + take];
+
+    let rel = match state.handles.get(&fh) {
+        Some(Handle::File(rel)) => rel.clone(),
+        _ => return error_reply(unique, EBADF),
+    };
+    match backend.write(&rel, offset, data) {
+        Ok(written) => {
+            // fuse_write_out { size u32, padding u32 }.
+            let mut w = Writer::with_header();
+            w.u32(written);
+            w.u32(0);
+            w.finish(unique)
+        }
+        Err(e) => error_reply(unique, errno_of(&e)),
+    }
+}
+
+fn handle_create(
+    state: &mut FsState,
+    backend: &dyn FsBackend,
+    unique: u64,
+    nodeid: u64,
+    args: &[u8],
+) -> Vec<u8> {
+    // fuse_create_in { flags u32, mode u32, umask u32, open_flags u32 }, then name.
+    let mode = rd_u32(args, 4).unwrap_or(0o644);
+    let Some((name, _)) = read_name(args, 16) else {
+        return error_reply(unique, EINVAL);
+    };
+    let Some(parent) = state.rel_of(nodeid) else {
+        return error_reply(unique, ENOENT);
+    };
+    let rel = parent.join(name);
+    match backend.create(&rel, mode) {
+        Ok(attr) => {
+            let child = state.intern(rel.clone());
+            let fh = state.add_handle(Handle::File(rel));
+            let mut w = Writer::with_header();
+            write_entry_out(&mut w, child, &attr);
+            // fuse_open_out { fh u64, open_flags u32, padding u32 }.
+            w.u64(fh);
+            w.u32(0);
+            w.u32(0);
+            w.finish(unique)
+        }
+        Err(e) => error_reply(unique, errno_of(&e)),
+    }
+}
+
+fn handle_mkdir(
+    state: &mut FsState,
+    backend: &dyn FsBackend,
+    unique: u64,
+    nodeid: u64,
+    args: &[u8],
+) -> Vec<u8> {
+    // fuse_mkdir_in { mode u32, umask u32 }, then name.
+    let mode = rd_u32(args, 0).unwrap_or(0o755);
+    let Some((name, _)) = read_name(args, 8) else {
+        return error_reply(unique, EINVAL);
+    };
+    let Some(parent) = state.rel_of(nodeid) else {
+        return error_reply(unique, ENOENT);
+    };
+    let rel = parent.join(name);
+    match backend.mkdir(&rel, mode) {
+        Ok(attr) => {
+            let child = state.intern(rel);
+            let mut w = Writer::with_header();
+            write_entry_out(&mut w, child, &attr);
+            w.finish(unique)
+        }
+        Err(e) => error_reply(unique, errno_of(&e)),
+    }
+}
+
+fn handle_unlink(
+    state: &mut FsState,
+    backend: &dyn FsBackend,
+    unique: u64,
+    nodeid: u64,
+    args: &[u8],
+) -> Vec<u8> {
+    let Some((name, _)) = read_name(args, 0) else {
+        return error_reply(unique, EINVAL);
+    };
+    let Some(parent) = state.rel_of(nodeid) else {
+        return error_reply(unique, ENOENT);
+    };
+    let rel = parent.join(name);
+    match backend.unlink(&rel) {
+        Ok(()) => {
+            state.invalidate(&rel);
+            Writer::with_header().finish(unique)
+        }
+        Err(e) => error_reply(unique, errno_of(&e)),
+    }
+}
+
+fn handle_rmdir(
+    state: &mut FsState,
+    backend: &dyn FsBackend,
+    unique: u64,
+    nodeid: u64,
+    args: &[u8],
+) -> Vec<u8> {
+    let Some((name, _)) = read_name(args, 0) else {
+        return error_reply(unique, EINVAL);
+    };
+    let Some(parent) = state.rel_of(nodeid) else {
+        return error_reply(unique, ENOENT);
+    };
+    let rel = parent.join(name);
+    match backend.rmdir(&rel) {
+        Ok(()) => {
+            state.invalidate(&rel);
+            Writer::with_header().finish(unique)
+        }
+        Err(e) => error_reply(unique, errno_of(&e)),
+    }
+}
+
+fn handle_rename(
+    state: &mut FsState,
+    backend: &dyn FsBackend,
+    unique: u64,
+    nodeid: u64,
+    args: &[u8],
+    extra: usize,
+) -> Vec<u8> {
+    // fuse_rename_in { newdir u64 } (RENAME) or fuse_rename2_in { newdir u64,
+    // flags u32, padding u32 } (RENAME2, `extra` = 8); old/new names follow.
+    let Some(newdir) = rd_u64(args, 0) else {
+        return error_reply(unique, EINVAL);
+    };
+    let name_off = 8 + extra;
+    let Some((oldname, next)) = read_name(args, name_off) else {
+        return error_reply(unique, EINVAL);
+    };
+    let Some((newname, _)) = read_name(args, next) else {
+        return error_reply(unique, EINVAL);
+    };
+    let (Some(old_parent), Some(new_parent)) = (state.rel_of(nodeid), state.rel_of(newdir)) else {
+        return error_reply(unique, ENOENT);
+    };
+    let from = old_parent.join(oldname);
+    let to = new_parent.join(newname);
+    match backend.rename(&from, &to) {
+        Ok(()) => {
+            state.invalidate(&from);
+            state.invalidate(&to);
+            Writer::with_header().finish(unique)
+        }
+        Err(e) => error_reply(unique, errno_of(&e)),
+    }
+}
+
+fn handle_symlink(
+    state: &mut FsState,
+    backend: &dyn FsBackend,
+    unique: u64,
+    nodeid: u64,
+    args: &[u8],
+) -> Vec<u8> {
+    // args: name NUL-terminated, then the link target NUL-terminated. The
+    // target is an arbitrary path, so it is read raw (not via `read_name`).
+    let Some((name, next)) = read_name(args, 0) else {
+        return error_reply(unique, EINVAL);
+    };
+    let Some(rest) = args.get(next..) else {
+        return error_reply(unique, EINVAL);
+    };
+    let tend = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+    let target = &rest[..tend];
+    let Some(parent) = state.rel_of(nodeid) else {
+        return error_reply(unique, ENOENT);
+    };
+    let rel = parent.join(name);
+    match backend.symlink(&rel, target) {
+        Ok(attr) => {
+            let child = state.intern(rel);
+            let mut w = Writer::with_header();
+            write_entry_out(&mut w, child, &attr);
+            w.finish(unique)
+        }
+        Err(e) => error_reply(unique, errno_of(&e)),
+    }
+}
+
+fn handle_setattr(
+    state: &mut FsState,
+    backend: &dyn FsBackend,
+    unique: u64,
+    nodeid: u64,
+    args: &[u8],
+) -> Vec<u8> {
+    // fuse_setattr_in: valid@0, fh@8, size@16, atime@32, mtime@40,
+    // atimensec@56, mtimensec@60, mode@68.
+    let valid = rd_u32(args, 0).unwrap_or(0);
+    let Some(rel) = state.rel_of(nodeid) else {
+        return error_reply(unique, ENOENT);
+    };
+
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or((0, 0), |d| (d.as_secs(), d.subsec_nanos()))
+    };
+
+    let mut set = SetAttr::default();
+    if valid & FATTR_SIZE != 0 {
+        set.size = rd_u64(args, 16);
+    }
+    if valid & FATTR_MODE != 0 {
+        set.mode = rd_u32(args, 68);
+    }
+    if valid & FATTR_MTIME != 0 {
+        set.mtime = Some(if valid & FATTR_MTIME_NOW != 0 {
+            now()
+        } else {
+            (rd_u64(args, 40).unwrap_or(0), rd_u32(args, 60).unwrap_or(0))
+        });
+    }
+    if valid & FATTR_ATIME != 0 {
+        set.atime = Some(if valid & FATTR_ATIME_NOW != 0 {
+            now()
+        } else {
+            (rd_u64(args, 32).unwrap_or(0), rd_u32(args, 56).unwrap_or(0))
+        });
+    }
+
+    match backend.setattr(&rel, &set) {
+        Ok(attr) => {
+            let mut w = Writer::with_header();
+            write_attr_out(&mut w, &attr);
+            w.finish(unique)
+        }
+        Err(e) => error_reply(unique, errno_of(&e)),
+    }
+}
+
 fn handle_statfs(unique: u64) -> Vec<u8> {
     // fuse_statfs_out wraps a kstatfs { blocks, bfree, bavail, files, ffree u64;
     // bsize, namelen, frsize u32; padding u32; spare[6] u32 }. Plausible values
@@ -593,7 +955,7 @@ fn handle_statfs(unique: u64) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{DT_DIR, DT_REG, MapFs, S_IFMT, S_IFREG};
+    use crate::backend::{DT_DIR, DT_REG, MapFs, Passthrough, S_IFMT, S_IFREG};
 
     /// Build a minimal `fuse_in_header` + args input buffer.
     fn request(opcode: u32, unique: u64, nodeid: u64, args: &[u8]) -> Vec<u8> {
@@ -617,7 +979,7 @@ mod tests {
 
     #[test]
     fn init_returns_our_version() {
-        let mut state = FsState::new();
+        let mut state = FsState::new(true);
         let fs = MapFs::new();
         // fuse_init_in: major=7, minor=99, max_readahead=0, flags=0.
         let mut args = Vec::new();
@@ -636,7 +998,7 @@ mod tests {
 
     #[test]
     fn getattr_root_is_directory() {
-        let mut state = FsState::new();
+        let mut state = FsState::new(true);
         let fs = MapFs::new().with_file("a.txt", "a");
         let reply = dispatch(
             &mut state,
@@ -652,7 +1014,7 @@ mod tests {
 
     #[test]
     fn lookup_then_open_then_read_roundtrips() {
-        let mut state = FsState::new();
+        let mut state = FsState::new(true);
         let fs = MapFs::new().with_file("hello.txt", "hi there");
 
         // LOOKUP "hello.txt" under root.
@@ -695,7 +1057,7 @@ mod tests {
 
     #[test]
     fn lookup_missing_is_enoent() {
-        let mut state = FsState::new();
+        let mut state = FsState::new(true);
         let fs = MapFs::new();
         let mut name = b"nope".to_vec();
         name.push(0);
@@ -710,7 +1072,7 @@ mod tests {
 
     #[test]
     fn opendir_readdir_lists_entries() {
-        let mut state = FsState::new();
+        let mut state = FsState::new(true);
         let fs = MapFs::new().with_file("a.txt", "a").with_file("b.txt", "b");
         let reply = dispatch(
             &mut state,
@@ -755,7 +1117,7 @@ mod tests {
 
     #[test]
     fn open_for_write_is_erofs() {
-        let mut state = FsState::new();
+        let mut state = FsState::new(true);
         let fs = MapFs::new().with_file("a.txt", "a");
         let mut name = b"a.txt".to_vec();
         name.push(0);
@@ -775,7 +1137,7 @@ mod tests {
 
     #[test]
     fn write_opcode_is_erofs() {
-        let mut state = FsState::new();
+        let mut state = FsState::new(true);
         let fs = MapFs::new();
         // FUSE_WRITE = 16.
         let reply = dispatch(&mut state, &fs, &request(16, 11, FUSE_ROOT_ID, &[0u8; 40])).unwrap();
@@ -784,7 +1146,7 @@ mod tests {
 
     #[test]
     fn unknown_opcode_is_enosys() {
-        let mut state = FsState::new();
+        let mut state = FsState::new(true);
         let fs = MapFs::new();
         let reply = dispatch(&mut state, &fs, &request(9999, 12, FUSE_ROOT_ID, &[])).unwrap();
         assert_eq!(out_error(&reply), -ENOSYS);
@@ -792,7 +1154,7 @@ mod tests {
 
     #[test]
     fn forget_is_replyless() {
-        let mut state = FsState::new();
+        let mut state = FsState::new(true);
         let fs = MapFs::new();
         let args = 1u64.to_le_bytes();
         assert!(
@@ -803,5 +1165,200 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    // --- write path (writable share) ---------------------------------------
+
+    /// `fuse_create_in` { flags, mode, umask, open_flags } + NUL-terminated name.
+    fn create_in(flags: u32, mode: u32, name: &str) -> Vec<u8> {
+        let mut a = Vec::new();
+        a.extend_from_slice(&flags.to_le_bytes());
+        a.extend_from_slice(&mode.to_le_bytes());
+        a.extend_from_slice(&0u32.to_le_bytes()); // umask
+        a.extend_from_slice(&0u32.to_le_bytes()); // open_flags
+        a.extend_from_slice(name.as_bytes());
+        a.push(0);
+        a
+    }
+
+    /// `fuse_write_in` { fh, offset, size, write_flags, lock_owner, flags, padding } + data.
+    fn write_in(fh: u64, offset: u64, data: &[u8]) -> Vec<u8> {
+        let mut a = Vec::new();
+        a.extend_from_slice(&fh.to_le_bytes());
+        a.extend_from_slice(&offset.to_le_bytes());
+        a.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        a.extend_from_slice(&[0u8; 20]); // write_flags/lock_owner/flags/padding
+        a.extend_from_slice(data);
+        a
+    }
+
+    fn writable() -> (FsState, Passthrough, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let pt = Passthrough::new(dir.path()).unwrap();
+        (FsState::new(false), pt, dir)
+    }
+
+    #[test]
+    fn create_write_read_roundtrip() {
+        let (mut state, fs, dir) = writable();
+
+        // CREATE hi.txt (O_RDWR), get child nodeid + fh.
+        let reply = dispatch(
+            &mut state,
+            &fs,
+            &request(FUSE_CREATE, 1, FUSE_ROOT_ID, &create_in(2, 0o644, "hi.txt")),
+        )
+        .unwrap();
+        assert_eq!(out_error(&reply), 0);
+        let child = rd_u64(&reply, FUSE_OUT_HEADER_LEN).unwrap();
+        // fuse_open_out follows the 128-byte fuse_entry_out.
+        let fh = rd_u64(&reply, FUSE_OUT_HEADER_LEN + 128).unwrap();
+
+        // WRITE "hello" at offset 0.
+        let reply = dispatch(
+            &mut state,
+            &fs,
+            &request(FUSE_WRITE, 2, child, &write_in(fh, 0, b"hello")),
+        )
+        .unwrap();
+        assert_eq!(out_error(&reply), 0);
+        assert_eq!(rd_u32(&reply, FUSE_OUT_HEADER_LEN), Some(5)); // fuse_write_out.size
+
+        // It actually hit the host.
+        assert_eq!(std::fs::read(dir.path().join("hi.txt")).unwrap(), b"hello");
+
+        // READ it back through the same fh.
+        let mut read_in = Vec::new();
+        read_in.extend_from_slice(&fh.to_le_bytes());
+        read_in.extend_from_slice(&0u64.to_le_bytes());
+        read_in.extend_from_slice(&64u32.to_le_bytes());
+        read_in.extend_from_slice(&[0u8; 16]);
+        let reply = dispatch(&mut state, &fs, &request(FUSE_READ, 3, child, &read_in)).unwrap();
+        assert_eq!(&reply[FUSE_OUT_HEADER_LEN..], b"hello");
+    }
+
+    #[test]
+    fn mkdir_then_create_inside() {
+        let (mut state, fs, dir) = writable();
+        // fuse_mkdir_in { mode, umask } + name.
+        let mut mk = Vec::new();
+        mk.extend_from_slice(&0o755u32.to_le_bytes());
+        mk.extend_from_slice(&0u32.to_le_bytes());
+        mk.extend_from_slice(b"sub");
+        mk.push(0);
+        let reply = dispatch(&mut state, &fs, &request(FUSE_MKDIR, 1, FUSE_ROOT_ID, &mk)).unwrap();
+        assert_eq!(out_error(&reply), 0);
+        let sub = rd_u64(&reply, FUSE_OUT_HEADER_LEN).unwrap();
+        assert!(dir.path().join("sub").is_dir());
+
+        let reply = dispatch(
+            &mut state,
+            &fs,
+            &request(FUSE_CREATE, 2, sub, &create_in(2, 0o644, "f")),
+        )
+        .unwrap();
+        assert_eq!(out_error(&reply), 0);
+        assert!(dir.path().join("sub/f").exists());
+    }
+
+    #[test]
+    fn setattr_truncate() {
+        let (mut state, fs, dir) = writable();
+        std::fs::write(dir.path().join("f"), b"hello world").unwrap();
+        // LOOKUP to get a nodeid.
+        let mut name = b"f".to_vec();
+        name.push(0);
+        let reply = dispatch(
+            &mut state,
+            &fs,
+            &request(FUSE_LOOKUP, 1, FUSE_ROOT_ID, &name),
+        )
+        .unwrap();
+        let node = rd_u64(&reply, FUSE_OUT_HEADER_LEN).unwrap();
+
+        // SETATTR with FATTR_SIZE = 4.
+        let mut sa = vec![0u8; 88];
+        sa[0..4].copy_from_slice(&FATTR_SIZE.to_le_bytes()); // valid
+        sa[16..24].copy_from_slice(&4u64.to_le_bytes()); // size
+        let reply = dispatch(&mut state, &fs, &request(FUSE_SETATTR, 2, node, &sa)).unwrap();
+        assert_eq!(out_error(&reply), 0);
+        assert_eq!(std::fs::read(dir.path().join("f")).unwrap(), b"hell");
+    }
+
+    #[test]
+    fn rename_unlink_rmdir() {
+        let (mut state, fs, dir) = writable();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        // RENAME a.txt -> b.txt under root (newdir = root).
+        let mut rn = Vec::new();
+        rn.extend_from_slice(&FUSE_ROOT_ID.to_le_bytes()); // newdir
+        rn.extend_from_slice(b"a.txt\0b.txt\0");
+        let reply = dispatch(&mut state, &fs, &request(FUSE_RENAME, 1, FUSE_ROOT_ID, &rn)).unwrap();
+        assert_eq!(out_error(&reply), 0);
+        assert!(!dir.path().join("a.txt").exists());
+        assert!(dir.path().join("b.txt").exists());
+
+        // UNLINK b.txt.
+        let reply = dispatch(
+            &mut state,
+            &fs,
+            &request(FUSE_UNLINK, 2, FUSE_ROOT_ID, b"b.txt\0"),
+        )
+        .unwrap();
+        assert_eq!(out_error(&reply), 0);
+        assert!(!dir.path().join("b.txt").exists());
+
+        // mkdir then RMDIR.
+        std::fs::create_dir(dir.path().join("d")).unwrap();
+        let reply = dispatch(
+            &mut state,
+            &fs,
+            &request(FUSE_RMDIR, 3, FUSE_ROOT_ID, b"d\0"),
+        )
+        .unwrap();
+        assert_eq!(out_error(&reply), 0);
+        assert!(!dir.path().join("d").exists());
+    }
+
+    #[test]
+    fn readonly_share_rejects_create_and_open_write() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f"), b"x").unwrap();
+        let fs = Passthrough::new(dir.path()).unwrap();
+        let mut state = FsState::new(true); // read-only
+
+        // CREATE -> EROFS, and nothing created on the host.
+        let reply = dispatch(
+            &mut state,
+            &fs,
+            &request(FUSE_CREATE, 1, FUSE_ROOT_ID, &create_in(2, 0o644, "new")),
+        )
+        .unwrap();
+        assert_eq!(out_error(&reply), -EROFS);
+        assert!(!dir.path().join("new").exists());
+
+        // OPEN existing file O_RDWR -> EROFS.
+        let mut name = b"f".to_vec();
+        name.push(0);
+        let look = dispatch(
+            &mut state,
+            &fs,
+            &request(FUSE_LOOKUP, 2, FUSE_ROOT_ID, &name),
+        )
+        .unwrap();
+        let node = rd_u64(&look, FUSE_OUT_HEADER_LEN).unwrap();
+        let mut open_in = Vec::new();
+        open_in.extend_from_slice(&2u32.to_le_bytes()); // O_RDWR
+        open_in.extend_from_slice(&0u32.to_le_bytes());
+        let reply = dispatch(&mut state, &fs, &request(FUSE_OPEN, 3, node, &open_in)).unwrap();
+        assert_eq!(out_error(&reply), -EROFS);
+    }
+
+    #[test]
+    fn unsupported_mutating_opcode_is_enosys_when_writable() {
+        let (mut state, fs, _dir) = writable();
+        // FUSE_MKNOD = 8 (not implemented) on a writable share -> ENOSYS.
+        let reply = dispatch(&mut state, &fs, &request(8, 1, FUSE_ROOT_ID, &[0u8; 16])).unwrap();
+        assert_eq!(out_error(&reply), -ENOSYS);
     }
 }

@@ -56,9 +56,10 @@ struct Args {
     #[argh(option)]
     vsock: Vec<dillo_config::VsockSpec>,
 
-    /// virtio-fs device: share a host directory into the guest (read-only).
-    /// Repeatable. Key/value: `tag=NAME,source=DIR[,bus=pci|mmio][,slot=N]`.
-    /// The guest mounts it with `mount -t virtiofs NAME <dir>`.
+    /// virtio-fs device: share a host directory into the guest (read-write by
+    /// default; pass `readonly` to forbid guest writes). Repeatable. Key/value:
+    /// `tag=NAME,source=DIR[,readonly][,bus=pci|mmio][,slot=N]`. The guest mounts
+    /// it with `mount -t virtiofs NAME <dir>`.
     #[argh(option)]
     fs: Vec<dillo_config::FsSpec>,
 
@@ -270,10 +271,15 @@ fn build_placements(
             dillo_config::ResolvedDevice::Vsock { .. } => {
                 anyhow::bail!("virtio-vsock is only supported on Unix hosts");
             }
-            dillo_config::ResolvedDevice::Fs { tag, source, .. } => {
+            dillo_config::ResolvedDevice::Fs {
+                tag,
+                source,
+                readonly,
+                ..
+            } => {
                 use anyhow::Context as _;
                 // 1 hiprio + 1 request queue + 1 config vector.
-                let fs = dillo_virtio_fs::VirtioFs::passthrough(tag, source.clone())
+                let fs = dillo_virtio_fs::VirtioFs::passthrough(tag, source.clone(), *readonly)
                     .with_context(|| format!("sharing virtio-fs source {}", source.display()))?;
                 built.push((3, "virtio-fs", Box::new(fs)));
             }

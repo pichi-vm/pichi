@@ -139,6 +139,10 @@ pub struct FsSpec {
     pub tag: String,
     /// Host directory served into the guest.
     pub source: PathBuf,
+    /// Reject guest writes (the guest may read but not modify the share).
+    /// Defaults to read-write, matching `--blk`.
+    #[serde(default)]
+    pub readonly: bool,
     #[serde(default)]
     pub bus: Option<Bus>,
     #[serde(default)]
@@ -245,6 +249,7 @@ pub enum ResolvedDevice {
     Fs {
         tag: String,
         source: PathBuf,
+        readonly: bool,
         placement: Placement,
     },
 }
@@ -339,6 +344,7 @@ fn resolve_device(device: Device) -> anyhow::Result<ResolvedDevice> {
             Ok(ResolvedDevice::Fs {
                 tag: f.tag,
                 source: f.source,
+                readonly: f.readonly,
                 placement: Placement {
                     bus: f.bus,
                     slot: f.slot,
@@ -681,15 +687,24 @@ mod tests {
     #[test]
     fn fs_kv_matches_json() {
         let kv: FsSpec =
-            serde_keyvalue::from_key_values("tag=ctx,source=/srv/ctx,bus=mmio").expect("kv parse");
-        let json: FsSpec =
-            serde_json::from_str(r#"{"tag":"ctx","source":"/srv/ctx","bus":"mmio"}"#)
-                .expect("json parse");
+            serde_keyvalue::from_key_values("tag=ctx,source=/srv/ctx,readonly,bus=mmio")
+                .expect("kv parse");
+        let json: FsSpec = serde_json::from_str(
+            r#"{"tag":"ctx","source":"/srv/ctx","readonly":true,"bus":"mmio"}"#,
+        )
+        .expect("json parse");
         assert_eq!(kv.tag, json.tag);
         assert_eq!(kv.source, json.source);
+        assert_eq!(kv.readonly, json.readonly);
         assert_eq!(kv.bus, json.bus);
         assert_eq!(kv.tag, "ctx");
+        assert!(kv.readonly);
         assert_eq!(kv.bus, Some(Bus::Mmio));
+
+        // Default is read-write (no `readonly` token).
+        let rw: FsSpec =
+            serde_keyvalue::from_key_values("tag=ctx,source=/srv/ctx").expect("kv parse");
+        assert!(!rw.readonly);
     }
 
     #[test]
@@ -700,6 +715,7 @@ mod tests {
             devices: vec![Device::Fs(FsSpec {
                 tag: "ctx".into(),
                 source: PathBuf::from("/srv/ctx"),
+                readonly: false,
                 bus: None,
                 slot: None,
             })],
@@ -712,6 +728,7 @@ mod tests {
             devices: vec![Device::Fs(FsSpec {
                 tag: "x".repeat(37),
                 source: PathBuf::from("/srv/ctx"),
+                readonly: false,
                 bus: None,
                 slot: None,
             })],

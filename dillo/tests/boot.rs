@@ -883,48 +883,59 @@ fn boots_with_vsock() {
 }
 
 /// A `--fs` device shares a host directory into the guest over virtio-fs. The
-/// device always enumerates on the PCI bus (proves dillo attached the
+/// device(s) always enumerate on the PCI bus (proves dillo attached the
 /// transport + the config tag). When the guest kernel has `CONFIG_VIRTIO_FS=y`
-/// built in, the probe (driven by `dillo.virtiofs_tag=`/`dillo.virtiofs_file=`)
-/// also mounts it, lists the share root, and reads a file back — exercising the
-/// FUSE INIT/LOOKUP/OPEN/READ/READDIR path end-to-end. A kernel without the
-/// built-in driver (the catalogued kernels ship it as a module, and snuffler
-/// loads none) is a clean skip *after* the attach assertion — never before.
+/// built in, the probe also mounts both shares and exercises the full FUSE path:
+/// on the read-write share it lists the root, reads a file back, and writes a
+/// probe file (verified host-side — guest→host write); on the read-only share it
+/// confirms a write is rejected. A kernel without the built-in driver (the
+/// catalogued kernels ship it as a module, and snuffler loads none) is a clean
+/// skip *after* the attach assertion — never before.
 ///
-/// Cross-platform: virtio-fs runs in-process and reads the host directory via
-/// `std::fs`, so this runs on every host lane including Windows/WHP (sharing a
-/// host directory into the Linux guest).
+/// Cross-platform: virtio-fs runs in-process and reads/writes the host directory
+/// via `std::fs`, so this runs on every host lane including Windows/WHP.
 #[test]
 fn boots_with_virtiofs() {
+    use snuffler::{VIRTIOFS_PROBE_CONTENT, VIRTIOFS_PROBE_FILE};
+
     if !hypervisor_available() {
         eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
         return;
     }
     let tmp = TempDir::new().unwrap();
 
-    // Host share: a known file to read back plus a sibling, so the guest's
-    // readdir has more than one entry to list.
+    // Read-write share: a known file to read back plus a sibling for readdir.
     const CONTENT: &str = "virtiofs round-trip ok";
     let share = tmp.path().join("share");
     std::fs::create_dir(&share).unwrap();
     std::fs::write(share.join("hello.txt"), CONTENT).unwrap();
     std::fs::write(share.join("readme.md"), "# hi").unwrap();
 
-    let cmdline = "console=hvc0 dillo.virtiofs_tag=ctx dillo.virtiofs_file=hello.txt";
+    // Read-only share: writes from the guest must be rejected by the device.
+    let ro_share = tmp.path().join("ro");
+    std::fs::create_dir(&ro_share).unwrap();
+    std::fs::write(ro_share.join("locked.txt"), "do not touch").unwrap();
+
+    let cmdline = "console=hvc0 dillo.virtiofs_tag=ctx dillo.virtiofs_file=hello.txt \
+                   dillo.virtiofs_ro_tag=roctx";
     let pmi = build_pmi(tmp.path(), cmdline, false);
-    let fs = format!("tag=ctx,source={}", share.display());
-    let output = boot_with(&pmi, 256, 1, tmp.path(), &["--fs", &fs]);
+    let rw = format!("tag=ctx,source={}", share.display());
+    let ro = format!("tag=roctx,source={},readonly", ro_share.display());
+    let output = boot_with(&pmi, 256, 1, tmp.path(), &["--fs", &rw, "--fs", &ro]);
     let r = parse_report(&output).unwrap_or_else(|| {
         panic!("boot produced no snuffler report (guest did not boot):\n{output}")
     });
 
-    // Attach proof: the virtio-fs PCI function (1af4:105a = 0x1040 + type 26)
-    // must enumerate even if the guest binds no driver.
+    // Attach proof: virtio-fs PCI functions (1af4:105a = 0x1040 + type 26) must
+    // enumerate even if the guest binds no driver. Two `--fs` devices → two.
+    let fs_funcs = r
+        .pci
+        .iter()
+        .filter(|p| p.vendor == 0x1af4 && p.device == 0x105a)
+        .count();
     assert!(
-        r.pci
-            .iter()
-            .any(|p| p.vendor == 0x1af4 && p.device == 0x105a),
-        "virtio-fs PCI function (1af4:105a) not enumerated — attach failed: {:?}",
+        fs_funcs >= 2,
+        "expected 2 virtio-fs PCI functions (1af4:105a), found {fs_funcs}: {:?}",
         r.pci
     );
 
@@ -940,14 +951,11 @@ fn boots_with_virtiofs() {
         );
         return;
     }
+
+    // Read path.
     assert!(
-        v.entries.iter().any(|e| e == "hello.txt"),
-        "share root listing missing hello.txt: {:?}",
-        v.entries
-    );
-    assert!(
-        v.entries.iter().any(|e| e == "readme.md"),
-        "share root listing missing readme.md: {:?}",
+        v.entries.iter().any(|e| e == "hello.txt") && v.entries.iter().any(|e| e == "readme.md"),
+        "share root listing incomplete: {:?}",
         v.entries
     );
     assert_eq!(
@@ -955,4 +963,32 @@ fn boots_with_virtiofs() {
         Some(CONTENT),
         "virtio-fs file content mismatch: {v:?}"
     );
+
+    // Write path: the guest's write succeeded and landed on the host byte-exact.
+    assert!(
+        v.wrote,
+        "guest write to rw share failed: {:?}",
+        v.write_error
+    );
+    let written = std::fs::read_to_string(share.join(VIRTIOFS_PROBE_FILE))
+        .expect("probe file not created on host by guest write");
+    assert_eq!(
+        written, VIRTIOFS_PROBE_CONTENT,
+        "guest→host write content mismatch"
+    );
+
+    // Read-only share: the write must have been rejected, and nothing written.
+    let ro_res = r
+        .virtiofs_ro
+        .expect("read-only virtiofs probe absent (cmdline requested dillo.virtiofs_ro_tag)");
+    if ro_res.mounted {
+        assert!(
+            !ro_res.wrote && ro_res.write_error.is_some(),
+            "read-only share accepted a write: {ro_res:?}"
+        );
+        assert!(
+            !ro_share.join(VIRTIOFS_PROBE_FILE).exists(),
+            "read-only share was modified on the host"
+        );
+    }
 }

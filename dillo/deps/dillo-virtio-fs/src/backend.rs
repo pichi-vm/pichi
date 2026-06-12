@@ -74,8 +74,36 @@ pub struct DirEntry {
     pub attr: Attr,
 }
 
-/// Read-only filesystem backing for a virtio-fs share. Paths are relative to
-/// the share root; the empty path is the root itself.
+/// Attributes to change in [`FsBackend::setattr`]. Each `Some` field is applied;
+/// `None` is left untouched. `uid`/`gid` are accepted but not applied (there is
+/// no portable `chown` in `std`); everything else is best-effort cross-platform.
+#[derive(Debug, Clone, Default)]
+pub struct SetAttr {
+    /// Truncate/extend the regular file to this size.
+    pub size: Option<u64>,
+    /// New mode bits (honored on Unix; maps to the read-only bit elsewhere).
+    pub mode: Option<u32>,
+    /// New modification time (seconds, nanoseconds since the Unix epoch).
+    pub mtime: Option<(u64, u32)>,
+    /// New access time (seconds, nanoseconds since the Unix epoch).
+    pub atime: Option<(u64, u32)>,
+}
+
+/// `errno` for a read-only filesystem, returned by the write-path default
+/// methods so a read-only backing fails closed if the device ever reaches it
+/// (the device also rejects writes up front when configured read-only).
+fn read_only_error() -> io::Error {
+    // 30 = EROFS; stored verbatim and surfaced via `raw_os_error` on every
+    // platform, so the FUSE layer maps it back to EROFS.
+    io::Error::from_raw_os_error(30)
+}
+
+/// Filesystem backing for a virtio-fs share. Paths are relative to the share
+/// root; the empty path is the root itself.
+///
+/// The read methods are required; the write methods default to `EROFS` so a
+/// read-only backing needs to implement nothing. A device configured read-only
+/// rejects mutating FUSE opcodes before any of these are called.
 pub trait FsBackend: Send + Sync {
     /// `lstat` the node at `rel` (does not follow a trailing symlink).
     fn stat(&self, rel: &Path) -> io::Result<Attr>;
@@ -88,6 +116,57 @@ pub trait FsBackend: Send + Sync {
 
     /// Read the target of the symlink at `rel`.
     fn readlink(&self, rel: &Path) -> io::Result<Vec<u8>>;
+
+    // --- write path (default: read-only) -----------------------------------
+
+    /// Write `data` at `offset` to the regular file at `rel`; returns the number
+    /// of bytes written.
+    fn write(&self, rel: &Path, offset: u64, data: &[u8]) -> io::Result<u32> {
+        let _ = (rel, offset, data);
+        Err(read_only_error())
+    }
+
+    /// Create (or open) a regular file at `rel` with `mode`, returning its attr.
+    fn create(&self, rel: &Path, mode: u32) -> io::Result<Attr> {
+        let _ = (rel, mode);
+        Err(read_only_error())
+    }
+
+    /// Create a directory at `rel` with `mode`, returning its attr.
+    fn mkdir(&self, rel: &Path, mode: u32) -> io::Result<Attr> {
+        let _ = (rel, mode);
+        Err(read_only_error())
+    }
+
+    /// Remove the regular file (or symlink) at `rel`.
+    fn unlink(&self, rel: &Path) -> io::Result<()> {
+        let _ = rel;
+        Err(read_only_error())
+    }
+
+    /// Remove the (empty) directory at `rel`.
+    fn rmdir(&self, rel: &Path) -> io::Result<()> {
+        let _ = rel;
+        Err(read_only_error())
+    }
+
+    /// Rename `from` to `to` (both relative to the share root).
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let _ = (from, to);
+        Err(read_only_error())
+    }
+
+    /// Apply [`SetAttr`] to `rel`, returning the resulting attr.
+    fn setattr(&self, rel: &Path, set: &SetAttr) -> io::Result<Attr> {
+        let _ = (rel, set);
+        Err(read_only_error())
+    }
+
+    /// Create a symlink at `rel` pointing at `target`, returning its attr.
+    fn symlink(&self, rel: &Path, target: &[u8]) -> io::Result<Attr> {
+        let _ = (rel, target);
+        Err(read_only_error())
+    }
 }
 
 /// Reject a relative path that tries to escape the share root: no absolute
@@ -115,14 +194,15 @@ pub(crate) fn sanitize_rel(rel: &Path) -> io::Result<PathBuf> {
 // ---------------------------------------------------------------------------
 
 mod passthrough {
-    use super::{Attr, DirEntry, FsBackend, sanitize_rel};
+    use super::{Attr, DirEntry, FsBackend, SetAttr, sanitize_rel};
     // The synthesized-attr path (non-Unix hosts) needs the type-bit constants;
     // on Unix the real mode is read straight from `MetadataExt`.
     #[cfg(not(unix))]
     use super::{S_IFDIR, S_IFLNK, S_IFREG};
-    use std::fs::{self, File, Metadata};
+    use std::fs::{self, File, FileTimes, Metadata, OpenOptions};
     use std::io;
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, UNIX_EPOCH};
 
     /// Read-only passthrough of a host directory subtree.
     #[derive(Debug)]
@@ -147,19 +227,31 @@ mod passthrough {
             Ok(Self { root })
         }
 
-        /// Resolve `rel` under the root. `sanitize_rel` already blocks lexical
-        /// escapes (`..`, absolute/prefix); for an *existing* target we also
-        /// canonicalize and confirm it stays within the root, which catches a
-        /// symlink (in any component) that points outside the share. A
-        /// non-existent target (a LOOKUP miss) skips the canonical check and
-        /// surfaces as `NotFound` from the subsequent stat/open.
+        /// Resolve `rel` under the root with a symlink-escape guard. `sanitize_rel`
+        /// already blocks lexical escapes (`..`, absolute/prefix). We then
+        /// canonicalize the **deepest existing ancestor** of the target and
+        /// confirm it stays within the root — this catches a symlink in any
+        /// existing component for both reads and writes-to-not-yet-existing
+        /// targets (e.g. CREATE inside a symlinked-out directory). A genuinely
+        /// missing leaf surfaces later as `NotFound` from the stat/open.
         fn resolve(&self, rel: &Path) -> io::Result<PathBuf> {
             let clean = sanitize_rel(rel)?;
             let full = self.root.join(&clean);
-            if let Ok(canon) = fs::canonicalize(&full)
-                && !canon.starts_with(&self.root)
-            {
-                return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+            let mut probe = full.as_path();
+            loop {
+                match fs::canonicalize(probe) {
+                    Ok(canon) => {
+                        if !canon.starts_with(&self.root) {
+                            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+                        }
+                        break;
+                    }
+                    // `probe` doesn't exist yet; check its parent instead.
+                    Err(_) => match probe.parent() {
+                        Some(parent) => probe = parent,
+                        None => break,
+                    },
+                }
             }
             Ok(full)
         }
@@ -176,6 +268,30 @@ mod passthrough {
         {
             std::os::windows::fs::FileExt::seek_read(file, buf, offset)
         }
+    }
+
+    /// Cross-platform positional write (`pwrite`/`seek_write`).
+    fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<usize> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::FileExt::write_at(file, buf, offset)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::FileExt::seek_write(file, buf, offset)
+        }
+    }
+
+    /// Build a `FileTimes` from optional (secs, nsec) access/modify stamps.
+    fn file_times(atime: Option<(u64, u32)>, mtime: Option<(u64, u32)>) -> FileTimes {
+        let mut times = FileTimes::new();
+        if let Some((s, n)) = atime {
+            times = times.set_accessed(UNIX_EPOCH + Duration::new(s, n));
+        }
+        if let Some((s, n)) = mtime {
+            times = times.set_modified(UNIX_EPOCH + Duration::new(s, n));
+        }
+        times
     }
 
     /// Map host metadata to the FUSE [`Attr`] the Linux guest expects.
@@ -286,6 +402,125 @@ mod passthrough {
             let path = self.resolve(rel)?;
             let target = fs::read_link(&path)?;
             Ok(target.into_os_string().into_encoded_bytes())
+        }
+
+        fn write(&self, rel: &Path, offset: u64, data: &[u8]) -> io::Result<u32> {
+            let path = self.resolve(rel)?;
+            let file = OpenOptions::new().write(true).open(&path)?;
+            let n = write_at(&file, data, offset)?;
+            Ok(n as u32)
+        }
+
+        fn create(&self, rel: &Path, mode: u32) -> io::Result<Attr> {
+            let path = self.resolve(rel)?;
+            let mut opts = OpenOptions::new();
+            opts.write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(mode & 0o777);
+            }
+            let _file = opts.open(&path)?;
+            // On non-Unix the mode can't be honored beyond the read-only bit,
+            // which `create` never sets; the file is created writable.
+            #[cfg(not(unix))]
+            let _ = mode;
+            let meta = fs::symlink_metadata(&path)?;
+            Ok(meta_to_attr(&meta, &path))
+        }
+
+        fn mkdir(&self, rel: &Path, mode: u32) -> io::Result<Attr> {
+            let path = self.resolve(rel)?;
+            fs::create_dir(&path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode & 0o777))?;
+            }
+            #[cfg(not(unix))]
+            let _ = mode;
+            let meta = fs::symlink_metadata(&path)?;
+            Ok(meta_to_attr(&meta, &path))
+        }
+
+        fn unlink(&self, rel: &Path) -> io::Result<()> {
+            let path = self.resolve(rel)?;
+            fs::remove_file(&path)
+        }
+
+        fn rmdir(&self, rel: &Path) -> io::Result<()> {
+            let path = self.resolve(rel)?;
+            fs::remove_dir(&path)
+        }
+
+        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+            let from = self.resolve(from)?;
+            let to = self.resolve(to)?;
+            fs::rename(&from, &to)
+        }
+
+        fn setattr(&self, rel: &Path, set: &SetAttr) -> io::Result<Attr> {
+            let path = self.resolve(rel)?;
+
+            if let Some(size) = set.size {
+                OpenOptions::new().write(true).open(&path)?.set_len(size)?;
+            }
+
+            if let Some(mode) = set.mode {
+                set_mode(&path, mode)?;
+            }
+
+            if set.atime.is_some() || set.mtime.is_some() {
+                // Times need an open handle; on a directory this may fail on some
+                // platforms — best-effort, don't fail the whole setattr.
+                if let Ok(file) = OpenOptions::new().write(true).open(&path) {
+                    let _ = file.set_times(file_times(set.atime, set.mtime));
+                } else if let Ok(file) = File::open(&path) {
+                    let _ = file.set_times(file_times(set.atime, set.mtime));
+                }
+            }
+
+            let meta = fs::symlink_metadata(&path)?;
+            Ok(meta_to_attr(&meta, &path))
+        }
+
+        fn symlink(&self, rel: &Path, target: &[u8]) -> io::Result<Attr> {
+            let path = self.resolve(rel)?;
+            symlink_at(&path, target)?;
+            let meta = fs::symlink_metadata(&path)?;
+            Ok(meta_to_attr(&meta, &path))
+        }
+    }
+
+    /// Apply mode bits where the platform supports it.
+    fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o777))
+        }
+        #[cfg(not(unix))]
+        {
+            // Map the owner-write bit to the read-only attribute.
+            let mut perms = fs::metadata(path)?.permissions();
+            perms.set_readonly(mode & 0o200 == 0);
+            fs::set_permissions(path, perms)
+        }
+    }
+
+    /// Create a symlink. Supported on Unix; elsewhere reported unsupported.
+    fn symlink_at(path: &Path, target: &[u8]) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
+            std::os::unix::fs::symlink(OsStr::from_bytes(target), path)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (path, target);
+            // 95 = EOPNOTSUPP; no portable symlink creation off Unix.
+            Err(io::Error::from_raw_os_error(95))
         }
     }
 }
@@ -511,6 +746,93 @@ mod tests {
             pt.stat(Path::new("nope")).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn passthrough_write_path_cross_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let pt = Passthrough::new(dir.path()).unwrap();
+
+        // create + write
+        let attr = pt.create(Path::new("new.txt"), 0o644).unwrap();
+        assert_eq!(attr.mode & S_IFMT, S_IFREG);
+        assert_eq!(
+            pt.write(Path::new("new.txt"), 0, b"hello world").unwrap(),
+            11
+        );
+        assert_eq!(
+            pt.read(Path::new("new.txt"), 0, 64).unwrap(),
+            b"hello world"
+        );
+        // positional write (overwrite "world" -> "rust!")
+        assert_eq!(pt.write(Path::new("new.txt"), 6, b"rust!").unwrap(), 5);
+        assert_eq!(
+            pt.read(Path::new("new.txt"), 0, 64).unwrap(),
+            b"hello rust!"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("new.txt")).unwrap(),
+            b"hello rust!"
+        );
+
+        // mkdir + nested create
+        pt.mkdir(Path::new("d"), 0o755).unwrap();
+        assert!(pt.stat(Path::new("d")).unwrap().is_dir());
+        pt.create(Path::new("d/inner.txt"), 0o644).unwrap();
+        pt.write(Path::new("d/inner.txt"), 0, b"x").unwrap();
+        assert!(dir.path().join("d/inner.txt").exists());
+
+        // setattr: truncate
+        let a = pt
+            .setattr(
+                Path::new("new.txt"),
+                &SetAttr {
+                    size: Some(5),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(a.size, 5);
+        assert_eq!(pt.read(Path::new("new.txt"), 0, 64).unwrap(), b"hello");
+
+        // rename
+        pt.rename(Path::new("new.txt"), Path::new("renamed.txt"))
+            .unwrap();
+        assert!(!dir.path().join("new.txt").exists());
+        assert_eq!(pt.read(Path::new("renamed.txt"), 0, 64).unwrap(), b"hello");
+
+        // unlink + rmdir
+        pt.unlink(Path::new("renamed.txt")).unwrap();
+        assert!(!dir.path().join("renamed.txt").exists());
+        pt.unlink(Path::new("d/inner.txt")).unwrap();
+        pt.rmdir(Path::new("d")).unwrap();
+        assert!(!dir.path().join("d").exists());
+
+        // write escaping the share is rejected before touching the fs
+        assert!(pt.write(Path::new("../escape"), 0, b"x").is_err());
+        assert!(pt.create(Path::new("../evil.txt"), 0o644).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn passthrough_setattr_mode_and_symlink_unix() {
+        let dir = tempfile::tempdir().unwrap();
+        let pt = Passthrough::new(dir.path()).unwrap();
+        pt.create(Path::new("f"), 0o644).unwrap();
+        let a = pt
+            .setattr(
+                Path::new("f"),
+                &SetAttr {
+                    mode: Some(0o600),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(a.mode & 0o777, 0o600);
+
+        let link = pt.symlink(Path::new("l"), b"f").unwrap();
+        assert_eq!(link.mode & S_IFMT, S_IFLNK);
+        assert_eq!(pt.readlink(Path::new("l")).unwrap(), b"f");
     }
 
     #[test]

@@ -20,7 +20,8 @@ use rustix::fd::{AsFd, BorrowedFd};
 use rustix::fs::{Mode, OFlags};
 use snuffler::{
     BlockDevice, ClockInfo, CpuInfo, FsResult, KernelLog, KernelLogEntry, MemoryInfo, NetIf,
-    PciDevice, REPORT_BEGIN, REPORT_END, Report, SerialPort, VsockResult,
+    PciDevice, REPORT_BEGIN, REPORT_END, Report, SerialPort, VIRTIOFS_PROBE_CONTENT,
+    VIRTIOFS_PROBE_FILE, VsockResult,
 };
 
 mod bench;
@@ -170,7 +171,7 @@ fn write_all_fd(fd: BorrowedFd<'_>, mut bytes: &[u8]) {
 fn observe() -> Report {
     let cmdline = read_trim("/proc/cmdline");
     let vsock = probe_vsock(&cmdline);
-    let virtiofs = probe_virtiofs(&cmdline);
+    let (virtiofs, virtiofs_ro) = probe_virtiofs(&cmdline);
     Report {
         arch: uname_machine(),
         uptime_secs: parse_uptime(),
@@ -186,27 +187,32 @@ fn observe() -> Report {
         kaslr_seed: read_kaslr_seed(),
         vsock,
         virtiofs,
+        virtiofs_ro,
         cmdline,
     }
 }
 
-/// Probe virtio-fs when the cmdline requests it (`dillo.virtiofs_tag=TAG`):
-/// mount that tag with `-t virtiofs`, list the share root, and — when
-/// `dillo.virtiofs_file=NAME` is also set — read that file back. `None` when the
-/// tag token is absent, so ordinary boots never touch virtio-fs.
-fn probe_virtiofs(cmdline: &str) -> Option<FsResult> {
-    let tag = cmdline
-        .split_whitespace()
-        .find_map(|tok| tok.strip_prefix("dillo.virtiofs_tag="))?
-        .to_owned();
-    let file = cmdline
-        .split_whitespace()
-        .find_map(|tok| tok.strip_prefix("dillo.virtiofs_file="))
-        .map(str::to_owned);
-    Some(run_virtiofs_probe(tag, file))
+/// Probe virtio-fs when the cmdline requests it. `dillo.virtiofs_tag=TAG` drives
+/// the read-write probe (mount, list, read `dillo.virtiofs_file=NAME`, then write
+/// a probe file); `dillo.virtiofs_ro_tag=TAG` drives a read-only probe (mount,
+/// attempt a write that must be rejected). Either is absent → `None`, so
+/// ordinary boots never touch virtio-fs. Returns `(read_write, read_only)`.
+fn probe_virtiofs(cmdline: &str) -> (Option<FsResult>, Option<FsResult>) {
+    let token = |key: &str| {
+        cmdline
+            .split_whitespace()
+            .find_map(|tok| tok.strip_prefix(key))
+            .map(str::to_owned)
+    };
+    let file = token("dillo.virtiofs_file=");
+    let rw = token("dillo.virtiofs_tag=")
+        .map(|tag| run_virtiofs_probe("/mnt-virtiofs", tag, file.clone()));
+    let ro = token("dillo.virtiofs_ro_tag=")
+        .map(|tag| run_virtiofs_probe("/mnt-virtiofs-ro", tag, None));
+    (rw, ro)
 }
 
-fn run_virtiofs_probe(tag: String, file: Option<String>) -> FsResult {
+fn run_virtiofs_probe(mountpoint: &str, tag: String, file: Option<String>) -> FsResult {
     use rustix::mount::{MountFlags, mount as do_mount};
 
     let mut res = FsResult {
@@ -215,17 +221,20 @@ fn run_virtiofs_probe(tag: String, file: Option<String>) -> FsResult {
         entries: Vec::new(),
         file: file.clone(),
         content: None,
+        wrote: false,
+        write_error: None,
         error: None,
     };
 
-    let mountpoint = "/mnt-virtiofs";
     let _ = fs::create_dir(mountpoint);
-    // `mount -t virtiofs <tag> <mountpoint>` read-only (the share is RO).
+    // Mount read-write (no MountFlags::RDONLY): write rejection is enforced by
+    // the *device* on a read-only share, which is what we want to exercise — not
+    // the guest kernel's own mount flag.
     if let Err(e) = do_mount(
         tag.as_str(),
         mountpoint,
         "virtiofs",
-        MountFlags::RDONLY,
+        MountFlags::empty(),
         None,
     ) {
         res.error = Some(format!("mount: {e}"));
@@ -248,6 +257,17 @@ fn run_virtiofs_probe(tag: String, file: Option<String>) -> FsResult {
             Err(e) => res.error = Some(format!("read {name}: {e}")),
         }
     }
+
+    // Exercise the guest→host write path (create + write a probe file). On a
+    // read-only share this is expected to fail with EROFS.
+    match fs::write(
+        format!("{mountpoint}/{VIRTIOFS_PROBE_FILE}"),
+        VIRTIOFS_PROBE_CONTENT,
+    ) {
+        Ok(()) => res.wrote = true,
+        Err(e) => res.write_error = Some(format!("write: {e}")),
+    }
+
     res
 }
 

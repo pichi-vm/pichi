@@ -54,18 +54,30 @@ pub struct Report {
     /// `AF_VSOCK` stream to host CID 2 on that port and round-trips a message.
     #[serde(default)]
     pub vsock: Option<VsockResult>,
-    /// Result of the guest-side virtio-fs probe. `None` unless the kernel
-    /// cmdline carries `dillo.virtiofs_tag=TAG`, in which case the probe mounts
-    /// that tag with `-t virtiofs`, lists the share root, and (when
-    /// `dillo.virtiofs_file=NAME` is also set) reads that file back.
+    /// Result of the guest-side virtio-fs probe on the read-write share. `None`
+    /// unless the kernel cmdline carries `dillo.virtiofs_tag=TAG`, in which case
+    /// the probe mounts that tag with `-t virtiofs`, lists the share root, reads
+    /// `dillo.virtiofs_file=NAME` back, and writes a probe file to verify the
+    /// guest→host write path.
     #[serde(default)]
     pub virtiofs: Option<FsResult>,
+    /// Result of the guest-side virtio-fs probe on a *read-only* share. `None`
+    /// unless `dillo.virtiofs_ro_tag=TAG` is present. The probe mounts it and
+    /// attempts a write, which must be rejected (`wrote == false`).
+    #[serde(default)]
+    pub virtiofs_ro: Option<FsResult>,
 }
+
+/// The fixed contents the virtio-fs probe writes into the share, so the host
+/// harness can verify the guest→host write byte-for-byte.
+pub const VIRTIOFS_PROBE_CONTENT: &str = "dillo-virtiofs-guest-write";
+/// The file name the probe creates in the share root.
+pub const VIRTIOFS_PROBE_FILE: &str = "dillo-probe.txt";
 
 /// Outcome of the guest-side virtio-fs probe.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FsResult {
-    /// Mount tag the guest mounted (`dillo.virtiofs_tag=TAG`).
+    /// Mount tag the guest mounted.
     pub tag: String,
     /// The `mount -t virtiofs` succeeded.
     pub mounted: bool,
@@ -78,7 +90,13 @@ pub struct FsResult {
     /// Contents read back from `file`, when the read succeeded.
     #[serde(default)]
     pub content: Option<String>,
-    /// Failure detail, if any stage errored.
+    /// Whether the probe's create+write of [`VIRTIOFS_PROBE_FILE`] succeeded.
+    #[serde(default)]
+    pub wrote: bool,
+    /// Error from the write attempt (expected/present on a read-only share).
+    #[serde(default)]
+    pub write_error: Option<String>,
+    /// Failure detail, if any earlier stage errored.
     #[serde(default)]
     pub error: Option<String>,
 }

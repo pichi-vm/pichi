@@ -31,7 +31,7 @@ use vm_memory::GuestAddress;
 
 use crate::fuse::FsState;
 
-pub use crate::backend::{Attr, DirEntry, FsBackend, MapFs, Passthrough};
+pub use crate::backend::{Attr, DirEntry, FsBackend, MapFs, Passthrough, SetAttr};
 
 /// VIRTIO_F_VERSION_1 from the virtio 1.x spec.
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;
@@ -78,8 +78,10 @@ pub enum FsError {
 }
 
 impl VirtioFs {
-    /// Build a virtio-fs device from a mount `tag` and an [`FsBackend`].
-    pub fn new(tag: &str, backend: Arc<dyn FsBackend>) -> Result<Self, FsError> {
+    /// Build a virtio-fs device from a mount `tag` and an [`FsBackend`]. When
+    /// `readonly` is true every mutating FUSE opcode is rejected with `EROFS`
+    /// before the backend is consulted.
+    pub fn new(tag: &str, backend: Arc<dyn FsBackend>, readonly: bool) -> Result<Self, FsError> {
         let bytes = tag.as_bytes();
         if bytes.is_empty() || bytes.len() > TAG_LEN {
             return Err(FsError::TagLength(bytes.len()));
@@ -89,17 +91,22 @@ impl VirtioFs {
         Ok(Self {
             tag: tag_buf,
             backend,
-            state: Arc::new(Mutex::new(FsState::new())),
+            state: Arc::new(Mutex::new(FsState::new(readonly))),
             activated: false,
         })
     }
 
-    /// Convenience: build a read-only passthrough of a host directory under
-    /// `tag`. Cross-platform; the Linux guest's FUSE attributes are read from
-    /// Unix metadata on Unix hosts and synthesized elsewhere.
-    pub fn passthrough(tag: &str, source: impl Into<std::path::PathBuf>) -> std::io::Result<Self> {
+    /// Convenience: build a passthrough of a host directory under `tag`. When
+    /// `readonly` is true the guest may read but not modify the share.
+    /// Cross-platform; the Linux guest's FUSE attributes are read from Unix
+    /// metadata on Unix hosts and synthesized elsewhere.
+    pub fn passthrough(
+        tag: &str,
+        source: impl Into<std::path::PathBuf>,
+        readonly: bool,
+    ) -> std::io::Result<Self> {
         let backing = Passthrough::new(source)?;
-        Self::new(tag, Arc::new(backing))
+        Self::new(tag, Arc::new(backing), readonly)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
     }
 }
@@ -374,7 +381,7 @@ mod tests {
 
     #[test]
     fn config_carries_tag_and_one_request_queue() {
-        let fs = VirtioFs::new("myshare", Arc::new(MapFs::new())).unwrap();
+        let fs = VirtioFs::new("myshare", Arc::new(MapFs::new()), true).unwrap();
         let mut buf = [0u8; TAG_LEN + 4];
         fs.read_config(0, &mut buf);
         assert_eq!(&buf[..7], b"myshare");
@@ -384,10 +391,10 @@ mod tests {
 
     #[test]
     fn tag_length_validated() {
-        assert!(VirtioFs::new("", Arc::new(MapFs::new())).is_err());
+        assert!(VirtioFs::new("", Arc::new(MapFs::new()), true).is_err());
         let long = "x".repeat(TAG_LEN + 1);
-        assert!(VirtioFs::new(&long, Arc::new(MapFs::new())).is_err());
-        assert!(VirtioFs::new(&"x".repeat(TAG_LEN), Arc::new(MapFs::new())).is_ok());
+        assert!(VirtioFs::new(&long, Arc::new(MapFs::new()), true).is_err());
+        assert!(VirtioFs::new(&"x".repeat(TAG_LEN), Arc::new(MapFs::new()), true).is_ok());
     }
 
     fn write_desc(
@@ -472,7 +479,7 @@ mod tests {
         q.avail_ring = avail;
         q.used_ring = used;
         let q = Arc::new(Mutex::new(q));
-        let state = Arc::new(Mutex::new(FsState::new()));
+        let state = Arc::new(Mutex::new(FsState::new(false)));
         let backend: Arc<dyn FsBackend> = Arc::new(MapFs::new());
 
         drain_requests(
