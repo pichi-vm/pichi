@@ -405,20 +405,31 @@ the output is forgeable; only the *anchor* changes when CC lands.
 
 ## 11. Software to build
 
-New components:
+### 11.1 Independent components (start now, in parallel)
+
+Each is self-contained with a clear interface and isolated tests; none depends
+on another *new* component, so they can proceed concurrently and they unblock
+the integrators below.
+
+| Component | Where | Role | Isolated test |
+|-----------|-------|------|---------------|
+| `pichi-recipe` | `pichi/deps/` | `pichi.yaml` types + parse + validate (§12). Shared by host (`pichi build`) and guest (corium). | parse/validate fixtures |
+| `pichi-erofs` | `pichi/deps/` | Deterministic, unprivileged, pure-Rust erofs emitter (§6.1). `pichi import` wraps its bytes into a context carapace. | determinism + `fsck.erofs` + kernel mount |
+| `pichi-provenance` | `pichi/deps/` | Build-manifest schema (binds inputs→outputs, §10) + sign/verify with a **pluggable anchor** (signature now, attestation later). Shared by corium (produce) and `pichi build` (verify). | roundtrip + verify |
+| `dillo-virtio-fs` | `dillo/deps/` | virtio-fs device — the untrusted output sink (§7.3). Follows the existing `VirtioDevice` pattern. | device harness + boot test |
+
+### 11.2 Integrators (depend on the above + existing code)
 
 | Component | Where | Role |
 |-----------|-------|------|
-| `pichi-erofs` | `pichi/deps/` (sibling of `cow.rs`/`verity.rs`) | Deterministic, unprivileged, pure-Rust erofs emitter (§6.1). Emits bytes; `pichi import` wraps them into a context carapace. |
-| `pichi build` | `pichi/src/cmd/build.rs` | Host orchestrator (§8): read recipe, pack context, resolve `from:`, launch dillo, wait, package + verify output. Builds on the `pichi run` exec path. |
-| build agent | new guest binary (static musl, like `snuffler`) | Guest PID 1 (§7–8): mount context, read `pichi.yaml`, run steps in tmpfs dm-snapshot, re-emit scutes via `cow.rs` + verity, write to virtiofs, emit signed/attested manifest, power off. **Name: open (§13).** |
-| virtio-fs (output) | `dillo/deps/dillo-virtio-fs` | Output-only host-readable sink (§7.3). |
-| dillo build wiring | `dillo` | Attach context + base carapaces, the virtiofs output, and the memory ceiling / lazy-acceptance config. |
-| build image + bootstrap | new | A pichi artifact carrying the agent (PID 1), build tooling (`mount`, dm/verity tools, package managers, `arma` for PMI), and a kernel with `EROFS`+`DM_VERITY`+`DM_SNAPSHOT`+unaccepted-memory. Selectable per build (`--build-image`), so it is just another artifact: bootstrapping = build the build image with a prior one; a one-off raw `pichi import` seeds the first. |
+| **corium** | `corium/` (root product; static musl guest binary, like `snuffler`) | The **pichi guest-services binary** — everything the guest needs, build being one capability. PID 1 in pichi appliances. Modular capabilities: **carapace assembly** at boot (uses the `carapace` crate), **build execution** (read recipe, tmpfs dm-snapshot per step, `cow.rs`+`verity.rs` re-emit, write to the virtiofs output, emit the provenance manifest — §7–8), attestation/reporting, init/shutdown. Extensible. A skeleton (PID 1 + dispatch) can start now; capabilities plug in. (`snuffler` stays the *test-only* probe; corium is production.) |
+| `pichi build` | `pichi/src/cmd/build.rs` | Host orchestrator (§8): resolve recipe + `from:` + build-image, auto-size memory, pack context (`pichi-erofs`→`pichi import`), launch dillo, wait, package + verify (`pichi-provenance`). Builds on the `pichi run` exec path. |
+| dillo build wiring | `dillo` | Attach context + base carapaces + the virtiofs output + the `maxmem` ceiling / lazy-acceptance config. |
+| build image + bootstrap | new | A pichi artifact carrying corium (PID 1) + build tooling (`mount`, dm/verity tools, package managers, `arma` for PMI) + a kernel with `EROFS`+`DM_VERITY`+`DM_SNAPSHOT`+unaccepted-memory. Selectable per build (`--build-image`); a one-off raw `pichi import` seeds the first. |
 
-Reused as-is: `pichi-import` (`cow.rs`, `verity.rs`), the `carapace` crate,
-`dillo-virtio-gpt` (vgpt), the `pichi run` device-assembly + exec path, and the
-snuffler-style musl build for the agent.
+Reused as-is: `pichi-import` (`cow.rs`, `verity.rs`), the `carapace` crate
+(guest assembly), `dillo-virtio-gpt` (vgpt), the `pichi run` device-assembly +
+exec path, and the snuffler-style musl build for corium.
 
 ---
 
@@ -484,16 +495,16 @@ indices, faked time — author's choice today).
   `--memory` (§9).
 - **Build image is any tagged artifact** (`--build-image`, precedence in §8) —
   which makes bootstrapping and per-project customization free.
+- **Guest agent = corium**, the pichi guest-services binary (root product,
+  static musl). It is the umbrella for *everything the guest needs* — carapace
+  assembly, build execution, attestation, init — not just building. "corium"
+  had no surviving definition anywhere (the runtime concept it once clashed with
+  was renamed/dropped in the dillo→pichi rework), so the name is reclaimed here.
+  `snuffler` remains the test-only probe.
 
 **Still open.**
 
-1. **Build-agent name.** "corium" has no surviving definition in either repo,
-   the planning docs, or memory — the only trace was the old open-question note,
-   and the runtime concept it once clashed with appears to have been renamed or
-   dropped in the dillo→pichi rework (runtime vocabulary is now scute/carapace
-   only). So the name is effectively free to reclaim, or pick a fresh
-   build-time-only one.
-2. **First build image's distro base** must permit remix/redistribution of a
+1. **First build image's distro base** must permit remix/redistribution of a
    customized image: **Fedora** (Remix trademark allowance) or **Debian**;
    **Ubuntu is excluded** (Canonical trademark policy restricts redistribution
    of modified images). Fedora-vs-Debian still open.
