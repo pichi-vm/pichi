@@ -66,6 +66,38 @@ pub struct Report {
     /// attempts a write, which must be rejected (`wrote == false`).
     #[serde(default)]
     pub virtiofs_ro: Option<FsResult>,
+    /// Result of the guest-side virtio-net probe. `None` unless the kernel
+    /// cmdline carries `dillo.net_mac=MAC`, in which case the probe looks for a
+    /// network interface whose MAC matches the host-assigned one — proving the
+    /// guest's virtio-net driver bound the device and read its config-space MAC.
+    #[serde(default)]
+    pub net_probe: Option<NetProbe>,
+}
+
+/// Outcome of the guest-side virtio-net probe: did an interface with the
+/// host-assigned MAC appear, and what does the guest see about it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetProbe {
+    /// The MAC the host asked the guest to look for (`dillo.net_mac=MAC`).
+    pub requested_mac: String,
+    /// An interface with that MAC was found.
+    pub found: bool,
+    /// The matching interface name (e.g. `"eth0"`).
+    #[serde(default)]
+    pub iface: Option<String>,
+    /// The interface's MAC as the guest reports it.
+    #[serde(default)]
+    pub mac: Option<String>,
+    /// The interface MTU.
+    #[serde(default)]
+    pub mtu: Option<u32>,
+    /// `/sys/class/net/<if>/operstate` (e.g. `"up"`, `"down"`, `"unknown"`).
+    #[serde(default)]
+    pub operstate: Option<String>,
+    /// `/sys/class/net/<if>/carrier` as a bool, when readable (only when the
+    /// link is administratively up).
+    #[serde(default)]
+    pub carrier: Option<bool>,
 }
 
 /// The fixed contents the virtio-fs probe writes into the share, so the host

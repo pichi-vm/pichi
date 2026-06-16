@@ -63,8 +63,15 @@ struct Args {
     #[argh(option)]
     fs: Vec<dillo_config::FsSpec>,
 
+    /// virtio-net device. Repeatable. Key/value:
+    /// `[backend=none|tap|macvtap][,iface=NAME][,mac=aa:bb:cc:dd:ee:ff][,bus=pci|mmio][,slot=N]`.
+    /// `tap`/`macvtap` are Linux-only; `none` (the default) is a peerless
+    /// link-up NIC available on every host.
+    #[argh(option)]
+    net: Vec<dillo_config::NetSpec>,
+
     /// path to a JSON device layout file. Mutually exclusive with
-    /// `--blk`/`--gpt`/`--vsock`/`--fs`/`--bus`/`--console`.
+    /// `--blk`/`--gpt`/`--vsock`/`--fs`/`--net`/`--bus`/`--console`.
     #[argh(option)]
     layout: Option<std::path::PathBuf>,
 }
@@ -195,9 +202,10 @@ fn layout_from_args(args: &Args) -> anyhow::Result<dillo_config::Layout> {
             args.blk.is_empty()
                 && args.gpt.is_empty()
                 && args.fs.is_empty()
+                && args.net.is_empty()
                 && args.bus.is_none()
                 && args.console.is_none(),
-            "--layout is mutually exclusive with --blk/--gpt/--fs/--vsock/--bus/--console"
+            "--layout is mutually exclusive with --blk/--gpt/--fs/--vsock/--net/--bus/--console"
         );
         #[cfg(unix)]
         anyhow::ensure!(
@@ -222,6 +230,7 @@ fn layout_from_args(args: &Args) -> anyhow::Result<dillo_config::Layout> {
             .map(dillo_config::Device::Blk)
             .chain(args.gpt.iter().cloned().map(dillo_config::Device::Gpt))
             .chain(args.fs.iter().cloned().map(dillo_config::Device::Fs))
+            .chain(args.net.iter().cloned().map(dillo_config::Device::Net))
             .collect();
         #[cfg(unix)]
         devices.extend(args.vsock.iter().cloned().map(dillo_config::Device::Vsock));
@@ -282,6 +291,16 @@ fn build_placements(
                 let fs = dillo_virtio_fs::VirtioFs::passthrough(tag, source.clone(), *readonly)
                     .with_context(|| format!("sharing virtio-fs source {}", source.display()))?;
                 built.push((3, "virtio-fs", Box::new(fs)));
+            }
+            dillo_config::ResolvedDevice::Net {
+                backend,
+                iface,
+                mac,
+                ..
+            } => {
+                let net = build_net_device(*backend, iface.as_deref(), *mac)?;
+                // 2 queues (rx/tx) + 1 config vector.
+                built.push((3, "virtio-net", Box::new(net)));
             }
             other => {
                 let (name, blk) = build_block_device(other)?;
@@ -353,7 +372,51 @@ fn build_block_device(
         dillo_config::ResolvedDevice::Fs { .. } => {
             anyhow::bail!("internal: build_block_device called for a fs device")
         }
+        dillo_config::ResolvedDevice::Net { .. } => {
+            anyhow::bail!("internal: build_block_device called for a net device")
+        }
     }
+}
+
+/// Construct a `VirtioNet` with the requested host backend. The portable
+/// `none` sink works on every host; `tap`/`macvtap` are Linux-only and surface
+/// a clean error elsewhere.
+fn build_net_device(
+    backend: dillo_config::NetBackendKind,
+    iface: Option<&str>,
+    mac: [u8; 6],
+) -> anyhow::Result<dillo_virtio_net::VirtioNet> {
+    use dillo_config::NetBackendKind;
+    use dillo_virtio_net::{NetBackend, VirtioNet};
+
+    // `iface` is consumed only by the Linux tap/macvtap arms.
+    #[cfg(not(target_os = "linux"))]
+    let _ = iface;
+
+    let backend: std::sync::Arc<dyn NetBackend> = match backend {
+        NetBackendKind::None => std::sync::Arc::new(dillo_virtio_net::NullBackend::new()),
+        #[cfg(target_os = "linux")]
+        NetBackendKind::Tap => {
+            use anyhow::Context as _;
+            let tap = dillo_virtio_net::TapBackend::open(iface.unwrap_or(""))
+                .context("opening TAP device (needs CAP_NET_ADMIN)")?;
+            log::info!("virtio-net: TAP backend on {:?}", tap.name());
+            std::sync::Arc::new(tap)
+        }
+        #[cfg(target_os = "linux")]
+        NetBackendKind::Macvtap => {
+            use anyhow::Context as _;
+            let name = iface.context("net backend `macvtap` requires iface=<macvtapN>")?;
+            let mv = dillo_virtio_net::MacvtapBackend::open(name)
+                .with_context(|| format!("attaching macvtap {name:?}"))?;
+            std::sync::Arc::new(mv)
+        }
+        #[cfg(not(target_os = "linux"))]
+        NetBackendKind::Tap | NetBackendKind::Macvtap => {
+            anyhow::bail!("net backend {backend:?} is Linux-only; use backend=none on this host");
+        }
+    };
+    Ok(VirtioNet::new(mac, backend))
 }
 
 /// Derive placement capacity from the surveyed platform: PCI functions (device

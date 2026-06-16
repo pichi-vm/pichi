@@ -31,6 +31,10 @@ dillo-virtio-console.workspace = true
 # reads files via std::fs, so it works on every host (incl. Windows/WHP).
 dillo-virtio-fs.workspace = true
 dillo-virtio-gpt.workspace = true
+# virtio-net's frontend + NullBackend are cross-platform; its TAP/macvtap
+# backends are `#[cfg(target_os = "linux")]` inside the crate, so it builds on
+# every host.
+dillo-virtio-net.workspace = true
 dillo-config.workspace = true
 dillo-devtree.workspace = true
 pmi.workspace = true

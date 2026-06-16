@@ -1,0 +1,28 @@
+[package]
+name = "dillo-virtio-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "In-process virtio-net device for dillo: cross-platform frontend plus Linux TAP/macvtap backends."
+
+[lints]
+workspace = true
+
+[dependencies]
+dillo-virtio = { workspace = true }
+dillo-mmio = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+# The frontend's queue marshalling is unit-tested against a real guest-memory
+# mmap, exactly like dillo-virtio-console.
+vm-memory = { workspace = true }
+
+# TAP and macvtap are Linux-only host backends (they open /dev/net/tun and
+# /dev/tapN). The cross-platform frontend (the VirtioDevice + NullBackend) needs
+# none of this, so libc/nix are pulled only on Linux and the backends are
+# `#[cfg(target_os = "linux")]`.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+nix = { workspace = true }

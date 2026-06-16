@@ -94,6 +94,7 @@ const KERNELS: &[Entry] = &[
             "VIRTIO_PCI",
             "VIRTIO_MMIO",
             "VIRTIO_BLK",
+            "VIRTIO_NET",
             "VIRTIO_CONSOLE",
             "VIRTIO_VSOCKETS",
             "RANDOMIZE_BASE",
@@ -133,6 +134,7 @@ const KERNELS: &[Entry] = &[
             "VIRTIO_PCI",
             "VIRTIO_MMIO",
             "VIRTIO_BLK",
+            "VIRTIO_NET",
             "VIRTIO_CONSOLE",
             "VIRTIO_VSOCKETS",
             "ACPI_SPCR_TABLE",
@@ -991,4 +993,81 @@ fn boots_with_virtiofs() {
             "read-only share was modified on the host"
         );
     }
+}
+
+/// A `--net` device gives the guest a virtio-net NIC. With the portable `none`
+/// backend — a link-up NIC with no peer — it needs no host networking, so this
+/// runs on every host lane (Linux/KVM, Windows/WHP, macOS/HVF).
+///
+/// Two assertions, mirroring the virtio-fs test's layered proof:
+///   1. Attach: the virtio-net PCI function (`1af4:1041` = 0x1040 + type 1)
+///      enumerates — dillo built and attached the transport. Always checked.
+///   2. Driver bind: snuffler finds an interface carrying the host-assigned MAC
+///      (`dillo.net_mac=…`), proving the guest's built-in virtio-net driver
+///      bound the device and read its config-space MAC. The kernel DB selects a
+///      `VIRTIO_NET=y` kernel, so this should hold; a kernel without the
+///      built-in driver is a clean skip *after* the attach assertion.
+///
+/// The real L2 datapath (frame movement, TAP, macvtap) is covered by
+/// `dillo-virtio-net`'s host-side unit tests; those backends need
+/// `CAP_NET_ADMIN`, which CI does not grant, so the boot test uses the sink.
+#[test]
+fn boots_with_net() {
+    if !hypervisor_available() {
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
+        return;
+    }
+    let kernel = match require(&["VIRTIO_NET", "VIRTIO_PCI", "VIRTIO_CONSOLE"], &[]) {
+        Some(k) => k,
+        None => {
+            eprintln!("skip: kernel DB has no downloadable virtio-net kernel");
+            return;
+        }
+    };
+
+    let tmp = TempDir::new().unwrap();
+    const MAC: &str = "52:54:00:ab:cd:ef";
+
+    let cmdline = format!("console=hvc0 dillo.net_mac={MAC}");
+    let pmi = build_pmi_from_path(tmp.path(), &kernel, host::CONFIG, &cmdline, false);
+    let net = format!("backend=none,mac={MAC}");
+    let output = boot_with(&pmi, 256, 1, tmp.path(), &["--net", &net]);
+    let r = parse_report(&output).unwrap_or_else(|| {
+        panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+    });
+
+    // Attach proof: a virtio-net PCI function (1af4:1041) must enumerate even if
+    // the guest binds no driver.
+    let net_funcs = r
+        .pci
+        .iter()
+        .filter(|p| p.vendor == 0x1af4 && p.device == 0x1041)
+        .count();
+    assert!(
+        net_funcs >= 1,
+        "expected a virtio-net PCI function (1af4:1041), found {net_funcs}: {:?}",
+        r.pci
+    );
+
+    // Driver-bind proof.
+    let np = r
+        .net_probe
+        .expect("net probe result absent (cmdline requested dillo.net_mac)");
+    assert_eq!(np.requested_mac, MAC, "probed unexpected MAC");
+    if !np.found {
+        eprintln!(
+            "skip: virtio-net attached on PCI but the guest bound no driver — this kernel \
+             lacks CONFIG_VIRTIO_NET=y built-in"
+        );
+        return;
+    }
+    assert_eq!(
+        np.mac.as_deref().map(str::to_ascii_lowercase),
+        Some(MAC.to_string()),
+        "guest interface MAC mismatch: {np:?}"
+    );
+    assert!(
+        np.iface.is_some(),
+        "matched MAC but no interface name: {np:?}"
+    );
 }

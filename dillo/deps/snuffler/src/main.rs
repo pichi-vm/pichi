@@ -20,7 +20,7 @@ use rustix::fd::{AsFd, BorrowedFd};
 use rustix::fs::{Mode, OFlags};
 use snuffler::{
     BlockDevice, ClockInfo, CpuInfo, FsResult, KernelLog, KernelLogEntry, MemoryInfo, NetIf,
-    PciDevice, REPORT_BEGIN, REPORT_END, Report, SerialPort, VIRTIOFS_PROBE_CONTENT,
+    NetProbe, PciDevice, REPORT_BEGIN, REPORT_END, Report, SerialPort, VIRTIOFS_PROBE_CONTENT,
     VIRTIOFS_PROBE_FILE, VsockResult,
 };
 
@@ -172,6 +172,8 @@ fn observe() -> Report {
     let cmdline = read_trim("/proc/cmdline");
     let vsock = probe_vsock(&cmdline);
     let (virtiofs, virtiofs_ro) = probe_virtiofs(&cmdline);
+    let net = walk_net();
+    let net_probe = probe_net(&cmdline, &net);
     Report {
         arch: uname_machine(),
         uptime_secs: parse_uptime(),
@@ -180,7 +182,7 @@ fn observe() -> Report {
         consoles: read_consoles(),
         pci: walk_pci(),
         block: walk_block(),
-        net: walk_net(),
+        net,
         serial: walk_serial(),
         clock: read_clock(),
         kernel_log: read_kernel_log(),
@@ -188,8 +190,37 @@ fn observe() -> Report {
         vsock,
         virtiofs,
         virtiofs_ro,
+        net_probe,
         cmdline,
     }
+}
+
+/// Probe virtio-net when the cmdline requests it (`dillo.net_mac=MAC`): find the
+/// interface whose MAC matches the host-assigned one, proving the guest's
+/// virtio-net driver bound the device and read its config-space MAC. `None` when
+/// the token is absent, so ordinary boots never run it.
+fn probe_net(cmdline: &str, ifaces: &[NetIf]) -> Option<NetProbe> {
+    let requested_mac = cmdline
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("dillo.net_mac="))?
+        .to_owned();
+    let matched = ifaces.iter().find(|n| {
+        n.mac
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case(&requested_mac))
+    });
+    let carrier = matched.and_then(|n| {
+        read_opt(Path::new(&format!("/sys/class/net/{}/carrier", n.name))).map(|s| s == "1")
+    });
+    Some(NetProbe {
+        requested_mac,
+        found: matched.is_some(),
+        iface: matched.map(|n| n.name.clone()),
+        mac: matched.and_then(|n| n.mac.clone()),
+        mtu: matched.and_then(|n| n.mtu),
+        operstate: matched.and_then(|n| n.operstate.clone()),
+        carrier,
+    })
 }
 
 /// Probe virtio-fs when the cmdline requests it. `dillo.virtiofs_tag=TAG` drives

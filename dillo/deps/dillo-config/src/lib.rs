@@ -60,7 +60,7 @@ pub struct Layout {
 }
 
 /// One device entry. JSON externally-tagged: `{"blk": {…}}` / `{"gpt": {…}}` /
-/// `{"vsock": {…}}` / `{"fs": {…}}`.
+/// `{"vsock": {…}}` / `{"fs": {…}}` / `{"net": {…}}`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Device {
@@ -68,6 +68,7 @@ pub enum Device {
     Gpt(GptSpec),
     Vsock(VsockSpec),
     Fs(FsSpec),
+    Net(NetSpec),
 }
 
 /// Console placement + endpoint.
@@ -149,6 +150,43 @@ pub struct FsSpec {
     pub slot: Option<u32>,
 }
 
+/// Which host-side L2 transport backs a virtio-net device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetBackendKind {
+    /// Portable sink: a link-up NIC with no peer. The only backend available on
+    /// non-Linux hosts. Default so a bare `--net` always attaches.
+    #[default]
+    None,
+    /// Linux `/dev/net/tun` in `IFF_TAP` mode (traditional TAP/bridging).
+    Tap,
+    /// Linux macvtap endpoint (`/dev/tap<ifindex>`).
+    Macvtap,
+}
+
+/// virtio-net device. The guest gets an Ethernet NIC with the configured (or
+/// derived) MAC; frames are carried by the selected host [`NetBackendKind`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct NetSpec {
+    /// Host L2 transport. Defaults to [`NetBackendKind::None`].
+    #[serde(default)]
+    pub backend: NetBackendKind,
+    /// Interface name: the `tapN` to create/attach (TAP), or the existing
+    /// `macvtapN` to attach (macvtap). Required for `macvtap`; optional for
+    /// `tap` (kernel auto-assigns); ignored for `none`.
+    #[serde(default)]
+    pub iface: Option<String>,
+    /// Guest MAC as `aa:bb:cc:dd:ee:ff`. Defaults to a derived
+    /// locally-administered (`52:54:00:…`) address.
+    #[serde(default)]
+    pub mac: Option<String>,
+    #[serde(default)]
+    pub bus: Option<Bus>,
+    #[serde(default)]
+    pub slot: Option<u32>,
+}
+
 /// One GPT partition. Fields are stamped verbatim into the synthesized entry.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -178,7 +216,7 @@ macro_rules! impl_kv_arg {
 }
 
 #[cfg(feature = "argh")]
-impl_kv_arg!(BlkSpec, GptSpec, VsockSpec, FsSpec);
+impl_kv_arg!(BlkSpec, GptSpec, VsockSpec, FsSpec, NetSpec);
 
 #[cfg(feature = "argh")]
 impl argh::FromArgValue for ConsoleSpec {
@@ -252,6 +290,13 @@ pub enum ResolvedDevice {
         readonly: bool,
         placement: Placement,
     },
+    Net {
+        backend: NetBackendKind,
+        /// Resolved interface name (tap/macvtap); `None` for an auto/none backend.
+        iface: Option<String>,
+        mac: [u8; 6],
+        placement: Placement,
+    },
 }
 
 impl ResolvedDevice {
@@ -260,7 +305,8 @@ impl ResolvedDevice {
             ResolvedDevice::Blk { placement, .. }
             | ResolvedDevice::Gpt { placement, .. }
             | ResolvedDevice::Vsock { placement, .. }
-            | ResolvedDevice::Fs { placement, .. } => placement,
+            | ResolvedDevice::Fs { placement, .. }
+            | ResolvedDevice::Net { placement, .. } => placement,
         }
     }
 }
@@ -280,6 +326,8 @@ const MAX_PARTITIONS: usize = 128;
 const MAX_LABEL_UTF16: usize = 36;
 /// virtio-fs config `tag[36]` bound (`virtio_fs_config.tag`).
 const MAX_FS_TAG: usize = 36;
+/// `IFNAMSIZ`: Linux interface-name bound including the NUL terminator.
+const IFNAMSIZ: usize = 16;
 
 /// Resolve a parsed [`Layout`] into validated facts.
 pub fn resolve(layout: Layout) -> anyhow::Result<Resolved> {
@@ -348,6 +396,36 @@ fn resolve_device(device: Device) -> anyhow::Result<ResolvedDevice> {
                 placement: Placement {
                     bus: f.bus,
                     slot: f.slot,
+                },
+            })
+        }
+        Device::Net(n) => {
+            // macvtap stacks on an existing link, so it needs a name; tap can
+            // let the kernel auto-assign one; none ignores it.
+            if matches!(n.backend, NetBackendKind::Macvtap) {
+                anyhow::ensure!(
+                    n.iface.as_deref().is_some_and(|s| !s.is_empty()),
+                    "net backend `macvtap` requires iface=<macvtapN>"
+                );
+            }
+            if let Some(iface) = &n.iface {
+                anyhow::ensure!(
+                    iface.len() < IFNAMSIZ,
+                    "net iface {iface:?} exceeds {} bytes",
+                    IFNAMSIZ - 1
+                );
+            }
+            let mac = match &n.mac {
+                Some(s) => parse_mac(s)?,
+                None => derive_mac(n.iface.as_deref().unwrap_or("dillo-net")),
+            };
+            Ok(ResolvedDevice::Net {
+                backend: n.backend,
+                iface: n.iface.filter(|s| !s.is_empty()),
+                mac,
+                placement: Placement {
+                    bus: n.bus,
+                    slot: n.slot,
                 },
             })
         }
@@ -464,6 +542,32 @@ fn parse_disk_guid(s: &str) -> anyhow::Result<[u8; 16]> {
     bytes
         .try_into()
         .map_err(|v: Vec<u8>| anyhow::anyhow!("disk-guid decoded to {} bytes (want 16)", v.len()))
+}
+
+/// Parse a MAC `aa:bb:cc:dd:ee:ff` into 6 bytes.
+fn parse_mac(s: &str) -> anyhow::Result<[u8; 6]> {
+    let mut mac = [0u8; 6];
+    let mut octets = s.split(':');
+    for (i, slot) in mac.iter_mut().enumerate() {
+        let octet = octets
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("MAC {s:?} has fewer than 6 octets"))?;
+        anyhow::ensure!(
+            octet.len() == 2,
+            "MAC {s:?} octet {i} ({octet:?}) must be exactly 2 hex digits"
+        );
+        *slot = u8::from_str_radix(octet, 16)
+            .map_err(|e| anyhow::anyhow!("MAC {s:?} octet {i} ({octet:?}) not hex: {e}"))?;
+    }
+    anyhow::ensure!(octets.next().is_none(), "MAC {s:?} has more than 6 octets");
+    Ok(mac)
+}
+
+/// Derive a stable locally-administered MAC (`52:54:00:xx:xx:xx`) from a seed,
+/// so distinct devices that omit `mac=` don't collide.
+fn derive_mac(seed: &str) -> [u8; 6] {
+    let digest = Sha256::digest(seed.as_bytes());
+    [0x52, 0x54, 0x00, digest[0], digest[1], digest[2]]
 }
 
 /// Parse `attrs`: exactly 16 hex chars → u64.
@@ -705,6 +809,83 @@ mod tests {
         let rw: FsSpec =
             serde_keyvalue::from_key_values("tag=ctx,source=/srv/ctx").expect("kv parse");
         assert!(!rw.readonly);
+    }
+
+    #[test]
+    fn net_kv_matches_json() {
+        let kv: NetSpec = serde_keyvalue::from_key_values(
+            "backend=tap,iface=tap0,mac=52:54:00:ab:cd:ef,bus=mmio",
+        )
+        .expect("kv parse");
+        let json: NetSpec = serde_json::from_str(
+            r#"{"backend":"tap","iface":"tap0","mac":"52:54:00:ab:cd:ef","bus":"mmio"}"#,
+        )
+        .expect("json parse");
+        assert_eq!(kv.backend, json.backend);
+        assert_eq!(kv.iface, json.iface);
+        assert_eq!(kv.mac, json.mac);
+        assert_eq!(kv.bus, json.bus);
+        assert_eq!(kv.backend, NetBackendKind::Tap);
+        assert_eq!(kv.bus, Some(Bus::Mmio));
+    }
+
+    #[test]
+    fn net_backend_defaults_to_none() {
+        // A bare `--net` (no fields) is valid and yields the portable sink.
+        let kv: NetSpec = serde_keyvalue::from_key_values("").expect("kv parse");
+        assert_eq!(kv.backend, NetBackendKind::None);
+        assert!(kv.iface.is_none());
+    }
+
+    #[test]
+    fn net_macvtap_requires_iface() {
+        let bad = Layout {
+            bus: None,
+            console: None,
+            devices: vec![Device::Net(NetSpec {
+                backend: NetBackendKind::Macvtap,
+                iface: None,
+                mac: None,
+                bus: None,
+                slot: None,
+            })],
+        };
+        assert!(resolve(bad).is_err(), "macvtap without iface must error");
+
+        let ok = Layout {
+            bus: None,
+            console: None,
+            devices: vec![Device::Net(NetSpec {
+                backend: NetBackendKind::Macvtap,
+                iface: Some("macvtap0".into()),
+                mac: None,
+                bus: None,
+                slot: None,
+            })],
+        };
+        assert!(resolve(ok).is_ok());
+    }
+
+    #[test]
+    fn net_mac_parsed_and_derived() {
+        assert_eq!(
+            parse_mac("52:54:00:ab:cd:ef").unwrap(),
+            [0x52, 0x54, 0x00, 0xab, 0xcd, 0xef]
+        );
+        assert!(parse_mac("52:54:00:ab:cd").is_err(), "too few octets");
+        assert!(
+            parse_mac("52:54:00:ab:cd:ef:00").is_err(),
+            "too many octets"
+        );
+        assert!(parse_mac("5:54:00:ab:cd:ef").is_err(), "octet not 2 digits");
+        assert!(parse_mac("zz:54:00:ab:cd:ef").is_err(), "octet not hex");
+
+        // Derived MACs are locally administered and seed-stable/-distinct.
+        let a = derive_mac("tap0");
+        let b = derive_mac("tap1");
+        assert_eq!(&a[..3], &[0x52, 0x54, 0x00]);
+        assert_ne!(a, b);
+        assert_eq!(a, derive_mac("tap0"));
     }
 
     #[test]

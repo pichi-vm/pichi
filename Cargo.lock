@@ -628,6 +628,7 @@ dependencies = [
  "dillo-virtio-console",
  "dillo-virtio-fs",
  "dillo-virtio-gpt",
+ "dillo-virtio-net",
  "dillo-virtio-vsock",
  "env_logger",
  "hex",
@@ -824,6 +825,18 @@ dependencies = [
  "log",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "dillo-virtio-net"
+version = "0.1.0"
+dependencies = [
+ "dillo-mmio",
+ "dillo-virtio",
+ "libc",
+ "log",
+ "nix 0.30.1",
+ "vm-memory 0.17.2",
 ]
 
 [[package]]

@@ -30,6 +30,7 @@ members = [
     "dillo/deps/dillo-virtio-console",
     "dillo/deps/dillo-virtio-fs",
     "dillo/deps/dillo-virtio-gpt",
+    "dillo/deps/dillo-virtio-net",
     "dillo/deps/dillo-virtio-vsock",
     "dillo/deps/dillo-virtio",
     "dillo/deps/snuffler",
@@ -98,6 +99,7 @@ dillo-virtio-blk = { path = "dillo/deps/dillo-virtio-blk" }
 dillo-virtio-console = { path = "dillo/deps/dillo-virtio-console" }
 dillo-virtio-fs = { path = "dillo/deps/dillo-virtio-fs" }
 dillo-virtio-gpt = { path = "dillo/deps/dillo-virtio-gpt" }
+dillo-virtio-net = { path = "dillo/deps/dillo-virtio-net" }
 dillo-virtio-vsock = { path = "dillo/deps/dillo-virtio-vsock" }
 
 # pichi-internal crates
