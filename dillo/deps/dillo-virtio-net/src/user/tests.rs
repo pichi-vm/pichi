@@ -463,16 +463,27 @@ fn udp_outbound_and_reply() {
 }
 
 /// A connect to a refused host port resets the guest connection (RST).
+///
+/// The target port is one that only a *UDP* socket holds: a TCP connect to it
+/// is refused on every platform (separate port spaces, no TCP listener), and
+/// holding the socket keeps the port from being reused. This is deterministic
+/// where the bind-then-drop trick is not — on Windows a just-closed listener
+/// port briefly still accepts connects.
 #[test]
 fn connection_refused_resets_guest() {
-    let dead_port = likely_closed_port();
+    // Hold a UDP socket so the TCP port stays free of any TCP listener.
+    let guard = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let dead_port = guard.local_addr().unwrap().port();
+
     let mut h = Harness::new(vec![]);
     let handle = h.connect(IpEndpoint::new(ipv4(127, 0, 0, 1), dead_port), 49004);
     let reset = h.run_until(|h| {
         let socket = h.tcp(handle);
-        // The guest's connection never establishes; an RST drives it to Closed.
+        // The host connect is refused; the proxy RSTs the guest (immediately on
+        // Unix, via the connect-timeout backstop on Windows) → Closed.
         matches!(socket.state(), tcp::State::Closed) && !socket.is_active()
     });
+    drop(guard);
     assert!(reset, "guest connection to a refused port was not reset");
 }
 
