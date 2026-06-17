@@ -520,3 +520,46 @@ fn multi_segment_transfer() {
     drop(h);
     let _ = server.join();
 }
+
+/// Fast, VM-free reproduction of the masquerade-to-real-external-host path: the
+/// guest-stack dials a well-known public IP, which the proxy masquerades onto a
+/// real host socket. A working masquerade keeps the connection up; a broken one
+/// (the Windows-only bug under investigation — see WINDOWS-MASQUERADE-HANDOFF.md)
+/// resets the guest to `Closed` within the proxy's connect-timeout window.
+///
+/// `#[ignore]`d: needs outbound internet on 443, so it never runs in CI. Run it
+/// manually while debugging — it reproduces in seconds instead of a 10-minute
+/// VM boot:
+///
+/// ```text
+/// cargo test -p dillo-virtio-net -- --ignored masquerade_holds_to_real_internet
+/// ```
+#[test]
+#[ignore = "needs outbound internet on 443; manual repro for masquerade-to-external"]
+fn masquerade_holds_to_real_internet() {
+    // Cloudflare anycast; 443 is the port CI/firewalls reliably permit.
+    let mut h = Harness::new(vec![]);
+    let handle = h.connect(IpEndpoint::new(ipv4(1, 1, 1, 1), 443), 49100);
+
+    // The guest establishes with the proxy immediately (the proxy accepts the
+    // SYN before its own host connect resolves).
+    let established = h.run_until(|h| h.tcp(handle).may_send());
+    assert!(established, "guest never established with the proxy");
+
+    // Drive past the proxy's 5s host-connect timeout. A reachable host keeps the
+    // bridged connection open; the bug resets it to Closed.
+    let start = StdInstant::now();
+    let mut closed = false;
+    while start.elapsed() < Duration::from_secs(8) {
+        h.step();
+        if matches!(h.tcp(handle).state(), tcp::State::Closed) {
+            closed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !closed,
+        "masquerade to a real external host was reset (reproduces the Windows bug)"
+    );
+}
