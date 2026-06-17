@@ -1195,11 +1195,33 @@ fn boots_with_net_user() {
         })
     };
 
+    // Host-side egress pre-check for the real-internet leg. The guest's
+    // masquerade uses the host's network stack, so the host's own reachability
+    // is an exact predictor: only endpoints the host can reach are worth
+    // asserting the guest can reach. A locked-down CI runner with no egress to
+    // these public IPs is an environmental skip (like no-/dev/kvm), not a
+    // failure — but where egress exists it stays a hard assertion that catches a
+    // real masquerade regression.
+    let reach_endpoints: Vec<&str> = ["1.1.1.1:443", "1.0.0.1:443"]
+        .into_iter()
+        .filter(|ep| {
+            ep.parse::<std::net::SocketAddr>()
+                .ok()
+                .and_then(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(5)).ok())
+                .is_some()
+        })
+        .collect();
+
     let tmp = TempDir::new().unwrap();
+    let reach_token = if reach_endpoints.is_empty() {
+        String::new()
+    } else {
+        format!(" dillo.net_reach={}", reach_endpoints.join(","))
+    };
     let cmdline = format!(
         "ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off console=hvc0 \
          dillo.net_echo=10.0.2.2:{tcp_echo_port} dillo.net_udp=10.0.2.2:{udp_echo_port} \
-         dillo.net_listen={GUEST_FWD_PORT} dillo.net_reach=1.1.1.1:443,1.0.0.1:443"
+         dillo.net_listen={GUEST_FWD_PORT}{reach_token}"
     );
     let pmi = build_pmi_from_path(tmp.path(), &kernel, host::CONFIG, &cmdline, false);
     let net = format!("backend=user,forwards=[{fwd_host_port}:{GUEST_FWD_PORT}]");
@@ -1267,15 +1289,22 @@ fn boots_with_net_user() {
     );
 
     // Leg 4: real-internet reach. The guest masquerades out through the proxy to
-    // a well-known external endpoint (Cloudflare anycast on 443, the port CI
-    // egress firewalls allow) and the connection holds — proving the user-mode
-    // NAT actually carries traffic to the internet, not just to the host. Numeric
-    // IPs (no DNS in v1); two anycast addresses for redundancy.
-    assert_eq!(
-        bench.external_ok,
-        Some(true),
-        "guest could not reach the real internet (masquerade): {bench:?}"
-    );
+    // a well-known external endpoint (Cloudflare anycast on 443) and the
+    // connection holds — proving the user-mode NAT actually carries traffic to
+    // the internet, not just to the host. Asserted only where the host itself has
+    // egress (see the pre-check above); skipped as environmental otherwise.
+    if reach_endpoints.is_empty() {
+        eprintln!(
+            "skip: host has no egress to the public test endpoints; \
+             real-internet masquerade leg not asserted on this runner"
+        );
+    } else {
+        assert_eq!(
+            bench.external_ok,
+            Some(true),
+            "guest could not reach the real internet via masquerade (host can reach {reach_endpoints:?}): {bench:?}"
+        );
+    }
 
     let _ = tcp_echo.join();
     let _ = udp_echo.join();
