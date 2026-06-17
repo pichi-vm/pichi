@@ -9,10 +9,19 @@
 
 use std::io::{Read, Write};
 use std::net::Shutdown;
+use std::time::{Duration, Instant};
 
 use mio::Token;
 use mio::net::TcpStream;
 use smoltcp::socket::tcp;
+
+/// How long the host-side connect may take before the guest connection is reset.
+/// A backstop for destinations that never complete (black-holed) and the
+/// portable way to surface connection-refused: a refused connect is detected
+/// immediately via `take_error`/`peer_addr` on Unix, but mio's IOCP backend on
+/// Windows doesn't surface it through those calls under polling, so this bound
+/// guarantees a timely RST on every platform.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// State for one bridged TCP connection. The smoltcp socket lives in the
 /// [`SocketSet`](smoltcp::iface::SocketSet); this owns the host side.
@@ -33,6 +42,8 @@ pub(super) struct TcpFlow {
     host_read_closed: bool,
     /// A fatal host-side error means the guest connection must be reset (RST).
     pub(super) reset: bool,
+    /// When the host connect was initiated, for the [`CONNECT_TIMEOUT`] backstop.
+    started: Instant,
 }
 
 impl std::fmt::Debug for TcpFlow {
@@ -59,6 +70,7 @@ impl TcpFlow {
             host_write_closed: false,
             host_read_closed: false,
             reset: false,
+            started: Instant::now(),
         }
     }
 
@@ -73,6 +85,7 @@ impl TcpFlow {
             host_write_closed: false,
             host_read_closed: false,
             reset: false,
+            started: Instant::now(),
         }
     }
 
@@ -127,7 +140,12 @@ impl TcpFlow {
                 if e.kind() == std::io::ErrorKind::NotConnected
                     || e.kind() == std::io::ErrorKind::WouldBlock =>
             {
-                // Still connecting; try again on the next wake.
+                // Still connecting — unless we've waited too long (a black-holed
+                // destination, or a refused connect on a platform that doesn't
+                // surface the error through these calls): RST the guest.
+                if self.started.elapsed() >= CONNECT_TIMEOUT {
+                    self.reset = true;
+                }
                 false
             }
             Err(_) => {
