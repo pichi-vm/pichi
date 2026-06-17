@@ -6,6 +6,12 @@ this doc and the repro test).
 **Owner picking this up:** debugging on a Windows machine.
 **Delete this file before merge.**
 
+> Toolchain: use a **nightly** toolchain on Windows — the workspace's
+> `.cargo/config.toml` sets `[unstable] bindeps = true`, which only nightly
+> cargo honors. Hence `cargo +nightly …` in every command below. (`rustup
+> toolchain install nightly` if you don't have it.) The fast repro needs no
+> hypervisor; only the VM repro needs WHP.
+
 ## TL;DR
 
 The user-mode virtio-net backend (`src/user/`) masquerades guest connections
@@ -40,7 +46,7 @@ A host-only repro drives the same masquerade path through the in-process
 two-smoltcp-stack harness — **iterate here, not via the 10-minute CI boot**:
 
 ```powershell
-cargo test -p dillo-virtio-net -- --ignored masquerade_holds_to_real_internet
+cargo +nightly test -p dillo-virtio-net -- --ignored masquerade_holds_to_real_internet
 ```
 
 (Needs outbound internet on 443.) It dials `1.1.1.1:443` from the guest-stack;
@@ -59,7 +65,7 @@ Test source: `src/user/tests.rs::masquerade_holds_to_real_internet`.
 ## Full reproduction (VM, needs WHP + internet)
 
 ```powershell
-cargo test -p dillo --features vm-tests boots_with_net_user -- --nocapture
+cargo +nightly test -p dillo --features vm-tests boots_with_net_user -- --nocapture
 ```
 
 dillo's own logs are captured in the test output (look for `[dillo] … WARN …`),
@@ -132,9 +138,9 @@ masquerade_holds_to_real_internet` and read which branch resets the flow.
 ## Validating a fix
 
 1. Harness repro passes on Windows:
-   `cargo test -p dillo-virtio-net -- --ignored masquerade_holds_to_real_internet`
+   `cargo +nightly test -p dillo-virtio-net -- --ignored masquerade_holds_to_real_internet`
 2. Boot test passes on Windows:
-   `cargo test -p dillo --features vm-tests boots_with_net_user`
+   `cargo +nightly test -p dillo --features vm-tests boots_with_net_user`
 3. `cargo fmt --all --check`; build with `-D warnings`.
 4. Push; confirm CI green on all four lanes.
 
