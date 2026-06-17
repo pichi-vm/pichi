@@ -89,6 +89,21 @@ impl TcpFlow {
         }
     }
 
+    /// Handle a mio WRITABLE readiness event for the host stream. For a
+    /// connecting socket this is how connect completion is reliably observed on
+    /// every platform (polling `peer_addr`/`take_error` works on Unix but not on
+    /// Windows IOCP for an async/external connect): `take_error` now reports
+    /// success (`None`) or the connect failure.
+    pub(super) fn note_writable(&mut self) {
+        if self.connected || self.reset {
+            return;
+        }
+        match self.stream.take_error() {
+            Ok(None) => self.connected = true,
+            Ok(Some(_)) | Err(_) => self.reset = true,
+        }
+    }
+
     /// Pump bytes between the guest-facing `socket` and the host `stream` once.
     /// Returns `true` if any bytes moved in either direction (so the caller
     /// knows to keep draining before it sleeps).

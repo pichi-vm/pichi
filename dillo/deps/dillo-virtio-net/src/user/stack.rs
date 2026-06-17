@@ -65,6 +65,9 @@ pub(super) struct Stack {
 
     /// Established/connecting outbound + inbound-forward TCP flows.
     tcp_flows: HashMap<SocketHandle, TcpFlow>,
+    /// mio token → TCP flow handle, so a WRITABLE event can drive connect
+    /// completion for the right flow (the cross-platform way to observe it).
+    tcp_flow_tokens: HashMap<Token, SocketHandle>,
     /// Destinations with a smoltcp socket currently in `Listen` awaiting a SYN.
     tcp_listening: HashMap<(IpAddress, u16), SocketHandle>,
     /// Outbound UDP flows, keyed by guest destination `(ip, port)`.
@@ -137,6 +140,7 @@ impl Stack {
             next_token,
             next_ephemeral: EPHEMERAL_BASE,
             tcp_flows: HashMap::new(),
+            tcp_flow_tokens: HashMap::new(),
             tcp_listening: HashMap::new(),
             udp_flows: HashMap::new(),
             forward_udp_local_ports: HashSet::new(),
@@ -174,8 +178,23 @@ impl Stack {
             let now = Instant::now();
             let wait = mio_wait(self.iface.poll_delay(now, &self.sockets));
             let _ = self.poll.poll(&mut self.events, Some(wait));
-            // Events are pure wakeups; every source is serviced each iteration,
-            // so there is nothing to route by token here.
+            // Data readiness needs no routing — every source is serviced each
+            // iteration. A WRITABLE event, though, is how a TCP flow's connect
+            // completion is observed portably (Windows IOCP doesn't surface it
+            // via peer_addr polling), so route those to the owning flow.
+            let writable: Vec<Token> = self
+                .events
+                .iter()
+                .filter(|e| e.is_writable())
+                .map(|e| e.token())
+                .collect();
+            for token in writable {
+                if let Some(handle) = self.tcp_flow_tokens.get(&token).copied() {
+                    if let Some(flow) = self.tcp_flows.get_mut(&handle) {
+                        flow.note_writable();
+                    }
+                }
+            }
         }
     }
 
@@ -284,6 +303,7 @@ impl Stack {
                 .and_then(|t| self.connect_host(t));
             match connected {
                 Some((stream, token)) => {
+                    self.tcp_flow_tokens.insert(token, handle);
                     self.tcp_flows.insert(handle, TcpFlow::new(stream, token));
                 }
                 None => {
@@ -338,6 +358,7 @@ impl Stack {
                         self.pending_removal.push(handle);
                         continue;
                     }
+                    self.tcp_flow_tokens.insert(token, handle);
                     self.tcp_flows
                         .insert(handle, TcpFlow::new_connected(stream, token));
                 }
@@ -414,6 +435,7 @@ impl Stack {
             .collect();
         for handle in dead {
             if let Some(mut flow) = self.tcp_flows.remove(&handle) {
+                self.tcp_flow_tokens.remove(&flow.token);
                 let _ = self.poll.registry().deregister(&mut flow.stream);
                 self.sockets.remove(handle);
             }
