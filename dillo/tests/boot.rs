@@ -1199,7 +1199,7 @@ fn boots_with_net_user() {
     let cmdline = format!(
         "ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off console=hvc0 \
          dillo.net_echo=10.0.2.2:{tcp_echo_port} dillo.net_udp=10.0.2.2:{udp_echo_port} \
-         dillo.net_listen={GUEST_FWD_PORT} dillo.net_http=1.1.1.1:80,1.0.0.1:80"
+         dillo.net_listen={GUEST_FWD_PORT} dillo.net_reach=1.1.1.1:443,1.0.0.1:443"
     );
     let pmi = build_pmi_from_path(tmp.path(), &kernel, host::CONFIG, &cmdline, false);
     let net = format!("backend=user,forwards=[{fwd_host_port}:{GUEST_FWD_PORT}]");
@@ -1267,13 +1267,14 @@ fn boots_with_net_user() {
     );
 
     // Leg 4: real-internet reach. The guest masquerades out through the proxy to
-    // a well-known external endpoint and gets a real HTTP response — proving the
-    // user-mode NAT actually carries traffic to the internet, not just to the
-    // host. Numeric IPs (no DNS in v1); two anycast addresses for redundancy.
+    // a well-known external endpoint (Cloudflare anycast on 443, the port CI
+    // egress firewalls allow) and the connection holds — proving the user-mode
+    // NAT actually carries traffic to the internet, not just to the host. Numeric
+    // IPs (no DNS in v1); two anycast addresses for redundancy.
     assert_eq!(
-        bench.http_ok,
+        bench.external_ok,
         Some(true),
-        "guest could not reach the real internet (HTTP via masquerade): {bench:?}"
+        "guest could not reach the real internet (masquerade): {bench:?}"
     );
 
     let _ = tcp_echo.join();

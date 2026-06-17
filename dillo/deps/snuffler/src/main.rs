@@ -243,8 +243,8 @@ fn probe_net_io(cmdline: &str) -> Option<NetBench> {
     if let Some(port) = cmdline_token(cmdline, "dillo.net_listen=").and_then(|s| s.parse().ok()) {
         bench.forward_ok = Some(run_inbound_accept(port));
     }
-    if let Some(endpoints) = cmdline_token(cmdline, "dillo.net_http=") {
-        bench.http_ok = Some(run_http_probe(&endpoints));
+    if let Some(endpoints) = cmdline_token(cmdline, "dillo.net_reach=") {
+        bench.external_ok = Some(run_external_reach_probe(&endpoints));
     }
     Some(bench)
 }
@@ -287,7 +287,7 @@ fn run_tcp_echo(addr: &str) -> NetBench {
         rx: zero_net_op(),
         udp_ok: None,
         forward_ok: None,
-        http_ok: None,
+        external_ok: None,
         error: None,
     };
 
@@ -401,51 +401,54 @@ fn run_inbound_accept(port: u16) -> bool {
     }
 }
 
-/// Prove real-internet reach through the user-mode proxy (masquerade): for each
-/// comma-separated `IP:PORT` in `endpoints`, connect, send a minimal plain-HTTP
-/// request, and check the reply begins with `HTTP/`. Returns `true` on the first
-/// endpoint that answers (several are tried so one flaky host doesn't fail it).
-fn run_http_probe(endpoints: &str) -> bool {
-    use std::io::{Read, Write};
-    use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+/// Prove real-internet reach through the user-mode proxy (masquerade), without a
+/// TLS stack and in a way that works through firewalls that only allow outbound
+/// 443. For each comma-separated `IP:PORT` in `endpoints`, connect (the guest
+/// reaches the proxy, which then dials the real host) and read with a timeout
+/// longer than the proxy's connect-timeout:
+///
+/// - if the real host is **reachable**, the proxy holds the connection open and
+///   the read times out (`WouldBlock`/`TimedOut`) with the connection still up
+///   — reach proven;
+/// - if it is **unreachable**, the proxy fails its connect and RSTs the guest
+///   within its connect-timeout, so the read returns a connection error.
+///
+/// Returns `true` on the first endpoint that proves reachable (several are tried
+/// so one flaky host can't fail it).
+fn run_external_reach_probe(endpoints: &str) -> bool {
+    use std::io::Read;
+    use std::net::{TcpStream, ToSocketAddrs};
     use std::time::Duration;
 
+    // Must exceed the proxy's 5s host-connect timeout so an unreachable host's
+    // RST arrives before this read returns.
+    const READ_TIMEOUT: Duration = Duration::from_secs(7);
+
     for endpoint in endpoints.split(',').filter(|s| !s.is_empty()) {
-        // The guest has no DNS in v1, so endpoints are numeric IP:PORT; parse
-        // without resolving.
+        // No DNS in v1, so endpoints are numeric IP:PORT; parse without resolving.
         let Ok(mut addrs) = endpoint.to_socket_addrs() else {
             continue;
         };
         let Some(addr) = addrs.next() else { continue };
-        let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(10)) else {
+        // Connecting reaches the proxy (which accepts immediately, then dials the
+        // real host); a short connect timeout is fine here.
+        let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(5)) else {
             continue;
         };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-        // Host header uses the canonical name for Cloudflare's 1.1.1.1; any
-        // server still returns a status line starting with `HTTP/`.
-        let host = match addr {
-            SocketAddr::V4(v4) => v4.ip().to_string(),
-            SocketAddr::V6(v6) => v6.ip().to_string(),
-        };
-        let req = format!(
-            "GET / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: dillo-snuffler\r\nConnection: close\r\n\r\n"
-        );
-        if stream.write_all(req.as_bytes()).is_err() {
-            continue;
-        }
-        let mut buf = [0u8; 64];
-        let mut got = 0;
-        // Read until we have enough for the status line (or the peer closes).
-        while got < 5 {
-            match stream.read(&mut buf[got..]) {
-                Ok(0) => break,
-                Ok(n) => got += n,
-                Err(_) => break,
+        let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+        let mut buf = [0u8; 16];
+        match (&stream).read(&mut buf) {
+            // Data, or a clean close from the real host: it was reached.
+            Ok(_) => return true,
+            // Read timed out with the connection still up: reached and held.
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                return true;
             }
-        }
-        if got >= 5 && &buf[..5] == b"HTTP/" {
-            return true;
+            // A reset/abort (proxy couldn't reach the host): try the next one.
+            Err(_) => continue,
         }
     }
     false

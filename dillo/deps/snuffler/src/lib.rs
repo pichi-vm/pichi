@@ -99,10 +99,13 @@ pub struct NetBench {
     #[serde(default)]
     pub forward_ok: Option<bool>,
     /// The guest reached the **real internet** through the user-mode proxy
-    /// (masquerade): a plain-HTTP request to a well-known external endpoint
-    /// returned an `HTTP/` response. Set when requested (`dillo.net_http=…`).
+    /// (masquerade): a TCP connection to a well-known external endpoint
+    /// established and stayed up past the proxy's connect-timeout window (an
+    /// unreachable host is RST within it). Set when requested
+    /// (`dillo.net_reach=…`). Port-agnostic, so it works through firewalls that
+    /// only permit outbound 443.
     #[serde(default)]
-    pub http_ok: Option<bool>,
+    pub external_ok: Option<bool>,
     /// Set when the datapath probe could not run to completion.
     #[serde(default)]
     pub error: Option<String>,
