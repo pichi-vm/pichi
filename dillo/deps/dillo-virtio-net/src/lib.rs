@@ -21,17 +21,20 @@
 //! `VIRTIO_NET_F_MAC` (config-space MAC), and `VIRTIO_NET_F_STATUS` (link
 //! status), so the guest reads the host-assigned MAC and sees a link-up NIC.
 //!
-//! The L2 transport itself lives behind [`NetBackend`]: [`NullBackend`] on
-//! every host, plus Linux [`TapBackend`] and [`MacvtapBackend`].
+//! The L2 transport itself lives behind [`NetBackend`]: the cross-platform,
+//! no-privilege [`UserNetBackend`] (the default), plus the Linux
+//! [`BridgeBackend`] and [`MacvtapBackend`]. [`NullBackend`] remains a portable
+//! sink used by tests.
 
 mod backend;
+mod user;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod bridge;
 #[cfg(target_os = "linux")]
 mod linux_fd;
 #[cfg(target_os = "linux")]
 mod macvtap;
-#[cfg(target_os = "linux")]
-mod tap;
 
 use std::sync::{Arc, Mutex};
 
@@ -43,11 +46,16 @@ use dillo_virtio::{
 };
 
 pub use backend::{MAX_FRAME_LEN, NetBackend, NullBackend, RECV_POLL};
+#[doc(hidden)]
+pub use user::fuzz_inspect_frame;
+pub use user::{Forward, Proto, UserNetBackend};
 
 #[cfg(target_os = "linux")]
-pub use macvtap::MacvtapBackend;
+pub use bridge::BridgeBackend;
+#[cfg(target_os = "macos")]
+pub use bridge::VmnetBackend;
 #[cfg(target_os = "linux")]
-pub use tap::TapBackend;
+pub use macvtap::MacvtapBackend;
 
 /// VIRTIO_F_VERSION_1 from the virtio 1.x spec.
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;

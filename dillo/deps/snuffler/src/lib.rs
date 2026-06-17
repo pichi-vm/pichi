@@ -72,6 +72,54 @@ pub struct Report {
     /// guest's virtio-net driver bound the device and read its config-space MAC.
     #[serde(default)]
     pub net_probe: Option<NetProbe>,
+    /// Result of the guest-side virtio-net **datapath** probe. `None` unless the
+    /// cmdline requests it (`dillo.net_echo=IP:PORT` etc). Exercises the user-
+    /// mode backend end to end: a TCP echo round-trip (with throughput), an
+    /// optional UDP echo, and an optional inbound-forward accept.
+    #[serde(default)]
+    pub net_bench: Option<NetBench>,
+}
+
+/// Guest-side virtio-net datapath results. Like [`BlkBench`], snuffler measures
+/// and verifies but asserts nothing; throughput is telemetry, only the
+/// correctness invariants (bytes moved, errors == 0, verified) are gated in CI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetBench {
+    /// Guest → host bytes (what the guest transmitted to the echo server).
+    pub tx: NetOp,
+    /// Host → guest bytes (the echo the guest read back); `verified` is whether
+    /// it matched the transmitted payload byte-for-byte.
+    pub rx: NetOp,
+    /// A UDP echo round-trip via the gateway matched, when requested
+    /// (`dillo.net_udp=IP:PORT`).
+    #[serde(default)]
+    pub udp_ok: Option<bool>,
+    /// An inbound-forwarded host→guest connection was accepted and echoed, when
+    /// requested (`dillo.net_listen=PORT`).
+    #[serde(default)]
+    pub forward_ok: Option<bool>,
+    /// Set when the datapath probe could not run to completion.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// One direction of a [`NetBench`] transfer (mirrors [`BlkOp`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetOp {
+    /// Total bytes transferred in this direction.
+    pub bytes: u64,
+    /// Number of read/write calls issued.
+    pub ops: u64,
+    /// Wall-clock duration in microseconds.
+    pub duration_us: u64,
+    /// `bytes / duration` in MiB/s (telemetry — noisy in a VM; do not gate CI).
+    pub throughput_mibps: f64,
+    /// Count of failed read/write calls.
+    pub errors: u64,
+    /// Whether the bytes were verified correct (echo matched). `None` when not
+    /// applicable.
+    #[serde(default)]
+    pub verified: Option<bool>,
 }
 
 /// Outcome of the guest-side virtio-net probe: did an interface with the

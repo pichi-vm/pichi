@@ -98,6 +98,11 @@ const KERNELS: &[Entry] = &[
             "VIRTIO_CONSOLE",
             "VIRTIO_VSOCKETS",
             "RANDOMIZE_BASE",
+            // Kernel IP autoconfig (`ip=` cmdline) + the IPv4 stack: the
+            // user-mode net datapath test relies on the guest self-configuring
+            // 10.0.2.15 with no in-guest tooling.
+            "INET",
+            "IP_PNP",
         ],
     },
     Entry {
@@ -138,6 +143,9 @@ const KERNELS: &[Entry] = &[
             "VIRTIO_CONSOLE",
             "VIRTIO_VSOCKETS",
             "ACPI_SPCR_TABLE",
+            // Kernel IP autoconfig (`ip=` cmdline) + the IPv4 stack (see x86_64).
+            "INET",
+            "IP_PNP",
         ],
     },
     Entry {
@@ -995,9 +1003,9 @@ fn boots_with_virtiofs() {
     }
 }
 
-/// A `--net` device gives the guest a virtio-net NIC. With the portable `none`
-/// backend — a link-up NIC with no peer — it needs no host networking, so this
-/// runs on every host lane (Linux/KVM, Windows/WHP, macOS/HVF).
+/// A `--net` device gives the guest a virtio-net NIC. With the default `user`
+/// backend (cross-platform user-mode NAT, no privilege), it runs on every host
+/// lane (Linux/KVM, Windows/WHP, macOS/HVF).
 ///
 /// Two assertions, mirroring the virtio-fs test's layered proof:
 ///   1. Attach: the virtio-net PCI function (`1af4:1041` = 0x1040 + type 1)
@@ -1008,9 +1016,9 @@ fn boots_with_virtiofs() {
 ///      `VIRTIO_NET=y` kernel, so this should hold; a kernel without the
 ///      built-in driver is a clean skip *after* the attach assertion.
 ///
-/// The real L2 datapath (frame movement, TAP, macvtap) is covered by
-/// `dillo-virtio-net`'s host-side unit tests; those backends need
-/// `CAP_NET_ADMIN`, which CI does not grant, so the boot test uses the sink.
+/// This validates attach + driver-bind only; the real user-mode datapath (TCP/
+/// UDP round-trips, port forwarding) is proven by `boots_with_net_user` and by
+/// `dillo-virtio-net`'s in-process datapath unit tests.
 #[test]
 fn boots_with_net() {
     if !hypervisor_available() {
@@ -1030,7 +1038,7 @@ fn boots_with_net() {
 
     let cmdline = format!("console=hvc0 dillo.net_mac={MAC}");
     let pmi = build_pmi_from_path(tmp.path(), &kernel, host::CONFIG, &cmdline, false);
-    let net = format!("backend=none,mac={MAC}");
+    let net = format!("mac={MAC}");
     let output = boot_with(&pmi, 256, 1, tmp.path(), &["--net", &net]);
     let r = parse_report(&output).unwrap_or_else(|| {
         panic!("boot produced no snuffler report (guest did not boot):\n{output}")
@@ -1070,4 +1078,194 @@ fn boots_with_net() {
         np.iface.is_some(),
         "matched MAC but no interface name: {np:?}"
     );
+}
+
+/// Exercise the **user-mode** networking datapath end to end, in a single boot.
+/// The guest self-configures `10.0.2.15` via the kernel `ip=` cmdline
+/// (`CONFIG_IP_PNP=y`), so snuffler uses pure `std::net`. Three legs:
+///   1. guest → host TCP echo via the gateway (`10.0.2.2`), with a `NetBench`
+///      (bytes moved, errors == 0, the echo verified byte-for-byte);
+///   2. guest → host UDP echo via the gateway;
+///   3. host → guest TCP through an inbound `forward` into a listener snuffler
+///      opens in the guest (the host harness connects and gets its bytes echoed).
+///
+/// Cross-platform: the user backend runs in-process with no privilege, so this
+/// runs on every host lane (Linux/KVM, Windows/WHP, macOS/HVF).
+#[test]
+fn boots_with_net_user() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream, UdpSocket};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    if !hypervisor_available() {
+        eprintln!("skip: no usable /dev/kvm on this host (local dev only)");
+        return;
+    }
+    let kernel = match require(
+        &[
+            "VIRTIO_NET",
+            "INET",
+            "IP_PNP",
+            "VIRTIO_PCI",
+            "VIRTIO_CONSOLE",
+        ],
+        &[],
+    ) {
+        Some(k) => k,
+        None => {
+            eprintln!("skip: kernel DB has no virtio-net + IP_PNP kernel");
+            return;
+        }
+    };
+
+    // A port that was bound then released — almost certainly free.
+    let free_port = || {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let tcp_echo_port = free_port();
+    let udp_echo_port = free_port();
+    let fwd_host_port = free_port();
+    const GUEST_FWD_PORT: u16 = 4545;
+    const FWD_PAYLOAD: &[u8] = b"host-to-guest-hello";
+
+    // 1. Host TCP echo server (the guest dials it via the gateway).
+    let tcp_echo = {
+        let listener = TcpListener::bind(("127.0.0.1", tcp_echo_port)).unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut buf = [0u8; 16 * 1024];
+                loop {
+                    match s.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if s.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    };
+
+    // 2. Host UDP echo server.
+    let udp_echo = {
+        let sock = UdpSocket::bind(("127.0.0.1", udp_echo_port)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(30))).ok();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 2048];
+            if let Ok((n, peer)) = sock.recv_from(&mut buf) {
+                let _ = sock.send_to(&buf[..n], peer);
+            }
+        })
+    };
+
+    // 3. Host-side forward connector: dial the forwarded port (retrying until
+    //    the guest's listener is reachable), send a payload, capture the echo.
+    let echoed_back: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+    let fwd_thread = {
+        let echoed_back = Arc::clone(&echoed_back);
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(45);
+            loop {
+                if Instant::now() >= deadline {
+                    return;
+                }
+                match TcpStream::connect(("127.0.0.1", fwd_host_port)) {
+                    Ok(mut s) => {
+                        s.set_read_timeout(Some(Duration::from_secs(10))).ok();
+                        if s.write_all(FWD_PAYLOAD).is_err() {
+                            std::thread::sleep(Duration::from_millis(200));
+                            continue;
+                        }
+                        let _ = s.shutdown(std::net::Shutdown::Write);
+                        let mut buf = Vec::new();
+                        let _ = s.read_to_end(&mut buf);
+                        if !buf.is_empty() {
+                            *echoed_back.lock().unwrap() = Some(buf);
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(200)),
+                }
+            }
+        })
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let cmdline = format!(
+        "ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off console=hvc0 \
+         dillo.net_echo=10.0.2.2:{tcp_echo_port} dillo.net_udp=10.0.2.2:{udp_echo_port} \
+         dillo.net_listen={GUEST_FWD_PORT}"
+    );
+    let pmi = build_pmi_from_path(tmp.path(), &kernel, host::CONFIG, &cmdline, false);
+    let net = format!("backend=user,forwards=[{fwd_host_port}:{GUEST_FWD_PORT}]");
+    let output = boot_with(&pmi, 256, 1, tmp.path(), &["--net", &net]);
+    let r = parse_report(&output).unwrap_or_else(|| {
+        panic!("boot produced no snuffler report (guest did not boot):\n{output}")
+    });
+
+    // Attach proof first (holds even if the guest's IP stack didn't come up).
+    let net_funcs = r
+        .pci
+        .iter()
+        .filter(|p| p.vendor == 0x1af4 && p.device == 0x1041)
+        .count();
+    assert!(
+        net_funcs >= 1,
+        "expected a virtio-net PCI function (1af4:1041), found {net_funcs}: {:?}",
+        r.pci
+    );
+
+    let bench = r
+        .net_bench
+        .expect("net_bench absent (cmdline requested dillo.net_echo)");
+    if let Some(err) = &bench.error {
+        // A guest that never brought its IP stack up is a clean skip *after* the
+        // attach proof — but the kernel DB selected an IP_PNP kernel, so this is
+        // unexpected; surface the detail.
+        panic!("user-mode net datapath probe failed in guest: {err}\n{output}");
+    }
+
+    // Leg 1: guest → host TCP echo (the headline real-I/O proof).
+    assert!(bench.tx.bytes > 0, "guest sent no bytes: {:?}", bench.tx);
+    assert_eq!(bench.tx.errors, 0, "guest TX errors: {:?}", bench.tx);
+    assert_eq!(bench.rx.errors, 0, "guest RX errors: {:?}", bench.rx);
+    assert_eq!(
+        bench.rx.verified,
+        Some(true),
+        "guest did not read its TCP echo back intact: {:?}",
+        bench.rx
+    );
+    eprintln!(
+        "net_bench: tx {:.1} MiB/s, rx {:.1} MiB/s ({} bytes)",
+        bench.tx.throughput_mibps, bench.rx.throughput_mibps, bench.rx.bytes
+    );
+
+    // Leg 2: UDP echo via the gateway.
+    assert_eq!(
+        bench.udp_ok,
+        Some(true),
+        "guest UDP echo via gateway failed: {bench:?}"
+    );
+
+    // Leg 3: inbound forward (host → guest). The guest accepted + echoed, and
+    // the host connector received its bytes back.
+    assert_eq!(
+        bench.forward_ok,
+        Some(true),
+        "guest never accepted the forwarded connection: {bench:?}"
+    );
+    let _ = fwd_thread.join();
+    assert_eq!(
+        echoed_back.lock().unwrap().as_deref(),
+        Some(FWD_PAYLOAD),
+        "host did not get its forwarded payload echoed back by the guest"
+    );
+
+    let _ = tcp_echo.join();
+    let _ = udp_echo.join();
 }

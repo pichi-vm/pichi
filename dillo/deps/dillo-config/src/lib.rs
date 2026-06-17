@@ -20,9 +20,13 @@
 //! (hex parsing, GUID derivation, endpoint checks); [`allocate`] then assigns
 //! each device a bus + slot.
 
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use serde::Deserialize;
+use serde::de::{self, MapAccess, Visitor};
 use sha2::{Digest, Sha256};
 
 // ---------------------------------------------------------------------------
@@ -154,14 +158,164 @@ pub struct FsSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NetBackendKind {
-    /// Portable sink: a link-up NIC with no peer. The only backend available on
-    /// non-Linux hosts. Default so a bare `--net` always attaches.
+    /// User-mode NAT (smoltcp): cross-platform, no OS permissions, with inbound
+    /// port forwarding. The default so a bare `--net` gives real networking
+    /// everywhere.
     #[default]
-    None,
-    /// Linux `/dev/net/tun` in `IFF_TAP` mode (traditional TAP/bridging).
-    Tap,
+    User,
+    /// Put the guest on the host's real L2 segment. One CLI, per-OS impls:
+    /// Linux creates a tap and enslaves it to the named bridge; macOS uses
+    /// `vmnet` bridged mode; Windows is unsupported. Needs privilege.
+    Bridge,
     /// Linux macvtap endpoint (`/dev/tap<ifindex>`).
     Macvtap,
+}
+
+/// Transport for a [`ForwardSpec`] rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Proto {
+    #[default]
+    Tcp,
+    Udp,
+}
+
+/// Default host bind address for an inbound forward (loopback — explicit
+/// `0.0.0.0` exposes it).
+fn default_forward_ip() -> IpAddr {
+    IpAddr::V4(Ipv4Addr::LOCALHOST)
+}
+
+/// One inbound port-forward rule (user mode only): host `(ip, port)` → guest
+/// `guest` port.
+///
+/// Deserializes from **either** a string shorthand or a struct. The shorthand
+/// works in both CLI key/value and JSON; the full struct form (the only way to
+/// set a custom bind `ip`) is available in JSON `--layout` — the CLI key/value
+/// parser renders a bracketed group as a sequence rather than a struct, so CLI
+/// users express forwards via the shorthand.
+///
+/// Shorthand grammar `[proto:]port[:guest]`: the leading token is a protocol
+/// only when it is exactly `tcp`/`udp`; `ip` is not expressible in shorthand
+/// (it binds loopback). Use the JSON struct form for a custom bind address.
+///
+/// ```text
+/// 2222:22      -> tcp 127.0.0.1:2222 -> guest 22
+/// udp:5353:53  -> udp 127.0.0.1:5353 -> guest 53
+/// 2222         -> tcp 127.0.0.1:2222 -> guest 2222
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardSpec {
+    pub proto: Proto,
+    pub ip: IpAddr,
+    pub port: u16,
+    /// Guest port; defaults to `port` (see [`ForwardSpec::guest_port`]).
+    pub guest: Option<u16>,
+}
+
+impl ForwardSpec {
+    /// The guest port this rule targets (`guest`, defaulting to `port`).
+    pub fn guest_port(&self) -> u16 {
+        self.guest.unwrap_or(self.port)
+    }
+}
+
+impl FromStr for ForwardSpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split(':');
+        let first = parts
+            .next()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| format!("empty forward {s:?}"))?;
+        let (proto, port_str) = match first {
+            "tcp" => (
+                Proto::Tcp,
+                parts
+                    .next()
+                    .ok_or_else(|| format!("forward {s:?}: missing port after `tcp:`"))?,
+            ),
+            "udp" => (
+                Proto::Udp,
+                parts
+                    .next()
+                    .ok_or_else(|| format!("forward {s:?}: missing port after `udp:`"))?,
+            ),
+            other => (Proto::Tcp, other),
+        };
+        let port = port_str
+            .parse::<u16>()
+            .map_err(|e| format!("forward {s:?}: bad host port {port_str:?}: {e}"))?;
+        let guest = match parts.next() {
+            Some(g) => Some(
+                g.parse::<u16>()
+                    .map_err(|e| format!("forward {s:?}: bad guest port {g:?}: {e}"))?,
+            ),
+            None => None,
+        };
+        if parts.next().is_some() {
+            return Err(format!(
+                "forward {s:?}: too many `:`-parts (want [proto:]port[:guest])"
+            ));
+        }
+        Ok(ForwardSpec {
+            proto,
+            ip: default_forward_ip(),
+            port,
+            guest,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ForwardSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ForwardVisitor;
+
+        impl<'de> Visitor<'de> for ForwardVisitor {
+            type Value = ForwardSpec;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a `[proto:]port[:guest]` string or a {proto,ip,port,guest} map")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<ForwardSpec, E> {
+                ForwardSpec::from_str(v).map_err(E::custom)
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<ForwardSpec, A::Error> {
+                let mut proto = None;
+                let mut ip = None;
+                let mut port = None;
+                let mut guest = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "proto" => proto = Some(map.next_value()?),
+                        "ip" => ip = Some(map.next_value()?),
+                        "port" => port = Some(map.next_value()?),
+                        "guest" => guest = Some(map.next_value()?),
+                        other => {
+                            return Err(de::Error::unknown_field(
+                                other,
+                                &["proto", "ip", "port", "guest"],
+                            ));
+                        }
+                    }
+                }
+                Ok(ForwardSpec {
+                    proto: proto.unwrap_or_default(),
+                    ip: ip.unwrap_or_else(default_forward_ip),
+                    port: port.ok_or_else(|| de::Error::missing_field("port"))?,
+                    guest,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(ForwardVisitor)
+    }
 }
 
 /// virtio-net device. The guest gets an Ethernet NIC with the configured (or
@@ -169,18 +323,21 @@ pub enum NetBackendKind {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct NetSpec {
-    /// Host L2 transport. Defaults to [`NetBackendKind::None`].
+    /// Host transport. Defaults to [`NetBackendKind::User`].
     #[serde(default)]
     pub backend: NetBackendKind,
-    /// Interface name: the `tapN` to create/attach (TAP), or the existing
-    /// `macvtapN` to attach (macvtap). Required for `macvtap`; optional for
-    /// `tap` (kernel auto-assigns); ignored for `none`.
+    /// Interface name: the bridge to enslave to (`bridge`) or the existing
+    /// `macvtapN` to attach (`macvtap`). Required for `bridge`/`macvtap`;
+    /// unused by `user`.
     #[serde(default)]
     pub iface: Option<String>,
     /// Guest MAC as `aa:bb:cc:dd:ee:ff`. Defaults to a derived
     /// locally-administered (`52:54:00:…`) address.
     #[serde(default)]
     pub mac: Option<String>,
+    /// Inbound port forwards (user mode only).
+    #[serde(default)]
+    pub forwards: Vec<ForwardSpec>,
     #[serde(default)]
     pub bus: Option<Bus>,
     #[serde(default)]
@@ -292,11 +449,22 @@ pub enum ResolvedDevice {
     },
     Net {
         backend: NetBackendKind,
-        /// Resolved interface name (tap/macvtap); `None` for an auto/none backend.
+        /// Resolved interface name (bridge/macvtap); `None` for user mode.
         iface: Option<String>,
         mac: [u8; 6],
+        /// Inbound port forwards (user mode only; empty otherwise).
+        forwards: Vec<ResolvedForward>,
         placement: Placement,
     },
+}
+
+/// A validated inbound port-forward rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedForward {
+    pub proto: Proto,
+    pub ip: IpAddr,
+    pub host_port: u16,
+    pub guest_port: u16,
 }
 
 impl ResolvedDevice {
@@ -400,12 +568,16 @@ fn resolve_device(device: Device) -> anyhow::Result<ResolvedDevice> {
             })
         }
         Device::Net(n) => {
-            // macvtap stacks on an existing link, so it needs a name; tap can
-            // let the kernel auto-assign one; none ignores it.
-            if matches!(n.backend, NetBackendKind::Macvtap) {
+            // bridge enslaves to a named bridge and macvtap stacks on an
+            // existing link, so both need an interface name; user mode does not.
+            if matches!(n.backend, NetBackendKind::Bridge | NetBackendKind::Macvtap) {
+                let what = match n.backend {
+                    NetBackendKind::Bridge => "bridge",
+                    _ => "macvtap",
+                };
                 anyhow::ensure!(
                     n.iface.as_deref().is_some_and(|s| !s.is_empty()),
-                    "net backend `macvtap` requires iface=<macvtapN>"
+                    "net backend `{what}` requires iface=<name>"
                 );
             }
             if let Some(iface) = &n.iface {
@@ -415,6 +587,22 @@ fn resolve_device(device: Device) -> anyhow::Result<ResolvedDevice> {
                     IFNAMSIZ - 1
                 );
             }
+            // Forwards are an inbound-NAT feature; they only make sense in user
+            // mode, where the guest has no routable address of its own.
+            anyhow::ensure!(
+                n.forwards.is_empty() || matches!(n.backend, NetBackendKind::User),
+                "net `forwards` are only valid for backend=user"
+            );
+            let forwards = n
+                .forwards
+                .iter()
+                .map(|f| ResolvedForward {
+                    proto: f.proto,
+                    ip: f.ip,
+                    host_port: f.port,
+                    guest_port: f.guest_port(),
+                })
+                .collect();
             let mac = match &n.mac {
                 Some(s) => parse_mac(s)?,
                 None => derive_mac(n.iface.as_deref().unwrap_or("dillo-net")),
@@ -423,6 +611,7 @@ fn resolve_device(device: Device) -> anyhow::Result<ResolvedDevice> {
                 backend: n.backend,
                 iface: n.iface.filter(|s| !s.is_empty()),
                 mac,
+                forwards,
                 placement: Placement {
                     bus: n.bus,
                     slot: n.slot,
@@ -814,56 +1003,143 @@ mod tests {
     #[test]
     fn net_kv_matches_json() {
         let kv: NetSpec = serde_keyvalue::from_key_values(
-            "backend=tap,iface=tap0,mac=52:54:00:ab:cd:ef,bus=mmio",
+            "backend=bridge,iface=br0,mac=52:54:00:ab:cd:ef,bus=mmio",
         )
         .expect("kv parse");
         let json: NetSpec = serde_json::from_str(
-            r#"{"backend":"tap","iface":"tap0","mac":"52:54:00:ab:cd:ef","bus":"mmio"}"#,
+            r#"{"backend":"bridge","iface":"br0","mac":"52:54:00:ab:cd:ef","bus":"mmio"}"#,
         )
         .expect("json parse");
         assert_eq!(kv.backend, json.backend);
         assert_eq!(kv.iface, json.iface);
         assert_eq!(kv.mac, json.mac);
         assert_eq!(kv.bus, json.bus);
-        assert_eq!(kv.backend, NetBackendKind::Tap);
+        assert_eq!(kv.backend, NetBackendKind::Bridge);
         assert_eq!(kv.bus, Some(Bus::Mmio));
     }
 
     #[test]
-    fn net_backend_defaults_to_none() {
-        // A bare `--net` (no fields) is valid and yields the portable sink.
+    fn net_backend_defaults_to_user() {
+        // A bare `--net` (no fields) is valid and yields user mode.
         let kv: NetSpec = serde_keyvalue::from_key_values("").expect("kv parse");
-        assert_eq!(kv.backend, NetBackendKind::None);
+        assert_eq!(kv.backend, NetBackendKind::User);
         assert!(kv.iface.is_none());
+        assert!(kv.forwards.is_empty());
+    }
+
+    fn net(backend: NetBackendKind, iface: Option<&str>, forwards: Vec<ForwardSpec>) -> Layout {
+        Layout {
+            bus: None,
+            console: None,
+            devices: vec![Device::Net(NetSpec {
+                backend,
+                iface: iface.map(str::to_owned),
+                mac: None,
+                forwards,
+                bus: None,
+                slot: None,
+            })],
+        }
     }
 
     #[test]
-    fn net_macvtap_requires_iface() {
-        let bad = Layout {
-            bus: None,
-            console: None,
-            devices: vec![Device::Net(NetSpec {
-                backend: NetBackendKind::Macvtap,
-                iface: None,
-                mac: None,
-                bus: None,
-                slot: None,
-            })],
-        };
-        assert!(resolve(bad).is_err(), "macvtap without iface must error");
+    fn net_bridge_and_macvtap_require_iface() {
+        assert!(
+            resolve(net(NetBackendKind::Macvtap, None, vec![])).is_err(),
+            "macvtap without iface must error"
+        );
+        assert!(
+            resolve(net(NetBackendKind::Bridge, None, vec![])).is_err(),
+            "bridge without iface must error"
+        );
+        assert!(resolve(net(NetBackendKind::Macvtap, Some("macvtap0"), vec![])).is_ok());
+        assert!(resolve(net(NetBackendKind::Bridge, Some("br0"), vec![])).is_ok());
+    }
 
-        let ok = Layout {
-            bus: None,
-            console: None,
-            devices: vec![Device::Net(NetSpec {
-                backend: NetBackendKind::Macvtap,
-                iface: Some("macvtap0".into()),
-                mac: None,
-                bus: None,
-                slot: None,
-            })],
-        };
-        assert!(resolve(ok).is_ok());
+    #[test]
+    fn net_forwards_only_valid_for_user() {
+        let fwd = vec![ForwardSpec::from_str("2222:22").unwrap()];
+        assert!(
+            resolve(net(NetBackendKind::User, None, fwd.clone())).is_ok(),
+            "forwards on user mode must be accepted"
+        );
+        assert!(
+            resolve(net(NetBackendKind::Bridge, Some("br0"), fwd.clone())).is_err(),
+            "forwards on bridge must be rejected"
+        );
+        assert!(
+            resolve(net(NetBackendKind::Macvtap, Some("macvtap0"), fwd)).is_err(),
+            "forwards on macvtap must be rejected"
+        );
+    }
+
+    #[test]
+    fn forward_shorthand_grammar() {
+        // 2 parts: host port + guest port.
+        let f = ForwardSpec::from_str("2222:22").unwrap();
+        assert_eq!(f.proto, Proto::Tcp);
+        assert_eq!(f.port, 2222);
+        assert_eq!(f.guest_port(), 22);
+        assert_eq!(f.ip, IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+        // 1 part: guest defaults to host port.
+        let f = ForwardSpec::from_str("8080").unwrap();
+        assert_eq!(f.port, 8080);
+        assert_eq!(f.guest_port(), 8080);
+        assert_eq!(f.guest, None);
+
+        // 3 parts with proto detection.
+        let f = ForwardSpec::from_str("udp:5353:53").unwrap();
+        assert_eq!(f.proto, Proto::Udp);
+        assert_eq!(f.port, 5353);
+        assert_eq!(f.guest_port(), 53);
+
+        // proto-only leading token without a port is an error.
+        assert!(ForwardSpec::from_str("tcp").is_err());
+        // Too many parts.
+        assert!(ForwardSpec::from_str("tcp:1:2:3").is_err());
+        // Non-numeric port.
+        assert!(ForwardSpec::from_str("notaport").is_err());
+        // A token that is not exactly tcp/udp is treated as the port.
+        assert!(ForwardSpec::from_str("tcpx:22").is_err());
+    }
+
+    #[test]
+    fn forward_shorthand_struct_json_parity() {
+        // The string shorthand and the JSON struct form agree.
+        let shorthand = ForwardSpec::from_str("2222:22").unwrap();
+        let json: ForwardSpec =
+            serde_json::from_str(r#"{"proto":"tcp","ip":"127.0.0.1","port":2222,"guest":22}"#)
+                .expect("json struct");
+        assert_eq!(shorthand, json);
+
+        // A custom (non-loopback) bind address via the struct form.
+        let exposed: ForwardSpec =
+            serde_json::from_str(r#"{"ip":"0.0.0.0","port":2222,"guest":22}"#).expect("json");
+        assert_eq!(exposed.ip, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(exposed.proto, Proto::Tcp);
+    }
+
+    #[test]
+    fn net_forwards_list_parses_from_cli_and_json() {
+        // A list of mixed shorthand strings via the CLI key/value form.
+        let kv: NetSpec =
+            serde_keyvalue::from_key_values("backend=user,forwards=[2222:22,udp:5353:53]")
+                .expect("kv shorthand list");
+        assert_eq!(kv.forwards.len(), 2);
+        assert_eq!(kv.forwards[0].port, 2222);
+        assert_eq!(kv.forwards[0].guest_port(), 22);
+        assert_eq!(kv.forwards[1].proto, Proto::Udp);
+
+        // JSON, mixing a shorthand string and a full struct element (the struct
+        // form — the only way to set a custom bind `ip` — is JSON-only).
+        let json: NetSpec = serde_json::from_str(
+            r#"{"backend":"user","forwards":["2222:22",{"ip":"0.0.0.0","port":80}]}"#,
+        )
+        .expect("json list");
+        assert_eq!(json.forwards.len(), 2);
+        assert_eq!(json.forwards[1].ip, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(json.forwards[1].guest_port(), 80);
     }
 
     #[test]

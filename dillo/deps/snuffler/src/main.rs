@@ -19,9 +19,9 @@ use std::path::Path;
 use rustix::fd::{AsFd, BorrowedFd};
 use rustix::fs::{Mode, OFlags};
 use snuffler::{
-    BlockDevice, ClockInfo, CpuInfo, FsResult, KernelLog, KernelLogEntry, MemoryInfo, NetIf,
-    NetProbe, PciDevice, REPORT_BEGIN, REPORT_END, Report, SerialPort, VIRTIOFS_PROBE_CONTENT,
-    VIRTIOFS_PROBE_FILE, VsockResult,
+    BlockDevice, ClockInfo, CpuInfo, FsResult, KernelLog, KernelLogEntry, MemoryInfo, NetBench,
+    NetIf, NetOp, NetProbe, PciDevice, REPORT_BEGIN, REPORT_END, Report, SerialPort,
+    VIRTIOFS_PROBE_CONTENT, VIRTIOFS_PROBE_FILE, VsockResult,
 };
 
 mod bench;
@@ -174,6 +174,7 @@ fn observe() -> Report {
     let (virtiofs, virtiofs_ro) = probe_virtiofs(&cmdline);
     let net = walk_net();
     let net_probe = probe_net(&cmdline, &net);
+    let net_bench = probe_net_io(&cmdline);
     Report {
         arch: uname_machine(),
         uptime_secs: parse_uptime(),
@@ -191,6 +192,7 @@ fn observe() -> Report {
         virtiofs,
         virtiofs_ro,
         net_probe,
+        net_bench,
         cmdline,
     }
 }
@@ -221,6 +223,178 @@ fn probe_net(cmdline: &str, ifaces: &[NetIf]) -> Option<NetProbe> {
         operstate: matched.and_then(|n| n.operstate.clone()),
         carrier,
     })
+}
+
+/// Probe the virtio-net *datapath* when the cmdline requests it
+/// (`dillo.net_echo=IP:PORT`). The guest is IP-configured by the kernel `ip=`
+/// cmdline (`CONFIG_IP_PNP=y`), so this is pure `std::net` — no tooling, no
+/// libc, no unsafe (mirroring the vsock probe). `None` when the token is absent.
+///
+/// - `dillo.net_echo=IP:PORT`  — TCP echo round-trip + throughput (required).
+/// - `dillo.net_udp=IP:PORT`   — UDP echo round-trip (optional).
+/// - `dillo.net_listen=PORT`   — accept one inbound-forwarded connection and
+///   echo it, proving the host→guest direction (optional).
+fn probe_net_io(cmdline: &str) -> Option<NetBench> {
+    let echo = cmdline_token(cmdline, "dillo.net_echo=")?;
+    let mut bench = run_tcp_echo(&echo);
+    if let Some(udp) = cmdline_token(cmdline, "dillo.net_udp=") {
+        bench.udp_ok = Some(run_udp_echo(&udp));
+    }
+    if let Some(port) = cmdline_token(cmdline, "dillo.net_listen=").and_then(|s| s.parse().ok()) {
+        bench.forward_ok = Some(run_inbound_accept(port));
+    }
+    Some(bench)
+}
+
+fn cmdline_token(cmdline: &str, prefix: &str) -> Option<String> {
+    cmdline
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix(prefix))
+        .map(str::to_owned)
+}
+
+fn net_mibps(bytes: u64, us: u64) -> f64 {
+    if us == 0 {
+        0.0
+    } else {
+        (bytes as f64 / 1_048_576.0) / (us as f64 / 1_000_000.0)
+    }
+}
+
+fn zero_net_op() -> NetOp {
+    NetOp {
+        bytes: 0,
+        ops: 0,
+        duration_us: 0,
+        throughput_mibps: 0.0,
+        errors: 0,
+        verified: None,
+    }
+}
+
+/// Connect to `addr` (IP:PORT), send a recognizable payload, and read the echo
+/// back, measuring each direction and verifying the bytes round-trip intact.
+fn run_tcp_echo(addr: &str) -> NetBench {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::{Duration, Instant};
+
+    let mut bench = NetBench {
+        tx: zero_net_op(),
+        rx: zero_net_op(),
+        udp_ok: None,
+        forward_ok: None,
+        error: None,
+    };
+
+    let mut stream = match TcpStream::connect(addr) {
+        Ok(s) => s,
+        Err(e) => {
+            bench.error = Some(format!("tcp connect {addr}: {e}"));
+            return bench;
+        }
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+
+    // 256 KiB of a recognizable pattern (multi-segment, but quick).
+    let payload: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
+
+    let t0 = Instant::now();
+    let tx_err = stream.write_all(&payload).is_err();
+    let _ = stream.flush();
+    let tx_us = t0.elapsed().as_micros() as u64;
+    bench.tx = NetOp {
+        bytes: payload.len() as u64,
+        ops: 1,
+        duration_us: tx_us,
+        throughput_mibps: net_mibps(payload.len() as u64, tx_us),
+        errors: u64::from(tx_err),
+        verified: None,
+    };
+
+    let mut got = vec![0u8; payload.len()];
+    let t1 = Instant::now();
+    let rx_res = stream.read_exact(&mut got);
+    let rx_us = t1.elapsed().as_micros() as u64;
+    let ok = rx_res.is_ok() && got == payload;
+    bench.rx = NetOp {
+        bytes: if rx_res.is_ok() {
+            payload.len() as u64
+        } else {
+            0
+        },
+        ops: 1,
+        duration_us: rx_us,
+        throughput_mibps: net_mibps(payload.len() as u64, rx_us),
+        errors: u64::from(rx_res.is_err()),
+        verified: Some(ok),
+    };
+    bench
+}
+
+/// Send one UDP datagram to `addr` and confirm it echoes back byte-for-byte.
+fn run_udp_echo(addr: &str) -> bool {
+    use std::net::UdpSocket;
+    use std::time::Duration;
+
+    const MSG: &[u8] = b"dillo-udp-ping";
+    let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else {
+        return false;
+    };
+    let _ = sock.set_read_timeout(Some(Duration::from_secs(5)));
+    if sock.connect(addr).is_err() || sock.send(MSG).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 64];
+    match sock.recv(&mut buf) {
+        Ok(n) => &buf[..n] == MSG,
+        Err(_) => false,
+    }
+}
+
+/// Open a listener on `port` and echo one inbound (host→guest forwarded)
+/// connection, proving the inbound direction. Bounded by a deadline so a missing
+/// peer can't hang PID 1.
+fn run_inbound_accept(port: u16) -> bool {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let Ok(listener) = TcpListener::bind(("0.0.0.0", port)) else {
+        return false;
+    };
+    let _ = listener.set_nonblocking(true);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut buf = [0u8; 4096];
+                let mut echoed_any = false;
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if stream.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                            echoed_any = true;
+                        }
+                    }
+                }
+                let _ = stream.flush();
+                return echoed_any;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 /// Probe virtio-fs when the cmdline requests it. `dillo.virtiofs_tag=TAG` drives

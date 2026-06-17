@@ -64,9 +64,12 @@ struct Args {
     fs: Vec<dillo_config::FsSpec>,
 
     /// virtio-net device. Repeatable. Key/value:
-    /// `[backend=none|tap|macvtap][,iface=NAME][,mac=aa:bb:cc:dd:ee:ff][,bus=pci|mmio][,slot=N]`.
-    /// `tap`/`macvtap` are Linux-only; `none` (the default) is a peerless
-    /// link-up NIC available on every host.
+    /// `[backend=user|bridge|macvtap][,iface=NAME][,mac=aa:bb:cc:dd:ee:ff]`
+    /// `[,forwards=[2222:22,udp:5353:53]][,bus=pci|mmio][,slot=N]`.
+    /// `user` (the default) is cross-platform user-mode NAT with inbound port
+    /// forwarding and needs no privilege; `bridge` (Linux/macOS, needs
+    /// CAP_NET_ADMIN/root) joins the host's L2 segment via `iface`; `macvtap`
+    /// is Linux-only.
     #[argh(option)]
     net: Vec<dillo_config::NetSpec>,
 
@@ -296,9 +299,10 @@ fn build_placements(
                 backend,
                 iface,
                 mac,
+                forwards,
                 ..
             } => {
-                let net = build_net_device(*backend, iface.as_deref(), *mac)?;
+                let net = build_net_device(*backend, iface.as_deref(), *mac, forwards)?;
                 // 2 queues (rx/tx) + 1 config vector.
                 built.push((3, "virtio-net", Box::new(net)));
             }
@@ -378,30 +382,44 @@ fn build_block_device(
     }
 }
 
-/// Construct a `VirtioNet` with the requested host backend. The portable
-/// `none` sink works on every host; `tap`/`macvtap` are Linux-only and surface
-/// a clean error elsewhere.
+/// Construct a `VirtioNet` with the requested host backend. The `user` backend
+/// (default, no privilege) works on every host; `bridge`/`macvtap` need
+/// privilege and surface a clean error where unsupported.
 fn build_net_device(
     backend: dillo_config::NetBackendKind,
     iface: Option<&str>,
     mac: [u8; 6],
+    forwards: &[dillo_config::ResolvedForward],
 ) -> anyhow::Result<dillo_virtio_net::VirtioNet> {
     use dillo_config::NetBackendKind;
     use dillo_virtio_net::{NetBackend, VirtioNet};
 
-    // `iface` is consumed only by the Linux tap/macvtap arms.
+    // `iface` is consumed only by the Linux bridge/macvtap arms.
     #[cfg(not(target_os = "linux"))]
     let _ = iface;
 
     let backend: std::sync::Arc<dyn NetBackend> = match backend {
-        NetBackendKind::None => std::sync::Arc::new(dillo_virtio_net::NullBackend::new()),
-        #[cfg(target_os = "linux")]
-        NetBackendKind::Tap => {
+        NetBackendKind::User => {
             use anyhow::Context as _;
-            let tap = dillo_virtio_net::TapBackend::open(iface.unwrap_or(""))
-                .context("opening TAP device (needs CAP_NET_ADMIN)")?;
-            log::info!("virtio-net: TAP backend on {:?}", tap.name());
-            std::sync::Arc::new(tap)
+            let rules: Vec<dillo_virtio_net::Forward> =
+                forwards.iter().map(translate_forward).collect();
+            let user = dillo_virtio_net::UserNetBackend::new(rules)
+                .context("starting user-mode network (smoltcp)")?;
+            std::sync::Arc::new(user)
+        }
+        #[cfg(target_os = "linux")]
+        NetBackendKind::Bridge => {
+            use anyhow::Context as _;
+            let name = iface.context("net backend `bridge` requires iface=<bridge-name>")?;
+            let bridge = dillo_virtio_net::BridgeBackend::open(name).with_context(|| {
+                format!("creating+enslaving a tap on bridge {name:?} (needs CAP_NET_ADMIN)")
+            })?;
+            log::info!(
+                "virtio-net: bridge backend, tap {:?} on {:?}",
+                bridge.tap_name(),
+                bridge.bridge()
+            );
+            std::sync::Arc::new(bridge)
         }
         #[cfg(target_os = "linux")]
         NetBackendKind::Macvtap => {
@@ -411,12 +429,41 @@ fn build_net_device(
                 .with_context(|| format!("attaching macvtap {name:?}"))?;
             std::sync::Arc::new(mv)
         }
+        #[cfg(target_os = "macos")]
+        NetBackendKind::Bridge => {
+            use anyhow::Context as _;
+            let name = iface.context("net backend `bridge` requires iface=<physical-interface>")?;
+            let vmnet = dillo_virtio_net::VmnetBackend::open(name).with_context(|| {
+                format!("starting vmnet bridged mode on {name:?} (needs root/entitlement)")
+            })?;
+            log::info!("virtio-net: vmnet bridge on {:?}", vmnet.physical());
+            std::sync::Arc::new(vmnet)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        NetBackendKind::Bridge => {
+            anyhow::bail!("net backend `bridge` is unsupported on this host (Windows)");
+        }
         #[cfg(not(target_os = "linux"))]
-        NetBackendKind::Tap | NetBackendKind::Macvtap => {
-            anyhow::bail!("net backend {backend:?} is Linux-only; use backend=none on this host");
+        NetBackendKind::Macvtap => {
+            anyhow::bail!("net backend `macvtap` is Linux-only; use backend=user on this host");
         }
     };
     Ok(VirtioNet::new(mac, backend))
+}
+
+/// Translate a resolved config forward into the net crate's own `Forward` type
+/// (which is independent of `dillo-config`).
+fn translate_forward(f: &dillo_config::ResolvedForward) -> dillo_virtio_net::Forward {
+    let proto = match f.proto {
+        dillo_config::Proto::Tcp => dillo_virtio_net::Proto::Tcp,
+        dillo_config::Proto::Udp => dillo_virtio_net::Proto::Udp,
+    };
+    dillo_virtio_net::Forward {
+        proto,
+        host_ip: f.ip,
+        host_port: f.host_port,
+        guest_port: f.guest_port,
+    }
 }
 
 /// Derive placement capacity from the surveyed platform: PCI functions (device

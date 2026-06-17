@@ -145,6 +145,13 @@ vm-superio = "0.8"
 # Process / signal / fd plumbing
 nix = { version = "0.30", features = ["fs", "process", "signal", "ioctl", "mman", "socket", "term"] }
 
+# virtio-net user-mode backend: an in-process, no-privilege TCP/IP stack
+# (smoltcp) plus a cross-platform host-socket event loop (mio). smoltcp is
+# predominantly safe Rust, so it fits the workspace `unsafe_code = "deny"` lint;
+# both are cross-platform, so they're pulled unconditionally by dillo-virtio-net.
+smoltcp = { version = "0.13", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-udp"] }
+mio = { version = "1", features = ["os-poll", "net"] }
+
 # Logging
 log = "0.4"
 env_logger = "0.11"
