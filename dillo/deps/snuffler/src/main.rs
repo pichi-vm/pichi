@@ -243,6 +243,9 @@ fn probe_net_io(cmdline: &str) -> Option<NetBench> {
     if let Some(port) = cmdline_token(cmdline, "dillo.net_listen=").and_then(|s| s.parse().ok()) {
         bench.forward_ok = Some(run_inbound_accept(port));
     }
+    if let Some(endpoints) = cmdline_token(cmdline, "dillo.net_http=") {
+        bench.http_ok = Some(run_http_probe(&endpoints));
+    }
     Some(bench)
 }
 
@@ -284,6 +287,7 @@ fn run_tcp_echo(addr: &str) -> NetBench {
         rx: zero_net_op(),
         udp_ok: None,
         forward_ok: None,
+        http_ok: None,
         error: None,
     };
 
@@ -395,6 +399,56 @@ fn run_inbound_accept(port: u16) -> bool {
             Err(_) => return false,
         }
     }
+}
+
+/// Prove real-internet reach through the user-mode proxy (masquerade): for each
+/// comma-separated `IP:PORT` in `endpoints`, connect, send a minimal plain-HTTP
+/// request, and check the reply begins with `HTTP/`. Returns `true` on the first
+/// endpoint that answers (several are tried so one flaky host doesn't fail it).
+fn run_http_probe(endpoints: &str) -> bool {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    for endpoint in endpoints.split(',').filter(|s| !s.is_empty()) {
+        // The guest has no DNS in v1, so endpoints are numeric IP:PORT; parse
+        // without resolving.
+        let Ok(mut addrs) = endpoint.to_socket_addrs() else {
+            continue;
+        };
+        let Some(addr) = addrs.next() else { continue };
+        let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(10)) else {
+            continue;
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+        // Host header uses the canonical name for Cloudflare's 1.1.1.1; any
+        // server still returns a status line starting with `HTTP/`.
+        let host = match addr {
+            SocketAddr::V4(v4) => v4.ip().to_string(),
+            SocketAddr::V6(v6) => v6.ip().to_string(),
+        };
+        let req = format!(
+            "GET / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: dillo-snuffler\r\nConnection: close\r\n\r\n"
+        );
+        if stream.write_all(req.as_bytes()).is_err() {
+            continue;
+        }
+        let mut buf = [0u8; 64];
+        let mut got = 0;
+        // Read until we have enough for the status line (or the peer closes).
+        while got < 5 {
+            match stream.read(&mut buf[got..]) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(_) => break,
+            }
+        }
+        if got >= 5 && &buf[..5] == b"HTTP/" {
+            return true;
+        }
+    }
+    false
 }
 
 /// Probe virtio-fs when the cmdline requests it. `dillo.virtiofs_tag=TAG` drives

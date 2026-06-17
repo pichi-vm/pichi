@@ -98,6 +98,11 @@ pub struct NetBench {
     /// requested (`dillo.net_listen=PORT`).
     #[serde(default)]
     pub forward_ok: Option<bool>,
+    /// The guest reached the **real internet** through the user-mode proxy
+    /// (masquerade): a plain-HTTP request to a well-known external endpoint
+    /// returned an `HTTP/` response. Set when requested (`dillo.net_http=…`).
+    #[serde(default)]
+    pub http_ok: Option<bool>,
     /// Set when the datapath probe could not run to completion.
     #[serde(default)]
     pub error: Option<String>,

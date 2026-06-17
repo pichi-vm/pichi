@@ -113,7 +113,9 @@ sudo ip link set macvtap0 address 52:54:00:ab:cd:ef up
   inbound forward, UDP, and edge cases (RST, half-close, multi-segment); plus
   config and bridge/macvtap construction unit tests.
 - **Layer 2 (real guest, CI):** dillo's `boots_with_net` (attach + MAC) and
-  `boots_with_net_user` (TCP/UDP/forward round-trips + `NetBench`).
+  `boots_with_net_user` — guest↔host TCP/UDP, an inbound forward, **and a real
+  HTTP fetch to a well-known external endpoint** (`dillo.net_http=`, masquerade
+  to the actual internet), all asserted via `NetBench` on every CI lane.
 - **Layer 3 (opt-in, never CI):** the bridge integration test above.
 - **Layer 5 (fuzz):** `dillo/fuzz` target `net_demux` fuzzes the untrusted
   guest-frame demux.
