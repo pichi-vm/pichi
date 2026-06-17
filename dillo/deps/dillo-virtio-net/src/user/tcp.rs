@@ -109,14 +109,17 @@ impl TcpFlow {
 
         let mut worked = false;
         worked |= self.guest_to_host(socket);
-        if self.reset {
-            // A host-side failure: RST the guest. The next `iface.poll` flushes
-            // the reset; the caller reaps the (now Closed) socket afterward.
-            socket.abort();
-            return worked;
+        if !self.reset {
+            self.maybe_shutdown_host_write(socket);
+            worked |= self.host_to_guest(socket);
         }
-        self.maybe_shutdown_host_write(socket);
-        worked |= self.host_to_guest(socket);
+        if self.reset {
+            // A host-side failure (refused/reset/broken): RST the guest. The next
+            // `iface.poll` flushes the reset; the caller reaps the now-Closed
+            // socket afterward. This is distinct from a clean host EOF, which is
+            // propagated as a FIN by `host_to_guest`.
+            socket.abort();
+        }
         worked
     }
 
@@ -191,7 +194,10 @@ impl TcpFlow {
     }
 
     /// Read from the host stream directly into the guest socket's send buffer,
-    /// so we never read more than smoltcp can hold. Host EOF/error → FIN.
+    /// so we never read more than smoltcp can hold. A clean host EOF becomes a
+    /// guest FIN; a host *error* (refused/reset/broken — including a connect
+    /// failure that some platforms only surface on the first read) becomes a
+    /// guest RST via `reset`.
     fn host_to_guest(&mut self, socket: &mut tcp::Socket<'_>) -> bool {
         if !socket.can_send() || self.host_read_closed {
             return false;
@@ -200,13 +206,17 @@ impl TcpFlow {
             Ok(0) => (0, ReadOutcome::Eof),
             Ok(n) => (n, ReadOutcome::Bytes(n)),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (0, ReadOutcome::WouldBlock),
-            Err(_) => (0, ReadOutcome::Eof),
+            Err(_) => (0, ReadOutcome::Errored),
         });
         match result {
             Ok(ReadOutcome::Bytes(n)) => n > 0,
             Ok(ReadOutcome::Eof) => {
                 socket.close();
                 self.host_read_closed = true;
+                false
+            }
+            Ok(ReadOutcome::Errored) => {
+                self.reset = true;
                 false
             }
             Ok(ReadOutcome::WouldBlock) | Err(_) => false,
@@ -216,6 +226,7 @@ impl TcpFlow {
 
 enum ReadOutcome {
     Bytes(usize),
+    Errored,
     Eof,
     WouldBlock,
 }
