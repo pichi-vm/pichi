@@ -16,11 +16,8 @@ use mio::net::TcpStream;
 use smoltcp::socket::tcp;
 
 /// How long the host-side connect may take before the guest connection is reset.
-/// A backstop for destinations that never complete (black-holed) and the
-/// portable way to surface connection-refused: a refused connect is detected
-/// immediately via `take_error`/`peer_addr` on Unix, but mio's IOCP backend on
-/// Windows doesn't surface it through those calls under polling, so this bound
-/// guarantees a timely RST on every platform.
+/// Backstop for black-holed destinations: the OS never delivers a WRITABLE event
+/// for a connect that silently drops, so this is the only signal available.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// State for one bridged TCP connection. The smoltcp socket lives in the
@@ -90,16 +87,32 @@ impl TcpFlow {
     }
 
     /// Handle a mio WRITABLE readiness event for the host stream. For a
-    /// connecting socket this is how connect completion is reliably observed on
-    /// every platform (polling `peer_addr`/`take_error` works on Unix but not on
-    /// Windows IOCP for an async/external connect): `take_error` now reports
-    /// success (`None`) or the connect failure.
+    /// connecting socket this is the only cross-platform way to observe connect
+    /// completion: mio's IOCP backend on Windows does not surface it through
+    /// `take_error`/`peer_addr` polling while the connect is in progress.
+    ///
+    /// Follows the mio-recommended protocol: check `take_error` for a connect
+    /// error, then confirm with `peer_addr` (a spurious WRITABLE may fire before
+    /// the connect is truly established on some platforms).
     pub(super) fn note_writable(&mut self) {
         if self.connected || self.reset {
             return;
         }
         match self.stream.take_error() {
-            Ok(None) => self.connected = true,
+            Ok(None) => {
+                // No error on the socket. Confirm the connect completed with
+                // peer_addr per the mio docs: a spurious WRITABLE can fire
+                // before the connect is truly established on some platforms.
+                match self.stream.peer_addr() {
+                    Ok(_) => self.connected = true,
+                    // NotConnected/WouldBlock: spurious event, still connecting.
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::NotConnected
+                            || e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    // Any other peer_addr error: connect failed.
+                    Err(_) => self.reset = true,
+                }
+            }
             Ok(Some(_)) | Err(_) => self.reset = true,
         }
     }
@@ -138,39 +151,27 @@ impl TcpFlow {
         worked
     }
 
-    /// Resolve the non-blocking connect. Sets `reset` on a connect failure.
-    /// Returns `true` once the host side is usable.
+    /// Wait for the non-blocking connect to complete. Sets `reset` on timeout.
+    /// Returns `true` once the host side is usable (after [`note_writable`] has
+    /// observed a WRITABLE event and confirmed connect success).
+    ///
+    /// We do NOT poll `take_error`/`peer_addr` here: mio's IOCP backend on
+    /// Windows doesn't surface connect completion through those calls while the
+    /// connect is in progress — they reliably reflect the outcome only after a
+    /// WRITABLE readiness event is delivered, which [`note_writable`] handles.
+    /// The timeout here is the backstop for black-holed destinations (the OS
+    /// never delivers a WRITABLE event for a connect that silently drops).
+    ///
+    /// [`note_writable`]: Self::note_writable
     fn ensure_connected(&mut self) -> bool {
         if self.connected {
             return true;
         }
-        // A surfaced async error (e.g. ECONNREFUSED) means the connect failed.
-        if let Ok(Some(_err)) = self.stream.take_error() {
+        if self.started.elapsed() >= CONNECT_TIMEOUT {
             self.reset = true;
             return false;
         }
-        match self.stream.peer_addr() {
-            Ok(_) => {
-                self.connected = true;
-                true
-            }
-            Err(e)
-                if e.kind() == std::io::ErrorKind::NotConnected
-                    || e.kind() == std::io::ErrorKind::WouldBlock =>
-            {
-                // Still connecting — unless we've waited too long (a black-holed
-                // destination, or a refused connect on a platform that doesn't
-                // surface the error through these calls): RST the guest.
-                if self.started.elapsed() >= CONNECT_TIMEOUT {
-                    self.reset = true;
-                }
-                false
-            }
-            Err(_) => {
-                self.reset = true;
-                false
-            }
-        }
+        false
     }
 
     /// Drain the guest socket's receive buffer into the host stream, consuming
