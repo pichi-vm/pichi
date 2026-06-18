@@ -16,6 +16,13 @@
 //!   guest port), the only way packets initiate from outside (the guest has no
 //!   routable address).
 //!
+//! ICMP echo to the gateway/own addresses is answered automatically by smoltcp
+//! (the `auto-icmp-echo-reply` feature), so the guest can ping the gateway.
+//! Echo to *external* hosts is intentionally unsupported: originating ICMP from
+//! an unprivileged process has no portable, `unsafe`-free path (Linux needs a
+//! sysctl-gated socket group; Windows' `IcmpSendEcho` is Win32 FFI), and the
+//! whole point of this backend is to need neither privilege nor `unsafe`.
+//!
 //! The device's RX/TX workers talk to this backend through the unchanged
 //! [`NetBackend`](crate::NetBackend) contract: [`send`](UserNetBackend::send)
 //! pushes a guest frame into the stack; [`recv`](UserNetBackend::recv) pops a
@@ -23,7 +30,10 @@
 //! dedicated thread (see [`stack`]).
 
 mod device;
+mod dhcp;
+mod dns;
 mod forward;
+mod ndp;
 mod stack;
 mod tcp;
 mod udp;
@@ -38,25 +48,43 @@ use std::time::Duration;
 use mio::{Poll, Token, Waker};
 use smoltcp::iface::{Config, Interface};
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address};
+use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address, Ipv6Address};
 
 use crate::backend::{NetBackend, RECV_POLL};
 
+#[doc(hidden)]
+pub use dhcp::fuzz_parse_dhcp;
+#[doc(hidden)]
+pub use dns::fuzz_parse_dns_query;
 pub use forward::{Forward, Proto};
+#[doc(hidden)]
+pub use ndp::fuzz_parse_router_solicit;
 #[doc(hidden)]
 pub use stack::fuzz_inspect_frame;
 
-// --- Addressing (slirp-compatible defaults, hardcoded in v1) ---------------
+// --- Addressing (slirp-compatible IPv4 defaults + a ULA IPv6 prefix) --------
 
-/// Guest's single assigned address.
+/// Guest's single assigned IPv4 address.
 pub(crate) const GUEST_IP: IpAddress = IpAddress::v4(10, 0, 2, 15);
-/// Gateway / host alias the smoltcp interface owns. guest→host traffic targets
-/// this; it is also the guest's default route.
+/// IPv4 gateway / host alias the smoltcp interface owns. guest→host traffic
+/// targets this; it is also the guest's default route.
 pub(crate) const GATEWAY_IP: IpAddress = IpAddress::v4(10, 0, 2, 2);
-/// DNS alias (reserved; DNS forwarding is a later nicety).
+/// IPv4 DNS alias the gateway DNS responder listens on.
 pub(crate) const DNS_IP: IpAddress = IpAddress::v4(10, 0, 2, 3);
-/// Subnet prefix length for the private `/24`.
+/// Subnet prefix length for the private IPv4 `/24`.
 pub(crate) const SUBNET_PREFIX: u8 = 24;
+
+/// IPv6 gateway / default router the interface owns, in a ULA (`fc00::/7`)
+/// prefix so it never collides with a real global address. The guest learns it
+/// and the prefix via the hand-rolled Router Advertisement (see [`ndp`]).
+pub(crate) const GATEWAY_IP6: IpAddress = IpAddress::v6(0xfd00, 0, 0, 0, 0, 0, 0, 2);
+/// IPv6 DNS alias the gateway DNS responder also listens on.
+pub(crate) const DNS_IP6: IpAddress = IpAddress::v6(0xfd00, 0, 0, 0, 0, 0, 0, 3);
+/// The advertised IPv6 prefix the guest autoconfigures an address within.
+pub(crate) const PREFIX6: IpAddress = IpAddress::v6(0xfd00, 0, 0, 0, 0, 0, 0, 0);
+/// Prefix length for the ULA `/64`.
+pub(crate) const SUBNET_PREFIX6: u8 = 64;
+
 /// Guest IP MTU.
 pub(crate) const MTU: usize = 1500;
 /// Full Ethernet frame MTU (IP MTU + 14-byte Ethernet header), which is what
@@ -64,8 +92,9 @@ pub(crate) const MTU: usize = 1500;
 pub(crate) const ETH_FRAME_MTU: usize = MTU + 14;
 
 /// The MAC the smoltcp interface (the gateway side) presents. Locally
-/// administered and distinct from any guest MAC; the guest learns it via ARP.
-const GATEWAY_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x35, 0x02];
+/// administered and distinct from any guest MAC; the guest learns it via ARP
+/// (v4) or the Router Advertisement's source link-layer option (v6).
+pub(crate) const GATEWAY_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x35, 0x02];
 
 /// mio token for the [`Waker`] that nudges the stack thread out of `poll` when
 /// the guest hands in a frame or the backend is dropped.
@@ -119,6 +148,7 @@ impl UserNetBackend {
 
         let stack = stack::Stack::new(
             poll,
+            Arc::clone(&waker),
             forwards,
             Arc::clone(&inbound),
             Arc::clone(&outbound),
@@ -190,23 +220,42 @@ impl Drop for UserNetBackend {
 
 // --- shared helpers --------------------------------------------------------
 
-/// Build the smoltcp [`Interface`] over `device`: it owns the gateway/DNS
-/// aliases, accepts packets to any destination (so it can terminate the
-/// guest's outbound flows), and routes everything via itself.
+/// Build the smoltcp [`Interface`] over `device`: it owns the IPv4 and IPv6
+/// gateway/DNS aliases, accepts packets to any destination (so it can terminate
+/// the guest's outbound flows), and routes everything via itself.
+///
+/// The interface holds four addresses (v4 gateway + DNS, v6 gateway + DNS); the
+/// smoltcp build-time `SMOLTCP_IFACE_MAX_ADDR_COUNT` is raised to 4 in the
+/// workspace `.cargo/config.toml` to fit them. The `push` results are asserted
+/// (not ignored) so a future address that overflows the cap fails loudly here
+/// rather than silently dropping and breaking routing.
 fn build_interface(device: &mut device::ProxyDevice) -> Interface {
     let mut config = Config::new(EthernetAddress(GATEWAY_MAC).into());
     config.random_seed = random_seed();
     let mut iface = Interface::new(config, device, Instant::now());
     iface.update_ip_addrs(|addrs| {
-        let _ = addrs.push(IpCidr::new(GATEWAY_IP, SUBNET_PREFIX));
-        let _ = addrs.push(IpCidr::new(DNS_IP, SUBNET_PREFIX));
+        addrs
+            .push(IpCidr::new(GATEWAY_IP, SUBNET_PREFIX))
+            .expect("iface addr cap too small for IPv4 gateway");
+        addrs
+            .push(IpCidr::new(DNS_IP, SUBNET_PREFIX))
+            .expect("iface addr cap too small for IPv4 DNS");
+        addrs
+            .push(IpCidr::new(GATEWAY_IP6, SUBNET_PREFIX6))
+            .expect("iface addr cap too small for IPv6 gateway");
+        addrs
+            .push(IpCidr::new(DNS_IP6, SUBNET_PREFIX6))
+            .expect("iface addr cap too small for IPv6 DNS");
     });
-    // A default route via the interface's own gateway IP, paired with
-    // `set_any_ip`, lets smoltcp locally terminate connections to arbitrary
-    // destinations (the crux of the user-mode NAT).
+    // Default routes via the interface's own gateway addresses, paired with
+    // `set_any_ip`, let smoltcp locally terminate connections to arbitrary
+    // destinations (the crux of the user-mode NAT) for both families.
     let _ = iface
         .routes_mut()
         .add_default_ipv4_route(Ipv4Address::new(10, 0, 2, 2));
+    let _ = iface
+        .routes_mut()
+        .add_default_ipv6_route(Ipv6Address::new(0xfd00, 0, 0, 0, 0, 0, 0, 2));
     iface.set_any_ip(true);
     iface
 }
@@ -222,16 +271,22 @@ fn random_seed() -> u64 {
         .unwrap_or(0x5254_0012_3502)
 }
 
-/// `smoltcp` IPv4 endpoint → std [`std::net::SocketAddr`]. The user-mode stack
-/// is IPv4-only (built without smoltcp's `proto-ipv6`), so `IpAddress` has only
-/// the `Ipv4` variant.
+/// `smoltcp` endpoint → std [`std::net::SocketAddr`], for either family. Used to
+/// open the masqueraded host socket for a guest flow.
 fn endpoint_to_socket_addr(ep: IpEndpoint) -> Option<std::net::SocketAddr> {
-    let IpAddress::Ipv4(v4) = ep.addr;
-    let o = v4.octets();
-    Some(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::new(o[0], o[1], o[2], o[3]),
-        ep.port,
-    )))
+    match ep.addr {
+        IpAddress::Ipv4(v4) => {
+            let o = v4.octets();
+            Some(std::net::SocketAddr::from((
+                std::net::Ipv4Addr::from(o),
+                ep.port,
+            )))
+        }
+        IpAddress::Ipv6(v6) => Some(std::net::SocketAddr::from((
+            std::net::Ipv6Addr::from(v6.octets()),
+            ep.port,
+        ))),
+    }
 }
 
 #[cfg(test)]

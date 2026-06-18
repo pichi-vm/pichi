@@ -149,7 +149,7 @@ nix = { version = "0.30", features = ["fs", "process", "signal", "ioctl", "mman"
 # (smoltcp) plus a cross-platform host-socket event loop (mio). smoltcp is
 # predominantly safe Rust, so it fits the workspace `unsafe_code = "deny"` lint;
 # both are cross-platform, so they're pulled unconditionally by dillo-virtio-net.
-smoltcp = { version = "0.13", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-udp"] }
+smoltcp = { version = "0.13", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "auto-icmp-echo-reply"] }
 mio = { version = "1", features = ["os-poll", "net"] }
 
 # Logging

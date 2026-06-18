@@ -18,26 +18,32 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration as StdDuration;
 
 use mio::net::{TcpListener, TcpStream, UdpSocket};
-use mio::{Events, Interest, Poll, Token};
+use mio::{Events, Interest, Poll, Token, Waker};
 use smoltcp::iface::{Interface, SocketHandle, SocketSet};
 use smoltcp::socket::{tcp, udp};
 use smoltcp::time::Instant;
 use smoltcp::wire::{
-    EthernetFrame, EthernetProtocol, IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol,
-    Ipv4Address, Ipv4Packet, TcpPacket, UdpPacket,
+    EthernetAddress, EthernetFrame, EthernetProtocol, IpAddress, IpEndpoint, IpListenEndpoint,
+    IpProtocol, Ipv4Address, Ipv4Packet, Ipv6Address, Ipv6Packet, TcpPacket, UdpPacket,
 };
 
 use super::device::ProxyDevice;
+use super::dhcp;
+use super::dns::Resolver;
 use super::forward::{Forward, ForwardListener, Proto};
+use super::ndp;
 use super::tcp::TcpFlow;
 use super::udp::UdpFlow;
 use super::{
-    FIRST_DYNAMIC_TOKEN, GATEWAY_IP, GUEST_IP, TCP_BUFFER, UDP_IDLE_TIMEOUT, UDP_META_SLOTS,
-    UDP_PAYLOAD_BUFFER, build_interface, endpoint_to_socket_addr,
+    DNS_IP, DNS_IP6, FIRST_DYNAMIC_TOKEN, GATEWAY_IP, GATEWAY_IP6, GATEWAY_MAC, GUEST_IP, MTU,
+    PREFIX6, SUBNET_PREFIX6, TCP_BUFFER, UDP_IDLE_TIMEOUT, UDP_META_SLOTS, UDP_PAYLOAD_BUFFER,
+    build_interface, endpoint_to_socket_addr,
 };
 
 /// Host loopback, where gateway-destined (guest→host) connections are sent.
 const HOST_LOOPBACK: IpAddress = IpAddress::v4(127, 0, 0, 1);
+/// IPv6 host loopback (`::1`), for v6 gateway-destined connections.
+const HOST_LOOPBACK6: IpAddress = IpAddress::v6(0, 0, 0, 0, 0, 0, 0, 1);
 /// Longest the stack sleeps between wakeups, so it stays responsive to the stop
 /// flag and to UDP idle reclamation even with no socket activity.
 const MAX_POLL_WAIT: StdDuration = StdDuration::from_millis(100);
@@ -45,6 +51,8 @@ const MAX_POLL_WAIT: StdDuration = StdDuration::from_millis(100);
 const MAX_DRIVE_ROUNDS: usize = 8;
 /// Ephemeral local ports for stack-originated connections start here.
 const EPHEMERAL_BASE: u16 = 49152;
+/// Standard DNS port, where the gateway DNS responder listens.
+const DNS_PORT: u16 = 53;
 
 /// All state owned by the user-mode stack thread.
 pub(super) struct Stack {
@@ -80,6 +88,13 @@ pub(super) struct Stack {
 
     /// Bound, mio-registered inbound forward listeners.
     forwards: Vec<ForwardListener>,
+
+    /// Off-thread DNS resolver for guest queries to the DNS alias.
+    dns: Resolver,
+    /// The smoltcp UDP socket bound to `DNS_IP:53` that receives guest queries.
+    dns_socket: SocketHandle,
+    /// The smoltcp UDP socket bound to `:67` that receives guest DHCP requests.
+    dhcp_socket: SocketHandle,
 }
 
 impl Stack {
@@ -87,6 +102,7 @@ impl Stack {
     /// inbound forward bound and registered with `poll`.
     pub(super) fn new(
         poll: Poll,
+        waker: Arc<Waker>,
         forwards: Vec<Forward>,
         inbound: Arc<Mutex<VecDeque<Vec<u8>>>>,
         outbound: Arc<(Mutex<VecDeque<Vec<u8>>>, Condvar)>,
@@ -94,7 +110,31 @@ impl Stack {
     ) -> std::io::Result<Self> {
         let mut device = ProxyDevice::new();
         let iface = build_interface(&mut device);
-        let sockets = SocketSet::new(Vec::new());
+        let mut sockets = SocketSet::new(Vec::new());
+
+        // The gateway DNS responder: a smoltcp UDP socket on DNS_IP:53. set_any_ip
+        // + DNS_IP in the interface's addresses route the guest's queries here.
+        let dns = Resolver::new(waker);
+        let mut dns_sock = make_udp_socket();
+        dns_sock
+            .bind(IpListenEndpoint {
+                addr: Some(DNS_IP),
+                port: DNS_PORT,
+            })
+            .map_err(|_| std::io::Error::other("failed to bind DNS responder socket"))?;
+        let dns_socket = sockets.add(dns_sock);
+
+        // The DHCP responder: a smoltcp UDP socket on :67 (any local address) so
+        // it catches the guest's broadcast DISCOVER/REQUEST. Replies go back
+        // broadcast (the client has no IP yet).
+        let mut dhcp_sock = make_udp_socket();
+        dhcp_sock
+            .bind(IpListenEndpoint {
+                addr: None,
+                port: dhcp::SERVER_PORT,
+            })
+            .map_err(|_| std::io::Error::other("failed to bind DHCP responder socket"))?;
+        let dhcp_socket = sockets.add(dhcp_sock);
 
         let mut next_token = FIRST_DYNAMIC_TOKEN;
         let mut bound = Vec::with_capacity(forwards.len());
@@ -146,6 +186,9 @@ impl Stack {
             forward_udp_local_ports: HashSet::new(),
             pending_removal: Vec::new(),
             forwards: bound,
+            dns,
+            dns_socket,
+            dhcp_socket,
         })
     }
 
@@ -160,7 +203,9 @@ impl Stack {
                 self.iface.poll(now, &mut self.device, &mut self.sockets);
                 self.promote_listeners();
                 self.accept_forwards();
-                let worked = self.pump_all();
+                let mut worked = self.service_dns();
+                worked |= self.service_dhcp();
+                worked |= self.pump_all();
                 // Flush any FIN/RST/ACK that pumping (close/abort) generated
                 // before we reap the now-closed sockets.
                 self.iface
@@ -220,18 +265,32 @@ impl Stack {
                 _ => {}
             }
         }
+        // A guest Router Solicitation needs a Router Advertisement reply: smoltcp
+        // has no RA server, so synthesize one (advertising the gateway + ULA
+        // prefix) directly onto the guest-bound queue for SLAAC autoconfig.
+        if let Some(rs) = ndp::parse_router_solicit(&frame) {
+            let ra = ndp::build_router_advert(
+                &rs,
+                ipv6_of(GATEWAY_IP6),
+                EthernetAddress(GATEWAY_MAC),
+                ipv6_of(PREFIX6),
+                SUBNET_PREFIX6,
+                MTU as u32,
+            );
+            self.device.tx.push_back(ra);
+        }
         // ARP, ICMP, established-flow segments, etc. are all handled by smoltcp.
         self.device.push_rx(frame);
     }
 
-    fn provision_tcp_listener(&mut self, dst: Ipv4Address, port: u16) {
-        let key = (IpAddress::Ipv4(dst), port);
+    fn provision_tcp_listener(&mut self, dst: IpAddress, port: u16) {
+        let key = (dst, port);
         if self.tcp_listening.contains_key(&key) {
             return;
         }
         let mut sock = make_tcp_socket();
         let endpoint = IpListenEndpoint {
-            addr: Some(IpAddress::Ipv4(dst)),
+            addr: Some(dst),
             port,
         };
         if sock.listen(endpoint).is_ok() {
@@ -240,8 +299,12 @@ impl Stack {
         }
     }
 
-    fn provision_udp_flow(&mut self, dst: Ipv4Address, port: u16) {
-        let addr = IpAddress::Ipv4(dst);
+    /// Ensure a smoltcp UDP socket exists for the destination `(dst, port)`.
+    /// One socket per destination is enough — smoltcp tags every received
+    /// datagram with its guest source endpoint, so the per-source host-socket
+    /// fan-out happens later in [`relay_udp_flows`](Self::relay_udp_flows).
+    fn provision_udp_flow(&mut self, dst: IpAddress, port: u16) {
+        let addr = dst;
         let key = (addr, port);
         if self.udp_flows.contains_key(&key) {
             return;
@@ -251,36 +314,24 @@ impl Stack {
         if addr == GATEWAY_IP && self.forward_udp_local_ports.contains(&port) {
             return;
         }
+        // DNS queries to either gateway DNS alias are answered locally by the
+        // DNS responder socket, not masqueraded.
+        if (addr == DNS_IP || addr == DNS_IP6) && port == DNS_PORT {
+            return;
+        }
         let Some(target) = self.host_target(IpEndpoint { addr, port }) else {
             return;
         };
-        let Ok(mut host) = UdpSocket::bind(unspecified_v4()) else {
-            return;
-        };
-        if host.connect(target).is_err() {
-            return;
-        }
-        let token = self.alloc_token();
-        if self
-            .poll
-            .registry()
-            .register(&mut host, token, Interest::READABLE)
-            .is_err()
-        {
-            return;
-        }
         let mut sock = make_udp_socket();
         let endpoint = IpListenEndpoint {
             addr: Some(addr),
             port,
         };
         if sock.bind(endpoint).is_err() {
-            let _ = self.poll.registry().deregister(&mut host);
             return;
         }
         let handle = self.sockets.add(sock);
-        self.udp_flows
-            .insert(key, (handle, UdpFlow::new(host, token)));
+        self.udp_flows.insert(key, (handle, UdpFlow::new(target)));
     }
 
     // --- promotion + accept ------------------------------------------------
@@ -419,11 +470,159 @@ impl Stack {
             let socket = sockets.get_mut::<tcp::Socket<'_>>(*handle);
             worked |= flow.pump(socket);
         }
-        for (handle, flow) in self.udp_flows.values_mut() {
-            let socket = sockets.get_mut::<udp::Socket<'_>>(*handle);
-            worked |= flow.pump(socket);
+        worked |= self.relay_udp_flows();
+        worked
+    }
+
+    /// Service the gateway DNS responder: hand any queued guest queries to the
+    /// off-thread resolver, and send back any responses it has finished. Returns
+    /// `true` if anything moved (so the drive loop keeps draining).
+    fn service_dns(&mut self) -> bool {
+        let mut worked = false;
+        // Outbound: parse each queued query and submit it for resolution. The
+        // parse (untrusted) stays on this thread; only the blocking lookup is
+        // offloaded.
+        loop {
+            let socket = self.sockets.get_mut::<udp::Socket<'_>>(self.dns_socket);
+            let Ok((payload, meta)) = socket.recv() else {
+                break;
+            };
+            if let Some(query) = super::dns::parse_query(payload) {
+                self.dns.submit(query, meta.endpoint);
+            }
+            worked = true;
+        }
+        // Inbound: send finished responses back to the querying guest endpoint.
+        for result in self.dns.drain() {
+            let socket = self.sockets.get_mut::<udp::Socket<'_>>(self.dns_socket);
+            if socket.can_send() {
+                let _ = socket.send_slice(&result.response, result.client);
+                worked = true;
+            }
         }
         worked
+    }
+
+    /// Service the gateway DHCP responder: answer a guest `DISCOVER` with an
+    /// `OFFER` and a `REQUEST` with an `ACK`, handing out the one static lease.
+    /// Replies are sent broadcast (the client has no address yet). Returns `true`
+    /// if anything moved.
+    fn service_dhcp(&mut self) -> bool {
+        let mut worked = false;
+        loop {
+            let socket = self.sockets.get_mut::<udp::Socket<'_>>(self.dhcp_socket);
+            let Ok((payload, _meta)) = socket.recv() else {
+                break;
+            };
+            let Some(req) = dhcp::parse(payload) else {
+                worked = true; // consumed a datagram even if we won't answer it
+                continue;
+            };
+            let reply = dhcp::build_reply(
+                &req,
+                ipv4_of(GUEST_IP),
+                ipv4_of(GATEWAY_IP),
+                ipv4_of(DNS_IP),
+                MTU as u16,
+            );
+            // Reply broadcast to the client port: the guest has no configured
+            // address to receive a unicast reply on yet.
+            let dst = IpEndpoint::new(
+                IpAddress::Ipv4(Ipv4Address::new(255, 255, 255, 255)),
+                dhcp::CLIENT_PORT,
+            );
+            let socket = self.sockets.get_mut::<udp::Socket<'_>>(self.dhcp_socket);
+            if socket.can_send() {
+                let _ = socket.send_slice(&reply, dst);
+            }
+            worked = true;
+        }
+        worked
+    }
+
+    /// Bridge every UDP destination both ways. Outbound: drain guest datagrams
+    /// from each smoltcp socket, lazily creating one host socket per distinct
+    /// guest source endpoint (so replies demux back to the right source), and
+    /// forward. Inbound: drain each host source's replies onto the smoltcp
+    /// socket addressed back to that guest source.
+    fn relay_udp_flows(&mut self) -> bool {
+        let mut worked = false;
+        // Collect destination keys up front so we can take `&mut self` for the
+        // per-source host-socket creation while iterating.
+        let keys: Vec<(IpAddress, u16)> = self.udp_flows.keys().copied().collect();
+        for key in keys {
+            // Outbound: read each queued guest datagram, ensure its source has a
+            // host socket, then send. Gather first to release the socket borrow
+            // before touching `self.poll`/tokens.
+            loop {
+                let Some((handle, _)) = self.udp_flows.get(&key) else {
+                    break;
+                };
+                let handle = *handle;
+                let socket = self.sockets.get_mut::<udp::Socket<'_>>(handle);
+                let Ok((payload, meta)) = socket.recv() else {
+                    break;
+                };
+                let payload = payload.to_vec();
+                let src = meta.endpoint;
+                self.ensure_udp_source(&key, src);
+                if let Some((_, flow)) = self.udp_flows.get_mut(&key) {
+                    flow.send_to_host(&src, &payload);
+                }
+                worked = true;
+            }
+
+            // Inbound: drain host replies onto the smoltcp socket, addressed to
+            // the originating guest source.
+            let Some((handle, flow)) = self.udp_flows.get_mut(&key) else {
+                continue;
+            };
+            let handle = *handle;
+            let socket = self.sockets.get_mut::<udp::Socket<'_>>(handle);
+            let did = flow.drain_host(|guest_src, payload| {
+                if socket.can_send() {
+                    let _ = socket.send_slice(payload, guest_src);
+                }
+            });
+            worked |= did;
+        }
+        worked
+    }
+
+    /// Lazily create the host socket for one guest source of a UDP destination:
+    /// an ephemeral host UDP socket connected to the destination's target and
+    /// registered for readiness. No-op if the source already has one.
+    fn ensure_udp_source(&mut self, key: &(IpAddress, u16), src: IpEndpoint) {
+        let Some((_, flow)) = self.udp_flows.get(key) else {
+            return;
+        };
+        if flow.has_source(&src) {
+            return;
+        }
+        let target = flow.target();
+        let bind = if target.is_ipv4() {
+            unspecified_v4()
+        } else {
+            unspecified_v6()
+        };
+        let Ok(mut host) = UdpSocket::bind(bind) else {
+            return;
+        };
+        if host.connect(target).is_err() {
+            return;
+        }
+        let token = self.alloc_token();
+        if self
+            .poll
+            .registry()
+            .register(&mut host, token, Interest::READABLE)
+            .is_err()
+        {
+            return;
+        }
+        if let Some((_, flow)) = self.udp_flows.get_mut(key) {
+            flow.add_source(src, host);
+        }
     }
 
     fn reap_closed(&mut self) {
@@ -445,17 +644,31 @@ impl Stack {
         }
     }
 
+    /// Reclaim idle UDP state at two granularities: first drop host sources
+    /// (per guest source endpoint) that have gone quiet, then reap whole
+    /// destinations once they are source-less and idle.
     fn reclaim_idle_udp(&mut self) {
         let now = std::time::Instant::now();
+
+        // Per-source: deregister host sockets for guest sources gone idle.
+        let keys: Vec<(IpAddress, u16)> = self.udp_flows.keys().copied().collect();
+        for key in keys {
+            if let Some((_, flow)) = self.udp_flows.get_mut(&key) {
+                for mut src in flow.reap_idle_sources(now, UDP_IDLE_TIMEOUT) {
+                    let _ = self.poll.registry().deregister(&mut src.sock);
+                }
+            }
+        }
+
+        // Per-destination: reap source-less, idle flows and their smoltcp socket.
         let expired: Vec<(IpAddress, u16)> = self
             .udp_flows
             .iter()
-            .filter(|(_, (_, flow))| flow.is_idle(now, UDP_IDLE_TIMEOUT))
+            .filter(|(_, (_, flow))| flow.is_reapable(now, UDP_IDLE_TIMEOUT))
             .map(|(k, _)| *k)
             .collect();
         for key in expired {
-            if let Some((handle, mut flow)) = self.udp_flows.remove(&key) {
-                let _ = self.poll.registry().deregister(&mut flow.sock);
+            if let Some((handle, _)) = self.udp_flows.remove(&key) {
                 self.sockets.remove(handle);
             }
         }
@@ -491,12 +704,14 @@ impl Stack {
         port
     }
 
-    /// Map a guest destination to its host-side target: the gateway IP folds to
-    /// loopback (guest→host); everything else is the literal destination
-    /// (masquerade). v6 destinations are unsupported (the stack is v4).
+    /// Map a guest destination to its host-side target: a gateway IP folds to
+    /// host loopback (guest→host) for its family; everything else is the literal
+    /// destination (masquerade), for either family.
     fn host_target(&self, dst: IpEndpoint) -> Option<SocketAddr> {
         let addr = if dst.addr == GATEWAY_IP {
             HOST_LOOPBACK
+        } else if dst.addr == GATEWAY_IP6 {
+            HOST_LOOPBACK6
         } else {
             dst.addr
         };
@@ -543,31 +758,92 @@ impl Stack {
     }
 }
 
+/// Largest IPv6 extension-header chain we'll walk before giving up. A bound
+/// against a hostile guest chaining headers to spin the parser.
+const MAX_IPV6_EXT_HEADERS: usize = 8;
+
 /// Inspect a guest frame for flow-opening intent without consuming it.
 ///
-/// Returns `(protocol, dst_ip, dst_port, opens_new_flow)` for IPv4 TCP/UDP.
+/// Returns `(protocol, dst_ip, dst_port, opens_new_flow)` for IPv4/IPv6 TCP/UDP.
 /// `opens_new_flow` is true only for a pure TCP SYN (so a guest SYN-ACK on an
 /// inbound forward isn't mistaken for a new outbound listen). Malformed or
-/// non-IPv4/TCP/UDP frames return `None` and are simply forwarded to smoltcp.
-fn inspect_frame(frame: &[u8]) -> Option<(IpProtocol, Ipv4Address, u16, bool)> {
+/// non-TCP/UDP frames return `None` and are simply forwarded to smoltcp.
+///
+/// This runs on fully guest-controlled bytes (the fuzzed surface): it must never
+/// panic and never mis-classify a malformed frame as flow-opening.
+fn inspect_frame(frame: &[u8]) -> Option<(IpProtocol, IpAddress, u16, bool)> {
     let eth = EthernetFrame::new_checked(frame).ok()?;
-    if eth.ethertype() != EthernetProtocol::Ipv4 {
-        return None;
+    match eth.ethertype() {
+        EthernetProtocol::Ipv4 => {
+            let ip = Ipv4Packet::new_checked(eth.payload()).ok()?;
+            inspect_l4(
+                ip.next_header(),
+                ip.payload(),
+                IpAddress::Ipv4(ip.dst_addr()),
+            )
+        }
+        EthernetProtocol::Ipv6 => {
+            let ip = Ipv6Packet::new_checked(eth.payload()).ok()?;
+            let dst = IpAddress::Ipv6(ip.dst_addr());
+            // Walk past any extension headers to the L4 header.
+            let (proto, l4) = ipv6_l4(ip.next_header(), ip.payload())?;
+            inspect_l4(proto, l4, dst)
+        }
+        _ => None,
     }
-    let ip = Ipv4Packet::new_checked(eth.payload()).ok()?;
-    let dst = ip.dst_addr();
-    match ip.next_header() {
+}
+
+/// Classify the L4 header (TCP/UDP) of an IP payload into a flow-opening tuple.
+fn inspect_l4(
+    proto: IpProtocol,
+    l4: &[u8],
+    dst: IpAddress,
+) -> Option<(IpProtocol, IpAddress, u16, bool)> {
+    match proto {
         IpProtocol::Tcp => {
-            let tcp = TcpPacket::new_checked(ip.payload()).ok()?;
+            let tcp = TcpPacket::new_checked(l4).ok()?;
             let opens = tcp.syn() && !tcp.ack();
             Some((IpProtocol::Tcp, dst, tcp.dst_port(), opens))
         }
         IpProtocol::Udp => {
-            let udp = UdpPacket::new_checked(ip.payload()).ok()?;
+            let udp = UdpPacket::new_checked(l4).ok()?;
             Some((IpProtocol::Udp, dst, udp.dst_port(), false))
         }
         _ => None,
     }
+}
+
+/// Walk an IPv6 extension-header chain starting at `first` over `payload`,
+/// returning the final L4 protocol and the slice at the start of its header.
+/// Returns `None` on a malformed chain, an unknown header, or if the chain is
+/// longer than [`MAX_IPV6_EXT_HEADERS`]. Bounds-checked and panic-free.
+fn ipv6_l4(first: IpProtocol, payload: &[u8]) -> Option<(IpProtocol, &[u8])> {
+    let mut proto = first;
+    let mut rest = payload;
+    for _ in 0..MAX_IPV6_EXT_HEADERS {
+        match proto {
+            IpProtocol::Tcp | IpProtocol::Udp => return Some((proto, rest)),
+            // These extension headers share the layout: next_header(1),
+            // hdr_ext_len(1, in 8-octet units excluding the first 8), then data.
+            IpProtocol::HopByHop | IpProtocol::Ipv6Route | IpProtocol::Ipv6Opts => {
+                let next = *rest.first()?;
+                let ext_len = *rest.get(1)? as usize;
+                let total = 8 + ext_len * 8;
+                rest = rest.get(total..)?;
+                proto = IpProtocol::from(next);
+            }
+            // The fragment header is a fixed 8 bytes; next_header is the first.
+            IpProtocol::Ipv6Frag => {
+                let next = *rest.first()?;
+                rest = rest.get(8..)?;
+                proto = IpProtocol::from(next);
+            }
+            // Anything else (ICMPv6, no-next-header, unknown) is not a flow we
+            // proxy — let smoltcp handle it.
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Fuzz entry point for the untrusted guest-frame demux/provisioning *decision*
@@ -603,6 +879,28 @@ fn unspecified_v4() -> SocketAddr {
     SocketAddr::from(([0, 0, 0, 0], 0))
 }
 
+/// Extract the IPv4 address from one of the v4 addressing constants. The stack's
+/// gateway/guest/DNS aliases are always v4; this is a convenience for the v4-only
+/// DHCP responder.
+fn ipv4_of(addr: IpAddress) -> Ipv4Address {
+    match addr {
+        IpAddress::Ipv4(a) => a,
+        IpAddress::Ipv6(_) => Ipv4Address::UNSPECIFIED,
+    }
+}
+
+/// Extract the IPv6 address from one of the v6 addressing constants.
+fn ipv6_of(addr: IpAddress) -> Ipv6Address {
+    match addr {
+        IpAddress::Ipv6(a) => a,
+        IpAddress::Ipv4(_) => Ipv6Address::UNSPECIFIED,
+    }
+}
+
+fn unspecified_v6() -> SocketAddr {
+    SocketAddr::from(([0u16; 8], 0))
+}
+
 /// smoltcp's optional `poll_delay`, clamped to [`MAX_POLL_WAIT`] so the loop
 /// always wakes often enough to honor the stop flag and reclaim idle flows.
 fn mio_wait(delay: Option<smoltcp::time::Duration>) -> StdDuration {
@@ -629,21 +927,63 @@ mod tests {
         0xff, 0x00, 0x00, 0x00, 0x00,
     ];
 
+    /// A well-formed Ethernet/IPv6/TCP **SYN** frame: 14 + 40 + 20 bytes, dst
+    /// `::1`, SYN set / ACK clear, no extension headers.
+    const TCP_SYN_V6: &[u8] = &[
+        // Ethernet: dst, src, ethertype=IPv6 (0x86dd)
+        0x52, 0x54, 0x00, 0x12, 0x35, 0x02, 0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcc, 0x86, 0xdd,
+        // IPv6: ver/tc/flow (4 bytes), payload_len=20, next_header=6 (TCP), hop_limit=64
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x14, 0x06, 0x40, // src addr fd00::15
+        0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x15, // dst addr ::1
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01, // TCP: sport=12345, dport=80, seq, ack, off=5/flags=SYN, win, csum, urg
+        0x30, 0x39, 0x00, 0x50, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x50, 0x02, 0xff,
+        0xff, 0x00, 0x00, 0x00, 0x00,
+    ];
+
     #[test]
     fn inspect_recognizes_a_syn() {
         let (proto, dst, port, opens) = inspect_frame(TCP_SYN).expect("valid SYN frame");
         assert_eq!(proto, IpProtocol::Tcp);
-        assert_eq!(dst, Ipv4Address::new(127, 0, 0, 1));
+        assert_eq!(dst, IpAddress::v4(127, 0, 0, 1));
         assert_eq!(port, 80);
         assert!(opens, "a pure SYN must be flow-opening");
     }
 
     #[test]
+    fn inspect_recognizes_a_v6_syn() {
+        let (proto, dst, port, opens) = inspect_frame(TCP_SYN_V6).expect("valid v6 SYN frame");
+        assert_eq!(proto, IpProtocol::Tcp);
+        assert_eq!(dst, IpAddress::v6(0, 0, 0, 0, 0, 0, 0, 1));
+        assert_eq!(port, 80);
+        assert!(opens, "a pure v6 SYN must be flow-opening");
+    }
+
+    #[test]
     fn inspect_never_panics_on_truncation() {
         // Every prefix of a valid frame must be handled without panicking; short
-        // frames simply fail `new_checked` and return `None`.
+        // frames simply fail `new_checked` and return `None`. Both families.
         for len in 0..=TCP_SYN.len() {
             fuzz_inspect_frame(&TCP_SYN[..len]);
+        }
+        for len in 0..=TCP_SYN_V6.len() {
+            fuzz_inspect_frame(&TCP_SYN_V6[..len]);
+        }
+    }
+
+    #[test]
+    fn inspect_never_panics_on_v6_ext_headers() {
+        // A v6 frame whose next_header claims an extension header but whose body
+        // is truncated/garbage must not panic or loop. Mutate the next_header
+        // byte (offset 14 + 6) through every value and truncate at every length.
+        let nh_off = 14 + 6;
+        for nh in 0u8..=255 {
+            let mut frame = TCP_SYN_V6.to_vec();
+            frame[nh_off] = nh;
+            for len in (nh_off + 1)..frame.len() {
+                fuzz_inspect_frame(&frame[..len]);
+            }
         }
     }
 

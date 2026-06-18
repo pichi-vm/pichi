@@ -425,7 +425,8 @@ fn run_external_reach_probe(endpoints: &str) -> bool {
     const READ_TIMEOUT: Duration = Duration::from_secs(7);
 
     for endpoint in endpoints.split(',').filter(|s| !s.is_empty()) {
-        // No DNS in v1, so endpoints are numeric IP:PORT; parse without resolving.
+        // Endpoints are numeric IP:PORT (the reach probe asserts raw masquerade,
+        // independent of name resolution), so this parse never hits the network.
         let Ok(mut addrs) = endpoint.to_socket_addrs() else {
             continue;
         };

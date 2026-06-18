@@ -29,3 +29,24 @@ path = "fuzz_targets/net_demux.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dns_query"
+path = "fuzz_targets/dns_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dhcp_parse"
+path = "fuzz_targets/dhcp_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ndp_parse"
+path = "fuzz_targets/ndp_parse.rs"
+test = false
+doc = false
+bench = false
