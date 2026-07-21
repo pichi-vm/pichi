@@ -63,11 +63,6 @@ const DEFAULT_DECOMPRESSED_CAP: u64 = 16 * 1024 * 1024 * 1024;
 /// Phase 42 D-06 locked verity defaults — used by the pull-side verity feed.
 const VERITY_DBS: u32 = 4096;
 const VERITY_HBS: u32 = 4096;
-/// 32-byte zero salt prefix per Phase 43 D-01. The pull-side verity output is
-/// recomputed locally and not asserted bit-equal against the import-side blob
-/// (Phase 43 D-03), so for non-Scute layers (Pmi) we skip verity entirely;
-/// for Scute layers we use the layer's per-scute salt annotation.
-const SALT_ZERO_PREFIX: &[u8] = &[0u8; 32];
 
 /// Entry point for `pichi pull`. Builds a throwaway tokio current-thread
 /// runtime, drives `pull_inner`, and drops the runtime before returning.
@@ -481,14 +476,19 @@ fn build_layer_pipeline(
 
     // (4) Optional VerityFeed callback (only for Scute layers with a salt).
     //     For non-Scute (Pmi) layers we skip verity entirely.
-    let verity = if let Some(salt_suffix) = scute_salt {
-        let mut full_salt: Vec<u8> = SALT_ZERO_PREFIX.to_vec();
-        full_salt.extend_from_slice(&salt_suffix);
+    let verity = if let Some(full_salt) = scute_salt {
+        // `dev.pichi.scute.verity.salt` already carries the FULL salt the
+        // importer used to compute the root hash (prefix + optional suffix;
+        // for the base scute the prefix — 32 zero bytes — IS the whole salt).
+        // Use it verbatim, exactly as carapace, the importer, and `pichi run`
+        // do; prepending another zero prefix produces a different hash tree
+        // and the guest's dm-verity activation fails ("metadata block
+        // corrupted").
         let params = VerityParams {
             data_block_size: VERITY_DBS,
             hash_block_size: VERITY_HBS,
             salt: full_salt,
-            uuid: [0u8; 16], // pull-side verity output is discarded; uuid irrelevant.
+            uuid: [0u8; 16], // uuid is metadata; the kernel ignores it at activation.
         };
         Some(Arc::new(Mutex::new(
             VerityBuilder::new(&params).context("VerityBuilder::new for pull")?,
@@ -1176,15 +1176,15 @@ mod tests {
     }
 
     /// Plan 02 helper: build the locked Phase 42 D-06 verity params for a
-    /// scute with the SAME salt the pull pipeline uses (32-zero prefix +
-    /// 32-zero per-scute suffix from the manifest).
+    /// scute with the SAME salt the pull pipeline uses — the full salt from
+    /// the `dev.pichi.scute.verity.salt` annotation, verbatim (here the base
+    /// scute's 32 zero bytes from make_scute_manifest's hex::encode([0u8; 32])).
     fn pull_side_verity_params() -> pichi_import::verity::VerityParams {
         pichi_import::verity::VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
-            // SALT_ZERO_PREFIX (32 zeros) + per-scute salt (also 32 zeros
-            // from make_scute_manifest's hex::encode([0u8; 32]) annotation).
-            salt: vec![0u8; 64],
+            // The per-scute salt annotation, used verbatim (no extra prefix).
+            salt: vec![0u8; 32],
             // pull-side uuid is hard-coded to 0u8; 16 in build_layer_pipeline.
             uuid: [0u8; 16],
         }
