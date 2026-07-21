@@ -31,11 +31,17 @@ anyhow        = { workspace = true, optional = true }
 # `http::HeaderValue` is consumed by oci-client's push_manifest_raw signature;
 # oci-client does not re-export it.
 http          = { workspace = true, optional = true }
+# Already in the tree transitively via oci-client; declared directly so blob
+# uploads can do a single streaming PUT (oci-client's push API only takes an
+# in-memory `Bytes`). Pinned to oci-client's major + rustls to avoid a second
+# reqwest/TLS stack.
+reqwest       = { version = "0.13", optional = true, default-features = false, features = ["stream", "rustls", "http2"] }
 
 [features]
 default = []
 http-client = [
     "dep:oci-client",
+    "dep:reqwest",
     "dep:tokio-util",
     "dep:serde",
     "dep:serde_json",

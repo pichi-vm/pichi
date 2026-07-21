@@ -48,14 +48,11 @@ use crate::config::Config;
 /// the `application/vnd.pichi.artifact.v1+json` discriminator (REGISTRY-07).
 const PUSH_MANIFEST_CONTENT_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 
-/// Chunk size for the BlobStore → push stream bridge. This is *also* the
-/// network chunk size: `oci-client`'s `push_blob_stream` emits one `PATCH`
-/// per yielded buffer, so each chunk costs a full registry round-trip. A tiny
-/// (e.g. 64 KiB) buffer therefore turns a large blob into thousands of
-/// sequential round-trips — negligible on localhost, but minutes over real
-/// registry latency. 1 MiB keeps memory residency modest while cutting the
-/// round-trip count ~16x; the chunked protocol (and its resumability) is
-/// retained. See the OCI distribution spec on chunked blob uploads.
+/// Read-buffer size for the BlobStore → push stream bridge. `push_blob_stream`
+/// streams this into a single monolithic PUT (see `pichi_registry`), so this is
+/// purely the disk-read granularity, not a network chunk size — it bounds how
+/// much of the blob is resident at once while it flows to the socket. 1 MiB
+/// amortises read syscalls without holding the whole blob in memory.
 const PUSH_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Entry point for `pichi push`. Builds a throwaway tokio current-thread

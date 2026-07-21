@@ -92,6 +92,9 @@ pub struct HttpRegistry {
     /// Auth resolution environment (XDG/HOME paths). Populated by the binary
     /// from `AuthEnv::from_process_env()`; tests can inject explicit paths.
     auth_env: AuthEnv,
+    /// Own reqwest client for streaming blob uploads (oci-client's push API
+    /// only accepts an in-memory `Bytes`).
+    http: reqwest::Client,
 }
 
 // oci-client's `Client` does not implement `Debug`, so the `clients` cache is
@@ -119,6 +122,11 @@ impl HttpRegistry {
             clients: Mutex::new(HashMap::new()),
             entries: map,
             auth_env,
+            // Own reqwest client for the streaming blob PUT (see
+            // `push_blob_stream`). rustls, http/1.1+2; reused across pushes.
+            http: reqwest::Client::builder()
+                .build()
+                .expect("build reqwest client"),
         }
     }
 
@@ -179,6 +187,24 @@ fn build_oci_ref(registry: &str, repo: &str, tag_or_digest: Option<&str>) -> Res
     s.parse().map_err(|e: oci_client::ParseError| {
         RegistryError::Transport(format!("oci ref build: {e}"))
     })
+}
+
+/// Apply registry credentials to a reqwest request. A bearer token (from
+/// oci-client's token-endpoint handshake) takes precedence; otherwise Basic
+/// credentials are used, and anonymous requests get no auth header. Never logs
+/// the values (Pitfall 14).
+fn apply_auth(
+    rb: reqwest::RequestBuilder,
+    token: &Option<String>,
+    auth: &RegistryAuth,
+) -> reqwest::RequestBuilder {
+    if let Some(t) = token {
+        rb.bearer_auth(t)
+    } else if let RegistryAuth::Basic(user, pass) = auth {
+        rb.basic_auth(user, Some(pass))
+    } else {
+        rb
+    }
 }
 
 /// Map oci-client errors into pichi-registry's [`RegistryError`], REDACTING
@@ -371,23 +397,84 @@ impl Registry for HttpRegistry {
     where
         S: Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
     {
+        // oci-client's push API buffers the whole blob in memory. Instead we
+        // perform the OCI monolithic upload ourselves — begin a session, then
+        // one streaming PUT — so a large layer flows straight from the source
+        // stream to the socket in a single request, never residing in memory.
+        // oci-client still runs the auth handshake (WWW-Authenticate → token).
         let oci_ref = build_oci_ref(registry, repo, None)?;
         let auth = self.auth_for(registry)?;
-        let client = self.client_for(registry);
-        // Pre-auth: blob upload needs write-scope bearer token cached in the
-        // client before push_blob_stream.
-        client
+        let token = self
+            .client_for(registry)
             .auth(&oci_ref, &auth, RegistryOperation::Push)
             .await
             .map_err(map_oci_error)?;
-        // oci-client's push_blob_stream takes Stream<Item = Result<Bytes,
-        // OciDistributionError>>; std::io::Result<Bytes> needs a per-item map.
-        use futures_util::StreamExt;
-        let mapped = stream.map(|r| r.map_err(OciDistributionError::IoError));
-        let _digest_url = client
-            .push_blob_stream(&oci_ref, mapped, &digest.to_string())
-            .await
-            .map_err(map_oci_error)?;
+
+        let insecure = self
+            .entries
+            .get(registry)
+            .map(|e| e.insecure)
+            .unwrap_or(false);
+        let scheme = if insecure { "http" } else { "https" };
+
+        // 1. Begin an upload session.
+        let uploads = format!("{scheme}://{registry}/v2/{repo}/blobs/uploads/");
+        let resp = apply_auth(
+            self.http
+                .post(&uploads)
+                .header(reqwest::header::CONTENT_LENGTH, "0"),
+            &token,
+            &auth,
+        )
+        .send()
+        .await
+        .map_err(|e| RegistryError::Transport(format!("begin upload in {repo}: {e}")))?;
+        if resp.status() != reqwest::StatusCode::ACCEPTED {
+            let code = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(RegistryError::Transport(format!(
+                "begin upload in {repo}: unexpected status {code}: {body}"
+            )));
+        }
+        let location = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| RegistryError::Transport("upload session missing Location".into()))?
+            .to_string();
+
+        // 2. Resolve the (possibly relative) location and append ?digest=.
+        let loc = if location.starts_with("http") {
+            location
+        } else {
+            format!("{scheme}://{registry}{location}")
+        };
+        let sep = if loc.contains('?') { '&' } else { '?' };
+        let put_url = format!(
+            "{loc}{sep}digest={}",
+            digest.to_string().replace(':', "%3A")
+        );
+
+        // 3. Single streaming PUT.
+        let body = reqwest::Body::wrap_stream(stream);
+        let resp = apply_auth(
+            self.http
+                .put(&put_url)
+                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .body(body),
+            &token,
+            &auth,
+        )
+        .send()
+        .await
+        .map_err(|e| RegistryError::Transport(format!("upload blob {digest}: {e}")))?;
+        if !resp.status().is_success() {
+            let code = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(RegistryError::Transport(format!(
+                "upload blob {digest}: unexpected status {code}: {body}"
+            )));
+        }
         Ok(())
     }
 
