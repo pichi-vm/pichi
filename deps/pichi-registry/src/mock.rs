@@ -270,6 +270,7 @@ impl Registry for MockRegistry {
         registry: &str,
         repo: &str,
         digest: &Digest,
+        _size: u64,
         stream: S,
     ) -> Result<()>
     where
@@ -441,7 +442,7 @@ mod tests {
         let chunk2 = Bytes::from_static(b"world");
         let digest = Digest::from_bytes_sha256(b"hello world");
         let s = stream::iter(vec![Ok(chunk1.clone()), Ok(chunk2.clone())]);
-        block_on(m.push_blob_stream("r.io", "x", &digest, s)).unwrap();
+        block_on(m.push_blob_stream("r.io", "x", &digest, 11, s)).unwrap();
         let log = m.pushed_blobs();
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].0, "r.io");

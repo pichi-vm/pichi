@@ -25,9 +25,11 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
-use pichi_artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference};
+use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference, ReferenceKind};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry};
-use pichi_storage::CacheLayout;
+use pichi_storage::{BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb};
+
+use crate::cmd::push::push_manifest_and_blobs;
 
 use crate::cli::{ManifestAnnotateArgs, ManifestCreateArgs, ManifestPushArgs};
 use crate::cmd::registry_helpers::build_http_registry;
@@ -46,19 +48,26 @@ pub fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
         .parse()
         .with_context(|| format!("invalid list reference: {}", args.list))?;
 
-    let registry = build_http_registry(config);
-    let rt = runtime()?;
+    // Sources are LOCAL images (podman-style): resolve each from the cache,
+    // never the registry. `pichi manifest push` uploads them together.
+    let layout = resolve_layout(config)?;
+    let blob_store = FilesystemBlobStore::new(&layout.graphroot);
+    let tag_db = FilesystemTagDb::open(&layout.graphroot)
+        .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
 
     let mut entries = Vec::with_capacity(args.sources.len());
     for src in &args.sources {
         let src_ref: Reference = src
             .parse()
             .with_context(|| format!("invalid source reference: {src}"))?;
-        let (bytes, digest) = rt
-            .block_on(registry.pull_manifest_by_tag(&src_ref))
-            .map_err(|e| anyhow!("fetch source manifest {src}: {e}"))?;
+        let digest = tag_db
+            .resolve_tag(&src_ref.to_string())?
+            .ok_or_else(|| anyhow!("source not in local cache: {src}"))?;
+        let raw = blob_store
+            .get_blob(&digest)
+            .with_context(|| format!("read local manifest {digest}"))?;
         let value: Value =
-            serde_json::from_slice(&bytes).with_context(|| format!("parse manifest {src}"))?;
+            serde_json::from_slice(&raw).with_context(|| format!("parse manifest {src}"))?;
         let artifact_type = value.get("artifactType").and_then(|v| v.as_str());
         if artifact_type != Some(MEDIA_TYPE_PICHI_ARTIFACT_V1) {
             bail!(
@@ -70,7 +79,7 @@ pub fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
             "mediaType": OCI_MANIFEST_MEDIA_TYPE,
             "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
             "digest": digest.to_string(),
-            "size": bytes.len(),
+            "size": raw.len(),
             "annotations": { SOURCE_REF_ANNOTATION: src },
         }));
     }
@@ -105,16 +114,58 @@ pub fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
         .list
         .parse()
         .with_context(|| format!("invalid list reference: {}", args.list))?;
-    let index = load_list(config, &list_ref)?;
-    let ready = prepare_for_push(index, &list_ref)?;
-    let bytes = serde_json::to_vec(&ready).context("serialise OCI image index")?;
+    let dest: Reference = args
+        .dest
+        .parse()
+        .with_context(|| format!("invalid destination reference: {}", args.dest))?;
+    let ready = prepare_for_push(load_list(config, &list_ref)?, &list_ref)?;
 
+    let layout = resolve_layout(config)?;
+    let blob_store = FilesystemBlobStore::new(&layout.graphroot);
     let registry = build_http_registry(config);
     let rt = runtime()?;
-    let digest = rt
-        .block_on(registry.push_manifest(&list_ref, OCI_IMAGE_INDEX_MEDIA_TYPE, Bytes::from(bytes)))
-        .map_err(|e| anyhow!("push image index {list_ref}: {e}"))?;
-    println!("pushed manifest list {list_ref} ({digest})");
+
+    rt.block_on(async {
+        // podman `--all` semantics: push every referenced local image (blobs +
+        // manifest, by digest into the dest repo), then the index last, so the
+        // dest tag only resolves once all content is present.
+        let manifests = ready
+            .get("manifests")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("manifest list is malformed (no `manifests` array)"))?;
+        for m in manifests {
+            let digest: Digest = m
+                .get("digest")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("index entry missing digest"))?
+                .parse()?;
+            let raw = blob_store
+                .get_blob(&digest)
+                .with_context(|| format!("read local manifest {digest}"))?;
+            let arch_ref = Reference {
+                registry: dest.registry.clone(),
+                repo: dest.repo.clone(),
+                kind: ReferenceKind::Digest(digest.clone()),
+            };
+            push_manifest_and_blobs(
+                &registry,
+                &blob_store,
+                &arch_ref,
+                &raw,
+                OCI_MANIFEST_MEDIA_TYPE,
+            )
+            .await
+            .with_context(|| format!("push arch image {digest}"))?;
+        }
+        let index_bytes = serde_json::to_vec(&ready).context("serialise OCI image index")?;
+        registry
+            .push_manifest(&dest, OCI_IMAGE_INDEX_MEDIA_TYPE, Bytes::from(index_bytes))
+            .await
+            .map_err(|e| anyhow!("push image index {dest}: {e}"))?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    println!("pushed manifest list {list_ref} -> {dest}");
     Ok(())
 }
 

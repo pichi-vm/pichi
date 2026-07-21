@@ -105,21 +105,38 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
         .ok_or_else(|| anyhow!("ref not in cache: {target}"))?;
 
     // 2. Read cached manifest bytes (raw — preserves OCI digest per Pitfall 3).
-    //    The bytes flow VERBATIM into `push_manifest` below; the negative-grep
-    //    gate enforces that the serialise helper is never called on this path.
     let raw_manifest = blob_store
         .get_blob(&manifest_digest)
         .with_context(|| format!("read manifest {manifest_digest} from cache"))?;
 
-    // 3. Pre-push re-validation (cheap O(layers) safety net per CONTEXT
-    //    discretion + RESEARCH recommendation). The parsed manifest is the
-    //    source of truth for the layer-walk loop in step 5; we discard the
-    //    validation handle on error here so observers see a clear error
-    //    BEFORE any registry call.
-    let manifest = Manifest::from_reader_validated(raw_manifest.as_slice())
-        .with_context(|| format!("re-validate cached manifest {manifest_digest}"))?;
+    // 3-6: push the manifest and its blobs.
+    push_manifest_and_blobs(
+        registry,
+        blob_store,
+        &target,
+        raw_manifest.as_slice(),
+        PUSH_MANIFEST_CONTENT_TYPE,
+    )
+    .await
+}
 
-    // 4.5. Push the empty-config blob (`{}`, 2 bytes, sha256:44136fa3...)
+/// Push one image manifest and all its blobs (config + layers) to `target`,
+/// HEAD-skipping blobs already present. Blobs go to `target.registry`/`repo`;
+/// the manifest is PUT at `target` (a tag or a digest). Shared by `pichi push`
+/// (single image) and `pichi manifest push` (each referenced arch image).
+pub(crate) async fn push_manifest_and_blobs<R: Registry>(
+    registry: &R,
+    blob_store: &dyn BlobStore,
+    target: &Reference,
+    raw_manifest: &[u8],
+    manifest_media_type: &str,
+) -> Result<()> {
+    // Pre-push re-validation (cheap O(layers) safety net); also the source of
+    // truth for the config + layer walk below.
+    let manifest = Manifest::from_reader_validated(raw_manifest)
+        .context("re-validate manifest before push")?;
+
+    // Push the empty-config blob (`{}`, 2 bytes, sha256:44136fa3...)
     //      before any layer. OCI 1.1 lets the manifest carry inline `data`
     //      for the empty-config descriptor, but registries (zot included)
     //      still require the physical blob to exist before accepting the
@@ -148,9 +165,16 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
                     .to_vec(),
             )
         };
+        let size = bytes.len() as u64;
         let one_chunk = stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) });
         registry
-            .push_blob_stream(&target.registry, &target.repo, &config_digest, one_chunk)
+            .push_blob_stream(
+                &target.registry,
+                &target.repo,
+                &config_digest,
+                size,
+                one_chunk,
+            )
             .await
             .map_err(|e| anyhow!("push_blob_stream config {config_digest}: {e}"))?;
     }
@@ -183,7 +207,13 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
         //     lines 822-842 pattern).
         let stream_chunks = blob_to_stream(blob_store, &layer_digest)?;
         registry
-            .push_blob_stream(&target.registry, &target.repo, &layer_digest, stream_chunks)
+            .push_blob_stream(
+                &target.registry,
+                &target.repo,
+                &layer_digest,
+                layer.size(),
+                stream_chunks,
+            )
             .await
             .map_err(|e| anyhow!("push_blob_stream layer {layer_digest}: {e}"))?;
     }
@@ -195,9 +225,9 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
     //    re-serialised through Manifest's serialise helper.
     registry
         .push_manifest(
-            &target,
-            PUSH_MANIFEST_CONTENT_TYPE,
-            Bytes::from(raw_manifest),
+            target,
+            manifest_media_type,
+            Bytes::copy_from_slice(raw_manifest),
         )
         .await
         .map_err(|e| anyhow!("push_manifest {target}: {e}"))?;
@@ -433,13 +463,13 @@ mod tests {
         // we observe 1 blob + 1 manifest is the load-bearing assertion;
         // the source-line guard below pins the *static* ordering.
 
-        // (b) Source-line-order grep within push_inner_with_registry. The
+        // (b) Source-line-order grep within push_manifest_and_blobs. The
         // last `push_blob_stream` call site MUST appear before the first
-        // `push_manifest` call site, both within the orchestrator body.
+        // `push_manifest` call site, both within the helper body.
         let src = std::fs::read_to_string("src/cmd/push.rs").expect("src/cmd/push.rs must exist");
         let orch_start = src
-            .find("pub(crate) async fn push_inner_with_registry")
-            .expect("orchestrator fn must exist");
+            .find("pub(crate) async fn push_manifest_and_blobs")
+            .expect("push_manifest_and_blobs fn must exist");
         let orch_after = &src[orch_start..];
         let orch_end_rel = orch_after
             .find("\n}")

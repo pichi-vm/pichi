@@ -42,6 +42,10 @@ enum Command {
     Tag(cli::TagArgs),
     /// Import a raw image into the local cache as a base carapace artifact.
     Import(cli::ImportArgs),
+    /// Export a cached artifact to an OCI image layout directory.
+    Save(cli::SaveArgs),
+    /// Import an OCI image layout directory into the local cache.
+    Load(cli::LoadArgs),
     /// Build an artifact from a `pichi.build/` project inside a VM.
     Build(cli::BuildArgs),
     /// Pull a pichi artifact from an OCI registry.
@@ -76,6 +80,8 @@ fn main() -> anyhow::Result<()> {
         Command::Rmi(args) => cmd::rmi::run(args, &config),
         Command::Tag(args) => cmd::tag::run(args, &config),
         Command::Import(args) => cmd::import::run(args, &config),
+        Command::Save(args) => cmd::save::run(args, &config),
+        Command::Load(args) => cmd::load::run(args, &config),
         Command::Build(args) => cmd::build::run(args, &config),
         Command::Pull(args) => cmd::pull::run(args, &config),
         Command::Push(args) => cmd::push::run(args, &config),

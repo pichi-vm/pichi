@@ -392,6 +392,7 @@ impl Registry for HttpRegistry {
         registry: &str,
         repo: &str,
         digest: &Digest,
+        size: u64,
         stream: S,
     ) -> Result<()>
     where
@@ -461,6 +462,7 @@ impl Registry for HttpRegistry {
             self.http
                 .put(&put_url)
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .header(reqwest::header::CONTENT_LENGTH, size)
                 .body(body),
             &token,
             &auth,

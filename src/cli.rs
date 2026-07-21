@@ -200,11 +200,34 @@ pub struct ManifestAnnotateArgs {
     pub arch: String,
 }
 
-/// Args for `pichi manifest push <list>`.
+/// Args for `pichi manifest push <list> <dest>`.
 #[derive(Debug, ClapArgs)]
 pub struct ManifestPushArgs {
-    /// The manifest-list reference to push.
+    /// The local manifest-list reference to push.
     pub list: String,
+    /// Destination registry reference (e.g. `ghcr.io/org/img:43`). All
+    /// referenced local images and the list are pushed here atomically.
+    pub dest: String,
+}
+
+/// Args for `pichi save <ref> -o <dir>` — export to an OCI image layout dir.
+#[derive(Debug, ClapArgs)]
+pub struct SaveArgs {
+    /// Cached image reference to export (e.g. `fedora:43`).
+    pub reference: String,
+    /// Output directory for the OCI image layout.
+    #[arg(short = 'o', long = "output")]
+    pub output: std::path::PathBuf,
+}
+
+/// Args for `pichi load <dir>` — import an OCI image layout dir.
+#[derive(Debug, ClapArgs)]
+pub struct LoadArgs {
+    /// OCI image layout directory to import (as produced by `pichi save`).
+    pub input: std::path::PathBuf,
+    /// Override the tag to register (default: the tag recorded in the layout).
+    #[arg(long)]
+    pub tag: Option<String>,
 }
 
 /// Args for `pichi build [-t <tag>] [--build-image <ref>] <dir>` (BUILD.md §3).

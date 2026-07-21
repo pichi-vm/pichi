@@ -177,11 +177,15 @@ pub trait Registry: Send + Sync {
     /// never need to fit in memory at once — Plan 03's `HttpRegistry` will
     /// drive this from a `BlobStore::open_blob(...)` reader wrapped in a
     /// `stream::unfold`.
+    /// `size` is the blob's exact byte length, sent as `Content-Length` on the
+    /// single streaming PUT — some registries (e.g. zot) reject a chunked
+    /// transfer-encoding upload without it.
     async fn push_blob_stream<S>(
         &self,
         registry: &str,
         repo: &str,
         digest: &Digest,
+        size: u64,
         stream: S,
     ) -> Result<()>
     where
