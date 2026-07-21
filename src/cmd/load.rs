@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use std::fs;
 
-use pichi_artifact::Digest;
+use pichi_artifact::{Digest, Reference};
 use pichi_storage::{BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::LoadArgs;
@@ -70,8 +70,15 @@ pub fn run(args: LoadArgs, config: &Config) -> Result<()> {
         });
         match tag {
             Some(t) => {
-                tag_db.set_tag(&t, &digest)?;
-                println!("loaded {t}");
+                // Canonicalise the ref the same way `pichi tag` does
+                // (D-01 / LOCAL-05), so later `resolve_tag` lookups — e.g.
+                // from `pichi manifest create` — find it.
+                let key = t
+                    .parse::<Reference>()
+                    .with_context(|| format!("invalid tag {t}"))?
+                    .to_string();
+                tag_db.set_tag(&key, &digest)?;
+                println!("loaded {key}");
             }
             None => println!("loaded {digest} (untagged)"),
         }
