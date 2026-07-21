@@ -57,7 +57,7 @@ const DEFAULT_BLOCK_SIZE: u32 = 4096;
 const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
 /// `pichi run <ref>` entry point.
-pub fn run(args: RunArgs, config: &Config) -> Result<()> {
+pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
     let layout = resolve_layout(config)?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
@@ -72,7 +72,7 @@ pub fn run(args: RunArgs, config: &Config) -> Result<()> {
             // Auto-pull on a cache miss, mirroring `docker`/`podman run`'s
             // default `--pull=missing`.
             if !blob_store.blob_exists(d) {
-                auto_pull(&target_ref, config)?;
+                auto_pull(&target_ref, config).await?;
             }
             d.clone()
         }
@@ -81,7 +81,7 @@ pub fn run(args: RunArgs, config: &Config) -> Result<()> {
             match db.resolve_tag(&key)? {
                 Some(d) => d,
                 None => {
-                    auto_pull(&target_ref, config)?;
+                    auto_pull(&target_ref, config).await?;
                     db.resolve_tag(&key)?
                         .ok_or_else(|| anyhow!("{key} not in cache after pull"))?
                 }
@@ -128,7 +128,7 @@ pub fn run(args: RunArgs, config: &Config) -> Result<()> {
 /// default `--pull=missing`: `pichi run` pulls on a cache miss rather than
 /// erroring. Delegates to `cmd::pull` (which owns the registry, auth, and
 /// verity-preparation pipeline) so there is one download path.
-fn auto_pull(reference: &Reference, config: &Config) -> Result<()> {
+async fn auto_pull(reference: &Reference, config: &Config) -> Result<()> {
     eprintln!("Unable to find {reference} locally; pulling...");
     crate::cmd::pull::run(
         PullArgs {
@@ -138,6 +138,7 @@ fn auto_pull(reference: &Reference, config: &Config) -> Result<()> {
         },
         config,
     )
+    .await
     .with_context(|| format!("auto-pull {reference}"))
 }
 

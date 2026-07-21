@@ -33,6 +33,8 @@ use pichi_storage::{
 
 use crate::cli::{PullArgs, PullPolicy};
 use crate::cmd::registry_helpers::build_http_registry;
+use futures_util::stream::{self, StreamExt};
+
 use crate::cmd::streaming_sink::{LimitWriter, TeeReader, TeeWriter, VerityFeedWriter};
 use crate::config::Config;
 
@@ -63,10 +65,11 @@ const DEFAULT_DECOMPRESSED_CAP: u64 = 16 * 1024 * 1024 * 1024;
 /// Phase 42 D-06 locked verity defaults — used by the pull-side verity feed.
 const VERITY_DBS: u32 = 4096;
 const VERITY_HBS: u32 = 4096;
+/// Max layers downloaded concurrently, matching podman's default of 3.
+const PULL_CONCURRENCY: usize = 3;
 
-/// Entry point for `pichi pull`. Builds a throwaway tokio current-thread
-/// runtime, drives `pull_inner`, and drops the runtime before returning.
-pub fn run(args: PullArgs, config: &Config) -> Result<()> {
+/// Entry point for `pichi pull`.
+pub async fn run(args: PullArgs, config: &Config) -> Result<()> {
     // Defense-in-depth: parse + canonicalise BEFORE any I/O (BL-02 / T-43-02).
     let target_ref: Reference = args
         .reference
@@ -78,7 +81,7 @@ pub fn run(args: PullArgs, config: &Config) -> Result<()> {
     let tag_db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
 
-    // --pull=never short-circuits BEFORE building the runtime (no network).
+    // --pull=never short-circuits before any network I/O.
     if policy == PullPolicy::Never {
         return tag_db
             .resolve_tag(&target_ref.to_string())?
@@ -86,16 +89,7 @@ pub fn run(args: PullArgs, config: &Config) -> Result<()> {
             .ok_or_else(|| anyhow!("pull policy `never`: ref not in cache: {target_ref}"));
     }
 
-    // Throwaway runtime (Pattern 1): `enable_all` includes the blocking pool
-    // required by SyncIoBridge (Plan 01 SPIKE A3).
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("failed to build per-call tokio runtime")?;
-    rt.block_on(async {
-        pull_inner(target_ref, policy, args.quiet, config, &blob_store, &tag_db).await
-    })
-    // rt drops here; tokio worker threads torn down before fn returns.
+    pull_inner(target_ref, policy, args.quiet, config, &blob_store, &tag_db).await
 }
 
 /// Internal driver — `pub(crate)` so `tests` modules in this file can drive
@@ -200,20 +194,38 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     //    cmdline's `roothash=`; consistency between cmdline and verity
     //    tree is the publisher's responsibility, validated at boot time
     //    inside the guest's dm-verity activation.
+    // REGISTRY-01: dedup by descriptor digest before any network I/O. D-01
+    // implicit refcount: source present ⇒ sidecars present (no partial-cache
+    // regeneration in v0.9; Phase 47 prune cleans up partial states). A
+    // malformed digest fails fast here, before a single byte is fetched.
+    let mut pending: Vec<&Layer> = Vec::new();
     for layer in &manifest.layers {
         let layer_digest: Digest = layer
             .digest_str()
             .parse()
             .with_context(|| format!("parse layer digest {}", layer.digest_str()))?;
-        if blob_store.blob_exists(&layer_digest) {
-            // REGISTRY-01: dedup by descriptor digest. D-01 implicit
-            // refcount: source present ⇒ sidecars present (no partial-cache
-            // regeneration in v0.9; Phase 47 prune cleans up partial states).
-            continue;
+        if !blob_store.blob_exists(&layer_digest) {
+            pending.push(layer);
         }
-        fetch_one_layer(registry, &target, layer, blob_store)
-            .await
-            .with_context(|| format!("fetch layer {layer_digest}"))?;
+    }
+
+    // Download the missing layers concurrently, bounded to PULL_CONCURRENCY —
+    // podman's default parallel-layer behaviour. `buffer_unordered` polls on
+    // this task, so the `&registry`/`&blob_store` borrows need no `'static`;
+    // each layer's blocking verity pipeline spreads across the runtime pool.
+    let target_ref = &target;
+    let mut downloads = stream::iter(pending)
+        .map(|layer| {
+            let layer_digest = layer.digest_str().to_string();
+            async move {
+                fetch_one_layer(registry, target_ref, layer, blob_store)
+                    .await
+                    .with_context(|| format!("fetch layer {layer_digest}"))
+            }
+        })
+        .buffer_unordered(PULL_CONCURRENCY);
+    while let Some(result) = downloads.next().await {
+        result?;
     }
 
     // 5. Atomic commit per D-03 refined per Pitfall 11 / Phase 42 Plan 05

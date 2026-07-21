@@ -109,7 +109,7 @@ pub fn annotate(args: ManifestAnnotateArgs, config: &Config) -> Result<()> {
     Ok(())
 }
 
-pub fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
+pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
     let list_ref: Reference = args
         .list
         .parse()
@@ -123,47 +123,43 @@ pub fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
     let layout = resolve_layout(config)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
     let registry = build_http_registry(config);
-    let rt = runtime()?;
 
-    rt.block_on(async {
-        // podman `--all` semantics: push every referenced local image (blobs +
-        // manifest, by digest into the dest repo), then the index last, so the
-        // dest tag only resolves once all content is present.
-        let manifests = ready
-            .get("manifests")
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow!("manifest list is malformed (no `manifests` array)"))?;
-        for m in manifests {
-            let digest: Digest = m
-                .get("digest")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("index entry missing digest"))?
-                .parse()?;
-            let raw = blob_store
-                .get_blob(&digest)
-                .with_context(|| format!("read local manifest {digest}"))?;
-            let arch_ref = Reference {
-                registry: dest.registry.clone(),
-                repo: dest.repo.clone(),
-                kind: ReferenceKind::Digest(digest.clone()),
-            };
-            push_manifest_and_blobs(
-                &registry,
-                &blob_store,
-                &arch_ref,
-                &raw,
-                OCI_MANIFEST_MEDIA_TYPE,
-            )
-            .await
-            .with_context(|| format!("push arch image {digest}"))?;
-        }
-        let index_bytes = serde_json::to_vec(&ready).context("serialise OCI image index")?;
-        registry
-            .push_manifest(&dest, OCI_IMAGE_INDEX_MEDIA_TYPE, Bytes::from(index_bytes))
-            .await
-            .map_err(|e| anyhow!("push image index {dest}: {e}"))?;
-        Ok::<(), anyhow::Error>(())
-    })?;
+    // podman `--all` semantics: push every referenced local image (blobs +
+    // manifest, by digest into the dest repo), then the index last, so the
+    // dest tag only resolves once all content is present.
+    let manifests = ready
+        .get("manifests")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("manifest list is malformed (no `manifests` array)"))?;
+    for m in manifests {
+        let digest: Digest = m
+            .get("digest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("index entry missing digest"))?
+            .parse()?;
+        let raw = blob_store
+            .get_blob(&digest)
+            .with_context(|| format!("read local manifest {digest}"))?;
+        let arch_ref = Reference {
+            registry: dest.registry.clone(),
+            repo: dest.repo.clone(),
+            kind: ReferenceKind::Digest(digest.clone()),
+        };
+        push_manifest_and_blobs(
+            &registry,
+            &blob_store,
+            &arch_ref,
+            &raw,
+            OCI_MANIFEST_MEDIA_TYPE,
+        )
+        .await
+        .with_context(|| format!("push arch image {digest}"))?;
+    }
+    let index_bytes = serde_json::to_vec(&ready).context("serialise OCI image index")?;
+    registry
+        .push_manifest(&dest, OCI_IMAGE_INDEX_MEDIA_TYPE, Bytes::from(index_bytes))
+        .await
+        .map_err(|e| anyhow!("push image index {dest}: {e}"))?;
 
     println!("pushed manifest list {list_ref} -> {dest}");
     Ok(())
@@ -304,13 +300,6 @@ fn resolve_layout(config: &Config) -> Result<CacheLayout> {
         layout.runroot.clone_from(p);
     }
     Ok(layout)
-}
-
-fn runtime() -> Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("failed to build per-call tokio runtime")
 }
 
 #[cfg(test)]

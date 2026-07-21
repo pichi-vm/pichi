@@ -57,7 +57,7 @@ const PUSH_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Entry point for `pichi push`. Builds a throwaway tokio current-thread
 /// runtime, drives [`push_inner`], drops the runtime before returning.
-pub fn run(args: PushArgs, config: &Config) -> Result<()> {
+pub async fn run(args: PushArgs, config: &Config) -> Result<()> {
     // Defense-in-depth: parse + canonicalise BEFORE any I/O (BL-02).
     let target_ref: Reference = args
         .reference
@@ -68,23 +68,14 @@ pub fn run(args: PushArgs, config: &Config) -> Result<()> {
     let tag_db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
 
-    // Throwaway runtime (Pattern 1): `enable_all` includes the I/O pool the
-    // oci-client transport needs. Mirrors `src/cmd/pull.rs::run`.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("failed to build per-call tokio runtime")?;
-    rt.block_on(async {
-        push_inner_with_registry(
-            target_ref,
-            args.quiet,
-            &build_http_registry(config),
-            &blob_store,
-            &tag_db,
-        )
-        .await
-    })
-    // rt drops here; tokio worker threads torn down before fn returns.
+    push_inner_with_registry(
+        target_ref,
+        args.quiet,
+        &build_http_registry(config),
+        &blob_store,
+        &tag_db,
+    )
+    .await
 }
 
 /// Internal driver — `pub(crate)` so the in-module `tests` mod can drive it

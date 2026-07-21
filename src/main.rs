@@ -63,13 +63,16 @@ enum Command {
     Run(cli::RunArgs),
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let cli = Cli::parse();
 
     let config = config::Config::load().context("failed to load pichi config")?;
 
+    // Network commands are async and share the one runtime; the rest are pure
+    // local (fs/CPU) work and stay synchronous — called directly, no `.await`.
     match cli.command {
         Command::System { cmd } => match cmd {
             cli::SystemCmd::Info(args) => system::run(args, &config),
@@ -83,14 +86,14 @@ fn main() -> anyhow::Result<()> {
         Command::Save(args) => cmd::save::run(args, &config),
         Command::Load(args) => cmd::load::run(args, &config),
         Command::Build(args) => cmd::build::run(args, &config),
-        Command::Pull(args) => cmd::pull::run(args, &config),
-        Command::Push(args) => cmd::push::run(args, &config),
+        Command::Pull(args) => cmd::pull::run(args, &config).await,
+        Command::Push(args) => cmd::push::run(args, &config).await,
         Command::Manifest { cmd } => match cmd {
             cli::ManifestCmd::Create(args) => cmd::manifest::create(args, &config),
             cli::ManifestCmd::Annotate(args) => cmd::manifest::annotate(args, &config),
-            cli::ManifestCmd::Push(args) => cmd::manifest::push(args, &config),
+            cli::ManifestCmd::Push(args) => cmd::manifest::push(args, &config).await,
         },
         Command::Update(args) => cmd::update::run(args, &config),
-        Command::Run(args) => cmd::run::run(args, &config),
+        Command::Run(args) => cmd::run::run(args, &config).await,
     }
 }
