@@ -58,10 +58,6 @@ const ACCEPTED_MANIFEST_TYPES: &[&str] = &[
     "application/vnd.docker.distribution.manifest.list.v2+json",
 ];
 
-/// Content-Type sent on `push_manifest`. Pichi only authors OCI v1.1 image
-/// manifests (D-07), so the content-type is fixed.
-const PUSH_MANIFEST_CONTENT_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-
 /// Per-registry credential hint shipped from the pichi binary's config.
 ///
 /// pichi-registry deliberately does NOT depend on the pichi binary — the
@@ -335,7 +331,7 @@ impl Registry for HttpRegistry {
     async fn push_manifest(
         &self,
         reference: &PichiRef,
-        _media_type: &str,
+        media_type: &str,
         bytes: Bytes,
     ) -> Result<Digest> {
         let oci_ref = to_oci_ref(reference)?;
@@ -346,7 +342,11 @@ impl Registry for HttpRegistry {
             .auth(&oci_ref, &auth, RegistryOperation::Push)
             .await
             .map_err(map_oci_error)?;
-        let ct: http::HeaderValue = PUSH_MANIFEST_CONTENT_TYPE
+        // The Content-Type MUST match the payload: an image manifest and an
+        // image index have different schemas, and the registry validates the
+        // bytes against the schema the Content-Type selects. `pichi manifest
+        // push` sends an index; `pichi push` sends a manifest.
+        let ct: http::HeaderValue = media_type
             .parse()
             .map_err(|e| RegistryError::Transport(format!("manifest content-type parse: {e}")))?;
         // Compute the locally-expected digest BEFORE moving bytes into push
