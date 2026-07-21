@@ -11,6 +11,7 @@ pub mod build;
 pub mod images;
 pub mod import;
 pub mod inspect;
+pub mod manifest;
 pub mod prune;
 pub mod pull;
 pub mod push;

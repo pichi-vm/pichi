@@ -48,6 +48,11 @@ enum Command {
     Pull(cli::PullArgs),
     /// Push a cached pichi artifact to an OCI registry.
     Push(cli::PushArgs),
+    /// Assemble and push a multi-arch OCI image index (mirrors `docker manifest`).
+    Manifest {
+        #[command(subcommand)]
+        cmd: cli::ManifestCmd,
+    },
     /// Resolve `pichi.build/*.yaml` carapace references into `refs.lock`.
     Update(cli::UpdateArgs),
     /// Boot a cached artifact by preparing the environment and exec'ing dillo.
@@ -74,6 +79,11 @@ fn main() -> anyhow::Result<()> {
         Command::Build(args) => cmd::build::run(args, &config),
         Command::Pull(args) => cmd::pull::run(args, &config),
         Command::Push(args) => cmd::push::run(args, &config),
+        Command::Manifest { cmd } => match cmd {
+            cli::ManifestCmd::Create(args) => cmd::manifest::create(args, &config),
+            cli::ManifestCmd::Annotate(args) => cmd::manifest::annotate(args, &config),
+            cli::ManifestCmd::Push(args) => cmd::manifest::push(args, &config),
+        },
         Command::Update(args) => cmd::update::run(args, &config),
         Command::Run(args) => cmd::run::run(args, &config),
     }

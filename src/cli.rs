@@ -160,6 +160,53 @@ pub struct PushArgs {
     pub quiet: bool,
 }
 
+/// Sub-subcommands for `pichi manifest <verb>` — assemble and push a
+/// multi-arch OCI image index, mirroring `docker manifest`.
+#[derive(Debug, Subcommand)]
+pub enum ManifestCmd {
+    /// Create a local manifest list from one or more pushed per-arch refs.
+    Create(ManifestCreateArgs),
+
+    /// Set the platform (`os`/`architecture`) of a list entry.
+    Annotate(ManifestAnnotateArgs),
+
+    /// Push the assembled list to a registry as an OCI image index.
+    Push(ManifestPushArgs),
+}
+
+/// Args for `pichi manifest create <list> <source>...`.
+#[derive(Debug, ClapArgs)]
+pub struct ManifestCreateArgs {
+    /// The manifest-list reference to create (e.g. `ghcr.io/org/img:43`).
+    pub list: String,
+    /// One or more per-arch source references, already pushed to the
+    /// registry (e.g. `ghcr.io/org/img:43-amd64`).
+    #[arg(required = true)]
+    pub sources: Vec<String>,
+}
+
+/// Args for `pichi manifest annotate <list> <source> --os <os> --arch <arch>`.
+#[derive(Debug, ClapArgs)]
+pub struct ManifestAnnotateArgs {
+    /// The manifest-list reference.
+    pub list: String,
+    /// The source reference (as passed to `create`) whose entry to annotate.
+    pub source: String,
+    /// Platform OS (pichi artifacts use `pichi`).
+    #[arg(long)]
+    pub os: String,
+    /// Platform architecture (e.g. `amd64`, `arm64`).
+    #[arg(long)]
+    pub arch: String,
+}
+
+/// Args for `pichi manifest push <list>`.
+#[derive(Debug, ClapArgs)]
+pub struct ManifestPushArgs {
+    /// The manifest-list reference to push.
+    pub list: String,
+}
+
 /// Args for `pichi build [-t <tag>] [--build-image <ref>] <dir>` (BUILD.md §3).
 #[derive(Debug, ClapArgs)]
 pub struct BuildArgs {
