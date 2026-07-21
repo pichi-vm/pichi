@@ -1,0 +1,17 @@
+/target
+/.codex
+/demo
+
+# Editor swap files
+*~
+*.swp
+*.swo
+
+Cargo.toml.bak*
+
+# Test fixtures are generated on the fly into TempDirs, never committed.
+# Guard against accidentally sweeping a generated disk image into a commit
+# (use `git add -f` if a binary genuinely needs to be tracked).
+*.raw
+*.img
+**/tests/fixtures/

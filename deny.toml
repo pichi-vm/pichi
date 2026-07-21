@@ -1,0 +1,34 @@
+# cargo-deny configuration for pichi.
+#
+# The license allowlist is tailored to pichi's actual dependency tree (verify
+# with `cargo metadata`). Adding a dependency whose license is not listed here
+# fails a `cargo deny check` by design — a deliberate prompt to review the new
+# license before accepting it.
+
+[licenses]
+allow = [
+    "Apache-2.0",    # this crate + many deps
+    "MIT",           # many deps (dual MIT/Apache)
+    "Unicode-3.0",   # required by the `unicode-ident` family (AND expression)
+    "ISC",           # ring / rustls-webpki and friends
+    "BSD-3-Clause",  # some transitive HTTP/TLS deps
+    "Zlib",          # e.g. the compression stack
+    "CDLA-Permissive-2.0",  # webpki-roots' bundled Mozilla CA set (data license)
+]
+confidence-threshold = 0.8
+
+[advisories]
+version = 2
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace-internal path deps carry no version; don't flag them as wildcards.
+allow-wildcard-paths = true
+
+[sources]
+# pichi depends on crates.io packages plus the pichi-vm git dependencies
+# (pmi, and the optional vm-tests boot artifacts).
+unknown-registry = "deny"
+unknown-git = "allow"

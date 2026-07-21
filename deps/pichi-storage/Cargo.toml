@@ -1,0 +1,25 @@
+[package]
+name = "pichi-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pichi-artifact = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+# Unix-only: the sole remaining use is `geteuid()` for podman's
+# rootful/rootless split (see layout.rs). std has no safe effective-uid API;
+# drop this dependency once one exists. Never compiled on Windows.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

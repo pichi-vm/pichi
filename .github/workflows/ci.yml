@@ -1,0 +1,260 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  NIGHTLY: nightly-2026-07-06
+
+# Supported platforms are Linux x86_64/aarch64 (KVM), Windows x86_64 (WHP),
+# and macOS arm64 (HVF on bare-metal organization runners).
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rustfmt
+          rustup default "$NIGHTLY"
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          cargo fmt --all -- --check
+
+  ci:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-24.04      # Linux x86_64 - full workspace + real KVM boot
+            os: ubuntu-24.04
+            runs_on: '["ubuntu-24.04"]'
+            guest_musl: x86_64-unknown-linux-musl
+          - name: linux-arm64       # Linux arm64 - full workspace + real KVM boot
+            os: linux-arm64
+            runs_on: '["self-hosted","Linux","ARM64","bare-metal","aarch64","kvm"]'
+            guest_musl: aarch64-unknown-linux-musl
+          - name: windows-2025      # Windows x86_64 - build + real WHP boot
+            os: windows-2025
+            runs_on: '["windows-2025"]'
+            guest_musl: x86_64-unknown-linux-musl
+          - name: macos-arm64       # macOS arm64 - build + real HVF boot
+            os: macos-arm64
+            runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
+            guest_musl: aarch64-unknown-linux-musl
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+          rustup default "$NIGHTLY"
+          # arma embeds native-arch tatu; snuffler is cross-built for the guest
+          # musl triple matching this host's arch.
+          rustup target add x86_64-unknown-none aarch64-unknown-none "${{ matrix.guest_musl }}"
+
+      # The boot step (`--features vm-tests`) consumes arma/dillo/conglobate/corium
+      # as git artifact deps, whose transitive tatu/snuffler artifact deps target
+      # non-default triples. The cargo bug that panicked on this
+      # (rust-lang/cargo#10647) is fixed in the pinned nightly, so stock cargo
+      # resolves the graph — no patched cargo needed.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Versions
+        shell: bash
+        run: |
+          cargo --version
+          rustc --version
+
+      - name: Enable KVM (Linux)
+        # Backend tests and boot fixtures may touch /dev/kvm during the plain
+        # workspace test run, so access must be granted before it.
+        if: runner.os == 'Linux'
+        run: ls -l /dev/kvm && sudo chmod 666 /dev/kvm || true
+
+      # `CARGO_BUILD_RUSTFLAGS: -D warnings` (set per cargo step below) makes the
+      # build warning-clean-or-fail. It is the lowest-priority rustflags source,
+      # so it applies to the host/workspace crates but is ignored for the musl
+      # snuffler target, which keeps its own linker flags from .cargo/config.toml.
+      # (Registry deps are cap-lints'd, so only our crates can fail it.) It is set
+      # per-step, never globally, so it can't reach the patched-cargo build above.
+
+      # All platforms run the full workspace unit tests. The only members are
+      # pichi and its nested deps/* crates (the products live in their own
+      # repos, consumed as git deps), so a plain `cargo test --workspace` works
+      # on every OS in the matrix.
+      - name: Test (Linux, full workspace)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+        run: |
+          cargo test --workspace
+
+      - name: Test (Windows, full workspace)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+        run: |
+          cargo test --workspace
+
+      - name: Test (macOS, full workspace)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+        run: |
+          cargo test --workspace
+
+      - name: Reserve hugepages for guest RAM (Linux/KVM)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # Hosted runners start with a fragmented page allocator, so a single
+          # `sysctl -w vm.nr_hugepages=1024` often only secures a fraction (we
+          # have seen ~132). Free the page cache + compact memory and retry a
+          # few times so enough 2 MiB-contiguous regions become available before
+          # giving up. This is allocation flakiness, not a capability gap.
+          want=1024
+          pages=$(sysctl -n vm.nr_hugepages)
+          for attempt in 1 2 3 4 5 6; do
+            if [ "$pages" -ge "$want" ]; then break; fi
+            sync || true
+            echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
+            echo 1 | sudo tee /proc/sys/vm/compact_memory >/dev/null || true
+            sudo sysctl -w vm.nr_hugepages=$want || true
+            pages=$(sysctl -n vm.nr_hugepages)
+            echo "hugepage reservation attempt $attempt: nr_hugepages=$pages (want $want)"
+            sleep 3
+          done
+
+          if [ "$pages" -lt "$want" ]; then
+            echo "Linux runner must provide vm.nr_hugepages >= $want; got $pages" >&2
+            exit 1
+          fi
+
+          grep -i huge /proc/meminfo
+
+      # Real guest boot on every platform. dillo builds its per-OS backend
+      # (KVM on Linux, WHP on Windows, HVF on macOS) and boots an Alpine
+      # same-arch guest; the test asserts the guest's self-report.
+      - name: Boot tests (KVM / WHP / HVF)
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+        run: |
+          cargo test -p pichi --features vm-tests -- --test-threads=1 --nocapture
+
+  # Real network import -> push -> rmi -> pull against an ephemeral zot
+  # registry. Exercises the registry-gated tests that skip in the matrix
+  # above (PICHI_TEST_REGISTRY is unset there). Linux-only: needs a
+  # container runtime to host the registry. No KVM required.
+  registry-zot:
+    name: registry round-trip (zot)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          rustup default "$NIGHTLY"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start zot
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/zot"
+          cat > "$RUNNER_TEMP/zot/config.json" <<'EOF'
+          {"storage":{"rootDirectory":"/var/lib/registry"},"http":{"address":"0.0.0.0","port":"5000"},"log":{"level":"warn"}}
+          EOF
+          docker run -d --name zot -p 5000:5000 \
+            -v "$RUNNER_TEMP/zot/config.json:/etc/zot/config.json:ro" \
+            ghcr.io/project-zot/zot-linux-amd64:latest serve /etc/zot/config.json
+          for _ in $(seq 1 30); do
+            curl -fsS http://localhost:5000/v2/ >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://localhost:5000/v2/ >/dev/null
+
+      - name: Round-trip tests (zot)
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+          PICHI_TEST_REGISTRY: localhost:5000
+          PICHI_TEST_REGISTRY_INSECURE: "1"
+        run: |
+          cargo test -p pichi --test cmd_pull --test cmd_push --test cmd_pull_push_roundtrip
+
+      - name: zot logs (on failure)
+        if: failure()
+        shell: bash
+        run: docker logs zot || true
+
+  # Real network round-trip against ghcr.io, a major production registry.
+  # Validates that pichi's custom OCI artifact format (vnd.pichi.* media
+  # types, empty-config artifact, verity annotations) is accepted and served
+  # bit-identically by a strict, real-world implementation. Runs only on
+  # push/dispatch: fork-PR GITHUB_TOKENs are read-only for packages.
+  registry-ghcr:
+    name: registry round-trip (ghcr.io)
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          rustup default "$NIGHTLY"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Write ghcr.io auth file
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/auth"
+          auth=$(printf '%s:%s' '${{ github.actor }}' "$GHCR_TOKEN" | base64 -w0)
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$auth" > "$RUNNER_TEMP/auth/auth.json"
+
+      - name: Round-trip test (ghcr.io)
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+          PICHI_TEST_REGISTRY: ghcr.io
+          PICHI_TEST_REPO_BASE: ghcr.io/${{ github.repository_owner }}/pichi-ci
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/auth/auth.json
+        run: |
+          cargo test -p pichi --test cmd_pull_push_roundtrip
+
+      - name: Delete test package (cleanup)
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X DELETE \
+            "/orgs/${{ github.repository_owner }}/packages/container/pichi-ci%2Froundtrip" \
+            && echo "deleted pichi-ci/roundtrip" \
+            || echo "cleanup skipped (no package, or token lacks delete:packages)"

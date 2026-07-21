@@ -1,0 +1,240 @@
+[package]
+name = "pichi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pichi"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[features]
+# Gates the KVM/boot integration tests (build_*.rs). The default `cargo test`
+# does not pull in the boot deps (arma/dillo/conglobate/corium artifacts); CI
+# runs them explicitly: `cargo test -p pichi --features vm-tests`. The product
+# artifacts are optional [dependencies] so non-vm builds never resolve them
+# (the registry/workspace jobs would otherwise drag in cross-target binaries).
+vm-tests = ["dep:arma", "dep:dillo", "dep:conglobate", "dep:corium"]
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+pichi-artifact.workspace = true
+serde_yaml = { workspace = true }
+pichi-import.workspace = true
+conglobate.workspace = true
+pichi-registry = { workspace = true, features = ["http-client"] }
+pichi-storage.workspace = true
+bytes.workspace = true
+env_logger.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+humansize.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tinytemplate.workspace = true
+tokio = { workspace = true, features = ["rt", "io-util", "macros"] }
+tokio-util = { workspace = true, features = ["io", "io-util"] }
+toml.workspace = true
+uuid.workspace = true
+ruzstd = "0.8"
+# Product binaries the boot tests orchestrate (host target). Optional so only
+# `vm-tests` resolves them; a plain `cargo test` pulls zero product artifacts.
+arma = { git = "https://github.com/pichi-vm/arma", artifact = "bin", optional = true }
+dillo = { git = "https://github.com/pichi-vm/dillo", artifact = "bin", optional = true }
+
+# conglobate (build-image /init) + corium (guest initramfs /init), cross-built
+# for the guest musl target (the binaries). corium's library half is consumed
+# (CORIUM_ROOT_OK); conglobate's lib (the portable recipe types) is the host
+# `conglobate` dep above — this entry shares that name to add only the
+# cross-built `bin` artifact (lib = false), so cargo unifies them rather than
+# rejecting a second name for the same package. Optional, gated on `vm-tests`.
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+conglobate = { git = "https://github.com/pichi-vm/conglobate", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
+corium = { git = "https://github.com/pichi-vm/corium", artifact = "bin", lib = true, target = "x86_64-unknown-linux-musl", optional = true }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+conglobate = { git = "https://github.com/pichi-vm/conglobate", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
+corium = { git = "https://github.com/pichi-vm/corium", artifact = "bin", lib = true, target = "aarch64-unknown-linux-musl", optional = true }
+
+[dev-dependencies]
+assert_cmd.workspace = true
+tempfile.workspace = true
+pichi-artifact.workspace = true
+pichi-storage.workspace = true
+# Test-only: round-trip the `--gpt` kv string `cmd::run` emits back through
+# dillo's device schema to guarantee the format parses as intended. Not a
+# runtime dependency — pichi and dillo are coupled only via dillo's CLI.
+dillo-config.workspace = true
+serde-keyvalue.workspace = true
+# KVM/boot integration tests (build_*.rs, gated on `vm-tests`). These drive the
+# real product binaries through their CLIs; the artifact deps build them.
+wait-timeout = "0.2"
+hex = "0.4"
+burrow = { workspace = true }
+
+[workspace]
+resolver = "2"
+members = [
+    # pichi-owned library crates (nested by their sole consumer, the root
+    # `pichi` crate).
+    "deps/pichi-artifact",
+    "deps/pichi-storage",
+    "deps/pichi-import",
+    "deps/pichi-registry",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"
+type_complexity = "allow"
+similar_names = "allow"
+struct_field_names = "allow"
+needless_continue = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+too_many_lines = "allow"
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"
+uninlined_format_args = "allow"
+
+[workspace.dependencies]
+# Cross-product shared crates
+pmi = { git = "https://github.com/pichi-vm/pmi" }
+devtree = { git = "https://github.com/pichi-vm/devtree" }
+# Dev-only caching URL downloader (shared by arma/dillo/e2e tests).
+burrow = { git = "https://github.com/pichi-vm/burrow" }
+
+# dillo lives in its own repo; the pichi CLI consumes only dillo-config (its
+# device schema) to validate the device set it passes to the dillo launcher.
+dillo-config = { git = "https://github.com/pichi-vm/dillo" }
+
+# pichi-internal crates
+pichi-artifact = { path = "deps/pichi-artifact" }
+pichi-storage = { path = "deps/pichi-storage" }
+pichi-import = { path = "deps/pichi-import" }
+pichi-registry = { path = "deps/pichi-registry" }
+# conglobate's portable lib (recipe I/O types) — consumed by the pichi CLI.
+conglobate = { git = "https://github.com/pichi-vm/conglobate" }
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# CLI
+argh = "0.1"
+
+# PE + CBOR
+object = { version = "0.36", default-features = false, features = ["read_core", "pe", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+serde-keyvalue = "0.1"
+ciborium = "0.2"
+
+# (FDT writer is hand-rolled in dillo/src/fdt_writer.rs because
+# upstream vm-fdt rejects the literal `__overlay__` child-node name
+# that DT overlay fragments require. See ARCH §7.1.)
+
+# Memory + KVM (Linux)
+vm-memory = { version = "0.17", default-features = false, features = ["backend-mmap", "backend-atomic"] }
+kvm-ioctls = "0.24"
+kvm-bindings = "0.14"
+
+# Hypervisor backends
+applevisor = "1"
+applevisor-sys = "1"
+windows-sys = { version = "0.61", features = ["Win32_System_Hypervisor"] }
+
+# Battle-tested 16550 UART implementation (matches what the PoC
+# uses) — the kernel's 8250 driver only enables ttyS0 if the probe
+# (LCR, LSR, MCR loopback, scratch echo) succeeds. A hand-rolled
+# stub usually fails one of those checks and Linux silently drops
+# the console.
+vm-superio = "0.8"
+
+# Process / signal / fd plumbing
+nix = { version = "0.30", features = ["fs", "process", "signal", "ioctl", "mman", "socket", "term"] }
+
+# virtio-net user-mode backend: an in-process, no-privilege TCP/IP stack
+# (smoltcp) plus a cross-platform host-socket event loop (mio). smoltcp is
+# predominantly safe Rust, so it fits the workspace `unsafe_code = "deny"` lint;
+# both are cross-platform, so they're pulled unconditionally by dillo-virtio-net.
+smoltcp = { version = "0.13", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "auto-icmp-echo-reply"] }
+mio = { version = "1", features = ["os-poll", "net"] }
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Utility
+zerocopy = { version = "0.8", features = ["derive"] }
+vmm-sys-util = "0.15"
+
+# Block device backends (virtio-blk + virtualized-GPT)
+rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
+gpt = "4.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+hex = "0.4"
+sha2 = "0.10"
+
+# pichi image-management (cache I/O, import, registry)
+tempfile = "3"
+libc = "0.2"
+assert_cmd = "2"
+
+# pichi async registry I/O (the workspace's first async runtime — pichi is the
+# high-level orchestrator; it execs the synchronous `dillo` launcher, so tokio
+# never enters the running VMM).
+tokio = { version = "1", default-features = false }
+tokio-util = { version = "0.7", default-features = false, features = ["io"] }
+futures-util = { version = "0.3", default-features = false }
+bytes = "1"
+oci-client = { version = "0.16", default-features = false, features = ["rustls-tls"] }
+http = { version = "1", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+
+# pichi CLI + presentation
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+humansize = "2"
+tinytemplate = "1"
+toml = "1"
+
+# tatu must fit its 2 MiB slab (linker ASSERT in tatu/linker/tatu.ld), so it
+# must always be built with release-equivalent codegen even when the rest of
+# the workspace is built in dev — a debug build's larger .text overflows the
+# slab. tatu is consumed by arma as an artifact dependency, so the profile
+# that applies is this workspace's, not tatu's own.
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.dev.package.tatu]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
