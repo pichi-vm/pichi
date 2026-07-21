@@ -194,27 +194,30 @@ fn run_forwards_cpus_and_memory() {
 }
 
 #[test]
-fn run_missing_ref_errors_with_hint() {
+fn run_missing_ref_auto_pulls() {
     let tmp = TempDir::new().unwrap();
     let _ = graphroot(&tmp);
     let record = tmp.path().join("argv.txt");
     let stub = make_stub_dillo(tmp.path(), &record);
 
+    // A cache miss triggers an auto-pull (docker/podman `--pull=missing`)
+    // rather than a "pull first" error. Point at a closed local port so the
+    // pull fails fast offline — the assertion is that run ATTEMPTS the pull.
     let assert = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
         .env("PICHI_DILLO", &stub)
-        .args(["run", "ghost:1"])
+        .args(["run", "127.0.0.1:1/ghost:1"])
         .assert()
         .failure();
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
     assert!(
-        stderr.contains("ref not in cache") && stderr.contains("pichi pull"),
-        "stderr: {stderr}"
+        stderr.contains("pulling") && stderr.contains("auto-pull"),
+        "stderr should show an auto-pull attempt: {stderr}"
     );
-    // The stub must never have been exec'd.
+    // The pull failed, so there is nothing to boot — dillo must not be exec'd.
     assert!(
         !record.exists(),
-        "dillo should not be invoked on a cache miss"
+        "dillo should not be invoked when the auto-pull fails"
     );
 }

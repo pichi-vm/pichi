@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `pichi run <ref>` — boot a cached artifact by exec'ing the `dillo` launcher.
+//! `pichi run <ref>` — boot an artifact by exec'ing the `dillo` launcher,
+//! auto-pulling it first if it isn't cached (docker/podman `--pull=missing`).
 //!
 //! pichi *derives* the boot-critical device set from the image manifest; it
 //! does not choose it. The PMI layer becomes `--pmi`; the scute layers become
@@ -35,7 +36,7 @@ use pichi_storage::{
     BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, sidecar::verity_path,
 };
 
-use crate::cli::RunArgs;
+use crate::cli::{PullArgs, PullPolicy, RunArgs};
 use crate::cmd::requirements;
 use crate::config::Config;
 
@@ -67,11 +68,24 @@ pub fn run(args: RunArgs, config: &Config) -> Result<()> {
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
     let digest = match &target_ref.kind {
-        ReferenceKind::Digest(d) => d.clone(),
+        ReferenceKind::Digest(d) => {
+            // Auto-pull on a cache miss, mirroring `docker`/`podman run`'s
+            // default `--pull=missing`.
+            if !blob_store.blob_exists(d) {
+                auto_pull(&target_ref, config)?;
+            }
+            d.clone()
+        }
         ReferenceKind::Tag(_) => {
             let key = target_ref.to_string();
-            db.resolve_tag(&key)?
-                .ok_or_else(|| anyhow!("ref not in cache: {key}\n  hint: pichi pull {key}"))?
+            match db.resolve_tag(&key)? {
+                Some(d) => d,
+                None => {
+                    auto_pull(&target_ref, config)?;
+                    db.resolve_tag(&key)?
+                        .ok_or_else(|| anyhow!("{key} not in cache after pull"))?
+                }
+            }
         }
     };
 
@@ -108,6 +122,23 @@ pub fn run(args: RunArgs, config: &Config) -> Result<()> {
     // 5. Locate dillo and hand off.
     let dillo = find_dillo();
     exec_dillo(&dillo, &dillo_args)
+}
+
+/// Fetch an artifact that isn't cached, mirroring `docker`/`podman run`'s
+/// default `--pull=missing`: `pichi run` pulls on a cache miss rather than
+/// erroring. Delegates to `cmd::pull` (which owns the registry, auth, and
+/// verity-preparation pipeline) so there is one download path.
+fn auto_pull(reference: &Reference, config: &Config) -> Result<()> {
+    eprintln!("Unable to find {reference} locally; pulling...");
+    crate::cmd::pull::run(
+        PullArgs {
+            reference: reference.to_string(),
+            pull: Some(PullPolicy::Missing),
+            quiet: false,
+        },
+        config,
+    )
+    .with_context(|| format!("auto-pull {reference}"))
 }
 
 /// Assemble the `dillo` argument vector (program name excluded).

@@ -258,7 +258,7 @@ pub struct UpdateArgs {
     pub dir: Option<std::path::PathBuf>,
 }
 
-/// Args for `pichi run <ref>` — boot a cached artifact by exec'ing dillo.
+/// Args for `pichi run <ref>` — boot an artifact (auto-pulling if not cached).
 #[derive(Debug, ClapArgs)]
 pub struct RunArgs {
     /// Image reference to boot (`image:tag` or `image@sha256:...`).
