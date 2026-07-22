@@ -29,7 +29,7 @@ use std::process::Command;
 use anyhow::{Context, Result, anyhow};
 
 use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements, ScuteDescriptor};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb, sidecar::verity_path};
+use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
 use crate::cmd::manifest_ext::ManifestExt;
@@ -194,7 +194,7 @@ pub(crate) async fn build_gpt_spec(
             .parse()
             .with_context(|| format!("invalid scute digest: {}", scute.digest))?;
         let cow_path = blob_store.blob_path(&cow_digest);
-        let v_path = verity_path(&cow_path);
+        let v_path = cow_path.verity_path();
 
         let salt = hex::decode(&scute.annotations.salt)
             .with_context(|| format!("scute salt is not valid hex: {}", scute.annotations.salt))?;
@@ -510,7 +510,7 @@ mod tests {
         assert_eq!(gpt.partitions[0].path, blob_store.blob_path(&cow_digest));
         assert_eq!(
             gpt.partitions[1].path,
-            verity_path(&blob_store.blob_path(&cow_digest))
+            blob_store.blob_path(&cow_digest).verity_path()
         );
         // Paired cow/verity share the same 34-hex label body.
         assert_eq!(gpt.partitions[0].label[2..], gpt.partitions[1].label[2..]);

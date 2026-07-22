@@ -14,8 +14,8 @@ use std::fs;
 
 use pichi_artifact::{Digest, Layer, Manifest, Reference};
 use pichi_import::verity::{VerityParams, compute};
-use pichi_storage::sidecar::{deflated_path, verity_path, write_sidecar_atomic};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::sidecar::write_sidecar_atomic;
+use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::LoadArgs;
 use crate::cmd::manifest_ext::ManifestExt;
@@ -128,7 +128,7 @@ async fn prepare_sidecars(blob_store: &FilesystemBlobStore, manifest: &Manifest)
             .parse()
             .with_context(|| format!("parse scute digest {}", layer.digest_str()))?;
         let blob_path = blob_store.blob_path(&digest);
-        let v_path = verity_path(&blob_path);
+        let v_path = blob_path.verity_path();
         if tokio::fs::try_exists(&v_path).await.unwrap_or(false) {
             continue;
         }
@@ -171,7 +171,7 @@ async fn prepare_sidecars(blob_store: &FilesystemBlobStore, manifest: &Manifest)
             .context("sidecar computation task panicked")??;
 
         if let Some(deflated) = deflated {
-            write_sidecar_atomic(&scratch, &deflated_path(&blob_path), &deflated)
+            write_sidecar_atomic(&scratch, &blob_path.deflated_path(), &deflated)
                 .await
                 .with_context(|| format!("write .deflated sidecar for {digest}"))?;
         }

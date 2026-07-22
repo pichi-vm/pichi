@@ -83,6 +83,29 @@ pub struct CacheLayout {
 }
 
 impl CacheLayout {
+    /// Run `op` while holding the cache's `index.json` advisory lock
+    /// (`<graphroot>/index.json.lock` — the same path
+    /// [`crate::FilesystemTagDb::set_tag`]/`delete_tag` lock against, so calling
+    /// those from within `op` in the SAME process would deadlock). Intended to
+    /// wrap a multi-step refcount computation that uses only lock-free reads
+    /// (`list_tags`/`resolve_tag`/`get_blob`); commit deletions after it
+    /// returns. The non-blocking acquire never parks a runtime worker.
+    pub async fn with_index_lock<F, Fut, R>(&self, op: F) -> anyhow::Result<R>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<R>>,
+    {
+        let lock_path = self.graphroot.join("index.json.lock");
+        if let Some(parent) = lock_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        // The guard holds the flock across `op().await`; drop releases it.
+        let guard = crate::lock::lock_exclusive_async(&lock_path).await?;
+        let result = op().await;
+        drop(guard);
+        result
+    }
+
     /// Resolve cache paths from the live process environment.
     pub fn resolve() -> anyhow::Result<Self> {
         // `is_root` drives podman's rootful/rootless split on Unix; Windows

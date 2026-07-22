@@ -33,6 +33,6 @@ mod tag_db;
 
 pub use blob_store::{BlobReader, BlobStore, FilesystemBlobStore};
 pub use layout::{CacheLayout, EnvSnapshot, Mode};
-pub use lock::{lock_exclusive, with_advisory_lock, with_index_lock};
-pub use sidecar::{deflated_path, unlink_blob_with_sidecars, verity_path, write_sidecar_atomic};
+pub use lock::{lock_exclusive, with_advisory_lock};
+pub use sidecar::{BlobSidecarExt, write_sidecar_atomic};
 pub use tag_db::{FilesystemTagDb, TagDb, TagEntry};

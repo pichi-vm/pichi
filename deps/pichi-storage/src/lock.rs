@@ -17,8 +17,6 @@ use anyhow::Context as _;
 use fs4::AsyncFileExt as _;
 use fs4::TryLockError;
 
-use crate::layout::CacheLayout;
-
 /// Poll interval when an advisory lock is contended. Uncontended acquisition
 /// takes the first `try_lock` (no sleep); contention retries at this cadence.
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -82,39 +80,6 @@ where
 {
     let _guard = lock_exclusive(path)?;
     op()
-}
-
-/// Run `op` while holding the cache's index.json advisory lock.
-///
-/// Lock path: `<layout.graphroot>/index.json.lock` — the SAME path that
-/// [`crate::FilesystemTagDb::set_tag`] / `delete_tag` lock against. This
-/// means a `with_index_lock`-wrapped closure that ALSO calls `set_tag`
-/// or `delete_tag` from the SAME process WILL deadlock (separate FDs to
-/// the same file from one process block each other under `flock(2)`).
-///
-/// **Intended use** (per Plan 05 `cmd::rmi`): wrap a multi-step refcount
-/// computation that uses the lock-free reads ([`crate::TagDb::list_tags`]
-/// / [`crate::TagDb::resolve_tag`] / [`crate::BlobStore::get_blob`]). Any
-/// `set_tag` / `delete_tag` call MUST happen OUTSIDE the closure (after
-/// it returns).
-///
-/// Per D-22 / LOCAL-03 / Pitfall 4 in 42-RESEARCH.md: this serialises two
-/// concurrent `pichi rmi` calls so they cannot both compute refcounts
-/// before either commits the deletion.
-pub async fn with_index_lock<F, Fut, R>(layout: &CacheLayout, op: F) -> anyhow::Result<R>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<R>>,
-{
-    let lock_path = layout.graphroot.join("index.json.lock");
-    if let Some(parent) = lock_path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    // Non-blocking acquire; the guard holds the flock across `op().await`.
-    let guard = lock_exclusive_async(&lock_path).await?;
-    let result = op().await;
-    drop(guard);
-    result
 }
 
 #[cfg(test)]

@@ -29,22 +29,46 @@
 
 use std::path::{Path, PathBuf};
 
-/// Path of the decompressed-scute sidecar for a source blob at `blob_path`.
-///
-/// Returns `<blob_path>.deflated`. The file may not exist (raw `+identity`
-/// layers skip writing this sidecar per D-04).
-#[must_use]
-pub fn deflated_path(blob_path: &Path) -> PathBuf {
-    blob_path.with_extension("deflated")
+/// Sidecar-path derivation + cleanup for a cached blob path. `Path` is foreign,
+/// so these hang off a local extension trait (per the "extension trait when you
+/// don't own the type" rule) — callers read `blob_path.verity_path()` and
+/// `blob_path.unlink_with_sidecars().await`.
+#[allow(async_fn_in_trait)] // used only via static dispatch on Path values
+pub trait BlobSidecarExt {
+    /// `<self>.deflated` — the decompressed-scute sidecar (only present for
+    /// `+zstd` layers per D-04; raw scutes are their own deflated bytes).
+    #[must_use]
+    fn deflated_path(&self) -> PathBuf;
+    /// `<self>.verity` — the dm-verity hash tree (byte-exact with
+    /// `pichi_import::verity::compute`), exposed to the guest as the hash device.
+    #[must_use]
+    fn verity_path(&self) -> PathBuf;
+    /// Unlink this blob path plus its `.deflated`/`.verity` siblings (D-08),
+    /// tolerating a missing sibling (`NotFound` → `Ok`).
+    async fn unlink_with_sidecars(&self) -> std::io::Result<()>;
 }
 
-/// Path of the dm-verity hash-tree sidecar for a source blob at `blob_path`.
-///
-/// Returns `<blob_path>.verity`, byte-exact with `pichi_import::verity::compute`
-/// output. Carapace exposes this to the guest as the dm-verity hash device.
-#[must_use]
-pub fn verity_path(blob_path: &Path) -> PathBuf {
-    blob_path.with_extension("verity")
+impl BlobSidecarExt for Path {
+    fn deflated_path(&self) -> PathBuf {
+        self.with_extension("deflated")
+    }
+
+    fn verity_path(&self) -> PathBuf {
+        self.with_extension("verity")
+    }
+
+    async fn unlink_with_sidecars(&self) -> std::io::Result<()> {
+        fn ignore_enoent(r: std::io::Result<()>) -> std::io::Result<()> {
+            match r {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            }
+        }
+        ignore_enoent(tokio::fs::remove_file(self).await)?;
+        ignore_enoent(tokio::fs::remove_file(self.deflated_path()).await)?;
+        ignore_enoent(tokio::fs::remove_file(self.verity_path()).await)?;
+        Ok(())
+    }
 }
 
 /// Atomically write `bytes` to `final_path` via a same-fs temp + `rename(2)`,
@@ -66,30 +90,6 @@ pub async fn write_sidecar_atomic(
     crate::atomic::write_atomic(scratch, final_path, bytes).await
 }
 
-/// Unlink a source blob plus its `.deflated` and `.verity` sidecars (D-08).
-///
-/// Removes (in this order): `<blob_path>`, `<blob_path>.deflated`,
-/// `<blob_path>.verity`. Each `remove_file` translates `NotFound` to `Ok(())`
-/// so missing siblings do not propagate (raw scutes lack `.deflated`;
-/// partial-derivation states may lack a sidecar; a second call is a no-op).
-/// Other errors (permission denied, EBUSY, etc.) propagate.
-///
-/// # Errors
-///
-/// Returns the first non-ENOENT `io::Error` encountered.
-pub async fn unlink_blob_with_sidecars(blob_path: &Path) -> std::io::Result<()> {
-    fn ignore_enoent(r: std::io::Result<()>) -> std::io::Result<()> {
-        match r {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            other => other,
-        }
-    }
-    ignore_enoent(tokio::fs::remove_file(blob_path).await)?;
-    ignore_enoent(tokio::fs::remove_file(deflated_path(blob_path)).await)?;
-    ignore_enoent(tokio::fs::remove_file(verity_path(blob_path)).await)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,11 +99,11 @@ mod tests {
         let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let src = PathBuf::from(format!("/tmp/abc/blobs/sha256/{hex}"));
         assert_eq!(
-            deflated_path(&src),
+            src.deflated_path(),
             PathBuf::from(format!("/tmp/abc/blobs/sha256/{hex}.deflated")),
         );
         assert_eq!(
-            verity_path(&src),
+            src.verity_path(),
             PathBuf::from(format!("/tmp/abc/blobs/sha256/{hex}.verity")),
         );
     }
@@ -142,12 +142,12 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let src = dir.path().join("aaa");
         std::fs::write(&src, b"source").unwrap();
-        std::fs::write(verity_path(&src), b"verity").unwrap();
+        std::fs::write(src.verity_path(), b"verity").unwrap();
 
-        unlink_blob_with_sidecars(&src).await.unwrap();
+        src.unlink_with_sidecars().await.unwrap();
 
         assert!(!src.exists(), "source should be unlinked");
-        assert!(!verity_path(&src).exists(), ".verity should be unlinked");
+        assert!(!src.verity_path().exists(), ".verity should be unlinked");
     }
 
     #[tokio::test]
@@ -155,13 +155,13 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let src = dir.path().join("bbb");
         std::fs::write(&src, b"source").unwrap();
-        std::fs::write(deflated_path(&src), b"deflated").unwrap();
+        std::fs::write(src.deflated_path(), b"deflated").unwrap();
 
-        unlink_blob_with_sidecars(&src).await.unwrap();
+        src.unlink_with_sidecars().await.unwrap();
         assert!(!src.exists());
-        assert!(!deflated_path(&src).exists());
+        assert!(!src.deflated_path().exists());
 
-        unlink_blob_with_sidecars(&src).await.unwrap();
+        src.unlink_with_sidecars().await.unwrap();
     }
 
     #[cfg(unix)]
@@ -173,14 +173,14 @@ mod tests {
         std::fs::create_dir(&parent).unwrap();
         let src = parent.join("ccc");
         std::fs::write(&src, b"source").unwrap();
-        std::fs::write(verity_path(&src), b"verity").unwrap();
+        std::fs::write(src.verity_path(), b"verity").unwrap();
 
         let original = std::fs::metadata(&parent).unwrap().permissions();
         let mut readonly = original.clone();
         readonly.set_mode(0o500);
         std::fs::set_permissions(&parent, readonly).unwrap();
 
-        let result = unlink_blob_with_sidecars(&src).await;
+        let result = src.unlink_with_sidecars().await;
 
         std::fs::set_permissions(&parent, original).unwrap();
 

@@ -31,8 +31,8 @@ use sha2::{Digest as _, Sha256};
 
 use pichi_artifact::{Digest, Reference};
 use pichi_storage::{
-    BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb,
-    sidecar::{verity_path, write_sidecar_atomic},
+    BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb,
+    sidecar::write_sidecar_atomic,
 };
 
 /// 32-byte zero salt prefix per CONTEXT D-01 / D-02.
@@ -115,7 +115,7 @@ pub async fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
         .scratch_dir()
         .await
         .context("scratch_dir for verity sidecar")?;
-    write_sidecar_atomic(&scratch2, &verity_path(&cow_blob_path), &staged.verity_blob)
+    write_sidecar_atomic(&scratch2, &cow_blob_path.verity_path(), &staged.verity_blob)
         .await
         .with_context(|| format!("write verity sidecar for cow {}", staged.cow_digest))?;
     if let Some(pmi) = &staged.pmi {

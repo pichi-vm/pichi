@@ -22,8 +22,8 @@ use pichi_artifact::{
     ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
     Reference, ReferenceKind, Requirements, ScuteAnnotations, ScuteDescriptor,
 };
-use pichi_storage::sidecar::{verity_path, write_sidecar_atomic};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::sidecar::write_sidecar_atomic;
+use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::BuildArgs;
 use crate::cmd::manifest_ext::ManifestExt;
@@ -220,7 +220,7 @@ async fn package_artifact(
             .with_context(|| format!("put cow blob {cow_digest}"))?;
         write_sidecar_atomic(
             &scratch,
-            &verity_path(&blob_store.blob_path(&cow_digest)),
+            &blob_store.blob_path(&cow_digest).verity_path(),
             &verity_bytes,
         )
         .await

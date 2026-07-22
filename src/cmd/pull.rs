@@ -24,8 +24,8 @@ use pichi_artifact::{Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Refe
 use pichi_import::verity::{VerityBuilder, VerityOutput, VerityParams};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry, pick_pichi_entry_from_index};
 use pichi_storage::{
-    BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb,
-    sidecar::{deflated_path, verity_path, write_sidecar_atomic},
+    BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb,
+    sidecar::write_sidecar_atomic,
 };
 
 use crate::cli::{PullArgs, PullPolicy};
@@ -456,12 +456,12 @@ async fn fetch_one_layer<R: Registry>(
         .with_context(|| format!("put_blob_from_path layer {descriptor_digest}"))?;
     let blob_path = blob_store.blob_path(&descriptor_digest);
     if let Some(dtemp) = &deflated_temp {
-        tokio::fs::rename(dtemp, deflated_path(&blob_path))
+        tokio::fs::rename(dtemp, blob_path.deflated_path())
             .await
             .with_context(|| format!("commit deflated sidecar for {descriptor_digest}"))?;
     }
     if let Some(vout) = verity_out {
-        write_sidecar_atomic(&scratch, &verity_path(&blob_path), &vout.blob)
+        write_sidecar_atomic(&scratch, &blob_path.verity_path(), &vout.blob)
             .await
             .with_context(|| format!("write verity sidecar for {descriptor_digest}"))?;
     }
@@ -972,7 +972,7 @@ mod tests {
     // ====================================================================
 
     use pichi_artifact::PmiDescriptor;
-    use pichi_storage::sidecar::{deflated_path, verity_path};
+    use pichi_storage::BlobSidecarExt;
 
     /// Plan 02 helper: build a 1-Scute or 1-ScuteZstd manifest with a
     /// 32-zero salt. Returns (manifest bytes, manifest digest).
@@ -1128,17 +1128,17 @@ mod tests {
         );
         // Both sidecars present (D-04: zstd → has .deflated).
         assert!(
-            deflated_path(&blob_path).exists(),
+            blob_path.deflated_path().exists(),
             ".deflated sidecar missing: {}",
-            deflated_path(&blob_path).display()
+            blob_path.deflated_path().display()
         );
         assert!(
-            verity_path(&blob_path).exists(),
+            blob_path.verity_path().exists(),
             ".verity sidecar missing: {}",
-            verity_path(&blob_path).display()
+            blob_path.verity_path().display()
         );
         // .deflated bytes byte-equal the original decompressed payload.
-        let deflated_disk = std::fs::read(deflated_path(&blob_path)).unwrap();
+        let deflated_disk = std::fs::read(blob_path.deflated_path()).unwrap();
         assert_eq!(
             deflated_disk, decompressed,
             ".deflated must equal the decompressed payload byte-for-byte"
@@ -1177,11 +1177,11 @@ mod tests {
 
         let blob_path = blob_store.blob_path(&layer_digest);
         assert!(blob_path.exists(), "source blob missing");
-        assert!(verity_path(&blob_path).exists(), ".verity sidecar missing");
+        assert!(blob_path.verity_path().exists(), ".verity sidecar missing");
         assert!(
-            !deflated_path(&blob_path).exists(),
+            !blob_path.deflated_path().exists(),
             "raw scute must NOT have a .deflated sidecar (D-04): {}",
-            deflated_path(&blob_path).display()
+            blob_path.deflated_path().display()
         );
     }
 
@@ -1240,19 +1240,19 @@ mod tests {
         let pmi_blob = blob_store.blob_path(&pmi_digest);
         assert!(pmi_blob.exists(), "PMI source blob missing");
         assert!(
-            !deflated_path(&pmi_blob).exists(),
+            !pmi_blob.deflated_path().exists(),
             "PMI must NOT have .deflated"
         );
         assert!(
-            !verity_path(&pmi_blob).exists(),
+            !pmi_blob.verity_path().exists(),
             "PMI must NOT have .verity (Pitfall 6)"
         );
 
         // Scute still has its .verity (raw → no .deflated).
         let scute_blob = blob_store.blob_path(&scute_digest);
-        assert!(verity_path(&scute_blob).exists(), "scute .verity missing");
+        assert!(scute_blob.verity_path().exists(), "scute .verity missing");
         assert!(
-            !deflated_path(&scute_blob).exists(),
+            !scute_blob.deflated_path().exists(),
             "raw scute must NOT have .deflated"
         );
     }
@@ -1287,7 +1287,7 @@ mod tests {
             .expect("pull should succeed");
 
         let blob_path = blob_store.blob_path(&layer_digest);
-        let on_disk_verity = std::fs::read(verity_path(&blob_path)).unwrap();
+        let on_disk_verity = std::fs::read(blob_path.verity_path()).unwrap();
 
         let params = pull_side_verity_params();
         let expected = pichi_import::verity::compute(&layer_data, &params)

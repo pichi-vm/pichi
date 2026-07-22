@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use pichi_storage::{CacheLayout, FilesystemTagDb, Mode, TagDb, with_index_lock};
+use pichi_storage::{CacheLayout, FilesystemTagDb, Mode, TagDb};
 use tokio::sync::Barrier;
 
 fn layout(tmp: &std::path::Path) -> CacheLayout {
@@ -40,7 +40,7 @@ async fn concurrent_with_index_lock_serializes_writers() {
         let barrier = Arc::clone(&barrier);
         tokio::spawn(async move {
             barrier.wait().await;
-            with_index_lock(&l, || async {
+            l.with_index_lock(|| async {
                 let now = in_critical.fetch_add(1, Ordering::SeqCst) + 1;
                 let mut prev = max_observed.load(Ordering::SeqCst);
                 while now > prev {
@@ -87,7 +87,8 @@ async fn with_index_lock_creates_graphroot_if_absent() {
         runroot: tmp.path().join("run"),
         mode: Mode::Rootless,
     };
-    with_index_lock(&layout, || async { Ok::<(), anyhow::Error>(()) })
+    layout
+        .with_index_lock(|| async { Ok::<(), anyhow::Error>(()) })
         .await
         .expect("must succeed");
     assert!(
@@ -113,13 +114,14 @@ async fn with_index_lock_path_matches_filesystem_tag_db_lock_path() {
     let b2 = Arc::clone(&barrier);
 
     let lock_holder = tokio::spawn(async move {
-        with_index_lock(&layout_for_lock, || async {
-            b1.wait().await;
-            tokio::time::sleep(Duration::from_millis(75)).await;
-            Ok::<(), anyhow::Error>(())
-        })
-        .await
-        .unwrap();
+        layout_for_lock
+            .with_index_lock(|| async {
+                b1.wait().await;
+                tokio::time::sleep(Duration::from_millis(75)).await;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+            .unwrap();
     });
 
     let setter_start = std::time::Instant::now();

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use oci_client::secrets::RegistryAuth;
-use pichi_registry::{AuthEnv, AuthHint, resolve_for_registry};
+use pichi_registry::{AuthEnv, AuthHint};
 use tempfile::TempDir;
 
 fn write_at(dir: &Path, rel: &str, body: &str) -> PathBuf {
@@ -42,7 +42,7 @@ async fn auth_parses_basic_auth() {
         xdg_config_home: Some(xdg),
         ..AuthEnv::default()
     };
-    let auth = resolve_for_registry("ghcr.io", None, &env).await.unwrap();
+    let auth = env.resolve("ghcr.io", None).await.unwrap();
     match auth {
         RegistryAuth::Basic(u, p) => {
             assert_eq!(u, "alice");
@@ -65,9 +65,7 @@ async fn auth_parses_identity_token() {
         xdg_config_home: Some(xdg),
         ..AuthEnv::default()
     };
-    let auth = resolve_for_registry("registry.example.com", None, &env)
-        .await
-        .unwrap();
+    let auth = env.resolve("registry.example.com", None).await.unwrap();
     match auth {
         RegistryAuth::Bearer(t) => assert_eq!(t, "eyJhbGc.dummy.token"),
         other => panic!("expected Bearer, got {other:?}"),
@@ -87,9 +85,7 @@ async fn auth_credsstore_loud_error() {
         xdg_config_home: Some(xdg),
         ..AuthEnv::default()
     };
-    let err = resolve_for_registry("ghcr.io", None, &env)
-        .await
-        .unwrap_err();
+    let err = env.resolve("ghcr.io", None).await.unwrap_err();
     let msg = err.to_string();
     // VERBATIM D-04 wording — the `format!` in auth.rs MUST match this exactly.
     assert!(
@@ -119,7 +115,7 @@ async fn auth_credsstore_unrelated_registry_skipped() {
         xdg_config_home: Some(xdg),
         ..AuthEnv::default()
     };
-    let auth = resolve_for_registry("ghcr.io", None, &env).await.unwrap();
+    let auth = env.resolve("ghcr.io", None).await.unwrap();
     assert!(
         matches!(auth, RegistryAuth::Anonymous),
         "anonymous pull for unrelated registry must succeed despite credsStore in auth.json"
@@ -148,7 +144,7 @@ async fn auth_search_order_xdg_config_wins_over_docker_config() {
         home: Some(home),
         ..AuthEnv::default()
     };
-    let auth = resolve_for_registry("ghcr.io", None, &env).await.unwrap();
+    let auth = env.resolve("ghcr.io", None).await.unwrap();
     match auth {
         RegistryAuth::Basic(u, _p) => assert_eq!(
             u, "xdguser",
@@ -172,7 +168,7 @@ async fn auth_docker_config_fallback() {
         home: Some(home),
         ..AuthEnv::default()
     };
-    let auth = resolve_for_registry("ghcr.io", None, &env).await.unwrap();
+    let auth = env.resolve("ghcr.io", None).await.unwrap();
     match auth {
         RegistryAuth::Basic(u, p) => {
             assert_eq!(u, "dockuser");
@@ -200,9 +196,7 @@ async fn auth_pichi_hint_wins_over_files() {
         identity_token: Some("from_pichi_config".into()),
         ..AuthHint::default()
     };
-    let auth = resolve_for_registry("ghcr.io", Some(&hint), &env)
-        .await
-        .unwrap();
+    let auth = env.resolve("ghcr.io", Some(&hint)).await.unwrap();
     match auth {
         RegistryAuth::Bearer(t) => assert_eq!(
             t, "from_pichi_config",

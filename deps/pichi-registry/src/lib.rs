@@ -55,7 +55,7 @@ pub mod index_walk;
 pub mod mock;
 
 #[cfg(feature = "http-client")]
-pub use auth::{AuthEnv, AuthHint, resolve_for_registry};
+pub use auth::{AuthEnv, AuthHint};
 #[cfg(feature = "http-client")]
 pub use http::{HttpRegistry, RegistryEntry};
 #[cfg(feature = "http-client")]

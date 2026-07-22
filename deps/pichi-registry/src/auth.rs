@@ -159,28 +159,33 @@ impl AuthEnv {
 /// missing the `user:pass` colon separator). Per Pitfall 14, error messages
 /// reference the registry hostname and field name only — never the decoded
 /// credential bytes themselves.
-pub async fn resolve_for_registry(
-    registry: &str,
-    pichi_hint: Option<&AuthHint>,
-    env: &AuthEnv,
-) -> Result<RegistryAuth> {
-    // 1. pichi's own per-registry config (already loaded by the binary).
-    if let Some(hint) = pichi_hint
-        && let Some(auth) = hint.to_registry_auth()
-    {
-        return Ok(auth);
-    }
-
-    // 2-4. Walk the search paths in order; first file that HAS a
-    // `auths.<registry>` entry wins. Reads are async so no worker is parked
-    // on a config read during a registry call.
-    for path in env.auth_search_paths() {
-        if let Some(entry) = read_entry_for(&path, registry).await? {
-            return entry_to_registry_auth(registry, &entry);
+impl AuthEnv {
+    /// Resolve credentials for `registry`, checking pichi's per-registry hint
+    /// first, then the credential-file search paths in order (first file with an
+    /// `auths.<registry>` entry wins). Errors reference the registry hostname
+    /// and field name only — never the decoded credential bytes.
+    pub async fn resolve(
+        &self,
+        registry: &str,
+        pichi_hint: Option<&AuthHint>,
+    ) -> Result<RegistryAuth> {
+        // 1. pichi's own per-registry config (already loaded by the binary).
+        if let Some(hint) = pichi_hint
+            && let Some(auth) = hint.to_registry_auth()
+        {
+            return Ok(auth);
         }
-    }
 
-    Ok(RegistryAuth::Anonymous)
+        // 2-4. Walk the search paths in order. Reads are async so no worker is
+        // parked on a config read during a registry call.
+        for path in self.auth_search_paths() {
+            if let Some(entry) = read_entry_for(&path, registry).await? {
+                return entry.into_registry_auth(registry);
+            }
+        }
+
+        Ok(RegistryAuth::Anonymous)
+    }
 }
 
 /// Read the auth file at `path`, returning `Some(entry)` only if the file
@@ -197,50 +202,51 @@ async fn read_entry_for(path: &Path, registry: &str) -> Result<Option<AuthEntry>
     Ok(file.auths.get(registry).cloned())
 }
 
-/// Extract a [`RegistryAuth`] from a single [`AuthEntry`], applying D-04's
-/// loud-error rule for `credsStore` / `credHelpers` IF AND ONLY IF the entry
-/// matches the target registry (which it does by construction here —
-/// [`read_entry_for`] already keyed on the target).
-fn entry_to_registry_auth(registry: &str, entry: &AuthEntry) -> Result<RegistryAuth> {
-    if let Some(store) = &entry.creds_store {
-        return Err(anyhow!(
-            "credsStore \"{store}\" not supported by pichi; configure static credentials \
-             in pichi's config.toml or remove the credsStore entry"
-        ));
+impl AuthEntry {
+    /// Extract a [`RegistryAuth`] from this entry, applying D-04's loud-error
+    /// rule for `credsStore` / `credHelpers` (the entry has already been keyed
+    /// on `registry` by [`read_entry_for`]).
+    fn into_registry_auth(&self, registry: &str) -> Result<RegistryAuth> {
+        if let Some(store) = &self.creds_store {
+            return Err(anyhow!(
+                "credsStore \"{store}\" not supported by pichi; configure static credentials \
+                 in pichi's config.toml or remove the credsStore entry"
+            ));
+        }
+        if let Some(helpers) = &self.cred_helpers
+            && let Some(helper) = helpers.get(registry)
+        {
+            return Err(anyhow!(
+                "credHelpers helper \"{helper}\" for registry \"{registry}\" not supported \
+                 by pichi; configure static credentials in pichi's config.toml"
+            ));
+        }
+        if let Some(b64) = &self.auth {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .with_context(|| format!("decode `auth` field for {registry}"))?;
+            let s = String::from_utf8(decoded)
+                .with_context(|| format!("`auth` field for {registry} is not valid utf-8"))?;
+            let (u, p) = s.split_once(':').ok_or_else(|| {
+                anyhow!("malformed `auth` for {registry}: expected user:password")
+            })?;
+            return Ok(RegistryAuth::Basic(u.to_string(), p.to_string()));
+        }
+        if let Some(t) = &self.identitytoken {
+            return Ok(RegistryAuth::Bearer(t.clone()));
+        }
+        Ok(RegistryAuth::Anonymous)
     }
-    if let Some(helpers) = &entry.cred_helpers
-        && let Some(helper) = helpers.get(registry)
-    {
-        return Err(anyhow!(
-            "credHelpers helper \"{helper}\" for registry \"{registry}\" not supported \
-             by pichi; configure static credentials in pichi's config.toml"
-        ));
-    }
-    if let Some(b64) = &entry.auth {
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .with_context(|| format!("decode `auth` field for {registry}"))?;
-        let s = String::from_utf8(decoded)
-            .with_context(|| format!("`auth` field for {registry} is not valid utf-8"))?;
-        let (u, p) = s
-            .split_once(':')
-            .ok_or_else(|| anyhow!("malformed `auth` for {registry}: expected user:password"))?;
-        return Ok(RegistryAuth::Basic(u.to_string(), p.to_string()));
-    }
-    if let Some(t) = &entry.identitytoken {
-        return Ok(RegistryAuth::Bearer(t.clone()));
-    }
-    Ok(RegistryAuth::Anonymous)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthEnv, RegistryAuth, resolve_for_registry};
+    use super::{AuthEnv, RegistryAuth};
 
     #[tokio::test]
     async fn anonymous_when_no_sources() {
         let env = AuthEnv::default();
-        let auth = resolve_for_registry("ghcr.io", None, &env).await.unwrap();
+        let auth = env.resolve("ghcr.io", None).await.unwrap();
         assert!(matches!(auth, RegistryAuth::Anonymous));
     }
 }

@@ -34,7 +34,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use pichi_artifact::{Digest, Manifest, Reference};
 use pichi_storage::{
-    BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry, with_index_lock,
+    BlobSidecarExt, BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry,
 };
 
 use crate::cli::RmiArgs;
@@ -62,7 +62,7 @@ async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
     // index-lock window. The lock is dropped only after every blob unlink
     // returns. `delete_tag_locked` skips re-acquiring the flock so we don't
     // self-deadlock against the outer `with_index_lock`.
-    let (target_digest, deleted) = with_index_lock(layout, || async {
+    let (target_digest, deleted) = layout.with_index_lock(|| async {
         let db = FilesystemTagDb::open(&layout.graphroot)?;
         let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
@@ -154,7 +154,7 @@ async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
         for d in &to_delete {
             let blob_path = blob_store.blob_path(d);
             let existed = blob_path.exists();
-            pichi_storage::sidecar::unlink_blob_with_sidecars(&blob_path)
+            blob_path.unlink_with_sidecars()
                 .await
                 .with_context(|| format!("unlink blob+sidecars for {d}"))?;
             if existed {

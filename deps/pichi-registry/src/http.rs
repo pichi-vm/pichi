@@ -42,7 +42,7 @@ use oci_client::{
 use pichi_artifact::{Digest, Reference as PichiRef};
 use tokio::io::AsyncWrite;
 
-use crate::auth::{AuthEnv, AuthHint, resolve_for_registry};
+use crate::auth::{AuthEnv, AuthHint};
 use crate::{Registry, RegistryError, Result};
 
 /// Manifest media types the pichi client will accept from `pull_manifest_raw`.
@@ -71,7 +71,7 @@ pub struct RegistryEntry {
     /// `true` → use plain HTTP for THIS registry (Pitfall 10 escape hatch);
     /// other registries continue to use HTTPS.
     pub insecure: bool,
-    /// Static credential hint forwarded to [`resolve_for_registry`] as the
+    /// Static credential hint forwarded to `AuthEnv::resolve` as the
     /// first credential source (D-04 resolution order).
     pub auth_hint: Option<AuthHint>,
 }
@@ -164,19 +164,30 @@ impl HttpRegistry {
             .and_then(|e| e.auth_hint.as_ref());
         // Pitfall 14: any error here may include the registry name but NOT
         // auth values — auth.rs is designed to never inline values; we trust it.
-        resolve_for_registry(registry, hint, &self.auth_env)
+        self.auth_env
+            .resolve(registry, hint)
             .await
             .map_err(|e| RegistryError::Auth(format!("auth resolution for {registry}: {e}")))
     }
 }
 
 /// Convert pichi's [`PichiRef`] to oci-client's [`OciRef`] at the boundary
-/// (Pitfall 6). Pichi's `Display` canonicalises to `"host/repo:tag"` or
-/// `"host/repo@digest"`; oci-client parses the same form.
-fn to_oci_ref(r: &PichiRef) -> Result<OciRef> {
-    r.to_string().parse().map_err(|e: oci_client::ParseError| {
-        RegistryError::Transport(format!("oci ref parse: {e}"))
-    })
+/// (Pitfall 6). Both types are foreign to this crate, so this is a local
+/// extension trait rather than a `From` impl (orphan rule). Pichi's `Display`
+/// canonicalises to `"host/repo:tag"` / `"host/repo@digest"`; oci-client parses
+/// the same form.
+trait ToOciRef {
+    fn to_oci_ref(&self) -> Result<OciRef>;
+}
+
+impl ToOciRef for PichiRef {
+    fn to_oci_ref(&self) -> Result<OciRef> {
+        self.to_string()
+            .parse()
+            .map_err(|e: oci_client::ParseError| {
+                RegistryError::Transport(format!("oci ref parse: {e}"))
+            })
+    }
 }
 
 /// Build an [`OciRef`] from raw `(registry, repo, tag-or-digest)` parts. Used
@@ -193,21 +204,23 @@ fn build_oci_ref(registry: &str, repo: &str, tag_or_digest: Option<&str>) -> Res
     })
 }
 
-/// Apply registry credentials to a reqwest request. A bearer token (from
-/// oci-client's token-endpoint handshake) takes precedence; otherwise Basic
-/// credentials are used, and anonymous requests get no auth header. Never logs
-/// the values (Pitfall 14).
-fn apply_auth(
-    rb: reqwest::RequestBuilder,
-    token: &Option<String>,
-    auth: &RegistryAuth,
-) -> reqwest::RequestBuilder {
-    if let Some(t) = token {
-        rb.bearer_auth(t)
-    } else if let RegistryAuth::Basic(user, pass) = auth {
-        rb.basic_auth(user, Some(pass))
-    } else {
-        rb
+/// Apply registry credentials to a reqwest request as a builder-chain method.
+/// A bearer token (from oci-client's token-endpoint handshake) takes
+/// precedence; otherwise Basic credentials are used, and anonymous requests get
+/// no auth header. Never logs the values (Pitfall 14).
+trait ApplyAuth {
+    fn apply_auth(self, token: &Option<String>, auth: &RegistryAuth) -> Self;
+}
+
+impl ApplyAuth for reqwest::RequestBuilder {
+    fn apply_auth(self, token: &Option<String>, auth: &RegistryAuth) -> Self {
+        if let Some(t) = token {
+            self.bearer_auth(t)
+        } else if let RegistryAuth::Basic(user, pass) = auth {
+            self.basic_auth(user, Some(pass))
+        } else {
+            self
+        }
     }
 }
 
@@ -226,53 +239,55 @@ fn apply_auth(
 /// - All other variants fall through to `Transport` with the Display string;
 ///   oci-client's Display impl on these variants does NOT include credential
 ///   bytes (verified by inspection of `errors.rs`).
-fn map_oci_error(e: OciDistributionError) -> RegistryError {
-    use OciDistributionError::{
-        AuthenticationFailure, ImageManifestNotFoundError, RegistryError as RegErr,
-        UnauthorizedError,
-    };
-    match e {
-        UnauthorizedError { url } => {
-            // Redacted: registry URL is fine; token strings are NOT included.
-            RegistryError::Auth(format!("authentication failed for {url}"))
-        }
-        AuthenticationFailure(msg) => {
-            // oci-client's AuthenticationFailure carries a message that may
-            // describe the failure mode (challenge parse error, missing realm,
-            // etc.) but never the credential bytes themselves.
-            RegistryError::Auth(format!("authentication failed: {msg}"))
-        }
-        ImageManifestNotFoundError(msg) => RegistryError::NotFound(msg),
-        RegErr { envelope, url } => {
-            // Match on error code — both ManifestUnknown and BlobUnknown map
-            // to NotFound. Drop envelope detail to avoid leaking any header
-            // echo the registry chose to include.
-            let code_str = envelope
-                .errors
-                .first()
-                .map(|e| format!("{:?}", e.code))
-                .unwrap_or_default();
-            if code_str.contains("ManifestUnknown")
-                || code_str.contains("BlobUnknown")
-                || code_str.contains("ManifestBlobUnknown")
-                || code_str.contains("NameUnknown")
-                || code_str.contains("NotFound")
-            {
-                RegistryError::NotFound(format!("{code_str} at {url}"))
-            } else if code_str.contains("Denied") || code_str.contains("Unauthorized") {
-                // Redacted denial — drop envelope detail (may contain header echoes).
-                RegistryError::Auth(format!("denied: {code_str} at {url}"))
-            } else {
-                RegistryError::Transport(format!("registry error {code_str} at {url}"))
+impl From<OciDistributionError> for RegistryError {
+    fn from(e: OciDistributionError) -> Self {
+        use OciDistributionError::{
+            AuthenticationFailure, ImageManifestNotFoundError, RegistryError as RegErr,
+            UnauthorizedError,
+        };
+        match e {
+            UnauthorizedError { url } => {
+                // Redacted: registry URL is fine; token strings are NOT included.
+                RegistryError::Auth(format!("authentication failed for {url}"))
             }
+            AuthenticationFailure(msg) => {
+                // oci-client's AuthenticationFailure carries a message that may
+                // describe the failure mode (challenge parse error, missing realm,
+                // etc.) but never the credential bytes themselves.
+                RegistryError::Auth(format!("authentication failed: {msg}"))
+            }
+            ImageManifestNotFoundError(msg) => RegistryError::NotFound(msg),
+            RegErr { envelope, url } => {
+                // Match on error code — both ManifestUnknown and BlobUnknown map
+                // to NotFound. Drop envelope detail to avoid leaking any header
+                // echo the registry chose to include.
+                let code_str = envelope
+                    .errors
+                    .first()
+                    .map(|e| format!("{:?}", e.code))
+                    .unwrap_or_default();
+                if code_str.contains("ManifestUnknown")
+                    || code_str.contains("BlobUnknown")
+                    || code_str.contains("ManifestBlobUnknown")
+                    || code_str.contains("NameUnknown")
+                    || code_str.contains("NotFound")
+                {
+                    RegistryError::NotFound(format!("{code_str} at {url}"))
+                } else if code_str.contains("Denied") || code_str.contains("Unauthorized") {
+                    // Redacted denial — drop envelope detail (may contain header echoes).
+                    RegistryError::Auth(format!("denied: {code_str} at {url}"))
+                } else {
+                    RegistryError::Transport(format!("registry error {code_str} at {url}"))
+                }
+            }
+            other => RegistryError::Transport(format!("oci-client: {other}")),
         }
-        other => RegistryError::Transport(format!("oci-client: {other}")),
     }
 }
 
 impl Registry for HttpRegistry {
     async fn pull_manifest_by_tag(&self, reference: &PichiRef) -> Result<(Bytes, Digest)> {
-        let oci_ref = to_oci_ref(reference)?;
+        let oci_ref = reference.to_oci_ref()?;
         let auth = self.auth_for(&reference.registry).await?;
         let client = self.client_for(&reference.registry);
         // REGISTRY-05 / Pitfall 1: pull_manifest_raw — NOT the auto-resolving
@@ -281,7 +296,7 @@ impl Registry for HttpRegistry {
         let (raw, digest_str) = client
             .pull_manifest_raw(&oci_ref, &auth, ACCEPTED_MANIFEST_TYPES)
             .await
-            .map_err(map_oci_error)?;
+            .map_err(RegistryError::from)?;
         let digest: Digest = digest_str
             .parse()
             .map_err(|e| RegistryError::Transport(format!("bad digest from registry: {e}")))?;
@@ -300,7 +315,7 @@ impl Registry for HttpRegistry {
         let (raw, _digest_str) = client
             .pull_manifest_raw(&oci_ref, &auth, ACCEPTED_MANIFEST_TYPES)
             .await
-            .map_err(map_oci_error)?;
+            .map_err(RegistryError::from)?;
         Ok(raw)
     }
 
@@ -323,7 +338,7 @@ impl Registry for HttpRegistry {
         client
             .auth(&oci_ref, &auth, RegistryOperation::Pull)
             .await
-            .map_err(map_oci_error)?;
+            .map_err(RegistryError::from)?;
         let descriptor = OciDescriptor {
             // pull_blob ignores media_type for the descriptor — only digest
             // and (optionally) size are consumed.
@@ -338,7 +353,7 @@ impl Registry for HttpRegistry {
         client
             .pull_blob(&oci_ref, &descriptor, sink)
             .await
-            .map_err(map_oci_error)
+            .map_err(RegistryError::from)
     }
 
     async fn pull_blob_stream(
@@ -355,7 +370,7 @@ impl Registry for HttpRegistry {
         client
             .auth(&oci_ref, &auth, RegistryOperation::Pull)
             .await
-            .map_err(map_oci_error)?;
+            .map_err(RegistryError::from)?;
         let descriptor = OciDescriptor {
             media_type: "application/octet-stream".to_string(),
             digest: digest.to_string(),
@@ -368,7 +383,7 @@ impl Registry for HttpRegistry {
         let sized = client
             .pull_blob_stream(&oci_ref, &descriptor)
             .await
-            .map_err(map_oci_error)?;
+            .map_err(RegistryError::from)?;
         Ok(sized.stream)
     }
 
@@ -382,11 +397,11 @@ impl Registry for HttpRegistry {
         client
             .auth(&oci_ref, &auth, RegistryOperation::Push)
             .await
-            .map_err(map_oci_error)?;
+            .map_err(RegistryError::from)?;
         client
             .blob_exists(&oci_ref, &digest.to_string())
             .await
-            .map_err(map_oci_error)
+            .map_err(RegistryError::from)
     }
 
     async fn push_manifest(
@@ -395,14 +410,14 @@ impl Registry for HttpRegistry {
         media_type: &str,
         bytes: Bytes,
     ) -> Result<Digest> {
-        let oci_ref = to_oci_ref(reference)?;
+        let oci_ref = reference.to_oci_ref()?;
         let auth = self.auth_for(&reference.registry).await?;
         let client = self.client_for(&reference.registry);
         // Pre-auth: manifest push needs write-scope bearer token before the PUT.
         client
             .auth(&oci_ref, &auth, RegistryOperation::Push)
             .await
-            .map_err(map_oci_error)?;
+            .map_err(RegistryError::from)?;
         // The Content-Type MUST match the payload: an image manifest and an
         // image index have different schemas, and the registry validates the
         // bytes against the schema the Content-Type selects. `pichi manifest
@@ -418,7 +433,7 @@ impl Registry for HttpRegistry {
         let _location_url = client
             .push_manifest_raw(&oci_ref, bytes, ct)
             .await
-            .map_err(map_oci_error)?;
+            .map_err(RegistryError::from)?;
         Ok(computed)
     }
 
@@ -444,7 +459,7 @@ impl Registry for HttpRegistry {
             .client_for(registry)
             .auth(&oci_ref, &auth, RegistryOperation::Push)
             .await
-            .map_err(map_oci_error)?;
+            .map_err(RegistryError::from)?;
 
         let insecure = self
             .entries
@@ -455,16 +470,14 @@ impl Registry for HttpRegistry {
 
         // 1. Begin an upload session.
         let uploads = format!("{scheme}://{registry}/v2/{repo}/blobs/uploads/");
-        let resp = apply_auth(
-            self.http
-                .post(&uploads)
-                .header(reqwest::header::CONTENT_LENGTH, "0"),
-            &token,
-            &auth,
-        )
-        .send()
-        .await
-        .map_err(|e| RegistryError::Transport(format!("begin upload in {repo}: {e}")))?;
+        let resp = self
+            .http
+            .post(&uploads)
+            .header(reqwest::header::CONTENT_LENGTH, "0")
+            .apply_auth(&token, &auth)
+            .send()
+            .await
+            .map_err(|e| RegistryError::Transport(format!("begin upload in {repo}: {e}")))?;
         if resp.status() != reqwest::StatusCode::ACCEPTED {
             let code = resp.status();
             let body = resp.text().await.unwrap_or_default();
@@ -493,18 +506,16 @@ impl Registry for HttpRegistry {
 
         // 3. Single streaming PUT.
         let body = reqwest::Body::wrap_stream(stream);
-        let resp = apply_auth(
-            self.http
-                .put(&put_url)
-                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-                .header(reqwest::header::CONTENT_LENGTH, size)
-                .body(body),
-            &token,
-            &auth,
-        )
-        .send()
-        .await
-        .map_err(|e| RegistryError::Transport(format!("upload blob {digest}: {e}")))?;
+        let resp = self
+            .http
+            .put(&put_url)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .header(reqwest::header::CONTENT_LENGTH, size)
+            .body(body)
+            .apply_auth(&token, &auth)
+            .send()
+            .await
+            .map_err(|e| RegistryError::Transport(format!("upload blob {digest}: {e}")))?;
         if !resp.status().is_success() {
             let code = resp.status();
             let body = resp.text().await.unwrap_or_default();
@@ -531,7 +542,7 @@ impl Registry for HttpRegistry {
         client
             .auth(&target, &auth, RegistryOperation::Push)
             .await
-            .map_err(map_oci_error)?;
+            .map_err(RegistryError::from)?;
         match client
             .mount_blob(&target, &source, &digest.to_string())
             .await
@@ -547,7 +558,7 @@ impl Registry for HttpRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_oci_ref, map_oci_error};
+    use super::build_oci_ref;
     use crate::RegistryError;
     use oci_client::errors::OciDistributionError;
 
@@ -556,7 +567,7 @@ mod tests {
         let e = OciDistributionError::UnauthorizedError {
             url: "https://ghcr.io/v2/owner/repo/manifests/v1".into(),
         };
-        let mapped = map_oci_error(e);
+        let mapped = RegistryError::from(e);
         match mapped {
             RegistryError::Auth(msg) => {
                 assert!(
