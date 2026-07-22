@@ -241,21 +241,27 @@ impl Requirements {
     /// Required memory floor in MiB (rounded up), if declared.
     #[must_use]
     pub fn memory_required_mib(&self) -> Option<u32> {
-        self.memory.and_then(|b| b.required).map(bytes_to_mib)
+        self.memory
+            .and_then(|b| b.required)
+            .map(Self::mib_from_bytes)
     }
 
     /// Recommended memory in MiB (rounded up), if declared.
     #[must_use]
     pub fn memory_recommended_mib(&self) -> Option<u32> {
-        self.memory.and_then(|b| b.recommended).map(bytes_to_mib)
+        self.memory
+            .and_then(|b| b.recommended)
+            .map(Self::mib_from_bytes)
     }
 }
 
-/// Round a byte count up to whole MiB, saturating at `u32::MAX` (dillo takes
-/// `--memory` in MiB).
-fn bytes_to_mib(bytes: u64) -> u32 {
-    const MIB: u64 = 1 << 20;
-    u32::try_from(bytes.div_ceil(MIB)).unwrap_or(u32::MAX)
+impl Requirements {
+    /// Round a byte count up to whole MiB, saturating at `u32::MAX` (dillo takes
+    /// `--memory` in MiB).
+    fn mib_from_bytes(bytes: u64) -> u32 {
+        const MIB: u64 = 1 << 20;
+        u32::try_from(bytes.div_ceil(MIB)).unwrap_or(u32::MAX)
+    }
 }
 
 #[cfg(test)]

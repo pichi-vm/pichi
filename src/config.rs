@@ -163,12 +163,12 @@ impl Config {
     ) -> Result<Self> {
         let mut cfg = Self::default();
         if let Some(p) = system {
-            if let Some(file_cfg) = read_optional(p)? {
+            if let Some(file_cfg) = Self::read_optional(p)? {
                 cfg.merge(file_cfg);
             }
         }
         if let Some(p) = user {
-            if let Some(file_cfg) = read_optional(p)? {
+            if let Some(file_cfg) = Self::read_optional(p)? {
                 cfg.merge(file_cfg);
             }
         }
@@ -205,15 +205,18 @@ impl Config {
     }
 }
 
-fn read_optional(path: &Path) -> Result<Option<Config>> {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => {
-            let parsed: Config = toml::from_str(&contents)
-                .with_context(|| format!("invalid TOML in {}", path.display()))?;
-            Ok(Some(parsed))
+impl Config {
+    /// Load a config from `path`, returning `Ok(None)` if the file is absent.
+    fn read_optional(path: &Path) -> Result<Option<Config>> {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => {
+                let parsed: Config = toml::from_str(&contents)
+                    .with_context(|| format!("invalid TOML in {}", path.display()))?;
+                Ok(Some(parsed))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
     }
 }
 

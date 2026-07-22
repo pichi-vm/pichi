@@ -553,7 +553,7 @@ mod tests {
             salt: salt.clone(),
             uuid: [0u8; 16],
         };
-        let vout = verity::compute(&cow_bytes, &params).unwrap();
+        let vout = params.compute(&cow_bytes).unwrap();
         std::fs::write(out.join("0000.verity"), &vout.blob).unwrap();
         std::fs::write(
             out.join("build.yaml"),
@@ -613,7 +613,7 @@ mod tests {
             salt: salt.clone(),
             uuid: [0u8; 16],
         };
-        let vout = verity::compute(&cow_bytes, &params).unwrap();
+        let vout = params.compute(&cow_bytes).unwrap();
         std::fs::write(out.join("0000.verity"), &vout.blob).unwrap();
         std::fs::write(
             out.join("build.yaml"),

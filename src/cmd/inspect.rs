@@ -110,12 +110,12 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     // Bare manifest path.
     let manifest = Manifest::from_reader_validated(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
-    let sidecar = build_sidecar(&digest, &manifest);
+    let sidecar = PichiSidecar::from_manifest(&digest, &manifest);
     let output = InspectOutput {
         manifest: value,
         _pichi: sidecar,
     };
-    emit(&args, &output)
+    args.emit(&output)
 }
 
 fn inspect_index(args: InspectArgs, digest: &Digest, value: &Value) -> Result<()> {
@@ -163,57 +163,63 @@ fn inspect_index(args: InspectArgs, digest: &Digest, value: &Value) -> Result<()
         entries,
         note,
     };
-    emit(&args, &output)
+    args.emit(&output)
 }
 
-fn build_sidecar(digest: &Digest, m: &Manifest) -> PichiSidecar {
-    let mut blobs = Vec::with_capacity(m.layers.len());
-    let mut pmi_present = false;
-    let mut scute_count = 0usize;
-    let mut total = 0u64;
-    for layer in &m.layers {
-        match layer {
-            Layer::Pmi(_) => pmi_present = true,
-            Layer::Scute(_) | Layer::ScuteZstd(_) => scute_count += 1,
-            Layer::Dtb(_) => {}
+impl PichiSidecar {
+    /// Summarise a cached [`Manifest`] into the human-facing sidecar view.
+    fn from_manifest(digest: &Digest, m: &Manifest) -> Self {
+        let mut blobs = Vec::with_capacity(m.layers.len());
+        let mut pmi_present = false;
+        let mut scute_count = 0usize;
+        let mut total = 0u64;
+        for layer in &m.layers {
+            match layer {
+                Layer::Pmi(_) => pmi_present = true,
+                Layer::Scute(_) | Layer::ScuteZstd(_) => scute_count += 1,
+                Layer::Dtb(_) => {}
+            }
+            total += layer.size();
+            blobs.push(BlobEntry {
+                digest: layer.digest_str().to_string(),
+                media_type: layer.media_type_str().to_string(),
+                size: layer.size(),
+            });
         }
-        total += layer.size();
-        blobs.push(BlobEntry {
-            digest: layer.digest_str().to_string(),
-            media_type: layer.media_type_str().to_string(),
-            size: layer.size(),
-        });
-    }
-    PichiSidecar {
-        digest: digest.to_string(),
-        artifact_type: m.artifact_type.clone(),
-        blob_count: m.layers.len(),
-        scute_count,
-        pmi_present,
-        total_layer_size: total,
-        blobs,
+        Self {
+            digest: digest.to_string(),
+            artifact_type: m.artifact_type.clone(),
+            blob_count: m.layers.len(),
+            scute_count,
+            pmi_present,
+            total_layer_size: total,
+            blobs,
+        }
     }
 }
 
-fn emit<T: Serialize>(args: &InspectArgs, value: &T) -> Result<()> {
-    if let Some(template_in) = &args.format {
-        if template_in == "json" {
+impl InspectArgs {
+    /// Emit `value` per the `--format` selection (default: pretty JSON).
+    fn emit<T: Serialize>(&self, value: &T) -> Result<()> {
+        if let Some(template_in) = &self.format {
+            if template_in == "json" {
+                let s = serde_json::to_string_pretty(value)?;
+                println!("{s}");
+            } else {
+                // tinytemplate render. D-17 syntax translation.
+                let template = template_in.replace("{{.", "{").replace("}}", "}");
+                let mut tt = TinyTemplate::new();
+                tt.set_default_formatter(&format_unescaped);
+                tt.add_template("inspect", &template)
+                    .with_context(|| format!("invalid --format template: {template_in:?}"))?;
+                let out = tt.render("inspect", value)?;
+                println!("{out}");
+            }
+        } else {
+            // Default: pretty-printed JSON.
             let s = serde_json::to_string_pretty(value)?;
             println!("{s}");
-        } else {
-            // tinytemplate render. D-17 syntax translation.
-            let template = template_in.replace("{{.", "{").replace("}}", "}");
-            let mut tt = TinyTemplate::new();
-            tt.set_default_formatter(&format_unescaped);
-            tt.add_template("inspect", &template)
-                .with_context(|| format!("invalid --format template: {template_in:?}"))?;
-            let out = tt.render("inspect", value)?;
-            println!("{out}");
         }
-    } else {
-        // Default: pretty-printed JSON.
-        let s = serde_json::to_string_pretty(value)?;
-        println!("{s}");
+        Ok(())
     }
-    Ok(())
 }

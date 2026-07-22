@@ -1201,7 +1201,8 @@ mod tests {
         let scute_data: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(4096).collect();
         let scute_digest = Digest::from_bytes_sha256(&scute_data);
         let params = pull_side_verity_params();
-        let expected_root = pichi_import::verity::compute(&scute_data, &params)
+        let expected_root = params
+            .compute(&scute_data)
             .expect("verity compute")
             .root_hash;
 
@@ -1290,9 +1291,7 @@ mod tests {
         let on_disk_verity = std::fs::read(blob_path.verity_path()).unwrap();
 
         let params = pull_side_verity_params();
-        let expected = pichi_import::verity::compute(&layer_data, &params)
-            .expect("verity::compute")
-            .blob;
+        let expected = params.compute(&layer_data).expect("verity::compute").blob;
         assert_eq!(
             on_disk_verity, expected,
             "<src>.verity bytes must equal verity::compute(layer_bytes, params).blob"
