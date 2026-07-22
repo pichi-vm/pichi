@@ -20,7 +20,7 @@ use crate::config::Config;
 
 /// `pichi tag <src> <dst>` entry point — create a new tag pointing at
 /// the same manifest digest as `src` (LOCAL-04).
-pub fn run(args: TagArgs, config: &Config) -> Result<()> {
+pub async fn run(args: TagArgs, config: &Config) -> Result<()> {
     let layout = resolve_layout(config)?;
     let db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
@@ -38,10 +38,12 @@ pub fn run(args: TagArgs, config: &Config) -> Result<()> {
     let dst_key = dst_ref.to_string();
 
     let digest = db
-        .resolve_tag(&src_key)?
+        .resolve_tag(&src_key)
+        .await?
         .ok_or_else(|| anyhow!("source ref not found in cache: {src_key}"))?;
 
     db.set_tag(&dst_key, &digest)
+        .await
         .with_context(|| format!("creating tag {dst_key}"))?;
 
     log::info!("tagged {src_key} as {dst_key} (manifest {digest})");

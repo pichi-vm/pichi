@@ -44,19 +44,19 @@ fn sha256_digest(bytes: &[u8]) -> pichi_artifact::Digest {
 
 /// Populate a bootable artifact (PMI layer + one scute) and bind `tag`.
 /// Returns `(pmi_blob_path, cow_blob_path)` for assertions.
-fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
+async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
     let blob_store = FilesystemBlobStore::new(graphroot);
 
     // Real cow bytes so the verity-root derivation in `pichi run` succeeds.
     let cow_bytes = vec![0u8; 4096];
     let cow_digest = sha256_digest(&cow_bytes);
-    blob_store.put_blob(&cow_digest, &cow_bytes).unwrap();
+    blob_store.put_blob(&cow_digest, &cow_bytes).await.unwrap();
 
     // PMI blob contents are opaque to `pichi run` (it only formats the path),
     // but store something so the artifact is realistic.
     let pmi_bytes = b"PMI\0".to_vec();
     let pmi_digest = sha256_digest(&pmi_bytes);
-    blob_store.put_blob(&pmi_digest, &pmi_bytes).unwrap();
+    blob_store.put_blob(&pmi_digest, &pmi_bytes).await.unwrap();
 
     let manifest = Manifest {
         schema_version: 2,
@@ -78,13 +78,14 @@ fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
     };
     let bytes = manifest.to_bytes().unwrap();
     let digest = manifest.digest().unwrap();
-    blob_store.put_blob(&digest, &bytes).unwrap();
+    blob_store.put_blob(&digest, &bytes).await.unwrap();
     // Store under the normalized reference key (`myapp:1` →
     // `docker.io/library/myapp:1`), matching how `pichi run` resolves it.
     let key: pichi_artifact::Reference = tag.parse().unwrap();
     FilesystemTagDb::open(graphroot)
         .unwrap()
         .set_tag(&key.to_string(), &digest)
+        .await
         .unwrap();
 
     (
@@ -109,11 +110,11 @@ fn make_stub_dillo(dir: &Path, record: &Path) -> PathBuf {
     stub
 }
 
-#[test]
-fn run_execs_dillo_with_manifest_derived_devices() {
+#[tokio::test]
+async fn run_execs_dillo_with_manifest_derived_devices() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (pmi_path, cow_path) = populate_bootable(&g, "myapp:1");
+    let (pmi_path, cow_path) = populate_bootable(&g, "myapp:1").await;
 
     let record = tmp.path().join("argv.txt");
     let stub = make_stub_dillo(tmp.path(), &record);
@@ -164,11 +165,11 @@ fn run_execs_dillo_with_manifest_derived_devices() {
     );
 }
 
-#[test]
-fn run_forwards_cpus_and_memory() {
+#[tokio::test]
+async fn run_forwards_cpus_and_memory() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let _ = populate_bootable(&g, "myapp:1");
+    let _ = populate_bootable(&g, "myapp:1").await;
 
     let record = tmp.path().join("argv.txt");
     let stub = make_stub_dillo(tmp.path(), &record);
@@ -193,8 +194,8 @@ fn run_forwards_cpus_and_memory() {
     );
 }
 
-#[test]
-fn run_missing_ref_auto_pulls() {
+#[tokio::test]
+async fn run_missing_ref_auto_pulls() {
     let tmp = TempDir::new().unwrap();
     let _ = graphroot(&tmp);
     let record = tmp.path().join("argv.txt");

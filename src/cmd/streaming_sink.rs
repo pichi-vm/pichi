@@ -282,8 +282,8 @@ mod tests {
     use super::*;
 
     /// Adapter test 1: TeeWriter mirrors writes to both branches.
-    #[test]
-    fn tee_writer_passes_bytes_to_both_branches() {
+    #[tokio::test]
+    async fn tee_writer_passes_bytes_to_both_branches() {
         let a: Vec<u8> = Vec::new();
         let b: Vec<u8> = Vec::new();
         let mut tee = TeeWriter::new(a, b);
@@ -294,8 +294,8 @@ mod tests {
     }
 
     /// Adapter test 2: DigestWriter computes the correct sha256 of input.
-    #[test]
-    fn digest_writer_finalizes_to_correct_sha256() {
+    #[tokio::test]
+    async fn digest_writer_finalizes_to_correct_sha256() {
         let mut dw = DigestWriter::new();
         dw.write_all(b"abc").unwrap();
         let (digest, n) = dw.finalize();
@@ -310,8 +310,8 @@ mod tests {
     /// Adapter test 3: read-side streaming decode — a `TeeReader` hashes the
     /// compressed bytes while a streaming `ruzstd` decoder pulls through it and
     /// yields the original (no full-frame buffering).
-    #[test]
-    fn tee_reader_hashes_compressed_and_streams_decode() {
+    #[tokio::test]
+    async fn tee_reader_hashes_compressed_and_streams_decode() {
         let original = b"the quick brown fox jumps over the lazy dog";
         let compressed = ruzstd::encoding::compress_to_vec(
             &original[..],
@@ -331,8 +331,8 @@ mod tests {
 
     /// Adapter test 4: VerityFeedWriter chunks writes into 4 KiB blocks
     /// regardless of how the caller's writes are sliced.
-    #[test]
-    fn verity_feed_writer_chunks_to_4kib_blocks() {
+    #[tokio::test]
+    async fn verity_feed_writer_chunks_to_4kib_blocks() {
         let calls = std::cell::RefCell::new(Vec::<usize>::new());
         let inner: Vec<u8> = Vec::new();
         // 12 KiB of data; expect exactly 3 feed calls of 4 KiB each.
@@ -352,8 +352,8 @@ mod tests {
     }
 
     /// Adapter test 5: LimitWriter errors past its cap.
-    #[test]
-    fn limit_writer_errors_past_cap() {
+    #[tokio::test]
+    async fn limit_writer_errors_past_cap() {
         let mut lw = LimitWriter::new(Vec::<u8>::new(), 4);
         lw.write_all(b"abcd").unwrap();
         let err = lw.write_all(b"e").unwrap_err();
@@ -373,8 +373,8 @@ mod tests {
     ///   (a) outer digest = sha256(compressed bytes)
     ///   (b) inner digest = sha256(decompressed bytes)
     ///   (c) the decompressed bytes flow through verbatim to the dest Vec.
-    #[test]
-    fn pipeline_composition_end_to_end() {
+    #[tokio::test]
+    async fn pipeline_composition_end_to_end() {
         use std::sync::{Arc, Mutex};
         let original = b"the quick brown fox";
         let compressed = ruzstd::encoding::compress_to_vec(

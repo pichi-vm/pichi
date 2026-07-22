@@ -14,7 +14,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -36,7 +35,7 @@ use crate::config::Config;
 const CONTEXT_TAG: &str = "context";
 const OUTPUT_TAG: &str = "output";
 
-pub fn run(args: BuildArgs, config: &Config) -> Result<()> {
+pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let build_dir = args.dir.join("pichi.build");
     if !build_dir.is_dir() {
         bail!(
@@ -53,6 +52,7 @@ pub fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     // The build image is a PMI-only appliance: --pmi is its PMI blob.
     let (_, build_manifest) = resolve_manifest(&build_image_ref, &db, &blob_store)
+        .await
         .with_context(|| format!("resolving build image {build_image_ref}"))?;
     let (pmi, _) = partition_layers(&build_manifest)
         .with_context(|| format!("build image {build_image_ref} is not bootable"))?;
@@ -73,6 +73,7 @@ pub fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let mut source_scutes: Vec<ScuteDescriptor> = Vec::new();
     for reference in collect_source_refs(&build_dir)? {
         let (_, manifest) = resolve_manifest(&reference, &db, &blob_store)
+            .await
             .with_context(|| format!("resolving source carapace {reference}"))?;
         let scutes = scute_layers(&manifest)
             .with_context(|| format!("reading scutes of source carapace {reference}"))?;
@@ -84,6 +85,7 @@ pub fn run(args: BuildArgs, config: &Config) -> Result<()> {
         }
         gpt_specs.push(
             build_gpt_spec(&manifest, &scutes, &blob_store)
+                .await
                 .with_context(|| format!("building vGPT for {reference}"))?,
         );
     }
@@ -95,7 +97,7 @@ pub fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     // Size the build VM from the build image's requirements.yaml (BUILD.md §7),
     // with the operator's --memory/--cpus overriding (but not below required).
-    let reqs = requirements::load_requirements(&build_manifest, &blob_store)?;
+    let reqs = requirements::load_requirements(&build_manifest, &blob_store).await?;
     let cpus = requirements::resolve_sized(
         args.cpus,
         reqs.as_ref().and_then(Requirements::cpus_required),
@@ -124,7 +126,7 @@ pub fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .ok_or_else(|| anyhow!("pichi build requires -t <tag> to name the result"))?;
 
     let dillo = find_dillo();
-    boot_and_wait(&dillo, &argv)?;
+    boot_and_wait(&dillo, &argv).await?;
 
     // The VM powered off; package what it wrote to the output sink.
     let created = chrono::Utc::now().to_rfc3339();
@@ -136,6 +138,7 @@ pub fn run(args: BuildArgs, config: &Config) -> Result<()> {
         tag,
         &created,
     )
+    .await
     .context("packaging build output")?;
     println!("pichi build: packaged {tag} -> {digest}");
     Ok(())
@@ -172,7 +175,7 @@ fn chain_annotations(created_rfc3339: &str) -> BTreeMap<String, String> {
 /// passed through unchanged — their blobs already live in the cache) followed
 /// by the delta scutes conglobate emitted (the build's [`BuildOutput`]
 /// contract), each salt-chained onto the source's top root.
-fn package_artifact(
+async fn package_artifact(
     output_dir: &Path,
     source_scutes: &[ScuteDescriptor],
     blob_store: &FilesystemBlobStore,
@@ -187,7 +190,10 @@ fn package_artifact(
         bail!("build produced no scutes");
     }
 
-    let scratch = blob_store.scratch_dir().context("preparing scratch dir")?;
+    let scratch = blob_store
+        .scratch_dir()
+        .await
+        .context("preparing scratch dir")?;
     let mut layers: Vec<Layer> = Vec::with_capacity(source_scutes.len() + out.scutes.len() + 1);
 
     // Source scutes pass through verbatim — their cow blobs + verity sidecars
@@ -207,12 +213,14 @@ fn package_artifact(
         let cow_digest = Digest::from_bytes_sha256(&cow_bytes);
         blob_store
             .put_blob(&cow_digest, &cow_bytes)
+            .await
             .with_context(|| format!("put cow blob {cow_digest}"))?;
         write_sidecar_atomic(
             &scratch,
             &verity_path(&blob_store.blob_path(&cow_digest)),
             &verity_bytes,
         )
+        .await
         .with_context(|| format!("write verity sidecar for {cow_digest}"))?;
 
         layers.push(Layer::Scute(ScuteDescriptor {
@@ -230,6 +238,7 @@ fn package_artifact(
         let pmi_digest = Digest::from_bytes_sha256(&pmi_bytes);
         blob_store
             .put_blob(&pmi_digest, &pmi_bytes)
+            .await
             .with_context(|| format!("put pmi blob {pmi_digest}"))?;
         layers.push(Layer::Pmi(PmiDescriptor {
             digest: pmi_digest.to_string(),
@@ -252,10 +261,12 @@ fn package_artifact(
     let digest = Digest::from_bytes_sha256(&bytes);
     blob_store
         .put_blob(&digest, &bytes)
+        .await
         .with_context(|| format!("put manifest blob {digest}"))?;
 
     let tag_ref: Reference = tag.parse().with_context(|| format!("invalid tag: {tag}"))?;
     db.set_tag(&tag_ref.to_string(), &digest)
+        .await
         .with_context(|| format!("set tag {tag}"))?;
 
     Ok(digest)
@@ -366,7 +377,7 @@ fn collect_source_refs(build_dir: &Path) -> Result<Vec<String>> {
 }
 
 /// Resolve a cached reference to its manifest digest + parsed manifest.
-fn resolve_manifest(
+async fn resolve_manifest(
     reference: &str,
     db: &FilesystemTagDb,
     blob_store: &FilesystemBlobStore,
@@ -378,12 +389,14 @@ fn resolve_manifest(
         ReferenceKind::Digest(d) => d.clone(),
         ReferenceKind::Tag(_) => {
             let key = target.to_string();
-            db.resolve_tag(&key)?
+            db.resolve_tag(&key)
+                .await?
                 .ok_or_else(|| anyhow!("ref not in cache: {key}\n  hint: pichi pull {key}"))?
         }
     };
     let bytes = blob_store
         .get_blob(&digest)
+        .await
         .with_context(|| format!("reading manifest blob {digest}"))?;
     let manifest = Manifest::from_reader_validated(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
@@ -393,11 +406,14 @@ fn resolve_manifest(
 /// Boot the build VM and wait for it to power off. Unlike `pichi run`
 /// (which `exec`s dillo), build spawns and waits so it can package the
 /// output afterwards.
-fn boot_and_wait(dillo: &Path, args: &[String]) -> Result<()> {
+async fn boot_and_wait(dillo: &Path, args: &[String]) -> Result<()> {
     log::info!("boot build VM: {} {}", dillo.display(), args.join(" "));
-    let status = Command::new(dillo)
+    // The build VM can run for minutes; drive it via tokio::process so it never
+    // blocks a runtime worker.
+    let status = tokio::process::Command::new(dillo)
         .args(args)
         .status()
+        .await
         .with_context(|| format!("spawning dillo at {}", dillo.display()))?;
     if !status.success() {
         bail!("build VM exited with {status}");
@@ -428,8 +444,8 @@ mod tests {
         serde_keyvalue::from_key_values(value).expect("--fs value parses as dillo FsSpec")
     }
 
-    #[test]
-    fn argv_has_pmi_context_output_and_one_gpt_per_carapace() {
+    #[tokio::test]
+    async fn argv_has_pmi_context_output_and_one_gpt_per_carapace() {
         let argv = build_dillo_args(
             Path::new("/cache/blobs/sha256/deadbeef"),
             &["partitions=[[path=/c,partuuid=u,typeguid=t,label=c:x]]".to_string()],
@@ -485,8 +501,8 @@ mod tests {
         assert!(!out.readonly, "output sink must be writable");
     }
 
-    #[test]
-    fn argv_omits_resource_flags_when_unset() {
+    #[tokio::test]
+    async fn argv_omits_resource_flags_when_unset() {
         let argv = build_dillo_args(
             Path::new("/p.pmi"),
             &[],
@@ -500,8 +516,8 @@ mod tests {
         assert!(!argv.iter().any(|a| a == "--gpt"));
     }
 
-    #[test]
-    fn build_image_flag_beats_env_and_falls_back_to_default() {
+    #[tokio::test]
+    async fn build_image_flag_beats_env_and_falls_back_to_default() {
         assert_eq!(resolve_build_image(Some("reg/bi:1")).unwrap(), "reg/bi:1");
         // Neither flag nor env -> the default official build image. (Env is
         // process-global; assert the default only when it is unset.)
@@ -510,8 +526,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn collect_source_refs_reads_from_keys() {
+    #[tokio::test]
+    async fn collect_source_refs_reads_from_keys() {
         let tmp = tempfile::TempDir::new().unwrap();
         let bd = tmp.path().join("pichi.build");
         std::fs::create_dir_all(&bd).unwrap();
@@ -528,8 +544,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn package_artifact_builds_and_tags_a_carapace() {
+    #[tokio::test]
+    async fn package_artifact_builds_and_tags_a_carapace() {
         use pichi_import::{cow, verity};
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -572,17 +588,18 @@ mod tests {
             "myapp:v1",
             "2026-06-22T00:00:00Z",
         )
+        .await
         .unwrap();
 
         let key = "myapp:v1".parse::<Reference>().unwrap().to_string();
-        assert_eq!(db.resolve_tag(&key).unwrap(), Some(digest.clone()));
-        let mbytes = blob_store.get_blob(&digest).unwrap();
+        assert_eq!(db.resolve_tag(&key).await.unwrap(), Some(digest.clone()));
+        let mbytes = blob_store.get_blob(&digest).await.unwrap();
         let m = Manifest::from_reader_validated(mbytes.as_slice()).unwrap();
         assert_eq!(m.layers.len(), 1, "one scute layer");
     }
 
-    #[test]
-    fn package_artifact_prepends_source_scutes() {
+    #[tokio::test]
+    async fn package_artifact_prepends_source_scutes() {
         use pichi_import::{cow, verity};
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -651,9 +668,10 @@ mod tests {
             "app:v1",
             "2026-06-22T00:00:00Z",
         )
+        .await
         .unwrap();
 
-        let mbytes = blob_store.get_blob(&digest).unwrap();
+        let mbytes = blob_store.get_blob(&digest).await.unwrap();
         let m = Manifest::from_reader_validated(mbytes.as_slice()).unwrap();
         let scute_layers = m
             .layers

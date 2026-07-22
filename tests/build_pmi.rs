@@ -23,10 +23,10 @@ use corium::CORIUM_ROOT_OK;
 
 const MARKER: &str = "corium-root-marker";
 
-#[test]
+#[tokio::test]
 #[ignore = "pichi build deferred; re-enable with build work"]
 #[cfg(target_arch = "x86_64")]
-fn single_pichi_build_emits_bootable_artifact() {
+async fn single_pichi_build_emits_bootable_artifact() {
     if !kvm_available() {
         eprintln!("skip: no usable /dev/kvm");
         return;
@@ -119,8 +119,8 @@ fn single_pichi_build_emits_bootable_artifact() {
         .env("XDG_DATA_HOME", &xdg)
         .env("PICHI_DILLO", common::DILLO_BIN)
         .args(["run", "app:1", "--memory", "1024", "--cpus", "1"])
-        .stdout(std::fs::File::create(&out_path).unwrap())
-        .stderr(std::fs::File::create(&err_path).unwrap())
+        .stdout(std::fs::File::create(&out_path).await.unwrap())
+        .stderr(std::fs::File::create(&err_path).await.unwrap())
         .spawn()
         .expect("spawn pichi run");
     let status = {

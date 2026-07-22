@@ -69,7 +69,7 @@ struct IndexEntryInfo {
 
 /// `pichi inspect <ref>` entry point — print the cached manifest as
 /// pretty-printed JSON augmented with a `_pichi` sidecar (LOCAL-02).
-pub fn run(args: InspectArgs, config: &Config) -> Result<()> {
+pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     let layout = resolve_layout(config)?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
@@ -84,13 +84,15 @@ pub fn run(args: InspectArgs, config: &Config) -> Result<()> {
         ReferenceKind::Digest(d) => d.clone(),
         ReferenceKind::Tag(_) => {
             let key = target_ref.to_string();
-            db.resolve_tag(&key)?
+            db.resolve_tag(&key)
+                .await?
                 .ok_or_else(|| anyhow!("ref not found in cache: {key}"))?
         }
     };
 
     let bytes = blob_store
         .get_blob(&digest)
+        .await
         .with_context(|| format!("reading manifest blob {digest}"))?;
     let value: Value = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing manifest JSON for {digest}"))?;

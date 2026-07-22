@@ -21,6 +21,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
+use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
@@ -42,7 +43,7 @@ const OCI_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+jso
 /// an entry came from. Stripped before the index is pushed.
 const SOURCE_REF_ANNOTATION: &str = "dev.pichi.manifest.source-ref";
 
-pub fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
+pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
     let list_ref: Reference = args
         .list
         .parse()
@@ -61,10 +62,12 @@ pub fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
             .parse()
             .with_context(|| format!("invalid source reference: {src}"))?;
         let digest = tag_db
-            .resolve_tag(&src_ref.to_string())?
+            .resolve_tag(&src_ref.to_string())
+            .await?
             .ok_or_else(|| anyhow!("source not in local cache: {src}"))?;
         let raw = blob_store
             .get_blob(&digest)
+            .await
             .with_context(|| format!("read local manifest {digest}"))?;
         let value: Value =
             serde_json::from_slice(&raw).with_context(|| format!("parse manifest {src}"))?;
@@ -94,7 +97,7 @@ pub fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
     Ok(())
 }
 
-pub fn annotate(args: ManifestAnnotateArgs, config: &Config) -> Result<()> {
+pub async fn annotate(args: ManifestAnnotateArgs, config: &Config) -> Result<()> {
     let list_ref: Reference = args
         .list
         .parse()
@@ -126,11 +129,13 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
 
     // podman `--all` semantics: push every referenced local image (blobs +
     // manifest, by digest into the dest repo), then the index last, so the
-    // dest tag only resolves once all content is present.
+    // dest tag only resolves once all content is present. The per-arch images
+    // are independent, so push them concurrently; the index push waits for all.
     let manifests = ready
         .get("manifests")
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow!("manifest list is malformed (no `manifests` array)"))?;
+    let mut arches: Vec<(Digest, Vec<u8>)> = Vec::with_capacity(manifests.len());
     for m in manifests {
         let digest: Digest = m
             .get("digest")
@@ -139,22 +144,36 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
             .parse()?;
         let raw = blob_store
             .get_blob(&digest)
+            .await
             .with_context(|| format!("read local manifest {digest}"))?;
+        arches.push((digest, raw));
+    }
+    let registry = &registry;
+    let blob_store = &blob_store;
+    let mut pushes = futures_util::stream::iter(arches.iter().map(|(digest, raw)| {
         let arch_ref = Reference {
             registry: dest.registry.clone(),
             repo: dest.repo.clone(),
             kind: ReferenceKind::Digest(digest.clone()),
         };
-        push_manifest_and_blobs(
-            &registry,
-            &blob_store,
-            &arch_ref,
-            &raw,
-            OCI_MANIFEST_MEDIA_TYPE,
-        )
-        .await
-        .with_context(|| format!("push arch image {digest}"))?;
+        async move {
+            push_manifest_and_blobs(
+                registry,
+                blob_store,
+                &arch_ref,
+                raw,
+                OCI_MANIFEST_MEDIA_TYPE,
+            )
+            .await
+            .with_context(|| format!("push arch image {digest}"))
+        }
+    }))
+    .buffer_unordered(3);
+    while let Some(result) = futures_util::StreamExt::next(&mut pushes).await {
+        result?;
     }
+    drop(pushes);
+
     let index_bytes = serde_json::to_vec(&ready).context("serialise OCI image index")?;
     registry
         .push_manifest(&dest, OCI_IMAGE_INDEX_MEDIA_TYPE, Bytes::from(index_bytes))
@@ -320,8 +339,8 @@ mod tests {
         "ghcr.io/pichi-vm/fedora:43".parse().unwrap()
     }
 
-    #[test]
-    fn build_index_has_index_media_type() {
+    #[tokio::test]
+    async fn build_index_has_index_media_type() {
         let idx = build_index(vec![entry("img:43-amd64", "sha256:aa")]);
         assert_eq!(
             idx["mediaType"], OCI_IMAGE_INDEX_MEDIA_TYPE,
@@ -331,8 +350,8 @@ mod tests {
         assert_eq!(idx["manifests"].as_array().unwrap().len(), 1);
     }
 
-    #[test]
-    fn annotate_sets_platform_on_matching_source() {
+    #[tokio::test]
+    async fn annotate_sets_platform_on_matching_source() {
         let mut idx = build_index(vec![
             entry("img:43-amd64", "sha256:aa"),
             entry("img:43-arm64", "sha256:bb"),
@@ -345,14 +364,14 @@ mod tests {
         assert!(idx["manifests"][0].get("platform").is_none());
     }
 
-    #[test]
-    fn annotate_unknown_source_errors() {
+    #[tokio::test]
+    async fn annotate_unknown_source_errors() {
         let mut idx = build_index(vec![entry("img:43-amd64", "sha256:aa")]);
         assert!(set_platform(&mut idx, "img:43-ppc64le", "pichi", "ppc64le").is_err());
     }
 
-    #[test]
-    fn push_requires_platform_on_every_entry() {
+    #[tokio::test]
+    async fn push_requires_platform_on_every_entry() {
         let mut idx = build_index(vec![
             entry("img:43-amd64", "sha256:aa"),
             entry("img:43-arm64", "sha256:bb"),
@@ -363,8 +382,8 @@ mod tests {
         assert!(err.to_string().contains("no platform"), "{err}");
     }
 
-    #[test]
-    fn prepare_strips_internal_annotation_and_keeps_platform() {
+    #[tokio::test]
+    async fn prepare_strips_internal_annotation_and_keeps_platform() {
         let mut idx = build_index(vec![entry("img:43-amd64", "sha256:aa")]);
         set_platform(&mut idx, "img:43-amd64", "pichi", "amd64").unwrap();
         let ready = prepare_for_push(idx, &list_ref()).unwrap();
@@ -378,8 +397,8 @@ mod tests {
         assert_eq!(m["artifactType"], MEDIA_TYPE_PICHI_ARTIFACT_V1);
     }
 
-    #[test]
-    fn encode_ref_is_collision_free() {
+    #[tokio::test]
+    async fn encode_ref_is_collision_free() {
         assert_ne!(encode_ref("img:43"), encode_ref("img/43"));
         assert_eq!(encode_ref("ghcr.io/org/img:43"), "ghcr.io%2Forg%2Fimg%3A43");
     }

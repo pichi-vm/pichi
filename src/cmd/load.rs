@@ -25,7 +25,7 @@ const ANN_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
 const ANN_HASH_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.hash-block-size";
 const DEFAULT_BLOCK_SIZE: u32 = 4096;
 
-pub fn run(args: LoadArgs, config: &Config) -> Result<()> {
+pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
     let dir = &args.input;
     let layout = resolve_layout(config)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
@@ -42,16 +42,19 @@ pub fn run(args: LoadArgs, config: &Config) -> Result<()> {
         let digest: Digest = format!("sha256:{hex}")
             .parse()
             .with_context(|| format!("layout blob name is not a sha256 digest: {hex}"))?;
-        if !blob_store.blob_exists(&digest) {
+        if !blob_store.blob_exists(&digest).await {
             blob_store
                 .put_blob_from_path(&entry.path(), &digest)
+                .await
                 .with_context(|| format!("import blob {digest}"))?;
         }
     }
 
     // Register the tag(s) from index.json (or the --tag override).
     let index: Value = serde_json::from_slice(
-        &fs::read(dir.join("index.json")).with_context(|| format!("read {}", dir.display()))?,
+        &tokio::fs::read(dir.join("index.json"))
+            .await
+            .with_context(|| format!("read {}", dir.display()))?,
     )
     .context("parse index.json")?;
     let manifests = index
@@ -74,10 +77,11 @@ pub fn run(args: LoadArgs, config: &Config) -> Result<()> {
         // `pichi pull` does — otherwise `pichi run` has no hash device.
         let raw = blob_store
             .get_blob(&digest)
+            .await
             .with_context(|| format!("read loaded manifest {digest}"))?;
         let manifest = Manifest::from_reader_validated(&raw[..])
             .with_context(|| format!("parse loaded manifest {digest}"))?;
-        prepare_sidecars(&blob_store, &manifest)?;
+        prepare_sidecars(&blob_store, &manifest).await?;
 
         let tag = args.tag.clone().or_else(|| {
             m.get("annotations")
@@ -94,7 +98,7 @@ pub fn run(args: LoadArgs, config: &Config) -> Result<()> {
                     .parse::<Reference>()
                     .with_context(|| format!("invalid tag {t}"))?
                     .to_string();
-                tag_db.set_tag(&key, &digest)?;
+                tag_db.set_tag(&key, &digest).await?;
                 println!("loaded {key}");
             }
             None => println!("loaded {digest} (untagged)"),
@@ -107,11 +111,12 @@ pub fn run(args: LoadArgs, config: &Config) -> Result<()> {
 /// `<blob>.deflated` (decompressed cow, `+zstd` only) and `<blob>.verity`
 /// (dm-verity hash tree). Idempotent — a scute whose `.verity` already exists
 /// is skipped. PMI/DTB layers carry no verity and are ignored.
-fn prepare_sidecars(blob_store: &FilesystemBlobStore, manifest: &Manifest) -> Result<()> {
+async fn prepare_sidecars(blob_store: &FilesystemBlobStore, manifest: &Manifest) -> Result<()> {
     let data_block_size = block_size(manifest, ANN_DATA_BLOCK_SIZE);
     let hash_block_size = block_size(manifest, ANN_HASH_BLOCK_SIZE);
     let scratch = blob_store
         .scratch_dir()
+        .await
         .context("preparing scratch dir for sidecars")?;
 
     for layer in &manifest.layers {
@@ -126,40 +131,54 @@ fn prepare_sidecars(blob_store: &FilesystemBlobStore, manifest: &Manifest) -> Re
             .with_context(|| format!("parse scute digest {}", layer.digest_str()))?;
         let blob_path = blob_store.blob_path(&digest);
         let v_path = verity_path(&blob_path);
-        if v_path.exists() {
+        if tokio::fs::try_exists(&v_path).await.unwrap_or(false) {
             continue;
         }
 
         let raw = blob_store
             .get_blob(&digest)
+            .await
             .with_context(|| format!("read scute cow blob {digest}"))?;
-        // For `+zstd` the cow must be decompressed before hashing; the
-        // decompressed bytes are also persisted as the `.deflated` sidecar
-        // (raw scutes ARE the deflated bytes, so no sidecar is written).
-        let cow = if is_zstd {
-            let mut decoder = ruzstd::decoding::StreamingDecoder::new(&raw[..])
-                .map_err(|e| anyhow!("zstd decoder init for {digest}: {e}"))?;
-            let mut out = Vec::new();
-            std::io::Read::read_to_end(&mut decoder, &mut out)
-                .with_context(|| format!("zstd decode scute {digest}"))?;
-            write_sidecar_atomic(&scratch, &deflated_path(&blob_path), &out)
-                .with_context(|| format!("write .deflated sidecar for {digest}"))?;
-            out
-        } else {
-            raw
-        };
-
         let salt = hex::decode(salt_hex)
             .with_context(|| format!("scute salt is not valid hex: {salt_hex}"))?;
-        let params = VerityParams {
-            data_block_size,
-            hash_block_size,
-            salt,
-            uuid: [0u8; 16], // metadata only; the kernel ignores it at activation.
-        };
-        let output = compute(&cow, &params)
-            .with_context(|| format!("dm-verity computation for scute {digest}"))?;
-        write_sidecar_atomic(&scratch, &v_path, &output.blob)
+
+        // The zstd decode + dm-verity hash are CPU-bound — run them off the
+        // runtime. Returns the optional `.deflated` bytes (only for `+zstd`;
+        // raw scutes ARE the deflated bytes) and the `.verity` blob.
+        let d = digest.clone();
+        let (deflated, verity_blob) =
+            tokio::task::spawn_blocking(move || -> Result<(Option<Vec<u8>>, Vec<u8>)> {
+                let cow = if is_zstd {
+                    let mut decoder = ruzstd::decoding::StreamingDecoder::new(&raw[..])
+                        .map_err(|e| anyhow!("zstd decoder init for {d}: {e}"))?;
+                    let mut out = Vec::new();
+                    std::io::Read::read_to_end(&mut decoder, &mut out)
+                        .with_context(|| format!("zstd decode scute {d}"))?;
+                    out
+                } else {
+                    raw
+                };
+                let params = VerityParams {
+                    data_block_size,
+                    hash_block_size,
+                    salt,
+                    uuid: [0u8; 16], // metadata only; kernel ignores it at activation.
+                };
+                let output =
+                    compute(&cow, &params).with_context(|| format!("dm-verity for scute {d}"))?;
+                let deflated = if is_zstd { Some(cow) } else { None };
+                Ok((deflated, output.blob))
+            })
+            .await
+            .context("sidecar computation task panicked")??;
+
+        if let Some(deflated) = deflated {
+            write_sidecar_atomic(&scratch, &deflated_path(&blob_path), &deflated)
+                .await
+                .with_context(|| format!("write .deflated sidecar for {digest}"))?;
+        }
+        write_sidecar_atomic(&scratch, &v_path, &verity_blob)
+            .await
             .with_context(|| format!("write .verity sidecar for {digest}"))?;
     }
     Ok(())

@@ -41,7 +41,7 @@ serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 tinytemplate.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "macros"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "macros", "fs", "process"] }
 tokio-util = { workspace = true, features = ["io", "io-util"] }
 toml.workspace = true
 uuid.workspace = true
@@ -213,6 +213,9 @@ assert_cmd = "2"
 tokio = { version = "1", default-features = false }
 tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 futures-util = { version = "0.3", default-features = false }
+# Async fn in traits that are used as `&dyn` (BlobStore/TagDb) — native
+# async-fn-in-trait is not object-safe, so the storage traits erase via this.
+async-trait = "0.1"
 bytes = "1"
 oci-client = { version = "0.16", default-features = false, features = ["rustls-tls"] }
 http = { version = "1", default-features = false }

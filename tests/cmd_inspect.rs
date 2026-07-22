@@ -30,8 +30,8 @@ fn graphroot(tmp: &TempDir) -> std::path::PathBuf {
     p
 }
 
-#[test]
-fn inspect_bare_manifest_returns_full_schema() {
+#[tokio::test]
+async fn inspect_bare_manifest_returns_full_schema() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let m = Manifest {
@@ -59,9 +59,11 @@ fn inspect_bare_manifest_returns_full_schema() {
     let bytes = m.to_bytes().unwrap();
     let digest = m.digest().unwrap();
     let bs = FilesystemBlobStore::new(&g);
-    bs.put_blob(&digest, &bytes).unwrap();
+    bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();
-    db.set_tag("docker.io/library/myapp:base", &digest).unwrap();
+    db.set_tag("docker.io/library/myapp:base", &digest)
+        .await
+        .unwrap();
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
@@ -84,8 +86,8 @@ fn inspect_bare_manifest_returns_full_schema() {
     assert_eq!(v["_pichi"]["total_layer_size"].as_u64(), Some(4096 + 8192));
 }
 
-#[test]
-fn inspect_image_index_lists_entries() {
+#[tokio::test]
+async fn inspect_image_index_lists_entries() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     // Hand-craft an OCI image index with one pichi entry + one container entry.
@@ -111,9 +113,9 @@ fn inspect_image_index_lists_entries() {
     let bytes = serde_json::to_vec(&index).unwrap();
     let digest = pichi_artifact::Digest::from_bytes_sha256(&bytes);
     let bs = FilesystemBlobStore::new(&g);
-    bs.put_blob(&digest, &bytes).unwrap();
+    bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();
-    db.set_tag("registry.io/multi:1", &digest).unwrap();
+    db.set_tag("registry.io/multi:1", &digest).await.unwrap();
 
     let out = Command::cargo_bin("pichi")
         .unwrap()

@@ -31,8 +31,8 @@ fn write_small_fixture(path: &std::path::Path) {
 
 /// IMPORT-01: end-to-end import produces 3 blobs + 1 tag; manifest is
 /// readable via `pichi inspect`.
-#[test]
-fn import_happy_path() {
+#[tokio::test]
+async fn import_happy_path() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
@@ -54,6 +54,7 @@ fn import_happy_path() {
     let db = FilesystemTagDb::open(&g).unwrap();
     let manifest_digest = db
         .resolve_tag("docker.io/library/myapp:base")
+        .await
         .unwrap()
         .expect("tag should resolve under canonical form");
 
@@ -75,15 +76,15 @@ fn import_happy_path() {
 
     // Manifest has exactly one Scute layer (no PMI).
     let blob_store = FilesystemBlobStore::new(&g);
-    let bytes = blob_store.get_blob(&manifest_digest).unwrap();
+    let bytes = blob_store.get_blob(&manifest_digest).await.unwrap();
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(manifest.layers.len(), 1, "exactly one layer (one scute)");
 }
 
 /// IMPORT-05 / CONTEXT D-06: `pichi import` accepts non-GPT input
 /// (treats input as opaque bytes -- no GPT parsing, no validation).
-#[test]
-fn import_accepts_non_gpt_input() {
+#[tokio::test]
+async fn import_accepts_non_gpt_input() {
     let tmp = TempDir::new().unwrap();
     let raw = tmp.path().join("not-a-disk.tar");
     // A few hundred bytes of "tar header"-ish data -- definitely not a
@@ -104,8 +105,8 @@ fn import_accepts_non_gpt_input() {
 }
 
 /// IMPORT-07: `--chunk-size` rejected for non-power-of-two, < 8, and > 2048.
-#[test]
-fn rejects_bad_chunk_size() {
+#[tokio::test]
+async fn rejects_bad_chunk_size() {
     let tmp = TempDir::new().unwrap();
     let raw = tmp.path().join("input.raw");
     std::fs::write(&raw, vec![0u8; 4096]).unwrap();
@@ -143,8 +144,8 @@ fn rejects_bad_chunk_size() {
 
 /// CONTEXT D-01 (e2e): default-flag import writes salt = 32 zero bytes
 /// = 64 hex zero chars in the manifest's scute annotation.
-#[test]
-fn bottom_scute_salt_is_zero_prefix_e2e() {
+#[tokio::test]
+async fn bottom_scute_salt_is_zero_prefix_e2e() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
@@ -161,10 +162,11 @@ fn bottom_scute_salt_is_zero_prefix_e2e() {
     let db = FilesystemTagDb::open(&g).unwrap();
     let manifest_digest = db
         .resolve_tag("docker.io/library/salt:check")
+        .await
         .unwrap()
         .unwrap();
     let blob_store = FilesystemBlobStore::new(&g);
-    let bytes = blob_store.get_blob(&manifest_digest).unwrap();
+    let bytes = blob_store.get_blob(&manifest_digest).await.unwrap();
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     let salt = match &manifest.layers[0] {
         Layer::Scute(s) => s.annotations.salt.clone(),
@@ -179,8 +181,8 @@ fn bottom_scute_salt_is_zero_prefix_e2e() {
 
 /// IMPORT-01 (extended): without --pmi, pichi inspect reports pmi_present: false.
 /// Extends import_happy_path by running inspect and asserting on pmi_present.
-#[test]
-fn import_without_pmi_reports_pmi_present_false() {
+#[tokio::test]
+async fn import_without_pmi_reports_pmi_present_false() {
     let tmp = TempDir::new().unwrap();
     let raw = tmp.path().join("input.raw");
     write_small_fixture(&raw);
@@ -209,8 +211,8 @@ fn import_without_pmi_reports_pmi_present_false() {
 }
 
 /// Happy path with --pmi: produces 4 blobs, 2-layer manifest, pmi_present: true.
-#[test]
-fn import_with_pmi_bundles_layer() {
+#[tokio::test]
+async fn import_with_pmi_bundles_layer() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
@@ -247,12 +249,13 @@ fn import_with_pmi_bundles_layer() {
     let db = FilesystemTagDb::open(&g).unwrap();
     let manifest_digest = db
         .resolve_tag("docker.io/library/appliance:bundle")
+        .await
         .unwrap()
         .expect("tag must resolve after --pmi import");
 
     // Manifest has exactly 2 layers: Scute + Pmi.
     let blob_store = FilesystemBlobStore::new(&g);
-    let bytes = blob_store.get_blob(&manifest_digest).unwrap();
+    let bytes = blob_store.get_blob(&manifest_digest).await.unwrap();
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         manifest.layers.len(),
@@ -295,8 +298,8 @@ fn import_with_pmi_bundles_layer() {
 }
 
 /// Negative: --pmi with a missing file fails non-zero, leaves no tag.
-#[test]
-fn import_with_missing_pmi_file_errors() {
+#[tokio::test]
+async fn import_with_missing_pmi_file_errors() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
@@ -317,7 +320,7 @@ fn import_with_missing_pmi_file_errors() {
 
     // No partial state: the tag must not be set.
     let db = FilesystemTagDb::open(&g).unwrap();
-    let resolved = db.resolve_tag("docker.io/library/bad:pmi").unwrap();
+    let resolved = db.resolve_tag("docker.io/library/bad:pmi").await.unwrap();
     assert!(
         resolved.is_none(),
         "tag must NOT be set after a missing-pmi failure (no partial state)"
@@ -326,8 +329,8 @@ fn import_with_missing_pmi_file_errors() {
 
 /// VALIDATION row "Manifest contains chain-wide verity annotations":
 /// chain annotations carry locked Phase 42 D-06 values.
-#[test]
-fn manifest_has_locked_verity_params_e2e() {
+#[tokio::test]
+async fn manifest_has_locked_verity_params_e2e() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
@@ -344,10 +347,11 @@ fn manifest_has_locked_verity_params_e2e() {
     let db = FilesystemTagDb::open(&g).unwrap();
     let manifest_digest = db
         .resolve_tag("docker.io/library/params:check")
+        .await
         .unwrap()
         .unwrap();
     let blob_store = FilesystemBlobStore::new(&g);
-    let bytes = blob_store.get_blob(&manifest_digest).unwrap();
+    let bytes = blob_store.get_blob(&manifest_digest).await.unwrap();
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         manifest

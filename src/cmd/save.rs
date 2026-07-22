@@ -13,7 +13,6 @@
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::json;
-use std::fs;
 use std::path::Path;
 
 use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
@@ -27,7 +26,7 @@ const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+jso
 const OCI_LAYOUT_MARKER: &str = r#"{"imageLayoutVersion":"1.0.0"}"#;
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 
-pub fn run(args: SaveArgs, config: &Config) -> Result<()> {
+pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
     let reference: Reference = args
         .reference
         .parse()
@@ -39,36 +38,49 @@ pub fn run(args: SaveArgs, config: &Config) -> Result<()> {
 
     let tag = reference.to_string();
     let manifest_digest = tag_db
-        .resolve_tag(&tag)?
+        .resolve_tag(&tag)
+        .await?
         .ok_or_else(|| anyhow!("ref not in cache: {tag}"))?;
     let raw_manifest = blob_store
         .get_blob(&manifest_digest)
+        .await
         .with_context(|| format!("read manifest {manifest_digest}"))?;
     let manifest = Manifest::from_reader_validated(raw_manifest.as_slice())
         .with_context(|| format!("parse cached manifest {manifest_digest}"))?;
 
     let out = &args.output;
     let blobs_dir = out.join("blobs").join("sha256");
-    fs::create_dir_all(&blobs_dir).with_context(|| format!("create {}", blobs_dir.display()))?;
-    fs::write(out.join("oci-layout"), OCI_LAYOUT_MARKER)?;
+    tokio::fs::create_dir_all(&blobs_dir)
+        .await
+        .with_context(|| format!("create {}", blobs_dir.display()))?;
+    tokio::fs::write(out.join("oci-layout"), OCI_LAYOUT_MARKER).await?;
 
-    // Manifest, config (unless it is the inline empty config), and every layer.
-    copy_blob(&blob_store, &manifest_digest, &blobs_dir)?;
+    // Manifest, config (unless the inline empty config), and every layer —
+    // copied concurrently (each is an independent file copy).
+    let mut to_copy: Vec<Digest> = vec![manifest_digest.clone()];
     if manifest.config.data.is_none() {
-        let cfg: Digest = manifest
-            .config
-            .digest
-            .parse()
-            .with_context(|| format!("invalid config digest: {}", manifest.config.digest))?;
-        copy_blob(&blob_store, &cfg, &blobs_dir)?;
+        to_copy.push(
+            manifest
+                .config
+                .digest
+                .parse()
+                .with_context(|| format!("invalid config digest: {}", manifest.config.digest))?,
+        );
     }
     for layer in &manifest.layers {
-        let d: Digest = layer
-            .digest_str()
-            .parse()
-            .with_context(|| format!("invalid layer digest: {}", layer.digest_str()))?;
-        copy_blob(&blob_store, &d, &blobs_dir)?;
+        to_copy.push(
+            layer
+                .digest_str()
+                .parse()
+                .with_context(|| format!("invalid layer digest: {}", layer.digest_str()))?,
+        );
     }
+    futures_util::future::try_join_all(
+        to_copy
+            .iter()
+            .map(|d| copy_blob(&blob_store, d, &blobs_dir)),
+    )
+    .await?;
 
     let index = json!({
         "schemaVersion": 2,
@@ -81,10 +93,11 @@ pub fn run(args: SaveArgs, config: &Config) -> Result<()> {
             "annotations": { REF_NAME_ANNOTATION: tag },
         }],
     });
-    fs::write(
+    tokio::fs::write(
         out.join("index.json"),
         serde_json::to_vec_pretty(&index).context("serialise index.json")?,
-    )?;
+    )
+    .await?;
 
     println!("saved {tag} -> {}", out.display());
     Ok(())
@@ -92,10 +105,14 @@ pub fn run(args: SaveArgs, config: &Config) -> Result<()> {
 
 /// Copy a cache blob into the layout's `blobs/sha256/<hex>` (streamed by the OS,
 /// no full read into this process).
-fn copy_blob(blob_store: &FilesystemBlobStore, digest: &Digest, blobs_dir: &Path) -> Result<()> {
+async fn copy_blob(
+    blob_store: &FilesystemBlobStore,
+    digest: &Digest,
+    blobs_dir: &Path,
+) -> Result<()> {
     let src = blob_store.blob_path(digest);
     let dst = blobs_dir.join(digest.hex());
-    fs::copy(&src, &dst).with_context(|| {
+    tokio::fs::copy(&src, &dst).await.with_context(|| {
         format!(
             "copy blob {digest} ({} -> {})",
             src.display(),

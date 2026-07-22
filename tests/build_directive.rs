@@ -19,10 +19,10 @@ mod common;
 
 use common::{assert_pichi_ok, kvm_available, make_ext4, pichi, pull_build_image};
 
-#[test]
+#[tokio::test]
 #[ignore = "pichi build deferred; re-enable with build work"]
 #[cfg(target_arch = "x86_64")]
-fn pichi_build_applies_a_copy_directive() {
+async fn pichi_build_applies_a_copy_directive() {
     if !kvm_available() {
         eprintln!("skip: no usable /dev/kvm");
         return;

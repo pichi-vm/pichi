@@ -16,6 +16,12 @@
 //! is only ever replaced by atomic rename, so readers see either the old or
 //! new file in full — never a torn write).
 //!
+//! The trait surface is async: since the actual work is blocking file locking
+//! + fsync, every method offloads its synchronous body via `spawn_blocking`
+//! (the store is `Clone`, so moving it into the closure is cheap). The
+//! sync bodies remain as private helpers, and `delete_tag_locked` stays a
+//! sync `pub` method for use inside a `with_index_lock` closure.
+//!
 //! On a brand-new cache where index.json does not yet exist, `resolve_tag`
 //! and `list_tags` return `Ok(None)` / `Ok(vec![])` rather than erroring.
 //!
@@ -31,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
@@ -48,16 +55,17 @@ const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 const OCI_LAYOUT_MARKER: &str = r#"{"imageLayoutVersion":"1.0.0"}"#;
 
 /// Tag-to-digest mapping trait. Implementations MUST be `Send + Sync`.
+#[async_trait]
 pub trait TagDb: Send + Sync {
     /// Insert or overwrite the tag → digest mapping.
-    fn set_tag(&self, tag: &str, digest: &Digest) -> Result<()>;
+    async fn set_tag(&self, tag: &str, digest: &Digest) -> Result<()>;
     /// Look up the digest for `tag`, returning `Ok(None)` if absent.
-    fn resolve_tag(&self, tag: &str) -> Result<Option<Digest>>;
+    async fn resolve_tag(&self, tag: &str) -> Result<Option<Digest>>;
     /// Enumerate all tag entries. Order is the on-disk order in `index.json`
     /// (insertion order with set_tag overwrites moving entries to the back).
-    fn list_tags(&self) -> Result<Vec<TagEntry>>;
+    async fn list_tags(&self) -> Result<Vec<TagEntry>>;
     /// Remove the tag. `Ok(true)` if it existed; `Ok(false)` otherwise.
-    fn delete_tag(&self, tag: &str) -> Result<bool>;
+    async fn delete_tag(&self, tag: &str) -> Result<bool>;
 }
 
 /// One row of the tag table.
@@ -106,11 +114,7 @@ struct ManifestDescriptor {
 /// Filesystem-backed tag database storing OCI Image Layout `index.json`.
 ///
 /// `path` passed to `open` is the **cache root directory** (the parent of
-/// `index.json` and `oci-layout`). For backward compatibility with the prior
-/// redb-based call sites, if `path` ends with any `.redb` extension we treat
-/// its parent as the root. (This compatibility shim covers any internal call
-/// site that was not yet migrated; the canonical public usage from Task 2
-/// onward is to pass the cache root directly.)
+/// `index.json` and `oci-layout`).
 #[derive(Debug, Clone)]
 pub struct FilesystemTagDb {
     root: PathBuf,
@@ -229,10 +233,10 @@ impl FilesystemTagDb {
             )),
         }
     }
-}
 
-impl TagDb for FilesystemTagDb {
-    fn set_tag(&self, tag: &str, digest: &Digest) -> Result<()> {
+    // --- Synchronous bodies (run inside spawn_blocking) ---------------------
+
+    fn set_tag_sync(&self, tag: &str, digest: &Digest) -> Result<()> {
         let lock_path = self.lock_path();
         with_advisory_lock(&lock_path, || {
             self.ensure_oci_layout_marker()?;
@@ -243,13 +247,6 @@ impl TagDb for FilesystemTagDb {
                 m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag)
             });
 
-            // Compute size: for v0.8 we don't have the manifest bytes here, so
-            // record 0 as a placeholder (Phase 41 has no consumer reading
-            // `size` yet; future work that resolves the manifest blob will
-            // populate it). The OCI spec requires the field but does not
-            // mandate its accuracy for an in-memory cache view used only by
-            // pichi internally. External consumers (skopeo) read size for
-            // pull validation, which is out of scope here.
             let descriptor = ManifestDescriptor {
                 media_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
                 digest: digest.to_string(),
@@ -265,7 +262,7 @@ impl TagDb for FilesystemTagDb {
         })
     }
 
-    fn resolve_tag(&self, tag: &str) -> Result<Option<Digest>> {
+    fn resolve_tag_sync(&self, tag: &str) -> Result<Option<Digest>> {
         // Lock-free read: index.json is replaced atomically by writers, so a
         // concurrent reader sees either the old or the new file in full.
         let index = self.read_index()?;
@@ -280,7 +277,7 @@ impl TagDb for FilesystemTagDb {
         Ok(None)
     }
 
-    fn list_tags(&self) -> Result<Vec<TagEntry>> {
+    fn list_tags_sync(&self) -> Result<Vec<TagEntry>> {
         let index = self.read_index()?;
         let mut out = Vec::with_capacity(index.manifests.len());
         for m in &index.manifests {
@@ -298,30 +295,19 @@ impl TagDb for FilesystemTagDb {
         Ok(out)
     }
 
-    fn delete_tag(&self, tag: &str) -> Result<bool> {
-        let lock_path = self.lock_path();
-        with_advisory_lock(&lock_path, || self.delete_tag_locked(tag))
-    }
-}
-
-impl FilesystemTagDb {
     /// Lock-free variant of [`TagDb::delete_tag`] for use inside a
     /// [`crate::with_index_lock`] window.
     ///
     /// **Caller MUST hold the advisory flock on `<root>/index.json.lock`** —
     /// either via `with_index_lock(layout, ...)` (the canonical path) or via
     /// any other holder of the same flock. Calling this without the flock is
-    /// a refcount-races bug (T-42-02): two concurrent `rmi` processes could
-    /// each compute orphan sets against the same pre-state and both unlink
-    /// blobs the other still considers referenced.
+    /// a refcount-races bug (T-42-02).
     ///
-    /// Calling [`TagDb::delete_tag`] (the locked entry point) from inside
-    /// `with_index_lock` would self-deadlock under `flock(2)` (separate FDs
-    /// to the same file from one process block each other). Use this method
-    /// instead in that context.
+    /// This method is synchronous by design: it is meant to be called from
+    /// inside a `spawn_blocking` closure that already holds the index lock.
     ///
     /// Returns `Ok(true)` if the tag existed and was removed, `Ok(false)`
-    /// otherwise. Same semantics as `delete_tag` but with no flock acquisition.
+    /// otherwise.
     pub fn delete_tag_locked(&self, tag: &str) -> Result<bool> {
         let mut index = self.read_index()?;
         let before = index.manifests.len();
@@ -335,47 +321,89 @@ impl FilesystemTagDb {
         }
         Ok(existed)
     }
+
+    fn delete_tag_sync(&self, tag: &str) -> Result<bool> {
+        let lock_path = self.lock_path();
+        with_advisory_lock(&lock_path, || self.delete_tag_locked(tag))
+    }
+}
+
+#[async_trait]
+impl TagDb for FilesystemTagDb {
+    async fn set_tag(&self, tag: &str, digest: &Digest) -> Result<()> {
+        let this = self.clone();
+        let tag = tag.to_string();
+        let digest = digest.clone();
+        tokio::task::spawn_blocking(move || this.set_tag_sync(&tag, &digest))
+            .await
+            .context("set_tag task panicked")?
+    }
+
+    async fn resolve_tag(&self, tag: &str) -> Result<Option<Digest>> {
+        let this = self.clone();
+        let tag = tag.to_string();
+        tokio::task::spawn_blocking(move || this.resolve_tag_sync(&tag))
+            .await
+            .context("resolve_tag task panicked")?
+    }
+
+    async fn list_tags(&self) -> Result<Vec<TagEntry>> {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.list_tags_sync())
+            .await
+            .context("list_tags task panicked")?
+    }
+
+    async fn delete_tag(&self, tag: &str) -> Result<bool> {
+        let this = self.clone();
+        let tag = tag.to_string();
+        tokio::task::spawn_blocking(move || this.delete_tag_sync(&tag))
+            .await
+            .context("delete_tag task panicked")?
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
 
     fn db() -> (tempfile::TempDir, FilesystemTagDb) {
         let dir = tempfile::TempDir::new().unwrap();
-        // Pass the ROOT directory (new convention).
         let db = FilesystemTagDb::open(dir.path()).unwrap();
         (dir, db)
     }
 
-    #[test]
-    fn set_and_resolve_round_trip() {
+    #[tokio::test]
+    async fn set_and_resolve_round_trip() {
         let (_dir, db) = db();
         let d = Digest::from_bytes_sha256(b"manifest-bytes");
-        db.set_tag("docker.io/library/alpine:latest", &d).unwrap();
-        let got = db.resolve_tag("docker.io/library/alpine:latest").unwrap();
+        db.set_tag("docker.io/library/alpine:latest", &d)
+            .await
+            .unwrap();
+        let got = db
+            .resolve_tag("docker.io/library/alpine:latest")
+            .await
+            .unwrap();
         assert_eq!(got, Some(d));
     }
 
-    #[test]
-    fn resolve_absent_returns_none() {
+    #[tokio::test]
+    async fn resolve_absent_returns_none() {
         let (_dir, db) = db();
-        assert_eq!(db.resolve_tag("never-set").unwrap(), None);
+        assert_eq!(db.resolve_tag("never-set").await.unwrap(), None);
     }
 
-    #[test]
-    fn list_tags_returns_all() {
+    #[tokio::test]
+    async fn list_tags_returns_all() {
         use std::collections::HashSet;
         let (_dir, db) = db();
         let d1 = Digest::from_bytes_sha256(b"one");
         let d2 = Digest::from_bytes_sha256(b"two");
         let d3 = Digest::from_bytes_sha256(b"three");
-        db.set_tag("a:latest", &d1).unwrap();
-        db.set_tag("b:latest", &d2).unwrap();
-        db.set_tag("c:latest", &d3).unwrap();
-        let entries = db.list_tags().unwrap();
+        db.set_tag("a:latest", &d1).await.unwrap();
+        db.set_tag("b:latest", &d2).await.unwrap();
+        db.set_tag("c:latest", &d3).await.unwrap();
+        let entries = db.list_tags().await.unwrap();
         assert_eq!(entries.len(), 3);
         let want: HashSet<_> = [
             ("a:latest".to_string(), d1),
@@ -388,68 +416,68 @@ mod tests {
         assert_eq!(got, want);
     }
 
-    #[test]
-    fn delete_tag_returns_true_then_false() {
+    #[tokio::test]
+    async fn delete_tag_returns_true_then_false() {
         let (_dir, db) = db();
         let d = Digest::from_bytes_sha256(b"toremove");
-        db.set_tag("foo:latest", &d).unwrap();
-        assert!(db.delete_tag("foo:latest").unwrap());
-        assert_eq!(db.resolve_tag("foo:latest").unwrap(), None);
-        assert!(!db.delete_tag("foo:latest").unwrap());
+        db.set_tag("foo:latest", &d).await.unwrap();
+        assert!(db.delete_tag("foo:latest").await.unwrap());
+        assert_eq!(db.resolve_tag("foo:latest").await.unwrap(), None);
+        assert!(!db.delete_tag("foo:latest").await.unwrap());
     }
 
-    #[test]
-    fn persists_across_drop_and_reopen() {
+    #[tokio::test]
+    async fn persists_across_drop_and_reopen() {
         let dir = tempfile::TempDir::new().unwrap();
         let d = Digest::from_bytes_sha256(b"persistent");
         {
             let db = FilesystemTagDb::open(dir.path()).unwrap();
-            db.set_tag("persist:tag", &d).unwrap();
+            db.set_tag("persist:tag", &d).await.unwrap();
         }
         let db2 = FilesystemTagDb::open(dir.path()).unwrap();
-        assert_eq!(db2.resolve_tag("persist:tag").unwrap(), Some(d));
+        assert_eq!(db2.resolve_tag("persist:tag").await.unwrap(), Some(d));
     }
 
-    #[test]
-    fn box_dyn_tagdb_compiles() {
+    #[tokio::test]
+    async fn box_dyn_tagdb_compiles() {
         let dir = tempfile::TempDir::new().unwrap();
         let _b: Box<dyn TagDb> = Box::new(FilesystemTagDb::open(dir.path()).unwrap());
     }
 
-    #[test]
-    fn concurrent_set_tag_different_keys() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_set_tag_different_keys() {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(FilesystemTagDb::open(dir.path()).unwrap());
+        let db = std::sync::Arc::new(FilesystemTagDb::open(dir.path()).unwrap());
 
         let d1 = Digest::from_bytes_sha256(b"data-one");
         let d2 = Digest::from_bytes_sha256(b"data-two");
 
         let h1 = {
-            let db = Arc::clone(&db);
+            let db = std::sync::Arc::clone(&db);
             let d = d1.clone();
-            std::thread::spawn(move || db.set_tag("myimage:latest", &d))
+            tokio::spawn(async move { db.set_tag("myimage:latest", &d).await })
         };
         let h2 = {
-            let db = Arc::clone(&db);
+            let db = std::sync::Arc::clone(&db);
             let d = d2.clone();
-            std::thread::spawn(move || db.set_tag("myimage:v1", &d))
+            tokio::spawn(async move { db.set_tag("myimage:v1", &d).await })
         };
 
-        h1.join().unwrap().expect("set_tag latest must succeed");
-        h2.join().unwrap().expect("set_tag v1 must succeed");
+        h1.await.unwrap().expect("set_tag latest must succeed");
+        h2.await.unwrap().expect("set_tag v1 must succeed");
 
         // CRITICAL: both writes must survive — no lost-update under flock.
-        assert_eq!(db.resolve_tag("myimage:latest").unwrap(), Some(d1));
-        assert_eq!(db.resolve_tag("myimage:v1").unwrap(), Some(d2));
-        assert_eq!(db.list_tags().unwrap().len(), 2);
+        assert_eq!(db.resolve_tag("myimage:latest").await.unwrap(), Some(d1));
+        assert_eq!(db.resolve_tag("myimage:v1").await.unwrap(), Some(d2));
+        assert_eq!(db.list_tags().await.unwrap().len(), 2);
     }
 
-    #[test]
-    fn index_json_schema_is_oci_compliant() {
+    #[tokio::test]
+    async fn index_json_schema_is_oci_compliant() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = FilesystemTagDb::open(dir.path()).unwrap();
         let d = Digest::from_bytes_sha256(b"oci-shape-check");
-        db.set_tag("registry.example/app:v1", &d).unwrap();
+        db.set_tag("registry.example/app:v1", &d).await.unwrap();
 
         let index_path = dir.path().join("index.json");
         let bytes = std::fs::read(&index_path).expect("index.json must exist");
@@ -473,19 +501,18 @@ mod tests {
             Some("registry.example/app:v1")
         );
 
-        // oci-layout marker file present with the canonical contents.
         let marker = std::fs::read_to_string(dir.path().join("oci-layout")).unwrap();
         assert_eq!(marker.trim(), r#"{"imageLayoutVersion":"1.0.0"}"#);
     }
 
-    #[test]
-    fn setting_same_tag_twice_overwrites() {
+    #[tokio::test]
+    async fn setting_same_tag_twice_overwrites() {
         let (_dir, db) = db();
         let d1 = Digest::from_bytes_sha256(b"v1");
         let d2 = Digest::from_bytes_sha256(b"v2");
-        db.set_tag("x:latest", &d1).unwrap();
-        db.set_tag("x:latest", &d2).unwrap();
-        assert_eq!(db.resolve_tag("x:latest").unwrap(), Some(d2));
-        assert_eq!(db.list_tags().unwrap().len(), 1);
+        db.set_tag("x:latest", &d1).await.unwrap();
+        db.set_tag("x:latest", &d2).await.unwrap();
+        assert_eq!(db.resolve_tag("x:latest").await.unwrap(), Some(d2));
+        assert_eq!(db.list_tags().await.unwrap().len(), 1);
     }
 }

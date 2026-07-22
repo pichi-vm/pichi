@@ -8,11 +8,9 @@
 //!
 //! - [`CacheLayout`]: rootless/rootful path resolution per podman convention
 //!   (STORAGE-03/04).
-//! - [`ReadSeek`]: blob-handle trait whose contract is locked from Phase 41
-//!   forward — the carapace device consumes
-//!   `Box<dyn ReadSeek>` from `BlobStore::open_blob`.
-//! - [`BlobStore`] / [`FilesystemBlobStore`]: content-addressed blob storage
-//!   with atomic-rename writes (STORAGE-02, STORAGE-06, STORAGE-10).
+//! - [`BlobStore`] / [`FilesystemBlobStore`]: async content-addressed blob
+//!   storage with atomic-rename writes (STORAGE-02, STORAGE-06, STORAGE-10).
+//!   `open_blob` yields an async streaming reader ([`BlobReader`]).
 //! - [`with_advisory_lock`] / [`lock_exclusive`] / [`with_index_lock`]:
 //!   cross-platform advisory file-lock helpers (std `File::lock`, i.e.
 //!   `flock(2)` on Unix / `LockFileEx` on Windows) for inter-process
@@ -29,13 +27,11 @@
 mod blob_store;
 mod layout;
 mod lock;
-mod read_seek;
 pub mod sidecar;
 mod tag_db;
 
-pub use blob_store::{BlobStore, FilesystemBlobStore};
+pub use blob_store::{BlobReader, BlobStore, FilesystemBlobStore};
 pub use layout::{CacheLayout, EnvSnapshot, Mode};
 pub use lock::{lock_exclusive, with_advisory_lock, with_index_lock};
-pub use read_seek::ReadSeek;
 pub use sidecar::{deflated_path, unlink_blob_with_sidecars, verity_path, write_sidecar_atomic};
 pub use tag_db::{FilesystemTagDb, TagDb, TagEntry};

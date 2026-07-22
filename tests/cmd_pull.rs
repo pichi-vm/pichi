@@ -57,8 +57,8 @@ fn test_repo_base() -> Option<String> {
 /// PICHI_TEST_REGISTRY env var; if cmd::pull built the throwaway runtime
 /// before the never-check it would still error here, but the implementation
 /// short-circuits before any I/O so no network is attempted).
-#[test]
-fn pull_never_errors_when_absent() {
+#[tokio::test]
+async fn pull_never_errors_when_absent() {
     let tmp = TempDir::new().unwrap();
     let _g = graphroot(&tmp);
     let assert = Command::cargo_bin("pichi")
@@ -83,8 +83,8 @@ fn pull_never_errors_when_absent() {
 /// REGISTRY-01 (zot): seed cache via `pichi import`, push to zot, rmi
 /// locally, pull twice. Second pull must NOT re-write blob files (mtimes
 /// stable) — REGISTRY-01 dedup-by-digest semantics.
-#[test]
-fn pull_skips_existing_blobs() {
+#[tokio::test]
+async fn pull_skips_existing_blobs() {
     let Some(base) = test_repo_base() else {
         eprintln!("PICHI_TEST_REGISTRY unset; skipping pull_skips_existing_blobs");
         return;
@@ -158,8 +158,8 @@ fn pull_skips_existing_blobs() {
 /// commands succeed regardless of cache state (a stronger "manifest was
 /// re-fetched from upstream" assertion would require zot HTTP-log inspection
 /// outside this test's scope).
-#[test]
-fn pull_always_refetches() {
+#[tokio::test]
+async fn pull_always_refetches() {
     let Some(base) = test_repo_base() else {
         eprintln!("PICHI_TEST_REGISTRY unset; skipping pull_always_refetches");
         return;
@@ -194,8 +194,8 @@ fn pull_always_refetches() {
 /// REGISTRY-03 (zot): `--pull=newer` — pull → pull again with --pull=newer.
 /// With unchanged upstream digest the second invocation must skip body
 /// fetch (the W6 revision uses GET-then-compare; functionally correct).
-#[test]
-fn pull_newer_skips_when_unchanged() {
+#[tokio::test]
+async fn pull_newer_skips_when_unchanged() {
     let Some(base) = test_repo_base() else {
         eprintln!("PICHI_TEST_REGISTRY unset; skipping pull_newer_skips_when_unchanged");
         return;
@@ -230,8 +230,8 @@ fn pull_newer_skips_when_unchanged() {
 /// REGISTRY-06 (zot): anonymous pull from zot's anonymous-anyone repo
 /// succeeds when no auth is configured. Uses a fresh second TempDir so no
 /// auth files leak from the first push.
-#[test]
-fn anonymous_pull() {
+#[tokio::test]
+async fn anonymous_pull() {
     let Some(base) = test_repo_base() else {
         eprintln!("PICHI_TEST_REGISTRY unset; skipping anonymous_pull");
         return;

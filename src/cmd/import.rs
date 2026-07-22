@@ -21,7 +21,7 @@ use crate::config::Config;
 
 /// `pichi import` entry point — import a raw image into the local cache
 /// as a base carapace artifact (IMPORT-01..07; Phase 43).
-pub fn run(args: ImportArgs, config: &Config) -> Result<()> {
+pub async fn run(args: ImportArgs, config: &Config) -> Result<()> {
     // T-43-02: parse the tag through the path-traversal-safe parser
     // BEFORE any I/O. Phase 42 BL-02 already covers traversal vectors.
     let _tag_ref: Reference = args
@@ -54,7 +54,7 @@ pub fn run(args: ImportArgs, config: &Config) -> Result<()> {
     // the root `pichi` crate; tools/import deliberately doesn't pull
     // chrono -- Plan 03 manifest.rs decision).
     lib_args.created_rfc3339 = chrono::Utc::now().to_rfc3339();
-    pichi_import::run(lib_args, &layout.graphroot)
+    pichi_import::run(lib_args, &layout.graphroot).await
 }
 
 fn resolve_layout(config: &Config) -> Result<CacheLayout> {

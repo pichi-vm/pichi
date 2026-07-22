@@ -36,7 +36,7 @@ const ANN_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
 const ANN_HASH_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.hash-block-size";
 const DEFAULT_BLOCK_SIZE: u32 = 4096;
 
-pub fn run(args: UpdateArgs, config: &Config) -> Result<()> {
+pub async fn run(args: UpdateArgs, config: &Config) -> Result<()> {
     let dir = args.dir.unwrap_or_else(|| PathBuf::from("."));
     let build_dir = dir.join("pichi.build");
     if !build_dir.is_dir() {
@@ -59,8 +59,10 @@ pub fn run(args: UpdateArgs, config: &Config) -> Result<()> {
 
         let mut entries: BTreeMap<String, LockEntry> = BTreeMap::new();
         for reference in refs {
-            let (manifest_digest, manifest) = resolve_manifest(&reference, &db, &blob_store)?;
+            let (manifest_digest, manifest) =
+                resolve_manifest(&reference, &db, &blob_store).await?;
             let top_root = carapace_top_root(&manifest, &blob_store)
+                .await
                 .with_context(|| format!("computing carapace root for {reference}"))?;
             entries.insert(
                 reference,
@@ -115,7 +117,7 @@ fn collect_refs(build_dir: &Path) -> Result<Vec<String>> {
 }
 
 /// Resolve a cached reference to its manifest digest + parsed manifest.
-fn resolve_manifest(
+async fn resolve_manifest(
     reference: &str,
     db: &FilesystemTagDb,
     blob_store: &FilesystemBlobStore,
@@ -127,7 +129,7 @@ fn resolve_manifest(
         ReferenceKind::Digest(d) => d.clone(),
         ReferenceKind::Tag(_) => {
             let key = target.to_string();
-            db.resolve_tag(&key)?.ok_or_else(|| {
+            db.resolve_tag(&key).await?.ok_or_else(|| {
                 anyhow!(
                     "ref not in cache: {key}\n  hint: pichi pull {key} (then re-run pichi update)"
                 )
@@ -136,6 +138,7 @@ fn resolve_manifest(
     };
     let bytes = blob_store
         .get_blob(&digest)
+        .await
         .with_context(|| format!("reading manifest blob {digest}"))?;
     let manifest = Manifest::from_reader_validated(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
@@ -146,7 +149,10 @@ fn resolve_manifest(
 /// dm-verity root. Each scute's root is recomputed from its COW blob +
 /// salt; the top is the one whose root is no other scute's salt-prefix
 /// parent (a linear salt chain has exactly one).
-fn carapace_top_root(manifest: &Manifest, blob_store: &FilesystemBlobStore) -> Result<[u8; 32]> {
+async fn carapace_top_root(
+    manifest: &Manifest,
+    blob_store: &FilesystemBlobStore,
+) -> Result<[u8; 32]> {
     let data_block_size = block_size(manifest, ANN_DATA_BLOCK_SIZE);
     let hash_block_size = block_size(manifest, ANN_HASH_BLOCK_SIZE);
 
@@ -167,6 +173,7 @@ fn carapace_top_root(manifest: &Manifest, blob_store: &FilesystemBlobStore) -> R
             .with_context(|| format!("invalid scute digest: {}", scute.digest))?;
         let cow_bytes = blob_store
             .get_blob(&cow_digest)
+            .await
             .with_context(|| format!("reading scute cow blob {cow_digest}"))?;
         let salt = hex::decode(&scute.annotations.salt)
             .with_context(|| format!("scute salt is not valid hex: {}", scute.annotations.salt))?;
@@ -180,15 +187,18 @@ fn carapace_top_root(manifest: &Manifest, blob_store: &FilesystemBlobStore) -> R
             }
         }
 
+        // dm-verity is CPU-bound — compute the root off the runtime.
         let params = VerityParams {
             data_block_size,
             hash_block_size,
             salt,
             uuid: [0u8; 16],
         };
-        let root = compute(&cow_bytes, &params)
-            .context("dm-verity root computation failed")?
-            .root_hash;
+        let root =
+            tokio::task::spawn_blocking(move || compute(&cow_bytes, &params).map(|o| o.root_hash))
+                .await
+                .context("verity task panicked")?
+                .context("dm-verity root computation failed")?;
         roots.push(root);
     }
 
@@ -241,8 +251,8 @@ mod tests {
     /// `pichi update` pins an imported carapace's reference with the exact
     /// top-scute root the importer produced — verified against an
     /// independent `cow::write` + `verity::compute` over the same image.
-    #[test]
-    fn pins_imported_carapace_root() {
+    #[tokio::test]
+    async fn pins_imported_carapace_root() {
         let tmp = TempDir::new().unwrap();
         let graphroot = tmp.path().join("storage");
         std::fs::create_dir_all(&graphroot).unwrap();
@@ -280,6 +290,7 @@ mod tests {
             },
             &graphroot,
         )
+        .await
         .unwrap();
 
         // A project that derives from it.
@@ -304,6 +315,7 @@ mod tests {
             },
             &config,
         )
+        .await
         .unwrap();
 
         let lock_text =

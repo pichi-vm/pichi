@@ -17,10 +17,10 @@ mod common;
 
 use common::{assert_pichi_ok, kvm_available, pichi, pull_build_image};
 
-#[test]
+#[tokio::test]
 #[ignore = "pichi build deferred; re-enable with build work"]
 #[cfg(target_arch = "x86_64")]
-fn pichi_build_flattens_source_into_a_carapace() {
+async fn pichi_build_flattens_source_into_a_carapace() {
     if !kvm_available() {
         eprintln!("skip: no usable /dev/kvm");
         return;

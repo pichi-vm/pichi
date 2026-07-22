@@ -57,8 +57,8 @@ fn bearer_zot() -> Option<String> {
 ///    will occur mid-stream.
 /// 5. Assert pull succeeded — oci-client's TokenCache transparently
 ///    refreshed the bearer token without any change to pichi-side code.
-#[test]
-fn mid_pull_401_retry() {
+#[tokio::test]
+async fn mid_pull_401_retry() {
     let Some(reg) = bearer_zot() else {
         eprintln!("PICHI_TEST_REGISTRY_BEARER unset; skipping mid_pull_401_retry");
         return;

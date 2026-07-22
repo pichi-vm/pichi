@@ -52,15 +52,17 @@ fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
     let cara_key = cara_tag.parse::<Reference>().unwrap().to_string();
     let cara_digest = db
         .resolve_tag(&cara_key)
+        .await
         .unwrap()
         .expect("carapace tag resolves");
-    let mut manifest =
-        Manifest::from_reader_validated(blob_store.get_blob(&cara_digest).unwrap().as_slice())
-            .unwrap();
+    let mut manifest = Manifest::from_reader_validated(
+        blob_store.get_blob(&cara_digest).await.unwrap().as_slice(),
+    )
+    .unwrap();
 
     let pmi_bytes = std::fs::read(pmi).unwrap();
     let pmi_digest = Digest::from_bytes_sha256(&pmi_bytes);
-    blob_store.put_blob(&pmi_digest, &pmi_bytes).unwrap();
+    blob_store.put_blob(&pmi_digest, &pmi_bytes).await.unwrap();
     manifest.layers.push(Layer::Pmi(PmiDescriptor {
         digest: pmi_digest.to_string(),
         size: pmi_bytes.len() as u64,
@@ -69,15 +71,19 @@ fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
     manifest.validate().unwrap();
     let bytes = manifest.to_bytes().unwrap();
     let digest = Digest::from_bytes_sha256(&bytes);
-    blob_store.put_blob(&digest, &bytes).unwrap();
-    db.set_tag(&app_tag.parse::<Reference>().unwrap().to_string(), &digest)
-        .unwrap();
+    blob_store.put_blob(&digest, &bytes).await.unwrap();
+    db.set_tag(
+        &app_tag.parse::<Reference>().await.unwrap().to_string(),
+        &digest,
+    )
+    .await
+    .unwrap();
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "pichi build deferred; re-enable with build work"]
 #[cfg(target_arch = "x86_64")]
-fn pichi_build_then_run_mounts_root_carapace() {
+async fn pichi_build_then_run_mounts_root_carapace() {
     if !kvm_available() {
         eprintln!("skip: no usable /dev/kvm");
         return;
@@ -145,8 +151,8 @@ fn pichi_build_then_run_mounts_root_carapace() {
         .env("XDG_DATA_HOME", &xdg)
         .env("PICHI_DILLO", DILLO_BIN)
         .args(["run", "app:1", "--memory", "1024", "--cpus", "1"])
-        .stdout(std::fs::File::create(&out_path).unwrap())
-        .stderr(std::fs::File::create(&err_path).unwrap())
+        .stdout(std::fs::File::create(&out_path).await.unwrap())
+        .stderr(std::fs::File::create(&err_path).await.unwrap())
         .spawn()
         .expect("spawn pichi run");
     let status = {

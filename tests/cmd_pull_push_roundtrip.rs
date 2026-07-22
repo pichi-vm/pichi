@@ -95,8 +95,8 @@ fn test_repo_base() -> Option<String> {
 ///     the registry-side digest may not appear in the local BlobStore. The
 ///     load-bearing assertions are MANIFEST bit-identity + TAG digest
 ///     equality; per-layer body equality is checked when reachable.
-#[test]
-fn bit_identical_round_trip() {
+#[tokio::test]
+async fn bit_identical_round_trip() {
     let Some(base) = test_repo_base() else {
         eprintln!("PICHI_TEST_REGISTRY unset; skipping bit_identical_round_trip");
         return;
@@ -130,7 +130,11 @@ fn bit_identical_round_trip() {
     );
 
     let db = FilesystemTagDb::open(&g).unwrap();
-    let manifest_digest_before = db.resolve_tag(&tag).unwrap().expect("tag set after import");
+    let manifest_digest_before = db
+        .resolve_tag(&tag)
+        .await
+        .unwrap()
+        .expect("tag set after import");
     drop(db);
 
     // Step 2: push to zot. Plan 05 ships cmd::push; this is the upload path.
@@ -151,7 +155,7 @@ fn bit_identical_round_trip() {
         .success();
     let db_after_rmi = FilesystemTagDb::open(&g).unwrap();
     assert!(
-        db_after_rmi.resolve_tag(&tag).unwrap().is_none(),
+        db_after_rmi.resolve_tag(&tag).await.unwrap().is_none(),
         "rmi must clear the tag"
     );
     drop(db_after_rmi);
@@ -172,6 +176,7 @@ fn bit_identical_round_trip() {
     let db_after_pull = FilesystemTagDb::open(&g).unwrap();
     let manifest_digest_after = db_after_pull
         .resolve_tag(&tag)
+        .await
         .unwrap()
         .expect("tag must resolve after re-pull");
 

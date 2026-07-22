@@ -274,7 +274,7 @@ impl Registry for MockRegistry {
         stream: S,
     ) -> Result<()>
     where
-        S: Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
+        S: Stream<Item = std::io::Result<Bytes>> + Send + 'static,
     {
         let mut pinned = Box::pin(stream);
         let mut buf: Vec<u8> = Vec::new();

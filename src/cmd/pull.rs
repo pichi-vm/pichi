@@ -84,7 +84,8 @@ pub async fn run(args: PullArgs, config: &Config) -> Result<()> {
     // --pull=never short-circuits before any network I/O.
     if policy == PullPolicy::Never {
         return tag_db
-            .resolve_tag(&target_ref.to_string())?
+            .resolve_tag(&target_ref.to_string())
+            .await?
             .map(|_| ())
             .ok_or_else(|| anyhow!("pull policy `never`: ref not in cache: {target_ref}"));
     }
@@ -105,13 +106,13 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     let target_str = target.to_string();
 
     // --pull=missing: skip network if cached.
-    if policy == PullPolicy::Missing && tag_db.resolve_tag(&target_str)?.is_some() {
+    if policy == PullPolicy::Missing && tag_db.resolve_tag(&target_str).await?.is_some() {
         return Ok(());
     }
     // --pull=newer: GET upstream manifest digest, compare to cached
     // (W6 revision: GET-then-compare, HEAD optimisation deferred).
     if policy == PullPolicy::Newer {
-        if let Some(cached) = tag_db.resolve_tag(&target_str)? {
+        if let Some(cached) = tag_db.resolve_tag(&target_str).await? {
             let (_raw, upstream) = registry
                 .pull_manifest_by_tag(&target)
                 .await
@@ -169,7 +170,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
             .digest
             .parse()
             .with_context(|| format!("parse config digest {}", manifest.config.digest))?;
-        if !blob_store.blob_exists(&config_digest) {
+        if !blob_store.blob_exists(&config_digest).await {
             let mut buf: Vec<u8> = Vec::new();
             registry
                 .pull_blob(
@@ -183,6 +184,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
                 .map_err(|e| anyhow!("pull config blob {config_digest}: {e}"))?;
             blob_store
                 .put_blob(&config_digest, &buf)
+                .await
                 .with_context(|| format!("put config blob {config_digest}"))?;
         }
     }
@@ -204,7 +206,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
             .digest_str()
             .parse()
             .with_context(|| format!("parse layer digest {}", layer.digest_str()))?;
-        if !blob_store.blob_exists(&layer_digest) {
+        if !blob_store.blob_exists(&layer_digest).await {
             pending.push(layer);
         }
     }
@@ -234,9 +236,11 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     //    the cache-wide advisory-lock helper per Pitfall 2).
     blob_store
         .put_blob(&final_digest, &final_bytes)
+        .await
         .with_context(|| format!("put_blob manifest {final_digest}"))?;
     tag_db
         .set_tag(&target_str, &final_digest)
+        .await
         .with_context(|| format!("set_tag {target_str}"))?;
 
     Ok(())
@@ -285,6 +289,7 @@ async fn fetch_one_layer<R: Registry>(
     let descriptor_digest: Digest = layer.digest_str().parse()?;
     let scratch = blob_store
         .scratch_dir()
+        .await
         .context("preparing scratch dir for streaming layer")?;
     let temp = tempfile::NamedTempFile::new_in(&scratch)
         .with_context(|| format!("creating layer temp file in {}", scratch.display()))?;
@@ -390,6 +395,7 @@ async fn fetch_one_layer<R: Registry>(
 
     blob_store
         .put_blob_from_path(layer_final.source_temp.path(), &descriptor_digest)
+        .await
         .with_context(|| format!("put_blob_from_path layer {descriptor_digest}"))?;
     // put_blob_from_path consumed the file via rename(2); tell NamedTempFile
     // not to attempt deletion on drop.
@@ -445,6 +451,7 @@ async fn fetch_one_layer<R: Registry>(
     // (b) `<src>.verity` — written via the Plan 01 atomic helper. Carapace
     //     (Phase 48) exposes this to the guest as the dm-verity hash device.
     write_sidecar_atomic(&scratch, &verity_path(&blob_path), &verity_out.blob)
+        .await
         .with_context(|| format!("write verity sidecar for {descriptor_digest}"))?;
 
     Ok(())
@@ -791,7 +798,7 @@ mod tests {
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         // Pre-set the tag in the cache.
         let cached = Digest::from_bytes_sha256(b"any cached manifest");
-        db.set_tag(&target.to_string(), &cached).unwrap();
+        db.set_tag(&target.to_string(), &cached).await.unwrap();
 
         let mock = MockRegistry::new();
         // No insert_* calls; if pull_inner touches the registry it will
@@ -924,7 +931,7 @@ mod tests {
 
         // The manifest blob in BlobStore must equal the mock bytes verbatim
         // (not a re-serialised round-trip).
-        let stored = blob_store.get_blob(&expected_digest).unwrap();
+        let stored = blob_store.get_blob(&expected_digest).await.unwrap();
         assert_eq!(
             stored, raw_bytes,
             "manifest blob must be byte-identical to wire bytes (Pitfall 3)"
@@ -1007,11 +1014,11 @@ mod tests {
 
         // Layer blob present in BlobStore.
         assert!(
-            blob_store.blob_exists(&layer_digest),
+            blob_store.blob_exists(&layer_digest).await,
             "layer blob must be present after pull"
         );
         // Tag resolves to manifest digest.
-        let resolved = db.resolve_tag(&target.to_string()).unwrap();
+        let resolved = db.resolve_tag(&target.to_string()).await.unwrap();
         assert_eq!(
             resolved.as_ref(),
             Some(&manifest_digest),
@@ -1074,16 +1081,16 @@ mod tests {
 
         // Picked manifest IS in BlobStore.
         assert!(
-            blob_store.blob_exists(&picked_manifest_digest),
+            blob_store.blob_exists(&picked_manifest_digest).await,
             "picked manifest blob must be present"
         );
         // Index's own digest is NOT in BlobStore (D-02: index dropped).
         assert!(
-            !blob_store.blob_exists(&index_digest),
+            !blob_store.blob_exists(&index_digest).await,
             "index manifest must NOT be persisted (D-02)"
         );
         // Tag resolves to PICKED manifest digest (not the index's).
-        let resolved = db.resolve_tag(&target.to_string()).unwrap();
+        let resolved = db.resolve_tag(&target.to_string()).await.unwrap();
         assert_eq!(resolved.as_ref(), Some(&picked_manifest_digest));
     }
 

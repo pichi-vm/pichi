@@ -31,7 +31,11 @@ fn graphroot(tmp: &TempDir) -> std::path::PathBuf {
     p
 }
 
-fn populate(graphroot: &std::path::Path, tag: &str, with_pmi: bool) -> pichi_artifact::Digest {
+async fn populate(
+    graphroot: &std::path::Path,
+    tag: &str,
+    with_pmi: bool,
+) -> pichi_artifact::Digest {
     let mut layers = vec![Layer::Scute(ScuteDescriptor {
         digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111".into(),
         size: 4096,
@@ -57,18 +61,18 @@ fn populate(graphroot: &std::path::Path, tag: &str, with_pmi: bool) -> pichi_art
     let bytes = m.to_bytes().unwrap();
     let digest = m.digest().unwrap();
     let blob_store = FilesystemBlobStore::new(graphroot);
-    blob_store.put_blob(&digest, &bytes).unwrap();
+    blob_store.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(graphroot).unwrap();
-    db.set_tag(tag, &digest).unwrap();
+    db.set_tag(tag, &digest).await.unwrap();
     digest
 }
 
-#[test]
-fn images_lists_default_columns() {
+#[tokio::test]
+async fn images_lists_default_columns() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    populate(&g, "docker.io/library/alpine:3", false);
-    populate(&g, "docker.io/library/myapp:base", true);
+    populate(&g, "docker.io/library/alpine:3", false).await;
+    populate(&g, "docker.io/library/myapp:base", true).await;
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
@@ -93,11 +97,11 @@ fn images_lists_default_columns() {
     );
 }
 
-#[test]
-fn images_quiet_prints_full_sha256_digests() {
+#[tokio::test]
+async fn images_quiet_prints_full_sha256_digests() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let d = populate(&g, "docker.io/library/alpine:3", false);
+    let d = populate(&g, "docker.io/library/alpine:3", false).await;
     let out = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
@@ -117,11 +121,11 @@ fn images_quiet_prints_full_sha256_digests() {
     assert!(!s.lines().any(|l| l.len() < 19 && l.starts_with("sha256:")));
 }
 
-#[test]
-fn images_format_does_not_html_escape() {
+#[tokio::test]
+async fn images_format_does_not_html_escape() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    populate(&g, "docker.io/library/alpine:3", false);
+    populate(&g, "docker.io/library/alpine:3", false).await;
     let out = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
@@ -142,11 +146,11 @@ fn images_format_does_not_html_escape() {
     assert!(s.contains("|false"), "got:\n{s}");
 }
 
-#[test]
-fn images_digests_flag_widens_column_to_full_digest() {
+#[tokio::test]
+async fn images_digests_flag_widens_column_to_full_digest() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let d = populate(&g, "docker.io/library/alpine:3", false);
+    let d = populate(&g, "docker.io/library/alpine:3", false).await;
     let out = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())

@@ -14,7 +14,7 @@ use pichi_storage::BlobStore;
 /// Load the artifact's launch contract from its config blob. Returns `Ok(None)`
 /// for artifacts with the OCI empty config (no launch contract, e.g. plain
 /// carapaces).
-pub fn load_requirements(
+pub async fn load_requirements(
     manifest: &Manifest,
     blob_store: &impl BlobStore,
 ) -> Result<Option<Requirements>> {
@@ -28,6 +28,7 @@ pub fn load_requirements(
         .with_context(|| format!("invalid config digest: {}", manifest.config.digest))?;
     let bytes = blob_store
         .get_blob(&digest)
+        .await
         .with_context(|| format!("reading config blob {digest}"))?;
     let config = Config::from_json(&bytes).context("parsing config blob")?;
     Ok(Some(config.requirements))
@@ -66,21 +67,21 @@ pub fn resolve_sized(
 mod tests {
     use super::*;
 
-    #[test]
-    fn explicit_meeting_floor_is_kept() {
+    #[tokio::test]
+    async fn explicit_meeting_floor_is_kept() {
         assert_eq!(
             resolve_sized(Some(4), Some(2), Some(8), "cpus").unwrap(),
             Some(4)
         );
     }
 
-    #[test]
-    fn explicit_below_required_errors() {
+    #[tokio::test]
+    async fn explicit_below_required_errors() {
         assert!(resolve_sized(Some(1), Some(2), Some(8), "cpus").is_err());
     }
 
-    #[test]
-    fn absent_uses_recommended_then_required() {
+    #[tokio::test]
+    async fn absent_uses_recommended_then_required() {
         assert_eq!(
             resolve_sized(None, Some(2), Some(8), "cpus").unwrap(),
             Some(8)

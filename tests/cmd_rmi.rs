@@ -31,7 +31,7 @@ fn graphroot(tmp: &TempDir) -> std::path::PathBuf {
 }
 
 /// Insert a manifest with a unique scute digest based on `salt_seed`.
-fn insert_manifest(
+async fn insert_manifest(
     graphroot: &std::path::Path,
     tag: &str,
     salt_seed: &str,
@@ -54,20 +54,22 @@ fn insert_manifest(
     let mbytes = m.to_bytes().unwrap();
     let mdigest = m.digest().unwrap();
     let bs = FilesystemBlobStore::new(graphroot);
-    bs.put_blob(&mdigest, &mbytes).unwrap();
+    bs.put_blob(&mdigest, &mbytes).await.unwrap();
     // Insert a fake scute blob too so `delete_blob` actually finds something.
     let parsed_scute: pichi_artifact::Digest = scute_digest.parse().unwrap();
-    bs.put_blob(&parsed_scute, b"fake-scute-bytes").unwrap();
+    bs.put_blob(&parsed_scute, b"fake-scute-bytes")
+        .await
+        .unwrap();
     let db = FilesystemTagDb::open(graphroot).unwrap();
-    db.set_tag(tag, &mdigest).unwrap();
+    db.set_tag(tag, &mdigest).await.unwrap();
     (mdigest, parsed_scute)
 }
 
-#[test]
-fn rmi_unique_manifest_unlinks_blobs() {
+#[tokio::test]
+async fn rmi_unique_manifest_unlinks_blobs() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (mdigest, sdigest) = insert_manifest(&g, "docker.io/library/alpine:3", "aaaa");
+    let (mdigest, sdigest) = insert_manifest(&g, "docker.io/library/alpine:3", "aaaa").await;
 
     Command::cargo_bin("pichi")
         .unwrap()
@@ -77,21 +79,31 @@ fn rmi_unique_manifest_unlinks_blobs() {
         .success();
 
     let bs = FilesystemBlobStore::new(&g);
-    assert!(!bs.blob_exists(&mdigest), "manifest blob must be unlinked");
-    assert!(!bs.blob_exists(&sdigest), "scute blob must be unlinked");
+    assert!(
+        !bs.blob_exists(&mdigest).await,
+        "manifest blob must be unlinked"
+    );
+    assert!(
+        !bs.blob_exists(&sdigest).await,
+        "scute blob must be unlinked"
+    );
 
     let db = FilesystemTagDb::open(&g).unwrap();
-    assert_eq!(db.resolve_tag("docker.io/library/alpine:3").unwrap(), None);
+    assert_eq!(
+        db.resolve_tag("docker.io/library/alpine:3").await.unwrap(),
+        None
+    );
 }
 
-#[test]
-fn rmi_shared_manifest_blocked_without_force() {
+#[tokio::test]
+async fn rmi_shared_manifest_blocked_without_force() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (mdigest, _) = insert_manifest(&g, "docker.io/library/alpine:3", "bbbb");
+    let (mdigest, _) = insert_manifest(&g, "docker.io/library/alpine:3", "bbbb").await;
     // Second tag pointing at the SAME manifest.
     let db = FilesystemTagDb::open(&g).unwrap();
     db.set_tag("docker.io/library/alpine:latest", &mdigest)
+        .await
         .unwrap();
 
     Command::cargo_bin("pichi")
@@ -105,11 +117,13 @@ fn rmi_shared_manifest_blocked_without_force() {
     let db = FilesystemTagDb::open(&g).unwrap();
     assert!(
         db.resolve_tag("docker.io/library/alpine:3")
+            .await
             .unwrap()
             .is_some()
     );
     assert!(
         db.resolve_tag("docker.io/library/alpine:latest")
+            .await
             .unwrap()
             .is_some()
     );
@@ -163,8 +177,8 @@ fn count_blob_files(graphroot: &std::path::Path) -> usize {
 /// + `<manifest>` (3 entries; import is identity-decompression so no `.deflated`
 /// per D-04). The `.verity` sidecar MUST be unlinked together with the cow
 /// inside the same `with_index_lock` window.
-#[test]
-fn rmi_after_import_leaves_no_orphans() {
+#[tokio::test]
+async fn rmi_after_import_leaves_no_orphans() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
@@ -211,8 +225,8 @@ fn rmi_after_import_leaves_no_orphans() {
 /// CACHE-04: --pmi artifact rmi (Plan 03 + PMI layer). Pre-rmi: 4 entries
 /// (cow + .verity + pmi + manifest). The PMI layer has no sidecars
 /// (Pitfall 6 — PMI has no verity tree). Post-rmi: ZERO files.
-#[test]
-fn rmi_after_import_with_pmi_leaves_no_orphans() {
+#[tokio::test]
+async fn rmi_after_import_with_pmi_leaves_no_orphans() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
@@ -262,8 +276,8 @@ fn rmi_after_import_with_pmi_leaves_no_orphans() {
 /// guards against the bug where unlink_blob_with_sidecars is called on a
 /// still-referenced blob (which would silently remove sidecars even though
 /// the source is preserved by refcount logic).
-#[test]
-fn rmi_with_other_tag_preserves_source_and_sidecars() {
+#[tokio::test]
+async fn rmi_with_other_tag_preserves_source_and_sidecars() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
@@ -280,9 +294,11 @@ fn rmi_with_other_tag_preserves_source_and_sidecars() {
     let db = FilesystemTagDb::open(&g).unwrap();
     let manifest_digest = db
         .resolve_tag("docker.io/library/tag1:v")
+        .await
         .unwrap()
         .expect("tag1 should resolve");
     db.set_tag("docker.io/library/tag2:v", &manifest_digest)
+        .await
         .unwrap();
 
     let pre_count = count_blob_files(&g);
@@ -302,11 +318,12 @@ fn rmi_with_other_tag_preserves_source_and_sidecars() {
     let db = FilesystemTagDb::open(&g).unwrap();
     assert!(
         db.resolve_tag("docker.io/library/tag1:v")
+            .await
             .unwrap()
             .is_none()
     );
     assert_eq!(
-        db.resolve_tag("docker.io/library/tag2:v").unwrap(),
+        db.resolve_tag("docker.io/library/tag2:v").await.unwrap(),
         Some(manifest_digest)
     );
     let post_count = count_blob_files(&g);
@@ -321,11 +338,11 @@ fn rmi_with_other_tag_preserves_source_and_sidecars() {
 /// fixture-inserted-fake-blob case from `rmi_unique_manifest_unlinks_blobs`).
 /// The helper's ENOENT tolerance must NOT cause rmi to fail when sidecars
 /// are absent.
-#[test]
-fn rmi_tolerates_source_blob_without_sidecars() {
+#[tokio::test]
+async fn rmi_tolerates_source_blob_without_sidecars() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (mdigest, sdigest) = insert_manifest(&g, "docker.io/library/legacy:v", "dddd");
+    let (mdigest, sdigest) = insert_manifest(&g, "docker.io/library/legacy:v", "dddd").await;
 
     // Sanity check: NO sidecars exist for the fixture-inserted blobs.
     let bs = FilesystemBlobStore::new(&g);
@@ -347,17 +364,18 @@ fn rmi_tolerates_source_blob_without_sidecars() {
         .success();
 
     // Both source blobs unlinked; ENOENT on missing sidecars was tolerated.
-    assert!(!bs.blob_exists(&mdigest), "manifest must be unlinked");
-    assert!(!bs.blob_exists(&sdigest), "scute must be unlinked");
+    assert!(!bs.blob_exists(&mdigest).await, "manifest must be unlinked");
+    assert!(!bs.blob_exists(&sdigest).await, "scute must be unlinked");
 }
 
-#[test]
-fn rmi_force_preserves_shared_blobs() {
+#[tokio::test]
+async fn rmi_force_preserves_shared_blobs() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (mdigest, sdigest) = insert_manifest(&g, "docker.io/library/alpine:3", "cccc");
+    let (mdigest, sdigest) = insert_manifest(&g, "docker.io/library/alpine:3", "cccc").await;
     let db = FilesystemTagDb::open(&g).unwrap();
     db.set_tag("docker.io/library/alpine:latest", &mdigest)
+        .await
         .unwrap();
 
     Command::cargo_bin("pichi")
@@ -369,18 +387,22 @@ fn rmi_force_preserves_shared_blobs() {
 
     let bs = FilesystemBlobStore::new(&g);
     assert!(
-        bs.blob_exists(&mdigest),
+        bs.blob_exists(&mdigest).await,
         "shared manifest blob must be preserved"
     );
     assert!(
-        bs.blob_exists(&sdigest),
+        bs.blob_exists(&sdigest).await,
         "shared scute blob must be preserved"
     );
 
     let db = FilesystemTagDb::open(&g).unwrap();
-    assert_eq!(db.resolve_tag("docker.io/library/alpine:3").unwrap(), None);
+    assert_eq!(
+        db.resolve_tag("docker.io/library/alpine:3").await.unwrap(),
+        None
+    );
     assert!(
         db.resolve_tag("docker.io/library/alpine:latest")
+            .await
             .unwrap()
             .is_some()
     );

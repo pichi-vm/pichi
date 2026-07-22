@@ -55,17 +55,17 @@ struct Row {
 }
 
 /// `pichi images` entry point — list cached artifacts (LOCAL-01).
-pub fn run(args: ImagesArgs, config: &Config) -> Result<()> {
+pub async fn run(args: ImagesArgs, config: &Config) -> Result<()> {
     let layout = resolve_layout(config)?;
     let db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
-    let entries = db.list_tags()?;
-    let mut rows: Vec<Row> = entries
-        .into_iter()
-        .map(|e| build_row(&e, &blob_store, &layout))
-        .collect();
+    let entries = db.list_tags().await?;
+    // Read every tag's manifest concurrently (one blob read each).
+    let mut rows: Vec<Row> =
+        futures_util::future::join_all(entries.iter().map(|e| build_row(e, &blob_store, &layout)))
+            .await;
 
     // Default sort (D-12): most-recently-created first, then repo, then tag.
     rows.sort_by(|a, b| {
@@ -107,11 +107,15 @@ pub fn run(args: ImagesArgs, config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn build_row(entry: &TagEntry, blob_store: &FilesystemBlobStore, layout: &CacheLayout) -> Row {
+async fn build_row(
+    entry: &TagEntry,
+    blob_store: &FilesystemBlobStore,
+    layout: &CacheLayout,
+) -> Row {
     // Try to parse the manifest. On any failure, list the row with placeholder
     // values rather than dropping it (presentation-layer resilience — Phase 42
     // doesn't validate; that's `pichi inspect`'s job).
-    let manifest_bytes = blob_store.get_blob(&entry.digest).ok();
+    let manifest_bytes = blob_store.get_blob(&entry.digest).await.ok();
     let manifest = manifest_bytes
         .as_ref()
         .and_then(|b| Manifest::from_reader(b.as_slice()).ok());
@@ -307,8 +311,8 @@ fn resolve_layout(config: &Config) -> Result<CacheLayout> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn translate_template_syntax_d17() {
+    #[tokio::test]
+    async fn translate_template_syntax_d17() {
         assert_eq!(
             translate_template_syntax("{{.Repository}}:{{.Tag}}"),
             "{Repository}:{Tag}"
@@ -317,8 +321,8 @@ mod tests {
         assert_eq!(translate_template_syntax("{Foo}"), "{Foo}");
     }
 
-    #[test]
-    fn split_repo_tag_canonical() {
+    #[tokio::test]
+    async fn split_repo_tag_canonical() {
         assert_eq!(
             split_repo_tag("docker.io/library/alpine:3"),
             ("docker.io/library/alpine".to_string(), "3".to_string())
@@ -336,8 +340,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn humanize_age_branches() {
+    #[tokio::test]
+    async fn humanize_age_branches() {
         let now: DateTime<Utc> = Local::now().with_timezone(&Utc);
         assert!(humanize_age(now - chrono::Duration::seconds(30)).ends_with("s ago"));
         assert!(humanize_age(now - chrono::Duration::seconds(120)).ends_with("m ago"));

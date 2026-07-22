@@ -189,7 +189,7 @@ pub trait Registry: Send + Sync {
         stream: S,
     ) -> Result<()>
     where
-        S: Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static;
+        S: Stream<Item = std::io::Result<Bytes>> + Send + 'static;
 
     /// Cross-repository blob mount (push optimization per REGISTRY-02). Used
     /// to avoid re-uploading blobs that already exist in another repo on the

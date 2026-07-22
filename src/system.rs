@@ -16,7 +16,7 @@ use crate::cli::InfoArgs;
 use crate::config::Config;
 
 /// Dispatch entry point for `pichi system <verb>`.
-pub fn run(args: InfoArgs, config: &Config) -> Result<()> {
+pub async fn run(args: InfoArgs, config: &Config) -> Result<()> {
     let layout = CacheLayout::resolve()?;
 
     // Apply config overrides for graphroot / runroot (visibility only —
@@ -142,8 +142,8 @@ impl InfoOutput {
 mod tests {
     use super::*;
 
-    #[test]
-    fn info_output_serialises_to_valid_json() {
+    #[tokio::test]
+    async fn info_output_serialises_to_valid_json() {
         let info = InfoOutput {
             store: StoreInfo {
                 graph_root: "/tmp/g".into(),

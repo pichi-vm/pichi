@@ -68,15 +68,26 @@ where
 /// Per D-22 / LOCAL-03 / Pitfall 4 in 42-RESEARCH.md: this serialises two
 /// concurrent `pichi rmi` calls so they cannot both compute refcounts
 /// before either commits the deletion.
-pub fn with_index_lock<F, R>(layout: &CacheLayout, op: F) -> anyhow::Result<R>
+pub async fn with_index_lock<F, Fut, R>(layout: &CacheLayout, op: F) -> anyhow::Result<R>
 where
-    F: FnOnce() -> anyhow::Result<R>,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<R>>,
 {
     let lock_path = layout.graphroot.join("index.json.lock");
     if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent).ok();
+        let _ = tokio::fs::create_dir_all(parent).await;
     }
-    with_advisory_lock(&lock_path, op)
+    // Acquire the flock off-runtime — it may block on a competing process.
+    // The lock lives on the open file description, so holding the returned
+    // `File` guard across `op().await` keeps it held regardless of which
+    // worker thread the task resumes on; dropping it (closing the FD) releases.
+    let lp = lock_path.clone();
+    let guard = tokio::task::spawn_blocking(move || lock_exclusive(&lp))
+        .await
+        .context("index lock task panicked")??;
+    let result = op().await;
+    drop(guard);
+    result
 }
 
 #[cfg(test)]

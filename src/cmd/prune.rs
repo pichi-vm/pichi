@@ -68,18 +68,18 @@ use crate::config::Config;
 
 /// `pichi system prune` entry point — garbage-collect orphan blobs +
 /// headless sidecars (PRUNE-01..04; Phase 47).
-pub fn run(args: PruneArgs, config: &Config) -> Result<()> {
+pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
     let layout = resolve_layout(config)?;
 
     // D-prune-LW1: ONE with_index_lock window covers the whole transaction
     // (live-set walk, source-orphan loop, headless-sidecar sweep). The
     // single call site in this file is also D-prune-T-FLOCK's static
     // assertion target — do not split into multiple lock callbacks.
-    let (records, total) = with_index_lock(&layout, || -> Result<(Vec<(Digest, u64)>, u64)> {
+    let (records, total) = with_index_lock(&layout, || async {
         let db = FilesystemTagDb::open(&layout.graphroot)?;
         let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
-        let all_tags = db.list_tags()?;
+        let all_tags = db.list_tags().await?;
 
         // D-prune-L1: live set = every tag's manifest digest + that
         // manifest's layer digests. Verbatim from src/cmd/rmi.rs:88-105
@@ -88,7 +88,7 @@ pub fn run(args: PruneArgs, config: &Config) -> Result<()> {
         let mut still_referenced: HashSet<Digest> = HashSet::new();
         for entry in &all_tags {
             still_referenced.insert(entry.digest.clone());
-            if let Ok(bytes) = blob_store.get_blob(&entry.digest) {
+            if let Ok(bytes) = blob_store.get_blob(&entry.digest).await {
                 if let Ok(m) = Manifest::from_reader(bytes.as_slice()) {
                     for layer in &m.layers {
                         // digest_str is "sha256:<hex>" — round-trip via parse.
@@ -161,6 +161,7 @@ pub fn run(args: PruneArgs, config: &Config) -> Result<()> {
                 // everything else above runs identically in both modes.
                 if !args.dry_run {
                     pichi_storage::sidecar::unlink_blob_with_sidecars(&blob_path)
+                        .await
                         .with_context(|| format!("unlink orphan blob+sidecars for {digest}"))?;
                 }
             }
@@ -218,8 +219,9 @@ pub fn run(args: PruneArgs, config: &Config) -> Result<()> {
         // (sidecar bytes do NOT appear in `records` per D-prune-B3).
         records.sort_by_key(|(d, _)| d.to_string());
 
-        Ok((records, total))
-    })?;
+        Ok::<(Vec<(Digest, u64)>, u64), anyhow::Error>((records, total))
+    })
+    .await?;
 
     // D-prune-LW1: print AFTER the lock is released — a slow stdout
     // pipe must NOT extend the lock window.
@@ -316,11 +318,11 @@ mod tests {
     }
 
     /// (1) Empty cache: run returns Ok; blobs/sha256/ unchanged (or absent).
-    #[test]
-    fn prune_empty_cache_returns_ok_and_changes_nothing() {
+    #[tokio::test]
+    async fn prune_empty_cache_returns_ok_and_changes_nothing() {
         let tmp = TempDir::new().unwrap();
         let config = make_config(&tmp);
-        run(PruneArgs { dry_run: false }, &config).unwrap();
+        run(PruneArgs { dry_run: false }, &config).await.unwrap();
 
         let blobs = config
             .storage
@@ -337,8 +339,8 @@ mod tests {
     }
 
     /// (2) Orphan source blob with sidecars: all three are unlinked.
-    #[test]
-    fn prune_orphan_source_blob_unlinked_with_sidecars() {
+    #[tokio::test]
+    async fn prune_orphan_source_blob_unlinked_with_sidecars() {
         let tmp = TempDir::new().unwrap();
         let config = make_config(&tmp);
         let g = config.storage.graphroot.as_ref().unwrap();
@@ -354,7 +356,7 @@ mod tests {
         .unwrap();
         std::fs::write(pichi_storage::sidecar::verity_path(&src), b"verity-bytes").unwrap();
 
-        run(PruneArgs { dry_run: false }, &config).unwrap();
+        run(PruneArgs { dry_run: false }, &config).await.unwrap();
 
         assert!(!src.exists(), "source orphan must be unlinked");
         assert!(
@@ -368,8 +370,8 @@ mod tests {
     }
 
     /// (3) --dry-run preserves files that would otherwise be removed.
-    #[test]
-    fn prune_dry_run_preserves_files() {
+    #[tokio::test]
+    async fn prune_dry_run_preserves_files() {
         let tmp = TempDir::new().unwrap();
         let config = make_config(&tmp);
         let g = config.storage.graphroot.as_ref().unwrap();
@@ -385,7 +387,7 @@ mod tests {
         .unwrap();
         std::fs::write(pichi_storage::sidecar::verity_path(&src), b"verity-bytes").unwrap();
 
-        run(PruneArgs { dry_run: true }, &config).unwrap();
+        run(PruneArgs { dry_run: true }, &config).await.unwrap();
 
         assert!(src.exists(), "--dry-run: source must NOT be unlinked");
         assert!(
@@ -401,8 +403,8 @@ mod tests {
     /// (4) Live-set walk: a tag → manifest → layer chain protects the
     /// referenced blobs from prune. Regression guard for the verbatim
     /// copy of `cmd::rmi`'s loop.
-    #[test]
-    fn prune_preserves_referenced_blob_and_sidecars() {
+    #[tokio::test]
+    async fn prune_preserves_referenced_blob_and_sidecars() {
         let tmp = TempDir::new().unwrap();
         let config = make_config(&tmp);
         let g = config.storage.graphroot.as_ref().unwrap();
@@ -431,8 +433,10 @@ mod tests {
         let mdigest = m.digest().unwrap();
 
         let bs = FilesystemBlobStore::new(g);
-        bs.put_blob(&mdigest, &mbytes).unwrap();
-        bs.put_blob(&scute_digest, b"fake-scute-bytes").unwrap();
+        bs.put_blob(&mdigest, &mbytes).await.unwrap();
+        bs.put_blob(&scute_digest, b"fake-scute-bytes")
+            .await
+            .unwrap();
         // Add a verity sidecar to the scute to prove it survives the
         // referenced-blob path (sidecars of live blobs are NOT touched
         // by prune; they are only swept when their source is missing).
@@ -444,17 +448,22 @@ mod tests {
         .unwrap();
 
         let db = FilesystemTagDb::open(g).unwrap();
-        db.set_tag("docker.io/library/foo:1", &mdigest).unwrap();
+        db.set_tag("docker.io/library/foo:1", &mdigest)
+            .await
+            .unwrap();
 
         let pre = std::fs::read_dir(&blobs).unwrap().count();
-        run(PruneArgs { dry_run: false }, &config).unwrap();
+        run(PruneArgs { dry_run: false }, &config).await.unwrap();
         let post = std::fs::read_dir(&blobs).unwrap().count();
         assert_eq!(
             post, pre,
             "all blobs+sidecars must be preserved under a live tag"
         );
-        assert!(bs.blob_exists(&mdigest), "manifest blob must survive");
-        assert!(bs.blob_exists(&scute_digest), "scute blob must survive");
+        assert!(bs.blob_exists(&mdigest).await, "manifest blob must survive");
+        assert!(
+            bs.blob_exists(&scute_digest).await,
+            "scute blob must survive"
+        );
         assert!(
             pichi_storage::sidecar::verity_path(&scute_path).exists(),
             "live scute's .verity sidecar must survive"
@@ -467,8 +476,8 @@ mod tests {
     /// is swept silently in the second readdir pass. Per D-prune-B3 the empty
     /// `records` triggers `Nothing to prune.\n` even though the sweep
     /// reclaimed disk.
-    #[test]
-    fn prune_headless_verity_sidecar_swept() {
+    #[tokio::test]
+    async fn prune_headless_verity_sidecar_swept() {
         let tmp = TempDir::new().unwrap();
         let config = make_config(&tmp);
         let g = config.storage.graphroot.as_ref().unwrap();
@@ -482,7 +491,7 @@ mod tests {
         // pre-Phase-46 / D-09 case.
         assert!(!stem.exists(), "fixture: source must be missing");
 
-        run(PruneArgs { dry_run: false }, &config).unwrap();
+        run(PruneArgs { dry_run: false }, &config).await.unwrap();
 
         assert!(
             !headless.exists(),
@@ -491,8 +500,8 @@ mod tests {
     }
 
     /// (6) D-prune-H1: same shape with `.deflated`.
-    #[test]
-    fn prune_headless_deflated_sidecar_swept() {
+    #[tokio::test]
+    async fn prune_headless_deflated_sidecar_swept() {
         let tmp = TempDir::new().unwrap();
         let config = make_config(&tmp);
         let g = config.storage.graphroot.as_ref().unwrap();
@@ -504,7 +513,7 @@ mod tests {
         std::fs::write(&headless, b"orphan-deflated").unwrap();
         assert!(!stem.exists(), "fixture: source must be missing");
 
-        run(PruneArgs { dry_run: false }, &config).unwrap();
+        run(PruneArgs { dry_run: false }, &config).await.unwrap();
 
         assert!(
             !headless.exists(),
@@ -515,8 +524,8 @@ mod tests {
     /// (7) D-prune-DR1 + D-prune-H1: --dry-run does NOT call remove_file on
     /// headless sidecars. Bytes accounting still happens (so `total` matches
     /// the non-dry path), but the file is preserved.
-    #[test]
-    fn prune_dry_run_preserves_headless_sidecar() {
+    #[tokio::test]
+    async fn prune_dry_run_preserves_headless_sidecar() {
         let tmp = TempDir::new().unwrap();
         let config = make_config(&tmp);
         let g = config.storage.graphroot.as_ref().unwrap();
@@ -527,7 +536,7 @@ mod tests {
         let headless = pichi_storage::sidecar::verity_path(&stem);
         std::fs::write(&headless, b"orphan-verity").unwrap();
 
-        run(PruneArgs { dry_run: true }, &config).unwrap();
+        run(PruneArgs { dry_run: true }, &config).await.unwrap();
 
         assert!(
             headless.exists(),
@@ -543,8 +552,8 @@ mod tests {
     /// against any future refactor that moves the sweep before the
     /// source-orphan loop (which would double-process the sibling and
     /// could break under different deletion semantics).
-    #[test]
-    fn prune_source_orphan_sidecars_not_double_swept() {
+    #[tokio::test]
+    async fn prune_source_orphan_sidecars_not_double_swept() {
         let tmp = TempDir::new().unwrap();
         let config = make_config(&tmp);
         let g = config.storage.graphroot.as_ref().unwrap();
@@ -558,7 +567,7 @@ mod tests {
         // Run completes without error AND both files are gone (the source
         // orphan loop unlinked them together via unlink_blob_with_sidecars
         // BEFORE the sweep ran).
-        run(PruneArgs { dry_run: false }, &config).unwrap();
+        run(PruneArgs { dry_run: false }, &config).await.unwrap();
 
         assert!(!src.exists(), "source orphan must be unlinked");
         assert!(

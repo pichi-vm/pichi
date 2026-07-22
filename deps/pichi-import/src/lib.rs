@@ -88,7 +88,114 @@ pub struct ImportArgs {
 ///   - `TagDb::set_tag` takes its own internal flock.
 ///   - There is no read-then-write race because import never reads
 ///     existing tags.
-pub fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
+pub async fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
+    let blob_store = FilesystemBlobStore::new(graphroot);
+    let scratch = blob_store
+        .scratch_dir()
+        .await
+        .context("preparing scratch dir for streaming COW")?;
+    let quiet = args.quiet;
+    let print_verity_info = args.print_verity_info;
+
+    // All the heavy work — cow streaming, sha256, dm-verity, PMI/DTB staging,
+    // manifest build — is CPU + blocking file I/O, so it runs off the runtime.
+    let staged = tokio::task::spawn_blocking(move || stage_import(args, &scratch))
+        .await
+        .context("import staging task panicked")??;
+
+    // Commit blobs (async): cow -> verity sidecar -> pmi -> dtb -> config ->
+    // manifest, then the tag. Ordering matches the original single-threaded
+    // path so error semantics (no partial tag without blobs) are unchanged.
+    blob_store
+        .put_blob_from_path(&staged.cow_temp_path, &staged.cow_digest)
+        .await
+        .with_context(|| format!("put_blob_from_path cow {}", staged.cow_digest))?;
+    let cow_blob_path = blob_store.blob_path(&staged.cow_digest);
+    let scratch2 = blob_store
+        .scratch_dir()
+        .await
+        .context("scratch_dir for verity sidecar")?;
+    write_sidecar_atomic(&scratch2, &verity_path(&cow_blob_path), &staged.verity_blob)
+        .await
+        .with_context(|| format!("write verity sidecar for cow {}", staged.cow_digest))?;
+    if let Some(pmi) = &staged.pmi {
+        blob_store
+            .put_blob_from_path(&pmi.temp_path, &pmi.digest)
+            .await
+            .with_context(|| format!("put_blob_from_path pmi {}", pmi.digest))?;
+    }
+    if let Some((digest, bytes)) = &staged.dtb {
+        blob_store
+            .put_blob(digest, bytes)
+            .await
+            .with_context(|| format!("put_blob dtb {digest}"))?;
+    }
+    if let Some((digest, bytes)) = &staged.config {
+        blob_store
+            .put_blob(digest, bytes)
+            .await
+            .with_context(|| format!("put_blob config {digest}"))?;
+    }
+    blob_store
+        .put_blob(&staged.manifest_digest, &staged.manifest_bytes)
+        .await
+        .with_context(|| format!("put_blob manifest {}", staged.manifest_digest))?;
+
+    // set_tag — DIRECT bare call (the flock is internal to set_tag; an outer
+    // advisory-lock from the same process would deadlock).
+    let db = FilesystemTagDb::open(graphroot)
+        .with_context(|| format!("opening tag db at {}", graphroot.display()))?;
+    db.set_tag(&staged.tag_key, &staged.manifest_digest)
+        .await
+        .with_context(|| format!("set_tag {}", staged.tag_key))?;
+
+    if !quiet {
+        log::info!(
+            "pichi import: tagged {} -> manifest {}",
+            staged.tag_key,
+            staged.manifest_digest
+        );
+    }
+    // Optional --print-verity-info JSON for CI consumption (D-04).
+    if print_verity_info {
+        println!(
+            "{{\"cow_digest\":\"{}\",\"verity_digest\":\"{}\",\"root_hash\":\"{}\"}}",
+            staged.cow_digest,
+            staged.verity_digest,
+            hex::encode(staged.root_hash)
+        );
+    }
+
+    Ok(())
+}
+
+/// Everything the async commit phase needs, produced by [`stage_import`] on a
+/// blocking thread. Temp files (cow, PMI) are `keep()`-ed so their paths stay
+/// valid across the `spawn_blocking` boundary; the async phase renames them
+/// into the blob store.
+struct StagedImport {
+    cow_temp_path: PathBuf,
+    cow_digest: Digest,
+    verity_blob: Vec<u8>,
+    verity_digest: Digest,
+    root_hash: [u8; 32],
+    pmi: Option<PmiStaged>,
+    dtb: Option<(Digest, Vec<u8>)>,
+    config: Option<(Digest, Vec<u8>)>,
+    manifest_bytes: Vec<u8>,
+    manifest_digest: Digest,
+    tag_key: String,
+}
+
+struct PmiStaged {
+    temp_path: PathBuf,
+    digest: Digest,
+}
+
+/// Synchronous staging pipeline: stream the input into a cow temp file, hash
+/// it, build the dm-verity tree, stage optional PMI/DTB/config, and build the
+/// manifest. Performs NO blob-store writes — those happen (async) in [`run`].
+fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
     // Carapaces are fixed at the spec-whitelisted scute chunk size; the
     // carapace read side rejects anything else (see
     // `SCUTE_CHUNK_SIZE_SECTORS`). Not a tunable.
@@ -108,7 +215,6 @@ pub fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
     //
     //   input file ──read chunks──> cow::write_streaming ──> cow temp file
     //   cow temp file ──read 4 KiB blocks──> VerityBuilder ──> verity blob
-    //   cow temp file ──atomic rename──> BlobStore::put_blob_from_path
     //
     // Memory profile (any input size):
     //   - input read buffer: 1 chunk (default 16 KiB, max 1 MiB)
@@ -116,14 +222,8 @@ pub fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
     //   - verity leaf hashes: 32 bytes per 4 KiB cow block (~0.78%)
     //   - verity blob: ~1/127 of cow size (kept in memory; small)
     //
-    // The cow + verity + manifest temps live in `blob_store.scratch_dir()`
-    // (same filesystem as the blob dir) so the final `rename(2)` cannot
-    // fail with `EXDEV`.
-    let blob_store = FilesystemBlobStore::new(graphroot);
-    let scratch = blob_store
-        .scratch_dir()
-        .context("preparing scratch dir for streaming COW")?;
-
+    // The cow + verity temps live in the caller-provided `scratch` dir (same
+    // filesystem as the blob dir) so the final `rename(2)` cannot EXDEV.
     let raw_size = std::fs::metadata(&args.raw_image)
         .with_context(|| format!("stat input image: {}", args.raw_image.display()))?
         .len();
@@ -142,7 +242,7 @@ pub fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
     let mut input = BufReader::new(input_file);
 
     // Step 1: stream COW into a NamedTempFile in scratch_dir.
-    let cow_temp = tempfile::NamedTempFile::new_in(&scratch)
+    let cow_temp = tempfile::NamedTempFile::new_in(scratch)
         .with_context(|| format!("creating cow temp file in {}", scratch.display()))?;
     let cow_meta;
     {
@@ -255,32 +355,22 @@ pub fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
         );
     }
 
-    // Step 5a: prepare optional PMI staging data BEFORE any blob writes.
-    // We hash + copy the file into scratch now so that if the file is
-    // missing or unreadable we abort BEFORE writing any blobs (no partial
-    // state). The actual put_blob_from_path for PMI happens in Step 6,
-    // between the verity put and the manifest put, per the task spec.
-    struct PmiStaged {
-        temp_path: std::path::PathBuf,
-        digest: Digest,
-        size: u64,
-        layer: pichi_artifact::Layer,
-    }
+    // Step 5a: stage optional PMI. Hash + copy the file into scratch now so a
+    // missing/unreadable PMI aborts before any blob writes (no partial state).
+    let mut pmi_layer: Option<pichi_artifact::Layer> = None;
     let pmi_staged: Option<PmiStaged> = if let Some(ref pmi_path) = args.pmi {
         // Fail-fast: stat the PMI file before any blob writes.
         let pmi_size = std::fs::metadata(pmi_path)
             .with_context(|| format!("stat PMI file: {}", pmi_path.display()))?
             .len();
 
-        // Hash the input file in place (stream_sha256 opens it directly;
-        // does not mutate the file, only reads it).
         let pmi_digest_arr = stream_sha256(pmi_path)
             .with_context(|| format!("hashing PMI file: {}", pmi_path.display()))?;
         let pmi_digest = Digest::Sha256(pmi_digest_arr);
 
-        // Stage PMI bytes into scratch_dir via NamedTempFile + buffered
-        // copy so the atomic rename (put_blob_from_path) cannot EXDEV.
-        let pmi_temp = tempfile::NamedTempFile::new_in(&scratch)
+        // Stage PMI bytes into scratch via NamedTempFile + buffered copy so
+        // the eventual atomic rename (put_blob_from_path) cannot EXDEV.
+        let pmi_temp = tempfile::NamedTempFile::new_in(scratch)
             .with_context(|| format!("creating PMI temp file in {}", scratch.display()))?;
         {
             let src = File::open(pmi_path)
@@ -297,28 +387,22 @@ pub fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
             .context("fsync PMI temp file")?;
 
         if !args.quiet {
-            log::info!(
-                "pichi import: pmi blob {} bytes, digest {}",
-                pmi_size,
-                pmi_digest
-            );
+            log::info!("pichi import: pmi blob {pmi_size} bytes, digest {pmi_digest}");
         }
 
-        let layer = pichi_artifact::Layer::Pmi(pichi_artifact::PmiDescriptor {
+        pmi_layer = Some(pichi_artifact::Layer::Pmi(pichi_artifact::PmiDescriptor {
             digest: pmi_digest.to_string(),
             size: pmi_size,
-        });
-        // Keep the temp file alive by extracting the path before NamedTempFile
-        // is dropped; we will pass it to put_blob_from_path in Step 6.
-        let temp_path = pmi_temp.into_temp_path();
-        // `keep()` prevents deletion on drop; we'll rename it in Step 6.
-        let temp_path = temp_path.keep().context("keeping PMI temp file path")?;
+        }));
+        // Keep the temp file (rename into the blob store happens in `run`).
+        let temp_path = pmi_temp
+            .into_temp_path()
+            .keep()
+            .context("keeping PMI temp file path")?;
 
         Some(PmiStaged {
             temp_path,
             digest: pmi_digest,
-            size: pmi_size,
-            layer,
         })
     } else {
         None
@@ -353,8 +437,8 @@ pub fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
     // Step 5c: build manifest. Extra layers (PMI, DTB) follow the base scute;
     // order is not load-bearing.
     let mut extra_layers: Vec<pichi_artifact::Layer> = Vec::new();
-    if let Some(s) = &pmi_staged {
-        extra_layers.push(s.layer.clone());
+    if let Some(layer) = &pmi_layer {
+        extra_layers.push(layer.clone());
     }
     if let Some((_, _, layer)) = &dtb_staged {
         extra_layers.push(layer.clone());
@@ -373,87 +457,25 @@ pub fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
         .context("Manifest::to_bytes failed")?;
     let manifest_digest = Digest::from_bytes_sha256(&manifest_bytes);
 
-    // Step 6: atomic blob writes (BlobStore handles temp+rename + flock --
-    // T-43-03 mitigation). The cow blob is staged via put_blob_from_path
-    // (atomic rename, no re-read) so we never load the multi-GB cow into
-    // memory. Verity + manifest are small and use the in-memory put_blob.
-    // Order: cow -> verity -> pmi (if present) -> manifest.
-    blob_store
-        .put_blob_from_path(cow_temp.path(), &cow_digest)
-        .with_context(|| format!("put_blob_from_path cow {cow_digest}"))?;
-    // `put_blob_from_path` consumed the temp file via rename(2); tell
-    // NamedTempFile not to try to delete it on drop.
-    let _ = cow_temp.into_temp_path().keep();
-    // Phase 46 D-01: verity tree lives as a sidecar next to the cow blob,
-    // not as a content-addressed blob. The cow blob was already committed
-    // above via put_blob_from_path; we write `<cow_path>.verity` to mirror
-    // the on-disk shape `pichi pull` produces (Plan 02). Carapace (Phase 48)
-    // reads `<src>.verity` to expose the dm-verity hash device to the guest.
-    //
-    // `verity_digest` is still computed (Step 4 above) and emitted via
-    // `--print-verity-info` (D-11) so the publisher's cmdline-construction
-    // workflow continues to work — it just isn't stored as a separate blob.
-    let cow_blob_path = blob_store.blob_path(&cow_digest);
-    let scratch_for_verity = blob_store
-        .scratch_dir()
-        .context("scratch_dir for verity sidecar")?;
-    write_sidecar_atomic(
-        &scratch_for_verity,
-        &verity_path(&cow_blob_path),
-        &verity_out.blob,
-    )
-    .with_context(|| format!("write verity sidecar for cow {cow_digest}"))?;
-    // PMI blob put between verity and manifest (per task spec error ordering).
-    if let Some(staged) = pmi_staged {
-        blob_store
-            .put_blob_from_path(&staged.temp_path, &staged.digest)
-            .with_context(|| format!("put_blob_from_path pmi {}", staged.digest))?;
-        // staged.temp_path was already kept; put_blob_from_path renamed it
-        // into the blob store. No further cleanup needed.
-        let _ = staged.size; // suppress unused warning
-    }
-    // DTB and config blobs (small; in-memory put) before the manifest.
-    if let Some((digest, bytes, _)) = &dtb_staged {
-        blob_store
-            .put_blob(digest, bytes)
-            .with_context(|| format!("put_blob dtb {digest}"))?;
-    }
-    if let Some((digest, bytes)) = &config_staged {
-        blob_store
-            .put_blob(digest, bytes)
-            .with_context(|| format!("put_blob config {digest}"))?;
-    }
-    blob_store
-        .put_blob(&manifest_digest, &manifest_bytes)
-        .with_context(|| format!("put_blob manifest {manifest_digest}"))?;
+    // Keep the cow temp file (its rename into the blob store happens in `run`).
+    let cow_temp_path = cow_temp
+        .into_temp_path()
+        .keep()
+        .context("keeping cow temp file path")?;
 
-    // Step 7: set tag -- DIRECT bare call per Pattern Mapper Correction #1.
-    // The flock is internal to set_tag; an outer advisory-lock from the
-    // same process on the same path would deadlock (lock.rs:50-58).
-    let db = FilesystemTagDb::open(graphroot)
-        .with_context(|| format!("opening tag db at {}", graphroot.display()))?;
-    db.set_tag(&tag_key, &manifest_digest)
-        .with_context(|| format!("set_tag {tag_key}"))?;
-
-    if !args.quiet {
-        log::info!("pichi import: tagged {tag_key} -> manifest {manifest_digest}");
-    }
-
-    // Step 8: optional --print-verity-info JSON for CI consumption
-    // (RESEARCH Open-Q #1 / D-04 -- feeds the verity-cross-validate job).
-    if args.print_verity_info {
-        // Hand-rolled JSON to avoid pulling serde_json into tools/import
-        // (the root binary already has serde_json but tools/import does
-        // not -- keep the closure tight per cargo-shear discipline).
-        println!(
-            "{{\"cow_digest\":\"{}\",\"verity_digest\":\"{}\",\"root_hash\":\"{}\"}}",
-            cow_digest,
-            verity_digest,
-            hex::encode(verity_out.root_hash)
-        );
-    }
-
-    Ok(())
+    Ok(StagedImport {
+        cow_temp_path,
+        cow_digest,
+        verity_blob: verity_out.blob,
+        verity_digest,
+        root_hash: verity_out.root_hash,
+        pmi: pmi_staged,
+        dtb: dtb_staged.map(|(d, b, _)| (d, b)),
+        config: config_staged,
+        manifest_bytes,
+        manifest_digest,
+        tag_key,
+    })
 }
 
 /// Stream-hash a file with SHA-256, returning the raw 32-byte digest.
@@ -523,8 +545,8 @@ mod tests {
         (args, graphroot)
     }
 
-    #[test]
-    fn run_writes_three_blobs_and_a_tag() {
+    #[tokio::test]
+    async fn run_writes_three_blobs_and_a_tag() {
         let tmp = TempDir::new().unwrap();
         let raw = tmp.path().join("input.raw");
         let mut data = vec![0u8; 64 * 1024]; // 4 chunks at chunk_size=32 sectors
@@ -532,7 +554,7 @@ mod tests {
         std::fs::write(&raw, &data).unwrap();
         let (args, graphroot) = make_args(&tmp, raw, "myapp:base");
 
-        run(args, &graphroot).unwrap();
+        run(args, &graphroot).await.unwrap();
 
         // Three blobs in <graphroot>/blobs/sha256/.
         let blobs_dir = graphroot.join("blobs").join("sha256");
@@ -546,15 +568,15 @@ mod tests {
         // Tag resolves (stored under canonical form after Reference::from_str normalization).
         let db = FilesystemTagDb::open(&graphroot).unwrap();
         let canonical_tag = "myapp:base".parse::<Reference>().unwrap().to_string();
-        let resolved = db.resolve_tag(&canonical_tag).unwrap();
+        let resolved = db.resolve_tag(&canonical_tag).await.unwrap();
         assert!(
             resolved.is_some(),
             "tag must resolve (canonical: {canonical_tag})"
         );
     }
 
-    #[test]
-    fn imports_at_the_carapace_scute_chunk_size() {
+    #[tokio::test]
+    async fn imports_at_the_carapace_scute_chunk_size() {
         // Carapaces are fixed at the spec-whitelisted chunk size; import is
         // no longer tunable and must emit exactly that value.
         let tmp = TempDir::new().unwrap();
@@ -563,7 +585,7 @@ mod tests {
         data[5000] = 0xCC;
         std::fs::write(&raw, &data).unwrap();
         let (args, graphroot) = make_args(&tmp, raw, "x:y");
-        run(args, &graphroot).unwrap();
+        run(args, &graphroot).await.unwrap();
 
         // The emitted cow blob's header records the chunk size; it must be 8.
         let blobs = graphroot.join("blobs").join("sha256");

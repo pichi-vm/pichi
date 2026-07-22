@@ -71,18 +71,19 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
         ReferenceKind::Digest(d) => {
             // Auto-pull on a cache miss, mirroring `docker`/`podman run`'s
             // default `--pull=missing`.
-            if !blob_store.blob_exists(d) {
+            if !blob_store.blob_exists(d).await {
                 auto_pull(&target_ref, config).await?;
             }
             d.clone()
         }
         ReferenceKind::Tag(_) => {
             let key = target_ref.to_string();
-            match db.resolve_tag(&key)? {
+            match db.resolve_tag(&key).await? {
                 Some(d) => d,
                 None => {
                     auto_pull(&target_ref, config).await?;
-                    db.resolve_tag(&key)?
+                    db.resolve_tag(&key)
+                        .await?
                         .ok_or_else(|| anyhow!("{key} not in cache after pull"))?
                 }
             }
@@ -92,6 +93,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
     // 2. Read + validate the manifest snapshot.
     let bytes = blob_store
         .get_blob(&digest)
+        .await
         .with_context(|| format!("reading manifest blob {digest}"))?;
     let manifest = Manifest::from_reader_validated(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
@@ -101,7 +103,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
 
     // 4. Derive the dillo argv from the manifest + runtime resources, applying
     //    the artifact's requirements.yaml floors (BUILD.md §7) when present.
-    let reqs = requirements::load_requirements(&manifest, &blob_store)?;
+    let reqs = requirements::load_requirements(&manifest, &blob_store).await?;
     let cpus = requirements::resolve_sized(
         args.cpus.or(config.run.cpus),
         reqs.as_ref().and_then(Requirements::cpus_required),
@@ -117,7 +119,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
     // One user-mode NIC per declared interface (BUILD.md §7); the guest brings
     // them up. v1 wires user-net only and does not yet act on ingress/slot.
     let interfaces = reqs.as_ref().map_or(0, |r| r.interfaces.len());
-    let dillo_args = build_dillo_args(&manifest, &blob_store, cpus, memory, interfaces)?;
+    let dillo_args = build_dillo_args(&manifest, &blob_store, cpus, memory, interfaces).await?;
 
     // 5. Locate dillo and hand off.
     let dillo = find_dillo();
@@ -143,7 +145,7 @@ async fn auto_pull(reference: &Reference, config: &Config) -> Result<()> {
 }
 
 /// Assemble the `dillo` argument vector (program name excluded).
-fn build_dillo_args(
+async fn build_dillo_args(
     manifest: &Manifest,
     blob_store: &FilesystemBlobStore,
     cpus: Option<u32>,
@@ -179,7 +181,7 @@ fn build_dillo_args(
     }
     if !scutes.is_empty() {
         argv.push("--gpt".to_string());
-        argv.push(build_gpt_spec(manifest, &scutes, blob_store)?);
+        argv.push(build_gpt_spec(manifest, &scutes, blob_store).await?);
     }
     for _ in 0..interfaces {
         argv.push("--net".to_string());
@@ -244,7 +246,7 @@ pub(crate) fn scute_layers(manifest: &Manifest) -> Result<Vec<&ScuteDescriptor>>
 /// Build the `--gpt` value: a chain-ordered partition list `[cow0, verity0,
 /// cow1, verity1, ...]`. device-id/disk-guid are omitted so dillo derives
 /// them from the PARTUUIDs (matching the carapace formula).
-pub(crate) fn build_gpt_spec(
+pub(crate) async fn build_gpt_spec(
     manifest: &Manifest,
     scutes: &[&ScuteDescriptor],
     blob_store: &FilesystemBlobStore,
@@ -265,8 +267,10 @@ pub(crate) fn build_gpt_spec(
             .with_context(|| format!("scute salt is not valid hex: {}", scute.annotations.salt))?;
         let cow_bytes = blob_store
             .get_blob(&cow_digest)
+            .await
             .with_context(|| format!("reading scute cow blob {cow_digest}"))?;
 
+        // dm-verity root computation is CPU-bound — run it off the runtime.
         let params = pichi_import::verity::VerityParams {
             data_block_size,
             hash_block_size,
@@ -274,9 +278,12 @@ pub(crate) fn build_gpt_spec(
             // Cosmetic for the root-hash computation (inputs are salt + data).
             uuid: [0u8; 16],
         };
-        let root = pichi_import::verity::compute(&cow_bytes, &params)
-            .context("dm-verity root computation failed")?
-            .root_hash;
+        let root = tokio::task::spawn_blocking(move || {
+            pichi_import::verity::compute(&cow_bytes, &params).map(|o| o.root_hash)
+        })
+        .await
+        .context("verity task panicked")?
+        .context("dm-verity root computation failed")?;
 
         // D-run-01: cow PARTUUID = root[0..16], verity PARTUUID = root[16..32].
         //
@@ -465,8 +472,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn partition_layers_splits_pmi_and_scutes() {
+    #[tokio::test]
+    async fn partition_layers_splits_pmi_and_scutes() {
         let scute = ScuteDescriptor {
             digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .into(),
@@ -478,8 +485,8 @@ mod tests {
         assert_eq!(scutes.len(), 1);
     }
 
-    #[test]
-    fn partition_layers_errors_without_pmi() {
+    #[tokio::test]
+    async fn partition_layers_errors_without_pmi() {
         let scute = ScuteDescriptor {
             digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .into(),
@@ -491,8 +498,8 @@ mod tests {
         assert!(err.to_string().contains("not bootable"), "got: {err}");
     }
 
-    #[test]
-    fn partition_layers_rejects_zstd_scutes() {
+    #[tokio::test]
+    async fn partition_layers_rejects_zstd_scutes() {
         let scute = ScuteDescriptor {
             digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .into(),
@@ -504,13 +511,15 @@ mod tests {
         assert!(err.to_string().contains("zstd"), "got: {err}");
     }
 
-    #[test]
-    fn build_dillo_args_pmi_only_passes_resources_and_no_gpt() {
+    #[tokio::test]
+    async fn build_dillo_args_pmi_only_passes_resources_and_no_gpt() {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
 
-        let argv = build_dillo_args(&m, &blob_store, Some(2), None, 1).unwrap();
+        let argv = build_dillo_args(&m, &blob_store, Some(2), None, 1)
+            .await
+            .unwrap();
         assert_eq!(argv[0], "--pmi");
         assert!(argv.contains(&"--cpus".to_string()));
         assert!(argv.contains(&"2".to_string()));
@@ -520,13 +529,15 @@ mod tests {
         assert_eq!(argv.iter().filter(|a| *a == "--net").count(), 1);
     }
 
-    #[test]
-    fn build_dillo_args_omits_resource_flags_when_unset() {
+    #[tokio::test]
+    async fn build_dillo_args_omits_resource_flags_when_unset() {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
 
-        let argv = build_dillo_args(&m, &blob_store, None, None, 0).unwrap();
+        let argv = build_dillo_args(&m, &blob_store, None, None, 0)
+            .await
+            .unwrap();
         assert!(!argv.contains(&"--cpus".to_string()));
         assert!(!argv.contains(&"--memory".to_string()));
         // No declared interfaces -> no --net.
@@ -541,28 +552,32 @@ mod tests {
         })
     }
 
-    #[test]
-    fn build_dillo_args_passes_dtb_when_present() {
+    #[tokio::test]
+    async fn build_dillo_args_passes_dtb_when_present() {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer(), dtb_layer_fixture()]);
-        let argv = build_dillo_args(&m, &blob_store, None, None, 0).unwrap();
+        let argv = build_dillo_args(&m, &blob_store, None, None, 0)
+            .await
+            .unwrap();
         assert!(argv.contains(&"--dtb".to_string()), "argv: {argv:?}");
     }
 
-    #[test]
-    fn build_dillo_args_no_dtb_when_absent() {
+    #[tokio::test]
+    async fn build_dillo_args_no_dtb_when_absent() {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
-        let argv = build_dillo_args(&m, &blob_store, None, None, 0).unwrap();
+        let argv = build_dillo_args(&m, &blob_store, None, None, 0)
+            .await
+            .unwrap();
         assert!(!argv.contains(&"--dtb".to_string()));
     }
 
     /// The user-net `--net` value we emit must parse back through dillo's own
     /// device schema as a user-mode interface (guards format drift).
-    #[test]
-    fn net_spec_round_trips_through_dillo_config() {
+    #[tokio::test]
+    async fn net_spec_round_trips_through_dillo_config() {
         let spec: dillo_config::NetSpec =
             serde_keyvalue::from_key_values(crate::cmd::build::USER_NET_SPEC)
                 .expect("user-net spec parses as dillo NetSpec");
@@ -571,14 +586,14 @@ mod tests {
 
     /// The `--gpt` kv string we emit must parse back through dillo's own
     /// device schema into the partitions we intended (guards format drift).
-    #[test]
-    fn gpt_spec_round_trips_through_dillo_config() {
+    #[tokio::test]
+    async fn gpt_spec_round_trips_through_dillo_config() {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
 
         let cow_bytes = vec![0u8; 8192];
         let cow_digest = sha256_digest(&cow_bytes);
-        blob_store.put_blob(&cow_digest, &cow_bytes).unwrap();
+        blob_store.put_blob(&cow_digest, &cow_bytes).await.unwrap();
 
         let scute = ScuteDescriptor {
             digest: cow_digest.to_string(),
@@ -587,7 +602,7 @@ mod tests {
         };
         let m = manifest_with(vec![pmi_layer(), Layer::Scute(scute.clone())]);
 
-        let spec = build_gpt_spec(&m, &[&scute], &blob_store).unwrap();
+        let spec = build_gpt_spec(&m, &[&scute], &blob_store).await.unwrap();
         // Must parse back through dillo's own device schema (same kv parser
         // dillo's `--gpt` uses).
         let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(&spec).unwrap();
@@ -611,8 +626,8 @@ mod tests {
         assert_eq!(gpt.partitions[0].label[2..], gpt.partitions[1].label[2..]);
     }
 
-    #[test]
-    fn check_architecture_accepts_absent_and_matching() {
+    #[tokio::test]
+    async fn check_architecture_accepts_absent_and_matching() {
         let m = manifest_with(vec![pmi_layer()]);
         check_architecture(&m).unwrap(); // absent
 
@@ -623,8 +638,8 @@ mod tests {
         check_architecture(&m2).unwrap(); // matching
     }
 
-    #[test]
-    fn check_architecture_rejects_mismatch() {
+    #[tokio::test]
+    async fn check_architecture_rejects_mismatch() {
         let mut m = manifest_with(vec![pmi_layer()]);
         m.annotations.insert(
             ARCH_ANNOTATION.to_string(),
@@ -637,14 +652,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_dillo_prefers_override() {
+    #[tokio::test]
+    async fn resolve_dillo_prefers_override() {
         let got = resolve_dillo(Some(OsString::from("/opt/dillo")), None);
         assert_eq!(got, PathBuf::from("/opt/dillo"));
     }
 
-    #[test]
-    fn resolve_dillo_finds_sibling() {
+    #[tokio::test]
+    async fn resolve_dillo_finds_sibling() {
         let tmp = TempDir::new().unwrap();
         let name = if cfg!(windows) { "dillo.exe" } else { "dillo" };
         std::fs::write(tmp.path().join(name), b"#!/bin/sh\n").unwrap();
@@ -653,8 +668,8 @@ mod tests {
         assert_eq!(got, tmp.path().join(name));
     }
 
-    #[test]
-    fn resolve_dillo_falls_back_to_path() {
+    #[tokio::test]
+    async fn resolve_dillo_falls_back_to_path() {
         let got = resolve_dillo(None, None);
         let name = if cfg!(windows) { "dillo.exe" } else { "dillo" };
         assert_eq!(got, PathBuf::from(name));

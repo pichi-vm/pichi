@@ -37,7 +37,7 @@ fn graphroot(tmp: &TempDir) -> std::path::PathBuf {
 
 /// Insert a manifest with a unique scute digest based on `salt_seed`.
 /// (Mirrors `tests/cmd_rmi.rs::insert_manifest`.)
-fn insert_manifest(
+async fn insert_manifest(
     graphroot: &std::path::Path,
     tag: &str,
     salt_seed: &str,
@@ -61,11 +61,13 @@ fn insert_manifest(
     let mdigest = m.digest().unwrap();
     let bs = FilesystemBlobStore::new(graphroot);
     use pichi_storage::BlobStore;
-    bs.put_blob(&mdigest, &mbytes).unwrap();
+    bs.put_blob(&mdigest, &mbytes).await.unwrap();
     let parsed_scute: pichi_artifact::Digest = scute_digest.parse().unwrap();
-    bs.put_blob(&parsed_scute, b"fake-scute-bytes").unwrap();
+    bs.put_blob(&parsed_scute, b"fake-scute-bytes")
+        .await
+        .unwrap();
     let db = FilesystemTagDb::open(graphroot).unwrap();
-    db.set_tag(tag, &mdigest).unwrap();
+    db.set_tag(tag, &mdigest).await.unwrap();
     (mdigest, parsed_scute)
 }
 
@@ -93,8 +95,8 @@ fn count_blob_files(graphroot: &std::path::Path) -> usize {
 }
 
 /// (1) Empty graphroot: `Nothing to prune.\n`, exit 0.
-#[test]
-fn prune_empty_cache_prints_nothing_to_prune() {
+#[tokio::test]
+async fn prune_empty_cache_prints_nothing_to_prune() {
     let tmp = TempDir::new().unwrap();
     let _ = graphroot(&tmp);
 
@@ -111,8 +113,8 @@ fn prune_empty_cache_prints_nothing_to_prune() {
 
 /// (2) All blobs live (referenced by a tag): `Nothing to prune.\n`,
 /// pre/post `count_blob_files` identical.
-#[test]
-fn prune_all_blobs_live_prints_nothing_to_prune() {
+#[tokio::test]
+async fn prune_all_blobs_live_prints_nothing_to_prune() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
@@ -142,8 +144,8 @@ fn prune_all_blobs_live_prints_nothing_to_prune() {
 /// (3) Import → rmi → prune: the orphans are already cleaned by rmi
 /// (Phase 46 Plan 04 atomicity), so prune reports `Nothing to prune.\n`.
 /// Regression guard against rmi/prune accounting drift.
-#[test]
-fn prune_after_import_then_rmi_reports_zero_orphans() {
+#[tokio::test]
+async fn prune_after_import_then_rmi_reports_zero_orphans() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
@@ -180,15 +182,15 @@ fn prune_after_import_then_rmi_reports_zero_orphans() {
 
 /// (4) Shared-tag preservation: `tag a:1 b:1`, `rmi a:1`, `prune` —
 /// blobs preserved because `b:1` still references them.
-#[test]
-fn prune_shared_tag_preservation() {
+#[tokio::test]
+async fn prune_shared_tag_preservation() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (mdigest, sdigest) = insert_manifest(&g, "docker.io/library/a:1", "aabb");
+    let (mdigest, sdigest) = insert_manifest(&g, "docker.io/library/a:1", "aabb").await;
 
     // Add a second tag pointing at the same manifest.
     let db = FilesystemTagDb::open(&g).unwrap();
-    db.set_tag("docker.io/library/b:1", &mdigest).unwrap();
+    db.set_tag("docker.io/library/b:1", &mdigest).await.unwrap();
     drop(db);
 
     Command::cargo_bin("pichi")
@@ -202,8 +204,14 @@ fn prune_shared_tag_preservation() {
     // points at them).
     let bs = FilesystemBlobStore::new(&g);
     use pichi_storage::BlobStore;
-    assert!(bs.blob_exists(&mdigest), "manifest must survive shared rmi");
-    assert!(bs.blob_exists(&sdigest), "scute must survive shared rmi");
+    assert!(
+        bs.blob_exists(&mdigest).await,
+        "manifest must survive shared rmi"
+    );
+    assert!(
+        bs.blob_exists(&sdigest).await,
+        "scute must survive shared rmi"
+    );
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
@@ -214,16 +222,19 @@ fn prune_shared_tag_preservation() {
 
     assert!(out.status.success(), "exit must be 0");
     assert_eq!(out.stdout, b"Nothing to prune.\n");
-    assert!(bs.blob_exists(&mdigest), "manifest must survive prune");
-    assert!(bs.blob_exists(&sdigest), "scute must survive prune");
+    assert!(
+        bs.blob_exists(&mdigest).await,
+        "manifest must survive prune"
+    );
+    assert!(bs.blob_exists(&sdigest).await, "scute must survive prune");
 }
 
 /// (5) Headless-sidecar silent sweep: a single `<64hex>.verity` with no
 /// source is reclaimed, but stdout is `Nothing to prune.\n` (D-prune-B3:
 /// per-line records and `(N blobs)` count surface source-orphan blobs
 /// only — headless sidecars are silent disk reclamation).
-#[test]
-fn prune_headless_sidecar_swept_silently() {
+#[tokio::test]
+async fn prune_headless_sidecar_swept_silently() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let blobs = g.join("blobs").join("sha256");
@@ -251,8 +262,8 @@ fn prune_headless_sidecar_swept_silently() {
 /// (6) --dry-run preserves files: manually seed a 64-hex orphan source
 /// + `.verity`, run with `--dry-run`, assert files preserved + stdout
 /// contains `sha256:` per-line and `Total reclaimed:` summary.
-#[test]
-fn prune_dry_run_preserves_files() {
+#[tokio::test]
+async fn prune_dry_run_preserves_files() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let blobs = g.join("blobs").join("sha256");
@@ -295,8 +306,8 @@ fn prune_dry_run_preserves_files() {
 /// files + names), run --dry-run against Tmp1 and a real run against
 /// Tmp2, assert `output1.stdout == output2.stdout` byte-equal. Tmp1's
 /// blobs MUST still be present; Tmp2's MUST be gone.
-#[test]
-fn prune_dry_run_then_real_run_byte_identical_stdout() {
+#[tokio::test]
+async fn prune_dry_run_then_real_run_byte_identical_stdout() {
     let tmp1 = TempDir::new().unwrap();
     let tmp2 = TempDir::new().unwrap();
     let g1 = graphroot(&tmp1);
@@ -349,8 +360,8 @@ fn prune_dry_run_then_real_run_byte_identical_stdout() {
 /// (8) D-prune-B4: orphans are sorted by digest ASCII order. Two orphan
 /// source blobs whose hex names start with `aaaa...` and `bbbb...`; the
 /// `aaaa...` line MUST precede the `bbbb...` line in stdout.
-#[test]
-fn prune_sorts_orphans_by_digest_ascii() {
+#[tokio::test]
+async fn prune_sorts_orphans_by_digest_ascii() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let blobs = g.join("blobs").join("sha256");

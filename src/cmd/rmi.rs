@@ -42,15 +42,17 @@ use crate::config::Config;
 
 /// `pichi rmi <ref>...` entry point — remove tags + refcount-aware blob
 /// GC (LOCAL-03).
-pub fn run(args: RmiArgs, config: &Config) -> Result<()> {
+pub async fn run(args: RmiArgs, config: &Config) -> Result<()> {
     let layout = resolve_layout(config)?;
     for input in &args.references {
-        rmi_one(input, args.force, &layout).with_context(|| format!("removing {input}"))?;
+        rmi_one(input, args.force, &layout)
+            .await
+            .with_context(|| format!("removing {input}"))?;
     }
     Ok(())
 }
 
-fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
+async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
     let target_ref: Reference = input
         .parse()
         .with_context(|| format!("invalid reference: {input}"))?;
@@ -60,17 +62,18 @@ fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
     // index-lock window. The lock is dropped only after every blob unlink
     // returns. `delete_tag_locked` skips re-acquiring the flock so we don't
     // self-deadlock against the outer `with_index_lock`.
-    let (target_digest, deleted) = with_index_lock(layout, || -> Result<(Digest, usize)> {
+    let (target_digest, deleted) = with_index_lock(layout, || async {
         let db = FilesystemTagDb::open(&layout.graphroot)?;
         let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
         // Resolve target.
         let target_digest = db
-            .resolve_tag(&target_key)?
+            .resolve_tag(&target_key)
+            .await?
             .ok_or_else(|| anyhow!("ref not found in cache: {target_key}"))?;
 
         // --force check: other tags pointing at the SAME manifest digest?
-        let all_tags = db.list_tags()?;
+        let all_tags = db.list_tags().await?;
         let other_pointers: Vec<&TagEntry> = all_tags
             .iter()
             .filter(|e| e.digest == target_digest && e.tag != target_key)
@@ -95,7 +98,7 @@ fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
                 continue; // skip the tag we're removing
             }
             still_referenced.insert(entry.digest.clone());
-            if let Ok(bytes) = blob_store.get_blob(&entry.digest) {
+            if let Ok(bytes) = blob_store.get_blob(&entry.digest).await {
                 if let Ok(m) = Manifest::from_reader(bytes.as_slice()) {
                     for layer in &m.layers {
                         // digest_str is "sha256:<hex>" — round-trip via parse.
@@ -111,7 +114,7 @@ fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
         // minus still_referenced.
         let mut candidates: HashSet<Digest> = HashSet::new();
         candidates.insert(target_digest.clone());
-        if let Ok(bytes) = blob_store.get_blob(&target_digest) {
+        if let Ok(bytes) = blob_store.get_blob(&target_digest).await {
             if let Ok(m) = Manifest::from_reader(bytes.as_slice()) {
                 for layer in &m.layers {
                     if let Ok(d) = layer.digest_str().parse::<Digest>() {
@@ -151,14 +154,16 @@ fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
             let blob_path = blob_store.blob_path(d);
             let existed = blob_path.exists();
             pichi_storage::sidecar::unlink_blob_with_sidecars(&blob_path)
+                .await
                 .with_context(|| format!("unlink blob+sidecars for {d}"))?;
             if existed {
                 deleted += 1;
             }
         }
 
-        Ok((target_digest, deleted))
-    })?;
+        Ok::<(Digest, usize), anyhow::Error>((target_digest, deleted))
+    })
+    .await?;
 
     log::info!(
         "removed tag {target_key} (manifest {target_digest}); unlinked {deleted} orphan blob(s)"

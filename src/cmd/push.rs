@@ -31,13 +31,11 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use anyhow::{Context, Result, anyhow};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures_util::stream;
 use pichi_artifact::{Digest, Manifest, Reference};
 use pichi_registry::Registry;
 use pichi_storage::{BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb};
-use std::io::Read;
-use std::sync::Mutex;
 
 use crate::cli::PushArgs;
 use crate::cmd::registry_helpers::build_http_registry;
@@ -47,13 +45,6 @@ use crate::config::Config;
 /// manifest under this media type — the inner `artifactType` field carries
 /// the `application/vnd.pichi.artifact.v1+json` discriminator (REGISTRY-07).
 const PUSH_MANIFEST_CONTENT_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-
-/// Read-buffer size for the BlobStore → push stream bridge. `push_blob_stream`
-/// streams this into a single monolithic PUT (see `pichi_registry`), so this is
-/// purely the disk-read granularity, not a network chunk size — it bounds how
-/// much of the blob is resident at once while it flows to the socket. 1 MiB
-/// amortises read syscalls without holding the whole blob in memory.
-const PUSH_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Entry point for `pichi push`. Builds a throwaway tokio current-thread
 /// runtime, drives [`push_inner`], drops the runtime before returning.
@@ -92,12 +83,14 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
     // 1. Resolve tag → manifest digest.
     let target_str = target.to_string();
     let manifest_digest = tag_db
-        .resolve_tag(&target_str)?
+        .resolve_tag(&target_str)
+        .await?
         .ok_or_else(|| anyhow!("ref not in cache: {target}"))?;
 
     // 2. Read cached manifest bytes (raw — preserves OCI digest per Pitfall 3).
     let raw_manifest = blob_store
         .get_blob(&manifest_digest)
+        .await
         .with_context(|| format!("read manifest {manifest_digest} from cache"))?;
 
     // 3-6: push the manifest and its blobs.
@@ -152,6 +145,7 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
             Bytes::from(
                 blob_store
                     .get_blob(&config_digest)
+                    .await
                     .with_context(|| format!("read config blob {config_digest} from cache"))?
                     .to_vec(),
             )
@@ -194,9 +188,8 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
             continue;
         }
 
-        // 5b. Stream upload from BlobStore (RESEARCH §"Push blob via stream"
-        //     lines 822-842 pattern).
-        let stream_chunks = blob_to_stream(blob_store, &layer_digest)?;
+        // 5b. Stream upload from BlobStore (async reader → ReaderStream).
+        let stream_chunks = blob_to_stream(blob_store, &layer_digest).await?;
         registry
             .push_blob_stream(
                 &target.registry,
@@ -226,44 +219,19 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     Ok(())
 }
 
-/// Wrap a [`BlobStore`] read source as a `Stream<Item = io::Result<Bytes>>`.
-/// Per RESEARCH §"Push blob via stream" lines 822-842 — the sync `Read` lives
-/// inside an async `unfold`. The `read` call is sync; `oci-client`'s push
-/// transport reads chunks at its own pace, so blocking the async runtime is
-/// acceptable for the same reason it's acceptable in the pull-side bridge:
-/// the throwaway `current_thread` runtime is single-purpose for this command.
-///
-/// **Sync wrapper:** `pichi_storage::ReadSeek` is `Read + Seek + Send` (NOT
-/// `Sync`) but the `push_blob_stream` trait surface requires
-/// `Stream + Send + Sync + 'static`. Wrapping the boxed handle in a
-/// [`std::sync::Mutex`] adds the missing `Sync` bound — the lock is held
-/// only inside the sync `unfold` body (no `.await` while holding it), so the
-/// `std::sync::Mutex` is the right choice (no `tokio::sync::Mutex` needed).
-fn blob_to_stream(
+/// Wrap a [`BlobStore`] blob as an async `Stream<Item = io::Result<Bytes>>` for
+/// the registry's streaming PUT. `open_blob` yields an `AsyncRead`, which
+/// `tokio_util::io::ReaderStream` adapts into the chunk stream the transport
+/// consumes — no blocking `Read` on the runtime.
+async fn blob_to_stream(
     blob_store: &dyn BlobStore,
     digest: &Digest,
-) -> Result<impl futures_util::stream::Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static>
-{
-    let file = blob_store
+) -> Result<impl futures_util::stream::Stream<Item = std::io::Result<Bytes>> + Send + 'static> {
+    let reader = blob_store
         .open_blob(digest)
+        .await
         .with_context(|| format!("open_blob {digest}"))?;
-    let shared = Mutex::new(file);
-    Ok(stream::unfold(shared, |shared| async move {
-        let mut buf = BytesMut::with_capacity(PUSH_CHUNK_BYTES);
-        buf.resize(PUSH_CHUNK_BYTES, 0);
-        let read_result = match shared.lock() {
-            Ok(mut guard) => Read::read(&mut **guard, &mut buf),
-            Err(_) => Err(std::io::Error::other("blob_to_stream: mutex poisoned")),
-        };
-        match read_result {
-            Ok(0) => None,
-            Ok(n) => {
-                buf.truncate(n);
-                Some((Ok(buf.freeze()), shared))
-            }
-            Err(e) => Some((Err(e), shared)),
-        }
-    }))
+    Ok(tokio_util::io::ReaderStream::new(reader))
 }
 
 /// Verbatim copy from `src/cmd/import.rs` lines 38-47 / `src/cmd/pull.rs`.
@@ -338,17 +306,21 @@ mod tests {
 
     /// Seed the cache: write the manifest + the single layer blob, set the
     /// tag. Returns the manifest digest.
-    fn seed_cache(graphroot: &Path, tag: &str, layer_data: &[u8]) -> (Digest, Digest) {
+    async fn seed_cache(graphroot: &Path, tag: &str, layer_data: &[u8]) -> (Digest, Digest) {
         let blob_store = FilesystemBlobStore::new(graphroot);
         let db = FilesystemTagDb::open(graphroot).unwrap();
         let layer_digest = Digest::from_bytes_sha256(layer_data);
-        blob_store.put_blob(&layer_digest, layer_data).unwrap();
+        blob_store
+            .put_blob(&layer_digest, layer_data)
+            .await
+            .unwrap();
         let (manifest_bytes, manifest_digest) =
             make_pichi_manifest(&layer_digest, layer_data.len() as u64);
         blob_store
             .put_blob(&manifest_digest, manifest_bytes.as_ref())
+            .await
             .unwrap();
-        db.set_tag(tag, &manifest_digest).unwrap();
+        db.set_tag(tag, &manifest_digest).await.unwrap();
         (manifest_digest, layer_digest)
     }
 
@@ -359,7 +331,8 @@ mod tests {
         let (_tmp, g) = graphroot();
         let layer_data = b"layer-data-for-skip-test";
         let target: Reference = "ghcr.io/example/skip:1".parse().unwrap();
-        let (_manifest_digest, layer_digest) = seed_cache(&g, &target.to_string(), layer_data);
+        let (_manifest_digest, layer_digest) =
+            seed_cache(&g, &target.to_string(), layer_data).await;
         let blob_store = FilesystemBlobStore::new(&g);
         let db = open_db(&g);
 
@@ -396,7 +369,8 @@ mod tests {
         let (_tmp, g) = graphroot();
         let layer_data = b"layer-data-for-upload-test";
         let target: Reference = "ghcr.io/example/upload:1".parse().unwrap();
-        let (_manifest_digest, layer_digest) = seed_cache(&g, &target.to_string(), layer_data);
+        let (_manifest_digest, layer_digest) =
+            seed_cache(&g, &target.to_string(), layer_data).await;
         let blob_store = FilesystemBlobStore::new(&g);
         let db = open_db(&g);
 
@@ -436,7 +410,8 @@ mod tests {
         let (_tmp, g) = graphroot();
         let layer_data = b"layer-data-for-order-test";
         let target: Reference = "ghcr.io/example/order:1".parse().unwrap();
-        let (_manifest_digest, _layer_digest) = seed_cache(&g, &target.to_string(), layer_data);
+        let (_manifest_digest, _layer_digest) =
+            seed_cache(&g, &target.to_string(), layer_data).await;
         let blob_store = FilesystemBlobStore::new(&g);
         let db = open_db(&g);
         let mock = MockRegistry::new();
@@ -519,8 +494,8 @@ mod tests {
         });
         let bytes = serde_json::to_vec(&bad_manifest).unwrap();
         let digest = Digest::from_bytes_sha256(&bytes);
-        blob_store.put_blob(&digest, &bytes).unwrap();
-        db.set_tag(&target.to_string(), &digest).unwrap();
+        blob_store.put_blob(&digest, &bytes).await.unwrap();
+        db.set_tag(&target.to_string(), &digest).await.unwrap();
 
         let mock = MockRegistry::new();
         let err = push_inner_with_registry(target, true, &mock, &blob_store, &db)
@@ -557,7 +532,10 @@ mod tests {
 
         let layer_data = b"raw-bytes-layer-data";
         let layer_digest = Digest::from_bytes_sha256(layer_data);
-        blob_store.put_blob(&layer_digest, layer_data).unwrap();
+        blob_store
+            .put_blob(&layer_digest, layer_data)
+            .await
+            .unwrap();
         let (clean_manifest, _clean_digest) =
             make_pichi_manifest(&layer_digest, layer_data.len() as u64);
         let mut raw_with_ws: Vec<u8> = clean_manifest.to_vec();
@@ -566,8 +544,11 @@ mod tests {
         let manifest_digest = Digest::from_bytes_sha256(&raw_bytes);
         blob_store
             .put_blob(&manifest_digest, raw_bytes.as_ref())
+            .await
             .unwrap();
-        db.set_tag(&target.to_string(), &manifest_digest).unwrap();
+        db.set_tag(&target.to_string(), &manifest_digest)
+            .await
+            .unwrap();
 
         let mock = MockRegistry::new();
         push_inner_with_registry(target.clone(), true, &mock, &blob_store, &db)

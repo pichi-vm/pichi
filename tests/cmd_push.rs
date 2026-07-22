@@ -57,8 +57,8 @@ fn test_repo_base() -> Option<String> {
 /// PICHI_TEST_REGISTRY needed — the error fires locally before any network
 /// call (cmd::push resolves the tag from the local cache as the first
 /// authority-bearing I/O).
-#[test]
-fn push_no_cache_errors() {
+#[tokio::test]
+async fn push_no_cache_errors() {
     let tmp = TempDir::new().unwrap();
     let _g = graphroot(&tmp);
     let assert = Command::cargo_bin("pichi")
@@ -82,8 +82,8 @@ fn push_no_cache_errors() {
 /// semantics as blobs). Asserts both invocations exit 0; the per-blob
 /// HEAD-skip is verified by the mock-backed unit test
 /// `push_inner_skips_present_blobs` in `src/cmd/push.rs::tests`.
-#[test]
-fn push_skips_existing_blobs() {
+#[tokio::test]
+async fn push_skips_existing_blobs() {
     let Some(base) = test_repo_base() else {
         eprintln!("PICHI_TEST_REGISTRY unset; skipping push_skips_existing_blobs");
         return;
@@ -128,8 +128,8 @@ fn push_skips_existing_blobs() {
 /// tests/cmd_pull_push_roundtrip.rs runs the rigorous bit-identical
 /// round-trip across all blobs; this test is the lighter-weight surface
 /// check for the cmd::push + cmd::pull binary integration.
-#[test]
-fn push_then_pull_succeeds() {
+#[tokio::test]
+async fn push_then_pull_succeeds() {
     let Some(base) = test_repo_base() else {
         eprintln!("PICHI_TEST_REGISTRY unset; skipping push_then_pull_succeeds");
         return;
@@ -150,6 +150,7 @@ fn push_then_pull_succeeds() {
     let db_before = FilesystemTagDb::open(&g).unwrap();
     let digest_before = db_before
         .resolve_tag(&tag)
+        .await
         .unwrap()
         .expect("tag should resolve after import");
     Command::cargo_bin("pichi")
@@ -168,7 +169,7 @@ fn push_then_pull_succeeds() {
         .success();
     let db_after_rmi = FilesystemTagDb::open(&g).unwrap();
     assert!(
-        db_after_rmi.resolve_tag(&tag).unwrap().is_none(),
+        db_after_rmi.resolve_tag(&tag).await.unwrap().is_none(),
         "rmi must clear the tag"
     );
     Command::cargo_bin("pichi")
@@ -182,6 +183,7 @@ fn push_then_pull_succeeds() {
     let db_after_pull = FilesystemTagDb::open(&g).unwrap();
     let digest_after = db_after_pull
         .resolve_tag(&tag)
+        .await
         .unwrap()
         .expect("tag should resolve after re-pull");
     assert_eq!(

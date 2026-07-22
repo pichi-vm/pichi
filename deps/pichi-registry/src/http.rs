@@ -154,15 +154,23 @@ impl HttpRegistry {
         client
     }
 
-    fn auth_for(&self, registry: &str) -> Result<RegistryAuth> {
-        let hint = self
-            .entries
-            .get(registry)
-            .and_then(|e| e.auth_hint.as_ref());
+    /// Resolve credentials for `registry`. The resolution reads
+    /// `containers-auth.json` / `~/.docker/config.json` from disk, so it runs
+    /// on a blocking thread rather than stalling a runtime worker on every
+    /// registry call (the previous sync read was a hidden block on the async
+    /// path).
+    async fn auth_for(&self, registry: &str) -> Result<RegistryAuth> {
+        let hint = self.entries.get(registry).and_then(|e| e.auth_hint.clone());
+        let auth_env = self.auth_env.clone();
+        let registry = registry.to_string();
         // Pitfall 14: any error here may include the registry name but NOT
         // auth values — auth.rs is designed to never inline values; we trust it.
-        resolve_for_registry(registry, hint, &self.auth_env)
-            .map_err(|e| RegistryError::Auth(format!("auth resolution for {registry}: {e}")))
+        tokio::task::spawn_blocking(move || {
+            resolve_for_registry(&registry, hint.as_ref(), &auth_env)
+                .map_err(|e| RegistryError::Auth(format!("auth resolution for {registry}: {e}")))
+        })
+        .await
+        .map_err(|e| RegistryError::Auth(format!("auth resolution task panicked: {e}")))?
     }
 }
 
@@ -269,7 +277,7 @@ fn map_oci_error(e: OciDistributionError) -> RegistryError {
 impl Registry for HttpRegistry {
     async fn pull_manifest_by_tag(&self, reference: &PichiRef) -> Result<(Bytes, Digest)> {
         let oci_ref = to_oci_ref(reference)?;
-        let auth = self.auth_for(&reference.registry)?;
+        let auth = self.auth_for(&reference.registry).await?;
         let client = self.client_for(&reference.registry);
         // REGISTRY-05 / Pitfall 1: pull_manifest_raw — NOT the auto-resolving
         // variant that runs oci-client's internal platform-resolver. Index
@@ -291,7 +299,7 @@ impl Registry for HttpRegistry {
         digest: &Digest,
     ) -> Result<Bytes> {
         let oci_ref = build_oci_ref(registry, repo, Some(&digest.to_string()))?;
-        let auth = self.auth_for(registry)?;
+        let auth = self.auth_for(registry).await?;
         let client = self.client_for(registry);
         let (raw, _digest_str) = client
             .pull_manifest_raw(&oci_ref, &auth, ACCEPTED_MANIFEST_TYPES)
@@ -309,7 +317,7 @@ impl Registry for HttpRegistry {
         sink: &mut W,
     ) -> Result<()> {
         let oci_ref = build_oci_ref(registry, repo, None)?;
-        let auth = self.auth_for(registry)?;
+        let auth = self.auth_for(registry).await?;
         let client = self.client_for(registry);
         // CI-found bug (CI #5 against GHCR): blob endpoints don't auto-resolve
         // creds — must call client.auth() explicitly so the bearer token is
@@ -339,7 +347,7 @@ impl Registry for HttpRegistry {
 
     async fn head_blob(&self, registry: &str, repo: &str, digest: &Digest) -> Result<bool> {
         let oci_ref = build_oci_ref(registry, repo, None)?;
-        let auth = self.auth_for(registry)?;
+        let auth = self.auth_for(registry).await?;
         let client = self.client_for(registry);
         // Pre-auth: blob_exists hits a non-manifest endpoint that doesn't
         // auto-resolve creds (CI-found bug, CI #5 GHCR). Push-side HEAD uses
@@ -361,7 +369,7 @@ impl Registry for HttpRegistry {
         bytes: Bytes,
     ) -> Result<Digest> {
         let oci_ref = to_oci_ref(reference)?;
-        let auth = self.auth_for(&reference.registry)?;
+        let auth = self.auth_for(&reference.registry).await?;
         let client = self.client_for(&reference.registry);
         // Pre-auth: manifest push needs write-scope bearer token before the PUT.
         client
@@ -396,7 +404,7 @@ impl Registry for HttpRegistry {
         stream: S,
     ) -> Result<()>
     where
-        S: Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
+        S: Stream<Item = std::io::Result<Bytes>> + Send + 'static,
     {
         // oci-client's push API buffers the whole blob in memory. Instead we
         // perform the OCI monolithic upload ourselves — begin a session, then
@@ -404,7 +412,7 @@ impl Registry for HttpRegistry {
         // stream to the socket in a single request, never residing in memory.
         // oci-client still runs the auth handshake (WWW-Authenticate → token).
         let oci_ref = build_oci_ref(registry, repo, None)?;
-        let auth = self.auth_for(registry)?;
+        let auth = self.auth_for(registry).await?;
         let token = self
             .client_for(registry)
             .auth(&oci_ref, &auth, RegistryOperation::Push)
@@ -489,7 +497,7 @@ impl Registry for HttpRegistry {
     ) -> Result<bool> {
         let target = build_oci_ref(registry, target_repo, None)?;
         let source = build_oci_ref(registry, source_repo, None)?;
-        let auth = self.auth_for(registry)?;
+        let auth = self.auth_for(registry).await?;
         let client = self.client_for(registry);
         // Pre-auth: cross-repo mount is a push operation against the target
         // repo. Auth must be cached before the mount POST.
