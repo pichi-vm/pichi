@@ -133,8 +133,8 @@ async fn single_pichi_build_emits_bootable_artifact() {
         .env("XDG_DATA_HOME", &xdg)
         .env("PICHI_DILLO", common::DILLO_BIN)
         .args(["run", "app:1", "--memory", "1024", "--cpus", "1"])
-        .stdout(std::fs::File::create(&out_path).await.unwrap())
-        .stderr(std::fs::File::create(&err_path).await.unwrap())
+        .stdout(std::fs::File::create(&out_path).unwrap())
+        .stderr(std::fs::File::create(&err_path).unwrap())
         .spawn()
         .expect("spawn pichi run");
     let status = {

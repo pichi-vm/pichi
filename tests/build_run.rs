@@ -44,7 +44,7 @@ fn carapace_root(refs_lock: &Path) -> String {
 
 /// Package the built carapace `cara_tag`'s scutes + the corium PMI into one
 /// application artifact tagged `app_tag`.
-fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
+async fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
     let graphroot = storage(xdg);
     let blob_store = FilesystemBlobStore::new(&graphroot);
     let db = FilesystemTagDb::open(&graphroot).unwrap();
@@ -72,12 +72,9 @@ fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
     let bytes = manifest.to_bytes().unwrap();
     let digest = Digest::from_bytes_sha256(&bytes);
     blob_store.put_blob(&digest, &bytes).await.unwrap();
-    db.set_tag(
-        &app_tag.parse::<Reference>().await.unwrap().to_string(),
-        &digest,
-    )
-    .await
-    .unwrap();
+    db.set_tag(&app_tag.parse::<Reference>().unwrap().to_string(), &digest)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -146,7 +143,7 @@ async fn pichi_build_then_run_mounts_root_carapace() {
     );
 
     // --- Package the built carapace + corium PMI into an app artifact. ---
-    package_app(&xdg, "appcara:1", "app:1", &cor_pmi);
+    package_app(&xdg, "appcara:1", "app:1", &cor_pmi).await;
 
     // --- pichi run: corium must assemble + mount the root carapace. ---
     let out_path = tmp.path().join("run.out");
@@ -155,8 +152,8 @@ async fn pichi_build_then_run_mounts_root_carapace() {
         .env("XDG_DATA_HOME", &xdg)
         .env("PICHI_DILLO", DILLO_BIN)
         .args(["run", "app:1", "--memory", "1024", "--cpus", "1"])
-        .stdout(std::fs::File::create(&out_path).await.unwrap())
-        .stderr(std::fs::File::create(&err_path).await.unwrap())
+        .stdout(std::fs::File::create(&out_path).unwrap())
+        .stderr(std::fs::File::create(&err_path).unwrap())
         .spawn()
         .expect("spawn pichi run");
     let status = {
