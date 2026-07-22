@@ -276,6 +276,9 @@ enum ChunkKind {
     /// End of input.
     Eof,
     /// The whole chunk is a sparse gap — treat as all-zero; no read performed.
+    /// Only the Unix sparse reader produces this; on other targets the fallback
+    /// reader yields only `Data`/`Eof`, so the variant is never constructed.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     Hole,
     /// The chunk was read into the caller's buffer (zero-padded on a short
     /// final read).
