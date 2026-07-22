@@ -222,6 +222,34 @@ impl Registry for MockRegistry {
         Ok(())
     }
 
+    async fn pull_blob_stream(
+        &self,
+        registry: &str,
+        repo: &str,
+        digest: &Digest,
+        _size: u64,
+    ) -> Result<futures_util::stream::BoxStream<'static, std::io::Result<Bytes>>> {
+        let key = (registry.to_string(), repo.to_string(), digest.clone());
+        let bytes = self
+            .blobs
+            .lock()
+            .expect("blobs mutex poisoned")
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| RegistryError::NotFound(format!("blob {registry}/{repo}@{digest}")))?;
+        let actual = Digest::from_bytes_sha256(&bytes);
+        if actual != *digest {
+            return Err(RegistryError::DigestMismatch {
+                expected: digest.clone(),
+                actual,
+            });
+        }
+        let chunk = Bytes::from(bytes);
+        Ok(Box::pin(futures_util::stream::once(async move {
+            Ok::<Bytes, std::io::Error>(chunk)
+        })))
+    }
+
     async fn head_blob(&self, registry: &str, repo: &str, digest: &Digest) -> Result<bool> {
         let key = (registry.to_string(), repo.to_string(), digest.clone());
         Ok(self

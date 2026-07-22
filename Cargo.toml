@@ -41,7 +41,7 @@ serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 tinytemplate.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "macros", "fs", "process"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "macros", "fs", "process", "sync"] }
 tokio-util = { workspace = true, features = ["io", "io-util"] }
 toml.workspace = true
 uuid.workspace = true

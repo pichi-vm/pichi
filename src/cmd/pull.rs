@@ -16,12 +16,9 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use std::sync::{Arc, Mutex};
-
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use sha2::{Digest as _, Sha256};
-use tokio_util::io::SyncIoBridge;
 
 use pichi_artifact::{Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
 use pichi_import::verity::{VerityBuilder, VerityOutput, VerityParams};
@@ -33,10 +30,8 @@ use pichi_storage::{
 
 use crate::cli::{PullArgs, PullPolicy};
 use crate::cmd::registry_helpers::build_http_registry;
-use futures_util::stream::{self, StreamExt};
-
-use crate::cmd::streaming_sink::{LimitWriter, TeeReader, TeeWriter, VerityFeedWriter};
 use crate::config::Config;
+use futures_util::stream::{self, StreamExt};
 
 /// Target platform `os` for D-02 index walks. A carapace is NOT "used on" an
 /// OS — it *is* a pichi VM guest's root filesystem — so the OCI `platform.os`
@@ -262,452 +257,343 @@ pub(crate) async fn pull_inner(
     pull_inner_with_registry(target, policy, quiet, &registry, blob_store, tag_db).await
 }
 
-/// One-layer fetch: stream the registry's bytes through the pipeline and
-/// commit the result via `put_blob_from_path`. The BlobStore key is the
-/// descriptor digest (oci-client verifies the wire bytes hash to that digest
-/// internally; for `+zstd` layers the descriptor digest IS the compressed
-/// digest by OCI convention, so the same key is used).
+/// One-layer fetch with a zero-copy, multi-consumer fan-out.
 ///
-/// **Bridge shape (Plan 01 SPIKE A3 corrected understanding):** `pull_blob`
-/// requires an `AsyncWrite` sink, but our pipeline (TeeWriter / DigestWriter
-/// / ZstdDecodeWriter / VerityFeedWriter / LimitWriter) is `std::io::Write`.
-/// We bridge with `tokio::io::duplex` + `spawn_blocking`:
-///   - `pull_blob` writes async into one half of a duplex pipe.
-///   - A blocking task reads the OTHER half via `SyncIoBridge` (async-read →
-///     sync-read shape, which is what `SyncIoBridge::new(reader)` produces
-///     for an `AsyncRead`) and `std::io::copy`-ies the bytes through our
-///     sync pipeline.
-///   - When `pull_blob` returns, the writer half is dropped → the reader
-///     half sees EOF → the blocking task finishes the pipeline and returns
-///     the captured tempfile.
+/// The transport yields owned `Bytes` chunks (`pull_blob_stream` — no copy).
+/// Each chunk is fanned out to parallel consumers by `Bytes::clone` (an `Arc`
+/// refcount bump, NOT a byte copy), so they all read the same buffer:
+///
+/// - **disk writer** (async I/O) — streams the wire bytes into a temp blob.
+/// - **outer SHA-256** (CPU) — verifies the descriptor digest.
+/// - for a raw scute: **verity builder** (CPU) consumes the same wire bytes.
+/// - for a `+zstd` scute: a **decoder** (CPU) consumes the wire bytes and
+///   re-fans-out the decompressed bytes to the verity builder and a
+///   **`.deflated` writer** (async I/O).
+///
+/// All consumers run concurrently (I/O on the runtime, CPU on the blocking
+/// pool) and are joined on completion; only then is the digest verified and
+/// the blob + sidecars atomically committed.
 async fn fetch_one_layer<R: Registry>(
     registry: &R,
     target: &Reference,
     layer: &Layer,
     blob_store: &dyn BlobStore,
 ) -> Result<()> {
+    use tokio::io::AsyncWriteExt as _;
+    use tokio::sync::mpsc;
+
     let descriptor_digest: Digest = layer.digest_str().parse()?;
     let scratch = blob_store
         .scratch_dir()
         .await
         .context("preparing scratch dir for streaming layer")?;
-    let temp = tempfile::NamedTempFile::new_in(&scratch)
-        .with_context(|| format!("creating layer temp file in {}", scratch.display()))?;
-
     let is_zstd = layer.is_zstd_variant();
-    // For Scute layers, extract the per-scute salt for the verity feed.
-    // For Pmi layers, no salt → no verity feed.
-    let scute_salt = match layer {
+    // Scute layers carry a per-scute salt and get a verity tree; PMI/DTB don't.
+    // The salt is used verbatim (it already is the full salt — matches carapace
+    // and the importer; do NOT prepend a zero prefix).
+    let scute_salt: Option<Vec<u8>> = match layer {
         Layer::Scute(d) | Layer::ScuteZstd(d) => Some(
             hex::decode(&d.annotations.salt)
                 .with_context(|| format!("decode scute salt for layer {}", d.digest))?,
         ),
-        // PMI and requirements layers are plain blobs — no verity sidecar.
         Layer::Pmi(_) | Layer::Dtb(_) => None,
     };
 
-    // D-04: only `+zstd` scutes get a `<src>.deflated` sidecar — for raw
-    // scutes the source IS the deflated bytes (carapace's read path falls
-    // back to <src> in Phase 48). The deflated tempfile lives in the same
-    // scratch dir as the source tempfile so its eventual rename(2) is
-    // same-fs (Pitfall 1). For Pmi layers and raw scutes we pass None.
-    let deflated_temp = if is_zstd && scute_salt.is_some() {
-        Some(
-            tempfile::NamedTempFile::new_in(&scratch)
-                .with_context(|| format!("creating deflated temp file in {}", scratch.display()))?,
+    let mut source = registry
+        .pull_blob_stream(
+            &target.registry,
+            &target.repo,
+            &descriptor_digest,
+            layer.size(),
         )
-    } else {
-        None
-    };
+        .await
+        .map_err(|e| anyhow!("pull_blob_stream {descriptor_digest}: {e}"))?;
 
-    let (sync_sink, capture) =
-        build_layer_pipeline(temp, is_zstd, scute_salt, deflated_temp.as_ref())?;
+    const CHAN_DEPTH: usize = 8;
+    let verity_params = scute_salt.as_ref().map(|salt| VerityParams {
+        data_block_size: VERITY_DBS,
+        hash_block_size: VERITY_HBS,
+        salt: salt.clone(),
+        uuid: [0u8; 16],
+    });
 
-    // Build the async/sync bridge: 64 KiB internal duplex buffer balances
-    // syscall amortisation against memory residency.
-    let (writer_async, reader_async) = tokio::io::duplex(64 * 1024);
-
-    // Spawn the sync pipeline on the blocking pool. It owns the sink and the
-    // capture; it returns the finalised tempfile (or any pipeline error).
-    let pipeline_handle: tokio::task::JoinHandle<Result<LayerFinal>> =
-        tokio::task::spawn_blocking(move || {
-            let mut sync_sink: Box<dyn std::io::Write + Send> = sync_sink;
-            let sync_reader = SyncIoBridge::new(reader_async);
-            // Hash the compressed/wire bytes on the READ side, and (for +zstd)
-            // decode by *pulling* through a streaming ruzstd decoder — bounded
-            // by the zstd window, no full-frame buffering. The reader is scoped
-            // so it (and its clone of `outer_hasher`) drops BEFORE
-            // `finalize_into`'s `Arc::try_unwrap(outer_hasher)`.
-            {
-                let hashing = TeeReader::new(
-                    sync_reader,
-                    SharedSha256Writer {
-                        hasher: Arc::clone(&capture.outer_hasher),
-                    },
-                );
-                let mut src: Box<dyn std::io::Read> = if is_zstd {
-                    Box::new(
-                        ruzstd::decoding::StreamingDecoder::new(hashing)
-                            .map_err(|e| anyhow!("zstd decoder init: {e}"))?,
-                    )
-                } else {
-                    Box::new(hashing)
-                };
-                std::io::copy(&mut src, &mut sync_sink)
-                    .context("std::io::copy registry → sync pipeline")?;
-            }
-            // Finalise the pipeline INSIDE the blocking task — capture's
-            // hashers + tempfile fsync are sync operations that mustn't run
-            // on the async runtime thread.
-            capture.finalize_into(sync_sink)
-        });
-
-    // Drive pull_blob into the async writer; drop the writer half explicitly
-    // so the reader half sees EOF and the spawn_blocking task can finish.
-    let pull_result = {
-        let mut writer = writer_async;
-        let res = registry
-            .pull_blob(
-                &target.registry,
-                &target.repo,
-                &descriptor_digest,
-                layer.size(),
-                &mut writer,
-            )
+    // Consumer: disk writer (async) → wire bytes into a same-fs temp blob.
+    let src_temp = scratch.join(unique_temp_name("src"));
+    let (disk_tx, mut disk_rx) = mpsc::channel::<Bytes>(CHAN_DEPTH);
+    let disk_path = src_temp.clone();
+    let disk_task = tokio::spawn(async move {
+        let mut f = tokio::fs::File::create(&disk_path)
             .await
-            .map_err(|e| anyhow!("pull_blob {descriptor_digest}: {e}"));
-        // Explicit shutdown + drop so the reader half observes EOF.
-        use tokio::io::AsyncWriteExt as _;
-        let _ = writer.shutdown().await;
-        drop(writer);
-        res
-    };
-
-    pull_result?;
-    // Move the deflated tempfile into the finalised LayerFinal (the pipeline
-    // owns only a clone of the underlying file handle for writing; here in
-    // the async task we still own the NamedTempFile so we can rename it
-    // after put_blob succeeds).
-    let mut layer_final = pipeline_handle
-        .await
-        .context("pipeline blocking task join")??;
-    layer_final.deflated_temp = deflated_temp;
-
-    blob_store
-        .put_blob_from_path(layer_final.source_temp.path(), &descriptor_digest)
-        .await
-        .with_context(|| format!("put_blob_from_path layer {descriptor_digest}"))?;
-    // put_blob_from_path consumed the file via rename(2); tell NamedTempFile
-    // not to attempt deletion on drop.
-    let _ = layer_final.source_temp.into_temp_path().keep();
-
-    // Per D-03 / D-04: derive sidecars AFTER the source blob is committed.
-    // Pmi layers have no verity → return early (Pitfall 6 — PMI has no
-    // verity tree). For scute layers, write `<src>.verity` unconditionally;
-    // write `<src>.deflated` only for `+zstd` variants (D-04 disk-saving
-    // skip). No `.roothash` sidecar — pichi never reads the roothash; the
-    // publisher bakes `roothash=<hex>` into the PMI cmdline at arma-build
-    // time and the guest reads it from cmdline at boot.
-    let Some(verity_out) = layer_final.verity_out else {
-        return Ok(());
-    };
-
-    let blob_path = blob_store.blob_path(&descriptor_digest);
-
-    // (a) `<src>.deflated` (zstd only). For consistency with the source-blob
-    //     path we rename the deflated_temp directly rather than slurping its
-    //     bytes through write_sidecar_atomic — multi-GB scutes must not be
-    //     materialised in memory. The deflated_temp was created in `scratch`
-    //     so the rename is same-fs (Pitfall 1).
-    if let Some(deflated_temp) = layer_final.deflated_temp {
-        let final_path = deflated_path(&blob_path);
-        // Ensure the parent dir exists (BlobStore::put_blob_from_path created
-        // it for the source blob; the sidecar shares the same dir but a
-        // future BlobStore impl might not, so be defensive).
-        if let Some(parent) = final_path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "create blob dir for deflated sidecar at {}",
-                    parent.display()
-                )
-            })?;
+            .with_context(|| format!("create layer temp {}", disk_path.display()))?;
+        while let Some(chunk) = disk_rx.recv().await {
+            f.write_all(&chunk).await.context("write layer temp")?;
         }
-        // sync_all the deflated tempfile so the post-rename file content is
-        // durable on disk — mirrors the source-blob path's
-        // `LayerCapture::finalize_into` call to `self.temp.as_file().sync_all()`.
-        deflated_temp
-            .as_file()
-            .sync_all()
-            .with_context(|| format!("sync_all deflated tempfile for {descriptor_digest}"))?;
-        std::fs::rename(deflated_temp.path(), &final_path).with_context(|| {
-            format!(
-                "rename deflated tempfile to {} (sidecar persist for {descriptor_digest})",
-                final_path.display()
-            )
-        })?;
-        let _ = deflated_temp.into_temp_path().keep();
+        f.sync_all().await.context("fsync layer temp")?;
+        Ok::<(), anyhow::Error>(())
+    });
+
+    // Consumer: outer SHA-256 (CPU) over the wire bytes.
+    let (ohash_tx, ohash_rx) = mpsc::channel::<Bytes>(CHAN_DEPTH);
+    let ohash_task = tokio::task::spawn_blocking(move || outer_hash(ohash_rx));
+
+    // Consumer: verity builder (CPU), fed either the wire bytes (raw) or the
+    // decompressed bytes (zstd, via the decoder below).
+    let (verity_task, verity_content_tx) = match &verity_params {
+        Some(params) => {
+            let params = params.clone();
+            let (vtx, vrx) = mpsc::channel::<Bytes>(CHAN_DEPTH);
+            let d = descriptor_digest.clone();
+            let handle = tokio::task::spawn_blocking(move || verity_consumer(vrx, params, d));
+            (Some(handle), Some(vtx))
+        }
+        None => (None, None),
+    };
+
+    // For `+zstd` scutes: a `.deflated` writer (async) + a decoder (CPU) that
+    // re-fans-out the decompressed bytes to verity + the `.deflated` writer.
+    let want_deflated = is_zstd && verity_params.is_some();
+    let deflated_temp = want_deflated.then(|| scratch.join(unique_temp_name("deflated")));
+    let (deflated_task, deflated_tx) = match &deflated_temp {
+        Some(path) => {
+            let (dtx, mut drx) = mpsc::channel::<Bytes>(CHAN_DEPTH);
+            let dpath = path.clone();
+            let handle = tokio::spawn(async move {
+                let mut f = tokio::fs::File::create(&dpath)
+                    .await
+                    .with_context(|| format!("create deflated temp {}", dpath.display()))?;
+                while let Some(chunk) = drx.recv().await {
+                    f.write_all(&chunk).await.context("write deflated temp")?;
+                }
+                f.sync_all().await.context("fsync deflated temp")?;
+                Ok::<(), anyhow::Error>(())
+            });
+            (Some(handle), Some(dtx))
+        }
+        None => (None, None),
+    };
+
+    // Decoder (zstd only): owns the verity + deflated senders so they close
+    // when decoding finishes.
+    let (decode_task, decode_tx) = if is_zstd && verity_params.is_some() {
+        let (dctx, dcrx) = mpsc::channel::<Bytes>(CHAN_DEPTH);
+        let vtx = verity_content_tx.clone();
+        let dtx = deflated_tx.clone();
+        let d = descriptor_digest.clone();
+        let handle = tokio::task::spawn_blocking(move || decode_consumer(dcrx, vtx, dtx, d));
+        (Some(handle), Some(dctx))
+    } else {
+        (None, None)
+    };
+    // The raw path feeds verity directly; the zstd path feeds the decoder.
+    // Drop the distributor's copies of the inner senders so only the decoder
+    // (zstd) keeps them alive.
+    let raw_verity_tx = if is_zstd {
+        None
+    } else {
+        verity_content_tx.clone()
+    };
+    drop(verity_content_tx);
+    drop(deflated_tx);
+
+    // Distributor: fan each wire chunk out to the compressed-side consumers.
+    let drive_result = async {
+        while let Some(item) = source.next().await {
+            let chunk =
+                item.map_err(|e| anyhow!("pull_blob_stream chunk {descriptor_digest}: {e}"))?;
+            if disk_tx.send(chunk.clone()).await.is_err() {
+                break;
+            }
+            if ohash_tx.send(chunk.clone()).await.is_err() {
+                break;
+            }
+            if let Some(tx) = &decode_tx {
+                if tx.send(chunk).await.is_err() {
+                    break;
+                }
+            } else if let Some(tx) = &raw_verity_tx {
+                if tx.send(chunk).await.is_err() {
+                    break;
+                }
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    // Close the compressed-side channels so consumers observe EOF.
+    drop(disk_tx);
+    drop(ohash_tx);
+    drop(decode_tx);
+    drop(raw_verity_tx);
+    drive_result?;
+
+    // Join all consumers (surfaces the first real error).
+    disk_task.await.context("disk writer join")??;
+    let outer: [u8; 32] = ohash_task.await.context("outer hash join")?;
+    if let Some(t) = decode_task {
+        t.await.context("decoder join")??;
+    }
+    let verity_out = match verity_task {
+        Some(t) => Some(t.await.context("verity join")??),
+        None => None,
+    };
+    if let Some(t) = deflated_task {
+        t.await.context("deflated writer join")??;
     }
 
-    // (b) `<src>.verity` — written via the Plan 01 atomic helper. Carapace
-    //     (Phase 48) exposes this to the guest as the dm-verity hash device.
-    write_sidecar_atomic(&scratch, &verity_path(&blob_path), &verity_out.blob)
-        .await
-        .with_context(|| format!("write verity sidecar for {descriptor_digest}"))?;
+    // Verify the descriptor digest before committing anything.
+    let outer_digest = Digest::Sha256(outer);
+    if outer_digest != descriptor_digest {
+        let _ = tokio::fs::remove_file(&src_temp).await;
+        if let Some(d) = &deflated_temp {
+            let _ = tokio::fs::remove_file(d).await;
+        }
+        bail!("layer digest mismatch: expected {descriptor_digest}, got {outer_digest}");
+    }
 
+    // Commit: rename the wire blob into place, then its sidecars.
+    blob_store
+        .put_blob_from_path(&src_temp, &descriptor_digest)
+        .await
+        .with_context(|| format!("put_blob_from_path layer {descriptor_digest}"))?;
+    let blob_path = blob_store.blob_path(&descriptor_digest);
+    if let Some(dtemp) = &deflated_temp {
+        tokio::fs::rename(dtemp, deflated_path(&blob_path))
+            .await
+            .with_context(|| format!("commit deflated sidecar for {descriptor_digest}"))?;
+    }
+    if let Some(vout) = verity_out {
+        write_sidecar_atomic(&scratch, &verity_path(&blob_path), &vout.blob)
+            .await
+            .with_context(|| format!("write verity sidecar for {descriptor_digest}"))?;
+    }
     Ok(())
 }
 
-/// Glue helper: build the per-layer pipeline; return the sync sink + a
-/// capture handle that owns the shared hashers + verity builder + temp file
-/// for finalisation after the bridge shutdown.
-///
-/// Pipeline shape (per RESEARCH §"Recommended Trait Shape" §"Pipeline
-/// Composition" lines 568-637 + Pitfall 5 + Pitfall 12):
-///
-/// 1. outer Sha256 over wire bytes (descriptor-digest verify side)
-/// 2. zstd::stream::write::Decoder branch IF +zstd, else passthrough
-/// 3. inner Sha256 over decoded bytes (= wire bytes when not +zstd)
-/// 4. VerityBuilder.add_data_block — fed in lockstep with decoded chunks
-///    (only when a per-scute salt is provided; Pmi layers skip verity)
-/// 5. LimitWriter (compressed-bomb defence) → BlobStore tempfile writer
-fn build_layer_pipeline(
-    temp: tempfile::NamedTempFile,
-    is_zstd: bool,
-    scute_salt: Option<Vec<u8>>,
-    deflated_temp: Option<&tempfile::NamedTempFile>,
-) -> Result<(Box<dyn std::io::Write + Send>, LayerCapture)> {
-    // Shared hashers and (optional) verity builder.
-    let outer_hasher = Arc::new(Mutex::new(Sha256::new()));
-    let inner_hasher = Arc::new(Mutex::new(Sha256::new()));
-
-    // (5) BlobStore tempfile writer wrapped in BufWriter for syscall
-    //     amortisation. We deliberately do NOT consume `temp` here; the
-    //     LayerCapture owns it via the file handle clone so finalize_into can
-    //     sync_all + return it for put_blob_from_path.
-    let file_handle = temp
-        .as_file()
-        .try_clone()
-        .context("clone tempfile handle for BufWriter")?;
-    let buffered = std::io::BufWriter::new(file_handle);
-
-    // Decompressed-side cap (Pitfall 12 / compressed-bomb defence).
-    let limit = LimitWriter::new(buffered, DEFAULT_DECOMPRESSED_CAP);
-
-    // (4) Optional VerityFeed callback (only for Scute layers with a salt).
-    //     For non-Scute (Pmi) layers we skip verity entirely.
-    let verity = if let Some(full_salt) = scute_salt {
-        // `dev.pichi.scute.verity.salt` already carries the FULL salt the
-        // importer used to compute the root hash (prefix + optional suffix;
-        // for the base scute the prefix — 32 zero bytes — IS the whole salt).
-        // Use it verbatim, exactly as carapace, the importer, and `pichi run`
-        // do; prepending another zero prefix produces a different hash tree
-        // and the guest's dm-verity activation fails ("metadata block
-        // corrupted").
-        let params = VerityParams {
-            data_block_size: VERITY_DBS,
-            hash_block_size: VERITY_HBS,
-            salt: full_salt,
-            uuid: [0u8; 16], // uuid is metadata; the kernel ignores it at activation.
-        };
-        Some(Arc::new(Mutex::new(
-            VerityBuilder::new(&params).context("VerityBuilder::new for pull")?,
-        )))
-    } else {
-        None
-    };
-
-    // Build the (Verity → Limit → tempfile) chain.
-    let after_verity: Box<dyn std::io::Write + Send> = if let Some(vb) = verity.as_ref() {
-        let vb_for_cb = Arc::clone(vb);
-        Box::new(VerityFeedWriter::new(
-            limit,
-            move |block: &[u8]| -> std::io::Result<()> {
-                let mut guard = vb_for_cb
-                    .lock()
-                    .map_err(|_| std::io::Error::other("verity mutex poisoned"))?;
-                guard
-                    .add_data_block(block)
-                    .map_err(|e| std::io::Error::other(format!("verity: {e}")))
-            },
-        ))
-    } else {
-        Box::new(limit)
-    };
-
-    // (3) Inner Sha256 (decompressed-side) — Tee splits the decoded stream
-    //     into (hasher [+optional deflated capture], verity-or-limit →
-    //     tempfile). Phase 46 D-04: when capturing the decompressed bytes
-    //     into `<src>.deflated`, we nest one more Tee so the inner_hasher
-    //     side ALSO writes into the deflated_temp file. The deflated_temp's
-    //     file handle is `try_clone`-d here; the `NamedTempFile` itself
-    //     stays in `fetch_one_layer`'s scope (the rename(2) at the
-    //     post-`put_blob_from_path` step needs the original handle).
-    let inner_hasher_writer = SharedSha256Writer {
-        hasher: Arc::clone(&inner_hasher),
-    };
-    let decompressed_tee: Box<dyn std::io::Write + Send> = if let Some(dt) = deflated_temp {
-        let dt_handle = dt
-            .as_file()
-            .try_clone()
-            .context("clone deflated tempfile handle for capture")?;
-        let dt_buffered = std::io::BufWriter::new(dt_handle);
-        let inner_plus_deflated = TeeWriter::new(inner_hasher_writer, dt_buffered);
-        Box::new(TeeWriter::new(inner_plus_deflated, after_verity))
-    } else {
-        Box::new(TeeWriter::new(inner_hasher_writer, after_verity))
-    };
-
-    // This is the DECOMPRESSED-side write pipeline. The compressed-side hash
-    // and any zstd decode now happen on the READ side (fetch_one_layer wraps
-    // the registry reader in a `TeeReader` + a streaming `ruzstd` decoder), so
-    // there is no full-frame buffering. `outer_hasher` (the compressed-bytes
-    // digest) is carried in the capture and fed by that read-side `TeeReader`.
-    let capture = LayerCapture {
-        temp,
-        outer_hasher,
-        inner_hasher,
-        verity,
-        is_zstd,
-    };
-    Ok((decompressed_tee, capture))
+/// Unique temp filename within the scratch dir (pid + process-local counter),
+/// avoiding a random-number dependency.
+fn unique_temp_name(kind: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    format!(
+        ".pichi-{kind}-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
-/// Sha2 hasher wrapped in `Arc<Mutex<>>` so it can be shared between the
-/// writer adapter (which feeds bytes via `Write::write`) and the
-/// [`LayerCapture`] (which finalises after the bridge shutdown).
-struct SharedSha256Writer {
-    hasher: Arc<Mutex<Sha256>>,
-}
-
-impl std::io::Write for SharedSha256Writer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut guard = self
-            .hasher
-            .lock()
-            .map_err(|_| std::io::Error::other("sha256 mutex poisoned"))?;
-        guard.update(buf);
-        Ok(buf.len())
+/// Outer SHA-256 consumer (CPU): hashes every wire chunk. Runs on the blocking
+/// pool, reading via `blocking_recv`.
+fn outer_hash(mut rx: tokio::sync::mpsc::Receiver<Bytes>) -> [u8; 32] {
+    let mut h = Sha256::new();
+    while let Some(chunk) = rx.blocking_recv() {
+        h.update(&chunk);
     }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
+    h.finalize().into()
 }
 
-/// Holds the per-layer state needed to finalise the pipeline after the
-/// `SyncIoBridge` has shut down. Tear-down order (Pitfall 5): drop sink →
-/// finalise verity → file sync_all → finalise sha256 hashers.
-struct LayerCapture {
-    temp: tempfile::NamedTempFile,
-    outer_hasher: Arc<Mutex<Sha256>>,
-    inner_hasher: Arc<Mutex<Sha256>>,
-    verity: Option<Arc<Mutex<VerityBuilder>>>,
-    is_zstd: bool,
-}
-
-/// Output of [`LayerCapture::finalize_into`].
-///
-/// Phase 46 Plan 02 changed the per-layer pipeline's output shape from "just
-/// the source tempfile" to a struct carrying (a) the source tempfile (still
-/// needed for `put_blob_from_path`), (b) the optional decompressed-bytes
-/// tempfile for `<src>.deflated` (only Some for `+zstd` scute layers per
-/// D-04), and (c) the verity output (Some for scute layers, None for PMI
-/// per Pitfall 6). `fetch_one_layer` consumes all three to (1) commit the
-/// source blob, (2) rename the deflated tempfile into place if present, and
-/// (3) write the `<src>.verity` sidecar via
-/// `pichi_storage::sidecar::write_sidecar_atomic`.
-///
-/// `deflated_temp` is initialised to `None` here and re-attached by
-/// `fetch_one_layer` after `await` (the pipeline body sees only a `try_clone`
-/// of the underlying file descriptor; the original `NamedTempFile` stays in
-/// `fetch_one_layer`'s scope so its `Drop` semantics — and the post-pipeline
-/// `rename(2)` — work correctly).
-struct LayerFinal {
-    source_temp: tempfile::NamedTempFile,
-    /// `None` for non-zstd layers (D-04 disk-saving) AND for Pmi layers.
-    /// Set by `fetch_one_layer` AFTER awaiting the blocking pipeline task.
-    deflated_temp: Option<tempfile::NamedTempFile>,
-    /// `None` for Pmi layers (Pitfall 6 — PMI has no verity tree).
-    /// `Some` for scute layers (raw and `+zstd`).
-    verity_out: Option<VerityOutput>,
-}
-
-impl LayerCapture {
-    /// Recover the inner hashers + tempfile + verity output after the
-    /// `SyncIoBridge` has shut down. Returns a `LayerFinal` so the caller
-    /// can hand the source tempfile to `put_blob_from_path`, then write
-    /// the `.deflated` (zstd-only) and `.verity` sidecars (Phase 46 D-01).
-    ///
-    /// Pitfall 5 ordering: dropping `sink` triggers Drop on the outermost
-    /// `TeeWriter`, which in turn triggers Drop on the wrapped
-    /// `ZstdDecodeWriter` (which flushes any final residue into the inner
-    /// hasher AND into the deflated-capture tempfile). Only AFTER that drop
-    /// do we finalise the hashers + the verity builder.
-    fn finalize_into(self, sink: Box<dyn std::io::Write + Send>) -> Result<LayerFinal> {
-        // Drop the outermost Tee — releases all inner writer references.
-        // The cascading Drop chain flushes ZstdDecodeWriter's residue and
-        // the BufWriter wrapping the deflated-capture file handle (so the
-        // deflated tempfile sees every decompressed byte before sync_all
-        // below runs).
-        drop(sink);
-
-        // sync_all the tempfile so put_blob_from_path's atomic rename reads
-        // a fully-flushed file.
-        self.temp
-            .as_file()
-            .sync_all()
-            .context("sync_all layer tempfile")?;
-
-        // Phase 46 D-02 / CACHE-02: capture the verity output instead of
-        // discarding it. For Pmi layers (no verity feed), self.verity is
-        // None and verity_out stays None — Pitfall 6.
-        let verity_out = if let Some(verity) = self.verity {
-            Some(
-                Arc::try_unwrap(verity)
-                    .map_err(|_| anyhow!("verity Arc still has external refs at finalize"))?
-                    .into_inner()
-                    .map_err(|_| anyhow!("verity mutex poisoned"))?
-                    .finalize(),
-            )
-        } else {
-            None
-        };
-
-        // Pull the hashers out of their Arcs. After dropping `sink` above,
-        // this side holds the only remaining strong reference.
-        let outer = Arc::try_unwrap(self.outer_hasher)
-            .map_err(|_| anyhow!("outer hasher Arc still has external refs"))?
-            .into_inner()
-            .map_err(|_| anyhow!("outer hasher mutex poisoned"))?;
-        let inner = Arc::try_unwrap(self.inner_hasher)
-            .map_err(|_| anyhow!("inner hasher Arc still has external refs"))?
-            .into_inner()
-            .map_err(|_| anyhow!("inner hasher mutex poisoned"))?;
-
-        let outer_bytes: [u8; 32] = outer.finalize().into();
-        let inner_bytes: [u8; 32] = inner.finalize().into();
-        let compressed = Digest::Sha256(outer_bytes);
-        let decompressed = Digest::Sha256(inner_bytes);
-
-        // For non-zstd layers, both Tee branches saw the same bytes, so the
-        // two digests are byte-equal. For zstd layers, they differ (Pitfall
-        // 12). We do not enforce here — oci-client verifies wire-bytes hash
-        // to descriptor.digest internally; this is a defence-in-depth
-        // observation point.
-        if !self.is_zstd {
-            debug_assert_eq!(
-                compressed, decompressed,
-                "non-zstd layer must have equal compressed/decompressed digests"
-            );
+/// Verity consumer (CPU): feeds the dm-verity builder in `data_block_size`
+/// blocks, buffering across chunk boundaries. Runs on the blocking pool.
+fn verity_consumer(
+    mut rx: tokio::sync::mpsc::Receiver<Bytes>,
+    params: VerityParams,
+    digest: Digest,
+) -> Result<VerityOutput> {
+    let dbs = params.data_block_size as usize;
+    let mut builder =
+        VerityBuilder::new(&params).with_context(|| format!("VerityBuilder::new for {digest}"))?;
+    let mut buf: Vec<u8> = Vec::with_capacity(dbs * 2);
+    while let Some(chunk) = rx.blocking_recv() {
+        buf.extend_from_slice(&chunk);
+        let mut off = 0;
+        while buf.len() - off >= dbs {
+            builder
+                .add_data_block(&buf[off..off + dbs])
+                .with_context(|| format!("verity block for {digest}"))?;
+            off += dbs;
         }
+        if off > 0 {
+            buf.drain(..off);
+        }
+    }
+    if !buf.is_empty() {
+        builder
+            .add_data_block(&buf)
+            .with_context(|| format!("final verity block for {digest}"))?;
+    }
+    Ok(builder.finalize())
+}
 
-        Ok(LayerFinal {
-            source_temp: self.temp,
-            // Re-attached by `fetch_one_layer` after `await` — the
-            // NamedTempFile lives in that scope so its post-pipeline rename
-            // can move the file into the blobs dir.
-            deflated_temp: None,
-            verity_out,
-        })
+/// Decoder consumer (CPU, `+zstd` only): decompresses the wire stream and
+/// re-fans-out the decompressed bytes to the verity + `.deflated` consumers.
+/// Enforces the decompressed-size cap (compression-bomb defence).
+fn decode_consumer(
+    rx: tokio::sync::mpsc::Receiver<Bytes>,
+    verity_tx: Option<tokio::sync::mpsc::Sender<Bytes>>,
+    deflated_tx: Option<tokio::sync::mpsc::Sender<Bytes>>,
+    digest: Digest,
+) -> Result<()> {
+    use std::io::Read as _;
+    let mut dec = ruzstd::decoding::StreamingDecoder::new(ChannelReader::new(rx))
+        .map_err(|e| anyhow!("zstd decoder init for {digest}: {e}"))?;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = dec
+            .read(&mut buf)
+            .with_context(|| format!("zstd decode {digest}"))?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > DEFAULT_DECOMPRESSED_CAP {
+            bail!("decompressed size exceeds cap ({DEFAULT_DECOMPRESSED_CAP} bytes) for {digest}");
+        }
+        // One copy out of the decoder's buffer (inherent); the fan-out clones
+        // are refcount-only.
+        let chunk = Bytes::copy_from_slice(&buf[..n]);
+        if let Some(tx) = &verity_tx {
+            if tx.blocking_send(chunk.clone()).is_err() {
+                break;
+            }
+        }
+        if let Some(tx) = &deflated_tx {
+            if tx.blocking_send(chunk).is_err() {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `std::io::Read` over an mpsc channel of `Bytes`, for driving the sync zstd
+/// decoder from the async fan-out. `blocking_recv` blocks the decoder's own
+/// blocking-pool thread only; `Bytes::split_to` advances without copying.
+struct ChannelReader {
+    rx: tokio::sync::mpsc::Receiver<Bytes>,
+    cur: Bytes,
+}
+
+impl ChannelReader {
+    fn new(rx: tokio::sync::mpsc::Receiver<Bytes>) -> Self {
+        Self {
+            rx,
+            cur: Bytes::new(),
+        }
+    }
+}
+
+impl std::io::Read for ChannelReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        while self.cur.is_empty() {
+            match self.rx.blocking_recv() {
+                Some(b) => self.cur = b,
+                None => return Ok(0),
+            }
+        }
+        let n = out.len().min(self.cur.len());
+        out[..n].copy_from_slice(&self.cur[..n]);
+        let _ = self.cur.split_to(n);
+        Ok(n)
     }
 }
 

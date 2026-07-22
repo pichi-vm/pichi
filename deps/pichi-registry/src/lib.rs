@@ -157,6 +157,20 @@ pub trait Registry: Send + Sync {
         sink: &mut W,
     ) -> Result<()>;
 
+    /// Streaming blob fetch that yields owned `Bytes` chunks straight from the
+    /// transport (reqwest's `bytes_stream` — no copy). Callers fan a chunk out
+    /// to multiple parallel consumers via `Bytes::clone`, which is an `Arc`
+    /// refcount bump, NOT a byte copy — so hashing, verity generation, and the
+    /// disk write all read the SAME buffer. The transport does NOT verify the
+    /// digest; the caller hashes the bytes itself (defence-in-depth).
+    async fn pull_blob_stream(
+        &self,
+        registry: &str,
+        repo: &str,
+        digest: &Digest,
+        size: u64,
+    ) -> Result<futures_util::stream::BoxStream<'static, std::io::Result<Bytes>>>;
+
     /// HEAD check: does the registry have this blob? Used by push to skip
     /// already-present blobs (REGISTRY-02).
     async fn head_blob(&self, registry: &str, repo: &str, digest: &Digest) -> Result<bool>;

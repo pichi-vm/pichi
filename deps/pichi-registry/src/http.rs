@@ -341,6 +341,37 @@ impl Registry for HttpRegistry {
             .map_err(map_oci_error)
     }
 
+    async fn pull_blob_stream(
+        &self,
+        registry: &str,
+        repo: &str,
+        digest: &Digest,
+        size: u64,
+    ) -> Result<futures_util::stream::BoxStream<'static, std::io::Result<bytes::Bytes>>> {
+        let oci_ref = build_oci_ref(registry, repo, None)?;
+        let auth = self.auth_for(registry).await?;
+        let client = self.client_for(registry);
+        // As in pull_blob: blob endpoints need creds cached via explicit auth().
+        client
+            .auth(&oci_ref, &auth, RegistryOperation::Pull)
+            .await
+            .map_err(map_oci_error)?;
+        let descriptor = OciDescriptor {
+            media_type: "application/octet-stream".to_string(),
+            digest: digest.to_string(),
+            size: i64::try_from(size).unwrap_or(i64::MAX),
+            ..Default::default()
+        };
+        // `SizedStream.stream` yields owned `Bytes` from reqwest's bytes_stream
+        // (no copy). The caller hashes for defence-in-depth, so we don't rely
+        // on oci-client's internal verification here.
+        let sized = client
+            .pull_blob_stream(&oci_ref, &descriptor)
+            .await
+            .map_err(map_oci_error)?;
+        Ok(sized.stream)
+    }
+
     async fn head_blob(&self, registry: &str, repo: &str, digest: &Digest) -> Result<bool> {
         let oci_ref = build_oci_ref(registry, repo, None)?;
         let auth = self.auth_for(registry).await?;

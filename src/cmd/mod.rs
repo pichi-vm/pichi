@@ -21,6 +21,5 @@ pub mod requirements;
 pub mod rmi;
 pub mod run;
 pub mod save;
-pub mod streaming_sink;
 pub mod tag;
 pub mod update;
