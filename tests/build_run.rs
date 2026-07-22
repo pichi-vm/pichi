@@ -101,7 +101,11 @@ async fn pichi_build_then_run_mounts_root_carapace() {
     make_ext4(&src, &[(MARKER, "hello from the root carapace\n")]);
     assert_pichi_ok(
         "import source",
-        &pichi(g, &[], &["import", src.to_str().unwrap(), "base:1"]),
+        &pichi(
+            g,
+            &[],
+            &["import", "raw", src.to_str().unwrap(), "-t", "base:1"],
+        ),
     );
 
     // --- pichi build the carapace (from:-only → source passes through). ---

@@ -16,6 +16,10 @@ fn chain_annotations() -> BTreeMap<String, String> {
         ("dev.pichi.carapace.verity.algo", "sha256"),
         ("dev.pichi.carapace.verity.data-block-size", "4096"),
         ("dev.pichi.carapace.verity.hash-block-size", "4096"),
+        (
+            "dev.pichi.carapace.verity.hash",
+            "abababababababababababababababababababababababababababababababab",
+        ),
         ("org.opencontainers.image.created", "2026-05-06T14:32:00Z"),
     ]
     .into_iter()

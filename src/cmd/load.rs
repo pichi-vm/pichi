@@ -80,6 +80,13 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
         let manifest = Manifest::from_reader_validated(&raw[..])
             .with_context(|| format!("parse loaded manifest {digest}"))?;
         prepare_sidecars(&blob_store, &manifest).await?;
+        // Verify the declared carapace root against the recomputed value
+        // (D-04). The sidecars above already recomputed each scute's verity;
+        // this cross-checks the chain top against the manifest annotation.
+        manifest
+            .verify_carapace_root(&blob_store)
+            .await
+            .with_context(|| format!("verifying carapace root for loaded manifest {digest}"))?;
 
         let tag = args.tag.clone().or_else(|| {
             m.get("annotations")

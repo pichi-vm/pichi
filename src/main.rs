@@ -40,8 +40,12 @@ enum Command {
     Rmi(cli::RmiArgs),
     /// Create a new tag pointing at the same manifest digest as `src`.
     Tag(cli::TagArgs),
-    /// Import a raw image into the local cache as a base carapace artifact.
-    Import(cli::ImportArgs),
+    /// Bring external bytes into the local cache (raw image → carapace, or a
+    /// pre-built PMI → bootable artifact).
+    Import {
+        #[command(subcommand)]
+        cmd: cli::ImportCmd,
+    },
     /// Export a cached artifact to an OCI image layout directory.
     Save(cli::SaveArgs),
     /// Import an OCI image layout directory into the local cache.
@@ -83,7 +87,10 @@ async fn main() -> anyhow::Result<()> {
         Command::Inspect(args) => cmd::inspect::run(args, &config).await,
         Command::Rmi(args) => cmd::rmi::run(args, &config).await,
         Command::Tag(args) => cmd::tag::run(args, &config).await,
-        Command::Import(args) => cmd::import::run(args, &config).await,
+        Command::Import { cmd } => match cmd {
+            cli::ImportCmd::Raw(args) => cmd::import::run_raw(args, &config).await,
+            cli::ImportCmd::Pmi(args) => cmd::import::run_pmi(args, &config).await,
+        },
         Command::Save(args) => cmd::save::run(args, &config).await,
         Command::Load(args) => cmd::load::run(args, &config).await,
         Command::Build(args) => cmd::build::run(args, &config).await,

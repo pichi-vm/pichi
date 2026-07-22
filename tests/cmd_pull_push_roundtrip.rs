@@ -120,7 +120,7 @@ async fn bit_identical_round_trip() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), &tag])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", &tag])
         .assert()
         .success();
     let snap_before = snapshot_cache(&g);

@@ -272,6 +272,12 @@ mod tests {
             "dev.pichi.carapace.verity.hash-block-size".into(),
             "4096".into(),
         );
+        // push does not recompute verity, so a well-formed (32-byte hex) root
+        // annotation is enough to satisfy validate().
+        annotations.insert(
+            "dev.pichi.carapace.verity.hash".into(),
+            hex::encode([0u8; 32]),
+        );
         let manifest = Manifest {
             schema_version: 2,
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
@@ -464,8 +470,8 @@ mod tests {
         let db = open_db(&g);
         let target: Reference = "ghcr.io/example/bad:1".parse().unwrap();
 
-        // Hand-craft a syntactically-valid but D-11-failing manifest
-        // (missing chain annotations). Insert it into the cache and tag it.
+        // Hand-craft a syntactically-valid but D-11-failing manifest: it has a
+        // scute layer (so the chain annotations are required) but carries none.
         let bad_manifest = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -476,8 +482,13 @@ mod tests {
                 "size": 2,
                 "data": "e30="
             },
-            "layers": []
-            // NOTE: no annotations field at all → missing chain annotations.
+            "layers": [{
+                "mediaType": "application/vnd.pichi.scute.v1",
+                "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "size": 1024,
+                "annotations": { "dev.pichi.scute.verity.salt": "00" }
+            }]
+            // NOTE: no top-level annotations → missing chain annotations.
         });
         let bytes = serde_json::to_vec(&bad_manifest).unwrap();
         let digest = Digest::from_bytes_sha256(&bytes);

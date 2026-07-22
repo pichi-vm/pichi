@@ -19,8 +19,9 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use conglobate::{BuildOutput, CarapaceRecipe, PmiRecipe};
 use pichi_artifact::{
-    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-    Reference, ReferenceKind, Requirements, ScuteAnnotations, ScuteDescriptor,
+    CHAIN_ANNOTATION_VERITY_HASH, ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1,
+    Manifest, PmiDescriptor, Reference, ReferenceKind, Requirements, ScuteAnnotations,
+    ScuteDescriptor,
 };
 use pichi_storage::sidecar::write_sidecar_atomic;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
@@ -249,7 +250,7 @@ async fn package_artifact(
         }));
     }
 
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         schema_version: 2,
         media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
@@ -257,6 +258,15 @@ async fn package_artifact(
         layers,
         annotations: chain_annotations(created_rfc3339),
     };
+    // Stamp the carapace trust anchor (rootₙ₋₁): recompute the top root from the
+    // now-cached scute cows (BUILD.md §7.1). All cow blobs are present above.
+    let root = manifest
+        .carapace_top_root(blob_store)
+        .await
+        .context("computing carapace verity root for packaged manifest")?;
+    manifest
+        .annotations
+        .insert(CHAIN_ANNOTATION_VERITY_HASH.to_string(), hex::encode(root));
     manifest
         .validate()
         .context("packaged manifest failed self-validation")?;
@@ -595,59 +605,84 @@ mod tests {
         let out = tmp.path().join("out");
         std::fs::create_dir_all(&out).unwrap();
 
-        // One delta scute conglobate emitted (cow + verity + salt).
-        let cow_bytes = cow::write(
-            &{
-                let mut v = vec![0u8; 4096 * 2];
-                v[10] = 9;
-                v
-            },
-            8,
-        )
-        .unwrap();
-        std::fs::write(out.join("0000.cow"), &cow_bytes).unwrap();
-        let salt = vec![0xABu8; 32]; // pretend chain prefix = source top root
-        let params = verity::VerityParams {
-            data_block_size: 4096,
-            hash_block_size: 4096,
-            salt: salt.clone(),
-            uuid: [0u8; 16],
-        };
-        let vout = params.compute(&cow_bytes).unwrap();
-        std::fs::write(out.join("0000.verity"), &vout.blob).unwrap();
-        std::fs::write(
-            out.join("build.yaml"),
-            format!(
-                "scutes:\n- cow: 0000.cow\n  verity: 0000.verity\n  salt: {}\n",
-                hex::encode(&salt)
-            ),
-        )
-        .unwrap();
-
         let graphroot = tmp.path().join("storage");
         std::fs::create_dir_all(&graphroot).unwrap();
         let blob_store = FilesystemBlobStore::new(&graphroot);
         let db = FilesystemTagDb::open(&graphroot).unwrap();
 
-        // Two pass-through source scutes (descriptors only; blobs already cached
-        // in a real build — package_artifact references them, doesn't re-read).
-        let src = |digest: &str, salt: &str| ScuteDescriptor {
-            digest: digest.to_string(),
-            size: 8192,
-            annotations: ScuteAnnotations {
-                salt: salt.to_string(),
-            },
+        // Stamping the carapace root recomputes the whole chain, so the scutes
+        // must form a real salt chain: each non-base scute's salt equals the
+        // previous scute's verity root. Build a genuine 2-source + 1-delta chain.
+        let verity_root = |cow_bytes: &[u8], salt: &[u8]| -> [u8; 32] {
+            verity::VerityParams {
+                data_block_size: 4096,
+                hash_block_size: 4096,
+                salt: salt.to_vec(),
+                uuid: [0u8; 16],
+            }
+            .compute(cow_bytes)
+            .unwrap()
+            .root_hash
         };
+        let make_cow = |seed: u8| {
+            let mut v = vec![0u8; 4096 * 2];
+            v[10] = seed;
+            cow::write(&v, 8).unwrap()
+        };
+
+        // Two pass-through source scutes; their cow blobs are cached (as in a
+        // real build) so the root recompute can read them.
+        let cow0 = make_cow(1);
+        let salt0 = vec![0u8; 32]; // base scute
+        let root0 = verity_root(&cow0, &salt0);
+        let d0 = Digest::from_bytes_sha256(&cow0);
+        blob_store.put_blob(&d0, &cow0).await.unwrap();
+
+        let cow1 = make_cow(2);
+        let salt1 = root0.to_vec(); // chains onto scute 0
+        let root1 = verity_root(&cow1, &salt1);
+        let d1 = Digest::from_bytes_sha256(&cow1);
+        blob_store.put_blob(&d1, &cow1).await.unwrap();
+
         let source_scutes = vec![
-            src(
-                "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-                &"00".repeat(32),
-            ),
-            src(
-                "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-                &"ab".repeat(32),
-            ),
+            ScuteDescriptor {
+                digest: d0.to_string(),
+                size: cow0.len() as u64,
+                annotations: ScuteAnnotations {
+                    salt: hex::encode(&salt0),
+                },
+            },
+            ScuteDescriptor {
+                digest: d1.to_string(),
+                size: cow1.len() as u64,
+                annotations: ScuteAnnotations {
+                    salt: hex::encode(&salt1),
+                },
+            },
         ];
+
+        // One delta scute conglobate emitted, chaining onto source scute 1.
+        let cow_delta = make_cow(9);
+        let salt_delta = root1.to_vec();
+        let root_delta = verity_root(&cow_delta, &salt_delta);
+        std::fs::write(out.join("0000.cow"), &cow_delta).unwrap();
+        let vout = verity::VerityParams {
+            data_block_size: 4096,
+            hash_block_size: 4096,
+            salt: salt_delta.clone(),
+            uuid: [0u8; 16],
+        }
+        .compute(&cow_delta)
+        .unwrap();
+        std::fs::write(out.join("0000.verity"), &vout.blob).unwrap();
+        std::fs::write(
+            out.join("build.yaml"),
+            format!(
+                "scutes:\n- cow: 0000.cow\n  verity: 0000.verity\n  salt: {}\n",
+                hex::encode(&salt_delta)
+            ),
+        )
+        .unwrap();
 
         let digest = package_artifact(
             &out,
@@ -668,5 +703,11 @@ mod tests {
             .filter(|l| matches!(l, Layer::Scute(_)))
             .count();
         assert_eq!(scute_layers, 3, "2 source scutes + 1 delta");
+        // The stamped root is the top of the chain — the delta scute's root.
+        assert_eq!(
+            m.carapace_verity_hash(),
+            Some(root_delta),
+            "packaged manifest must declare the delta (top) scute's verity root"
+        );
     }
 }

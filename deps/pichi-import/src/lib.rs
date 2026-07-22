@@ -44,34 +44,19 @@ const SALT_ZERO_PREFIX: [u8; 32] = [0u8; 32];
 pub struct ImportArgs {
     /// Path to the raw image file to import.
     pub raw_image: PathBuf,
-    /// Tag to assign (e.g. `myapp:base`).
-    pub tag: String,
+    /// Tag to assign (e.g. `myapp:base`). `None` caches the carapace without
+    /// tagging it — the root hash is still printed (an ephemeral import, e.g.
+    /// to compute the hash or as a throwaway intermediate).
+    pub tag: Option<String>,
     /// Optional author-supplied salt suffix bytes (already hex-decoded).
     /// `None` = use just the 32-byte zero prefix (D-01 default).
     pub salt_suffix: Option<Vec<u8>>,
     /// If true, suppress progress reporting.
     pub quiet: bool,
-    /// If true, emit JSON `{"cow_digest","verity_digest","root_hash"}` on
-    /// stdout for CI cross-validation (RESEARCH Open-Q #1; D-04).
-    pub print_verity_info: bool,
     /// Caller-supplied RFC 3339 timestamp (avoids a `chrono` dep here --
     /// the root `pichi` binary already has chrono and supplies it via
     /// `src/cmd/import.rs`). Plan 03 manifest.rs decision.
     pub created_rfc3339: String,
-    /// Optional path to a pre-built PMI file to bundle as a sibling layer.
-    /// When `Some`, produces an appliance artifact (one Scute + one PMI layer).
-    /// The file is treated as opaque bytes — no PMI format validation per
-    /// Phase 43 D-06 spirit (producer owns PMI validity / measurement).
-    pub pmi: Option<PathBuf>,
-
-    /// Optional base DTB file (detached-mode PMI). When `Some`, bundled as a
-    /// `vnd.pichi.dtb.v1` layer. Opaque bytes.
-    pub dtb: Option<PathBuf>,
-
-    /// Optional config-blob JSON (`vnd.pichi.config.v1+json`) bytes, already
-    /// serialised + validated by the caller. When `Some`, stored as the
-    /// manifest config blob; when `None`, the OCI empty config is used.
-    pub config_json: Option<Vec<u8>>,
 }
 
 /// Entry point for `pichi import`.
@@ -95,7 +80,6 @@ pub async fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
         .await
         .context("preparing scratch dir for streaming COW")?;
     let quiet = args.quiet;
-    let print_verity_info = args.print_verity_info;
 
     // All the heavy work — cow streaming, sha256, dm-verity, PMI/DTB staging,
     // manifest build — is CPU + blocking file I/O, so it runs off the runtime.
@@ -103,9 +87,9 @@ pub async fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
         .await
         .context("import staging task panicked")??;
 
-    // Commit blobs (async): cow -> verity sidecar -> pmi -> dtb -> config ->
-    // manifest, then the tag. Ordering matches the original single-threaded
-    // path so error semantics (no partial tag without blobs) are unchanged.
+    // Commit blobs (async): cow -> verity sidecar -> manifest, then the tag.
+    // Ordering matches the original single-threaded path so error semantics
+    // (no partial tag without blobs) are unchanged.
     blob_store
         .put_blob_from_path(&staged.cow_temp_path, &staged.cow_digest)
         .await
@@ -118,83 +102,56 @@ pub async fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
     write_sidecar_atomic(&scratch2, &cow_blob_path.verity_path(), &staged.verity_blob)
         .await
         .with_context(|| format!("write verity sidecar for cow {}", staged.cow_digest))?;
-    if let Some(pmi) = &staged.pmi {
-        blob_store
-            .put_blob_from_path(&pmi.temp_path, &pmi.digest)
-            .await
-            .with_context(|| format!("put_blob_from_path pmi {}", pmi.digest))?;
-    }
-    if let Some((digest, bytes)) = &staged.dtb {
-        blob_store
-            .put_blob(digest, bytes)
-            .await
-            .with_context(|| format!("put_blob dtb {digest}"))?;
-    }
-    if let Some((digest, bytes)) = &staged.config {
-        blob_store
-            .put_blob(digest, bytes)
-            .await
-            .with_context(|| format!("put_blob config {digest}"))?;
-    }
     blob_store
         .put_blob(&staged.manifest_digest, &staged.manifest_bytes)
         .await
         .with_context(|| format!("put_blob manifest {}", staged.manifest_digest))?;
 
     // set_tag — DIRECT bare call (the flock is internal to set_tag; an outer
-    // advisory-lock from the same process would deadlock).
-    let db = FilesystemTagDb::open(graphroot)
-        .with_context(|| format!("opening tag db at {}", graphroot.display()))?;
-    db.set_tag(&staged.tag_key, &staged.manifest_digest)
-        .await
-        .with_context(|| format!("set_tag {}", staged.tag_key))?;
+    // advisory-lock from the same process would deadlock). Skipped for an
+    // untagged (ephemeral) import — the blobs are cached by digest.
+    if let Some(tag_key) = &staged.tag_key {
+        let db = FilesystemTagDb::open(graphroot)
+            .with_context(|| format!("opening tag db at {}", graphroot.display()))?;
+        db.set_tag(tag_key, &staged.manifest_digest)
+            .await
+            .with_context(|| format!("set_tag {tag_key}"))?;
+    }
 
     if !quiet {
         log::info!(
-            "pichi import: tagged {} -> manifest {}",
-            staged.tag_key,
-            staged.manifest_digest
+            "pichi import: cached manifest {} (tag: {})",
+            staged.manifest_digest,
+            staged.tag_key.as_deref().unwrap_or("<none>"),
         );
     }
-    // Optional --print-verity-info JSON for CI consumption (D-04).
-    if print_verity_info {
-        println!(
-            "{{\"cow_digest\":\"{}\",\"verity_digest\":\"{}\",\"root_hash\":\"{}\"}}",
-            staged.cow_digest,
-            staged.verity_digest,
-            hex::encode(staged.root_hash)
-        );
-    }
+    // Print the produced artifact's content ID to stdout. Docker prints the
+    // image ID (its config-blob digest) here; pichi's artifact identity is the
+    // manifest digest instead — it's what tags, `@sha256:…`, `inspect`/`rmi`,
+    // and `--carapace` all reference. It doubles as a `--carapace` reference for
+    // an untagged import. The carapace root hash is a manifest annotation, read
+    // back via `pichi inspect`.
+    println!("{}", staged.manifest_digest);
 
     Ok(())
 }
 
 /// Everything the async commit phase needs, produced by [`stage_import`] on a
-/// blocking thread. Temp files (cow, PMI) are `keep()`-ed so their paths stay
-/// valid across the `spawn_blocking` boundary; the async phase renames them
-/// into the blob store.
+/// blocking thread. The cow temp file is `keep()`-ed so its path stays valid
+/// across the `spawn_blocking` boundary; the async phase renames it into the
+/// blob store.
 struct StagedImport {
     cow_temp_path: PathBuf,
     cow_digest: Digest,
     verity_blob: Vec<u8>,
-    verity_digest: Digest,
-    root_hash: [u8; 32],
-    pmi: Option<PmiStaged>,
-    dtb: Option<(Digest, Vec<u8>)>,
-    config: Option<(Digest, Vec<u8>)>,
     manifest_bytes: Vec<u8>,
     manifest_digest: Digest,
-    tag_key: String,
-}
-
-struct PmiStaged {
-    temp_path: PathBuf,
-    digest: Digest,
+    tag_key: Option<String>,
 }
 
 /// Synchronous staging pipeline: stream the input into a cow temp file, hash
-/// it, build the dm-verity tree, stage optional PMI/DTB/config, and build the
-/// manifest. Performs NO blob-store writes — those happen (async) in [`run`].
+/// it, build the dm-verity tree, and build the base-carapace manifest. Performs
+/// NO blob-store writes — those happen (async) in [`run`].
 fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
     // Carapaces are fixed at the spec-whitelisted scute chunk size; the
     // carapace read side rejects anything else (see
@@ -202,12 +159,16 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
     let chunk_size_sectors = SCUTE_CHUNK_SIZE_SECTORS;
 
     // Defense-in-depth: re-parse the tag at the lib boundary too
-    // (PATTERNS.md "Reference parsing" -- defense in depth).
-    let tag_ref: Reference = args
+    // (PATTERNS.md "Reference parsing" -- defense in depth). `None` = untagged.
+    let tag_key = args
         .tag
-        .parse()
-        .with_context(|| format!("invalid tag reference: {}", args.tag))?;
-    let tag_key = tag_ref.to_string();
+        .as_deref()
+        .map(|t| {
+            t.parse::<Reference>()
+                .map(|r| r.to_string())
+                .with_context(|| format!("invalid tag reference: {t}"))
+        })
+        .transpose()?;
 
     // BL-01 / T-43-01 mitigation: STREAM the input into a temp COW file
     // rather than slurping `args.raw_image` into a `Vec<u8>` (which would
@@ -239,16 +200,33 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
 
     let input_file = File::open(&args.raw_image)
         .with_context(|| format!("opening input image: {}", args.raw_image.display()))?;
-    let mut input = BufReader::new(input_file);
 
-    // Step 1: stream COW into a NamedTempFile in scratch_dir.
+    // Step 1: stream COW into a NamedTempFile in scratch_dir. On Unix we walk
+    // the input sparsely (SEEK_DATA/SEEK_HOLE) so large gaps in a sparse disk
+    // image cost a couple of lseeks instead of reading every zero byte;
+    // elsewhere we fall back to a plain sequential read. Both produce identical
+    // COW bytes.
     let cow_temp = tempfile::NamedTempFile::new_in(scratch)
         .with_context(|| format!("creating cow temp file in {}", scratch.display()))?;
     let cow_meta;
     {
         let mut cow_writer = BufWriter::new(cow_temp.as_file());
-        cow_meta = cow::write_streaming(&mut input, &mut cow_writer, chunk_size_sectors)
-            .context("cow::write_streaming failed")?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            cow_meta = cow::write_streaming_sparse(
+                &input_file,
+                raw_size,
+                &mut cow_writer,
+                chunk_size_sectors,
+            )
+            .context("cow::write_streaming_sparse failed")?;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let mut input = BufReader::new(&input_file);
+            cow_meta = cow::write_streaming(&mut input, &mut cow_writer, chunk_size_sectors)
+                .context("cow::write_streaming failed")?;
+        }
         cow_writer.flush().context("flushing cow temp writer")?;
     }
     // Re-open the cow temp file for reading. fsync to make sure all
@@ -355,101 +333,15 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
         );
     }
 
-    // Step 5a: stage optional PMI. Hash + copy the file into scratch now so a
-    // missing/unreadable PMI aborts before any blob writes (no partial state).
-    let mut pmi_layer: Option<pichi_artifact::Layer> = None;
-    let pmi_staged: Option<PmiStaged> = if let Some(ref pmi_path) = args.pmi {
-        // Fail-fast: stat the PMI file before any blob writes.
-        let pmi_size = std::fs::metadata(pmi_path)
-            .with_context(|| format!("stat PMI file: {}", pmi_path.display()))?
-            .len();
-
-        let pmi_digest_arr = stream_sha256(pmi_path)
-            .with_context(|| format!("hashing PMI file: {}", pmi_path.display()))?;
-        let pmi_digest = Digest::Sha256(pmi_digest_arr);
-
-        // Stage PMI bytes into scratch via NamedTempFile + buffered copy so
-        // the eventual atomic rename (put_blob_from_path) cannot EXDEV.
-        let pmi_temp = tempfile::NamedTempFile::new_in(scratch)
-            .with_context(|| format!("creating PMI temp file in {}", scratch.display()))?;
-        {
-            let src = File::open(pmi_path)
-                .with_context(|| format!("opening PMI file: {}", pmi_path.display()))?;
-            let mut reader = BufReader::new(src);
-            let mut writer = BufWriter::new(pmi_temp.as_file());
-            std::io::copy(&mut reader, &mut writer)
-                .with_context(|| format!("copying PMI file to scratch: {}", pmi_path.display()))?;
-            writer.flush().context("flushing PMI temp writer")?;
-        }
-        pmi_temp
-            .as_file()
-            .sync_all()
-            .context("fsync PMI temp file")?;
-
-        if !args.quiet {
-            log::info!("pichi import: pmi blob {pmi_size} bytes, digest {pmi_digest}");
-        }
-
-        pmi_layer = Some(pichi_artifact::Layer::Pmi(pichi_artifact::PmiDescriptor {
-            digest: pmi_digest.to_string(),
-            size: pmi_size,
-        }));
-        // Keep the temp file (rename into the blob store happens in `run`).
-        let temp_path = pmi_temp
-            .into_temp_path()
-            .keep()
-            .context("keeping PMI temp file path")?;
-
-        Some(PmiStaged {
-            temp_path,
-            digest: pmi_digest,
-        })
-    } else {
-        None
-    };
-
-    // Step 5b: stage the optional base DTB (small — read into memory) and the
-    // optional config blob, before any blob writes (fail-fast).
-    let dtb_staged: Option<(Digest, Vec<u8>, pichi_artifact::Layer)> = match &args.dtb {
-        Some(p) => {
-            let bytes =
-                std::fs::read(p).with_context(|| format!("read DTB file: {}", p.display()))?;
-            let digest = Digest::from_bytes_sha256(&bytes);
-            let layer = pichi_artifact::Layer::Dtb(pichi_artifact::DtbDescriptor {
-                digest: digest.to_string(),
-                size: bytes.len() as u64,
-            });
-            Some((digest, bytes, layer))
-        }
-        None => None,
-    };
-    let config_staged: Option<(Digest, Vec<u8>)> = args
-        .config_json
-        .as_ref()
-        .map(|bytes| (Digest::from_bytes_sha256(bytes), bytes.clone()));
-    let config_descriptor = match &config_staged {
-        Some((digest, bytes)) => {
-            pichi_artifact::ConfigDescriptor::for_config(digest.to_string(), bytes.len() as u64)
-        }
-        None => pichi_artifact::ConfigDescriptor::canonical(),
-    };
-
-    // Step 5c: build manifest. Extra layers (PMI, DTB) follow the base scute;
-    // order is not load-bearing.
-    let mut extra_layers: Vec<pichi_artifact::Layer> = Vec::new();
-    if let Some(layer) = &pmi_layer {
-        extra_layers.push(layer.clone());
-    }
-    if let Some((_, _, layer)) = &dtb_staged {
-        extra_layers.push(layer.clone());
-    }
+    // Step 5: build the base-carapace manifest (one Scute, no PMI). The single
+    // scute's verity root is the carapace top root (rootₙ₋₁), stamped into the
+    // manifest. The bootable appliance form is assembled later by `pichi import pmi`.
     let pichi_manifest = manifest::build(
         &cow_digest,
         cow_size,
         &full_salt,
+        &verity_out.root_hash,
         &args.created_rfc3339,
-        extra_layers,
-        config_descriptor,
     )
     .context("manifest::build failed")?;
     let manifest_bytes = pichi_manifest
@@ -467,11 +359,6 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
         cow_temp_path,
         cow_digest,
         verity_blob: verity_out.blob,
-        verity_digest,
-        root_hash: verity_out.root_hash,
-        pmi: pmi_staged,
-        dtb: dtb_staged.map(|(d, b, _)| (d, b)),
-        config: config_staged,
         manifest_bytes,
         manifest_digest,
         tag_key,
@@ -513,14 +400,10 @@ mod tests {
         std::fs::create_dir_all(&graphroot).unwrap();
         let args = ImportArgs {
             raw_image,
-            tag: tag.to_string(),
+            tag: Some(tag.to_string()),
             salt_suffix: None,
             quiet: true,
-            print_verity_info: false,
             created_rfc3339: "2026-05-07T12:00:00Z".to_string(),
-            pmi: None,
-            dtb: None,
-            config_json: None,
         };
         (args, graphroot)
     }

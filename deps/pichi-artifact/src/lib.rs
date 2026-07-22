@@ -25,8 +25,8 @@ pub use config::{Band, Config, ConfigError, Ingress, Interface, PortSpec, Requir
 pub use digest::{Digest, DigestParseError};
 pub use error::Error;
 pub use manifest::{
-    ConfigDescriptor, DtbDescriptor, Layer, Manifest, ManifestValidationError, PmiDescriptor,
-    ScuteAnnotations, ScuteDescriptor,
+    CHAIN_ANNOTATION_VERITY_HASH, ConfigDescriptor, DtbDescriptor, Layer, Manifest,
+    ManifestValidationError, PmiDescriptor, ScuteAnnotations, ScuteDescriptor,
 };
 pub use media_type::{
     MEDIA_TYPE_OCI_EMPTY_V1, MEDIA_TYPE_PICHI_ARTIFACT_V1, MEDIA_TYPE_PICHI_CONFIG_V1,

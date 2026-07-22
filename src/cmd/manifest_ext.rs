@@ -14,7 +14,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 
 use pichi_artifact::{Digest, DtbDescriptor, Layer, Manifest, PmiDescriptor, ScuteDescriptor};
 use pichi_import::verity::VerityParams;
-use pichi_storage::{BlobStore, FilesystemBlobStore};
+use pichi_storage::BlobStore;
 
 /// Chain-wide verity annotation keys + the carapace-locked default block size.
 const ANN_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
@@ -41,7 +41,14 @@ pub trait ManifestExt {
     /// Fail closed when the artifact's declared architecture ≠ the host.
     fn check_architecture(&self) -> Result<()>;
     /// The carapace trust anchor `rootₙ₋₁`: the top scute's dm-verity root.
-    async fn carapace_top_root(&self, blob_store: &FilesystemBlobStore) -> Result<[u8; 32]>;
+    async fn carapace_top_root(&self, blob_store: &dyn BlobStore) -> Result<[u8; 32]>;
+    /// Recompute the carapace top root from the (undistributed) scute cows and
+    /// verify it matches the declared `dev.pichi.carapace.verity.hash`
+    /// annotation. D-04: never trust distributed verity — recompute and
+    /// compare. Errors on mismatch (corrupt download / tampered manifest).
+    /// No-op for scute-less manifests, and for zstd-scute carapaces (whose
+    /// recompute path is not yet supported — consistent with `run`/`update`).
+    async fn verify_carapace_root(&self, blob_store: &dyn BlobStore) -> Result<()>;
 }
 
 impl ManifestExt for Manifest {
@@ -115,7 +122,7 @@ impl ManifestExt for Manifest {
         Ok(())
     }
 
-    async fn carapace_top_root(&self, blob_store: &FilesystemBlobStore) -> Result<[u8; 32]> {
+    async fn carapace_top_root(&self, blob_store: &dyn BlobStore) -> Result<[u8; 32]> {
         let data_block_size = self.data_block_size();
         let hash_block_size = self.hash_block_size();
 
@@ -181,6 +188,32 @@ impl ManifestExt for Manifest {
             [] => bail!("carapace chain has no top scute (cycle?)"),
             _ => bail!("carapace chain is not linear ({} top scutes)", tops.len()),
         }
+    }
+
+    async fn verify_carapace_root(&self, blob_store: &dyn BlobStore) -> Result<()> {
+        let has_plain_scute = self.layers.iter().any(|l| matches!(l, Layer::Scute(_)));
+        let has_zstd_scute = self.layers.iter().any(|l| matches!(l, Layer::ScuteZstd(_)));
+        // Nothing to verify without an uncompressed carapace; the zstd recompute
+        // path is deferred (matches `carapace_top_root`'s own limitation).
+        if !has_plain_scute || has_zstd_scute {
+            return Ok(());
+        }
+        let declared = self
+            .carapace_verity_hash()
+            .ok_or_else(|| anyhow!("manifest is missing the carapace verity root annotation"))?;
+        let computed = self
+            .carapace_top_root(blob_store)
+            .await
+            .context("recomputing carapace verity root")?;
+        if declared != computed {
+            bail!(
+                "carapace verity root mismatch: manifest declares {} but the scute cows \
+                 recompute to {} (corrupt download or tampered manifest)",
+                hex::encode(declared),
+                hex::encode(computed)
+            );
+        }
+        Ok(())
     }
 }
 

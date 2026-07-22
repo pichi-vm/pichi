@@ -187,7 +187,7 @@ async fn rmi_after_import_leaves_no_orphans() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), "myapp:base"])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "myapp:base"])
         .assert()
         .success();
 
@@ -222,51 +222,66 @@ async fn rmi_after_import_leaves_no_orphans() {
     );
 }
 
-/// CACHE-04: --pmi artifact rmi (Plan 03 + PMI layer). Pre-rmi: 4 entries
-/// (cow + .verity + pmi + manifest). The PMI layer has no sidecars
-/// (Pitfall 6 — PMI has no verity tree). Post-rmi: ZERO files.
+/// CACHE-04: appliance rmi (base carapace + attached PMI/DTB). The PMI and
+/// DTB layers have no sidecars (Pitfall 6 — no verity tree). Import a base
+/// carapace, then `pichi attach -t` a PMI + DTB to fork an appliance tag.
+/// Pre-rmi: 6 entries (cow + .verity + carapace-manifest + pmi + dtb +
+/// appliance-manifest). Removing BOTH tags leaves ZERO files.
 #[tokio::test]
-async fn rmi_after_import_with_pmi_leaves_no_orphans() {
+async fn rmi_after_attach_leaves_no_orphans() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let raw = tmp.path().join("input.raw");
     write_raw_fixture(&raw);
 
-    // Synthetic PMI bytes — opaque per Phase 43 D-06; pichi never parses
-    // the PMI format. A 4 KiB zero-padded buffer is sufficient.
-    let pmi = tmp.path().join("input.pmi");
+    // Synthetic PMI / DTB bytes — opaque per Phase 43 D-06; pichi never parses
+    // their formats.
+    let pmi = tmp.path().join("boot.pmi");
     std::fs::write(&pmi, vec![0u8; 4096]).unwrap();
+    let dtb = tmp.path().join("base.dtb");
+    std::fs::write(&dtb, vec![0u8; 2048]).unwrap();
 
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "myapp:base"])
+        .assert()
+        .success();
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
         .args([
             "import",
-            "--pmi",
+            "pmi",
             pmi.to_str().unwrap(),
-            raw.to_str().unwrap(),
-            "myapp:pmi",
+            "--dtb",
+            dtb.to_str().unwrap(),
+            "--carapace",
+            "myapp:base",
+            "-t",
+            "myapp:app",
         ])
         .assert()
         .success();
 
     let pre_count = count_blob_files(&g);
     assert_eq!(
-        pre_count, 4,
-        "pre-rmi --pmi: expected 4 (cow + manifest + pmi + .verity); got {pre_count}"
+        pre_count, 6,
+        "pre-rmi: expected 6 (cow + .verity + carapace-manifest + pmi + dtb + \
+         appliance-manifest); got {pre_count}"
     );
 
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["rmi", "myapp:pmi"])
+        .args(["rmi", "myapp:app", "myapp:base"])
         .assert()
         .success();
 
     let post_count = count_blob_files(&g);
     assert_eq!(
         post_count, 0,
-        "post-rmi --pmi: blobs/sha256/ MUST be empty; got {post_count}"
+        "post-rmi: blobs/sha256/ MUST be empty; got {post_count}"
     );
 }
 
@@ -286,7 +301,7 @@ async fn rmi_with_other_tag_preserves_source_and_sidecars() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), "tag1:v"])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "tag1:v"])
         .assert()
         .success();
 

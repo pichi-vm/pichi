@@ -40,7 +40,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
-tinytemplate.workspace = true
+minijinja.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "macros", "fs", "process", "sync"] }
 tokio-util = { workspace = true, features = ["io", "io-util"] }
 toml.workspace = true
@@ -228,7 +228,7 @@ base64 = { version = "0.22", default-features = false, features = ["std"] }
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 humansize = "2"
-tinytemplate = "1"
+minijinja = "2"
 toml = "1"
 
 # tatu must fit its 2 MiB slab (linker ASSERT in tatu/linker/tatu.ld), so it

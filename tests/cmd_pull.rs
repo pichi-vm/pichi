@@ -97,7 +97,13 @@ async fn pull_skips_existing_blobs() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), &format!("{base}/dedup:1")])
+        .args([
+            "import",
+            "raw",
+            raw.to_str().unwrap(),
+            "-t",
+            &format!("{base}/dedup:1"),
+        ])
         .assert()
         .success();
     // Step 2: push to zot. (Plan 05 implements push; until then the zot
@@ -171,7 +177,13 @@ async fn pull_always_refetches() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), &format!("{base}/always:1")])
+        .args([
+            "import",
+            "raw",
+            raw.to_str().unwrap(),
+            "-t",
+            &format!("{base}/always:1"),
+        ])
         .assert()
         .success();
     let push = Command::cargo_bin("pichi")
@@ -207,7 +219,13 @@ async fn pull_newer_skips_when_unchanged() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), &format!("{base}/newer:1")])
+        .args([
+            "import",
+            "raw",
+            raw.to_str().unwrap(),
+            "-t",
+            &format!("{base}/newer:1"),
+        ])
         .assert()
         .success();
     let push = Command::cargo_bin("pichi")
@@ -243,7 +261,13 @@ async fn anonymous_pull() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), &format!("{base}/anon:1")])
+        .args([
+            "import",
+            "raw",
+            raw.to_str().unwrap(),
+            "-t",
+            &format!("{base}/anon:1"),
+        ])
         .assert()
         .success();
     let push = Command::cargo_bin("pichi")

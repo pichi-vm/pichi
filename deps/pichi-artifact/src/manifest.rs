@@ -26,6 +26,14 @@ const CHAIN_ANNOTATION_VERITY_ALGO: &str = "dev.pichi.carapace.verity.algo";
 const CHAIN_ANNOTATION_VERITY_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
 const CHAIN_ANNOTATION_VERITY_HASH_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.hash-block-size";
 
+/// The carapace trust anchor `rootₙ₋₁`: the hex-encoded dm-verity root of the
+/// carapace's top scute (BUILD.md §7.1). MANDATORY on any manifest that carries
+/// scute layers. It is a *verify-against* value, never trusted blindly: pull /
+/// load recompute the root from the (undistributed) scute cows and reject a
+/// mismatch; the authoritative anchor remains the one measured inside the PMI's
+/// boot manifest at launch.
+pub const CHAIN_ANNOTATION_VERITY_HASH: &str = "dev.pichi.carapace.verity.hash";
+
 /// Canonical SHA-256 digest of `{}` (the OCI 1.1 empty config blob).
 const EMPTY_CONFIG_DIGEST: &str =
     "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
@@ -286,6 +294,12 @@ pub enum ManifestValidationError {
     /// D-07 rule 4: scute salt is not valid hex.
     #[error("scute salt is not valid hex: {0}")]
     BadSalt(String),
+
+    /// The carapace verity-root annotation is present but not a 32-byte hex
+    /// string (BUILD.md §7.1). Presence-when-scutes is enforced separately via
+    /// [`ManifestValidationError::MissingChainAnnotation`].
+    #[error("carapace verity root annotation is not 32-byte hex: {0}")]
+    BadVerityRoot(String),
     /// More than one base DTB layer (BUILD.md §7.1 — at most one).
     #[error("artifact has more than one base DTB layer (got {0}); at most one is permitted")]
     MultipleDtb(usize),
@@ -331,6 +345,24 @@ impl Manifest {
         Ok(crate::Digest::from_bytes_sha256(&bytes))
     }
 
+    /// Return `true` if this manifest carries at least one scute layer (i.e.
+    /// it describes a carapace, so a verity root anchor is meaningful).
+    fn has_scutes(&self) -> bool {
+        self.layers
+            .iter()
+            .any(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)))
+    }
+
+    /// The declared carapace trust anchor `rootₙ₋₁` (the
+    /// [`CHAIN_ANNOTATION_VERITY_HASH`] annotation), decoded to 32 bytes.
+    /// `None` if absent or not a 32-byte hex string. This is the *declared*
+    /// value; callers that need trust MUST recompute and compare (pull / load).
+    pub fn carapace_verity_hash(&self) -> Option<[u8; 32]> {
+        let hex_str = self.annotations.get(CHAIN_ANNOTATION_VERITY_HASH)?;
+        let bytes = hex::decode(hex_str).ok()?;
+        <[u8; 32]>::try_from(bytes.as_slice()).ok()
+    }
+
     /// Validate per D-07. See [`ManifestValidationError`] for the rule set.
     ///
     /// # Errors
@@ -356,14 +388,31 @@ impl Manifest {
                 media_type: c.media_type.clone(),
             });
         }
-        // Rule 3: chain annotations present
-        for key in [
-            CHAIN_ANNOTATION_VERITY_ALGO,
-            CHAIN_ANNOTATION_VERITY_DATA_BLOCK_SIZE,
-            CHAIN_ANNOTATION_VERITY_HASH_BLOCK_SIZE,
-        ] {
-            if !self.annotations.contains_key(key) {
-                return Err(ManifestValidationError::MissingChainAnnotation(key));
+        // Rule 3 (BUILD.md §7.1): the carapace verity-chain annotations describe
+        // the carapace, so they are required ONLY when scute layers are present.
+        // A scute-less (PMI-only) artifact carries none of them.
+        if self.has_scutes() {
+            for key in [
+                CHAIN_ANNOTATION_VERITY_ALGO,
+                CHAIN_ANNOTATION_VERITY_DATA_BLOCK_SIZE,
+                CHAIN_ANNOTATION_VERITY_HASH_BLOCK_SIZE,
+            ] {
+                if !self.annotations.contains_key(key) {
+                    return Err(ManifestValidationError::MissingChainAnnotation(key));
+                }
+            }
+            // The verity root anchor MUST be present and 32-byte hex; pull /
+            // load recompute and compare it (here we check presence + shape).
+            match self.annotations.get(CHAIN_ANNOTATION_VERITY_HASH) {
+                None => {
+                    return Err(ManifestValidationError::MissingChainAnnotation(
+                        CHAIN_ANNOTATION_VERITY_HASH,
+                    ));
+                }
+                Some(root) if hex::decode(root).map(|b| b.len()) != Ok(32) => {
+                    return Err(ManifestValidationError::BadVerityRoot(root.clone()));
+                }
+                Some(_) => {}
             }
         }
         // Rule 5 (out of order — bail early on count): at most one PMI
@@ -416,6 +465,7 @@ mod tests {
             CHAIN_ANNOTATION_VERITY_HASH_BLOCK_SIZE.into(),
             "4096".into(),
         );
+        a.insert(CHAIN_ANNOTATION_VERITY_HASH.into(), "ab".repeat(32));
         a.insert(
             "org.opencontainers.image.created".into(),
             "2026-05-06T14:32:00Z".into(),
@@ -610,6 +660,49 @@ mod tests {
             m.validate().unwrap_err(),
             ManifestValidationError::BadSalt(_)
         ));
+    }
+
+    #[test]
+    fn validate_rejects_missing_verity_root_when_scutes_present() {
+        let mut m = sample_base_manifest();
+        m.annotations.remove(CHAIN_ANNOTATION_VERITY_HASH);
+        let err = m.validate().unwrap_err();
+        assert!(
+            matches!(err, ManifestValidationError::MissingChainAnnotation(k) if k == CHAIN_ANNOTATION_VERITY_HASH),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_malformed_verity_root() {
+        let mut m = sample_base_manifest();
+        m.annotations
+            .insert(CHAIN_ANNOTATION_VERITY_HASH.into(), "deadbeef".into()); // 4 bytes, not 32
+        assert!(matches!(
+            m.validate().unwrap_err(),
+            ManifestValidationError::BadVerityRoot(_)
+        ));
+    }
+
+    #[test]
+    fn carapace_verity_hash_decodes_annotation() {
+        let m = sample_base_manifest();
+        assert_eq!(m.carapace_verity_hash(), Some([0xabu8; 32]));
+    }
+
+    #[test]
+    fn validate_accepts_scuteless_manifest_without_verity_root() {
+        // A PMI-only (scute-less) manifest has no carapace, so the root anchor
+        // is not required.
+        let mut m = sample_base_manifest();
+        m.layers.clear();
+        m.layers.push(Layer::Pmi(PmiDescriptor {
+            digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                .into(),
+            size: 4096,
+        }));
+        m.annotations.remove(CHAIN_ANNOTATION_VERITY_HASH);
+        m.validate().unwrap();
     }
 
     #[test]

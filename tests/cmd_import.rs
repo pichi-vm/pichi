@@ -41,7 +41,7 @@ async fn import_happy_path() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), "myapp:base"])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "myapp:base"])
         .assert()
         .success();
 
@@ -99,7 +99,7 @@ async fn import_accepts_non_gpt_input() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), "tar:opaque"])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "tar:opaque"])
         .assert()
         .success();
 }
@@ -154,7 +154,7 @@ async fn bottom_scute_salt_is_zero_prefix_e2e() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), "salt:check"])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "salt:check"])
         .assert()
         .success();
 
@@ -179,10 +179,11 @@ async fn bottom_scute_salt_is_zero_prefix_e2e() {
     );
 }
 
-/// IMPORT-01 (extended): without --pmi, pichi inspect reports pmi_present: false.
-/// Extends import_happy_path by running inspect and asserting on pmi_present.
+/// IMPORT-01 (extended): a base import is not bootable — its manifest carries
+/// no PMI layer. Extends import_happy_path by inspecting and asserting on the
+/// manifest's layers.
 #[tokio::test]
-async fn import_without_pmi_reports_pmi_present_false() {
+async fn import_without_pmi_has_no_pmi_layer() {
     let tmp = TempDir::new().unwrap();
     let raw = tmp.path().join("input.raw");
     write_small_fixture(&raw);
@@ -190,7 +191,7 @@ async fn import_without_pmi_reports_pmi_present_false() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), "nopmi:base"])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "nopmi:base"])
         .assert()
         .success();
 
@@ -203,127 +204,13 @@ async fn import_without_pmi_reports_pmi_present_false() {
         .get_output()
         .stdout
         .clone();
-    let inspect_str = String::from_utf8(inspect).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&inspect).unwrap();
+    let layers = v["manifest"]["layers"].as_array().expect("layers array");
     assert!(
-        inspect_str.contains(r#""pmi_present": false"#),
-        "inspect must report pmi_present: false for a base (non-appliance) import: {inspect_str}"
-    );
-}
-
-/// Happy path with --pmi: produces 4 blobs, 2-layer manifest, pmi_present: true.
-#[tokio::test]
-async fn import_with_pmi_bundles_layer() {
-    let tmp = TempDir::new().unwrap();
-    let g = graphroot(&tmp);
-    let raw = tmp.path().join("input.raw");
-    write_small_fixture(&raw);
-
-    // Fake PMI: 8 KiB of arbitrary bytes (opaque to pichi import).
-    let fake_pmi = tmp.path().join("payload.pmi");
-    std::fs::write(&fake_pmi, vec![0xC3u8; 8192]).unwrap();
-
-    Command::cargo_bin("pichi")
-        .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
-        .args([
-            "import",
-            "--pmi",
-            fake_pmi.to_str().unwrap(),
-            raw.to_str().unwrap(),
-            "appliance:bundle",
-        ])
-        .assert()
-        .success();
-
-    // Four blobs: cow, verity, pmi, manifest.
-    let blobs = g.join("blobs").join("sha256");
-    let n = std::fs::read_dir(&blobs).unwrap().count();
-    assert_eq!(
-        n,
-        4,
-        "expected 4 blobs (cow + verity + pmi + manifest) in {}",
-        blobs.display()
-    );
-
-    // Tag resolves.
-    let db = FilesystemTagDb::open(&g).unwrap();
-    let manifest_digest = db
-        .resolve_tag("docker.io/library/appliance:bundle")
-        .await
-        .unwrap()
-        .expect("tag must resolve after --pmi import");
-
-    // Manifest has exactly 2 layers: Scute + Pmi.
-    let blob_store = FilesystemBlobStore::new(&g);
-    let bytes = blob_store.get_blob(&manifest_digest).await.unwrap();
-    let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        manifest.layers.len(),
-        2,
-        "appliance manifest must have 2 layers (Scute + Pmi)"
-    );
-    let has_pmi = manifest.layers.iter().any(|l| matches!(l, Layer::Pmi(_)));
-    assert!(
-        has_pmi,
-        "appliance manifest must contain a Layer::Pmi layer"
-    );
-
-    // PMI descriptor size matches the fake file byte length.
-    let pmi_layer = manifest
-        .layers
-        .iter()
-        .find(|l| matches!(l, Layer::Pmi(_)))
-        .expect("must have PMI layer");
-    assert_eq!(
-        pmi_layer.size(),
-        8192u64,
-        "PMI descriptor size must match the input file's byte length"
-    );
-
-    // pichi inspect reports pmi_present: true.
-    let inspect = Command::cargo_bin("pichi")
-        .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
-        .args(["inspect", "appliance:bundle"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let inspect_str = String::from_utf8(inspect).unwrap();
-    assert!(
-        inspect_str.contains(r#""pmi_present": true"#),
-        "pichi inspect must report pmi_present: true for appliance import: {inspect_str}"
-    );
-}
-
-/// Negative: --pmi with a missing file fails non-zero, leaves no tag.
-#[tokio::test]
-async fn import_with_missing_pmi_file_errors() {
-    let tmp = TempDir::new().unwrap();
-    let g = graphroot(&tmp);
-    let raw = tmp.path().join("input.raw");
-    write_small_fixture(&raw);
-
-    Command::cargo_bin("pichi")
-        .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
-        .args([
-            "import",
-            "--pmi",
-            "/nonexistent/pmi/path.bin",
-            raw.to_str().unwrap(),
-            "bad:pmi",
-        ])
-        .assert()
-        .failure();
-
-    // No partial state: the tag must not be set.
-    let db = FilesystemTagDb::open(&g).unwrap();
-    let resolved = db.resolve_tag("docker.io/library/bad:pmi").await.unwrap();
-    assert!(
-        resolved.is_none(),
-        "tag must NOT be set after a missing-pmi failure (no partial state)"
+        !layers
+            .iter()
+            .any(|l| l["mediaType"] == "application/vnd.pichi.pmi.v1"),
+        "a base carapace import must carry no PMI layer: {v:#}"
     );
 }
 
@@ -339,7 +226,7 @@ async fn manifest_has_locked_verity_params_e2e() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), "params:check"])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "params:check"])
         .assert()
         .success();
 

@@ -8,8 +8,9 @@
 //!
 //! This exercises the whole host path (`pichi import` → `pichi update` →
 //! `pichi build` → package) plus conglobate's source-attach + flatten. The
-//! build image is a normal appliance artifact (`pichi import --pmi`); `pichi
-//! build` boots its PMI and ignores the unused scute. x86_64 + KVM only.
+//! build image is a normal appliance artifact (`pichi import` + `pichi
+//! attach`); `pichi build` boots its PMI and ignores the unused scute.
+//! x86_64 + KVM only.
 
 #![cfg(all(feature = "vm-tests", target_os = "linux", target_arch = "x86_64"))]
 
@@ -43,7 +44,11 @@ async fn pichi_build_flattens_source_into_a_carapace() {
     std::fs::write(&src_raw, &src).unwrap();
     assert_pichi_ok(
         "import source",
-        &pichi(g, &[], &["import", src_raw.to_str().unwrap(), "base:1"]),
+        &pichi(
+            g,
+            &[],
+            &["import", "raw", src_raw.to_str().unwrap(), "-t", "base:1"],
+        ),
     );
 
     // The project: a from:-only carapace recipe (no derive directives → the

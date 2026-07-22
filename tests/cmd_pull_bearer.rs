@@ -107,7 +107,7 @@ password = "{pass}"
         .unwrap()
         .env("XDG_CONFIG_HOME", tmp.path().join("config"))
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), &tag])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", &tag])
         .assert()
         .success();
     Command::cargo_bin("pichi")

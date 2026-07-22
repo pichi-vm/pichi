@@ -123,7 +123,7 @@ async fn prune_all_blobs_live_prints_nothing_to_prune() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), "myapp:base"])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "myapp:base"])
         .assert()
         .success();
 
@@ -154,7 +154,7 @@ async fn prune_after_import_then_rmi_reports_zero_orphans() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), "myapp:base"])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "myapp:base"])
         .assert()
         .success();
     Command::cargo_bin("pichi")

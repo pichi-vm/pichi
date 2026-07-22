@@ -98,7 +98,7 @@ async fn push_skips_existing_blobs() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), &tag])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", &tag])
         .assert()
         .success();
 
@@ -144,7 +144,7 @@ async fn push_then_pull_succeeds() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", raw.to_str().unwrap(), &tag])
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", &tag])
         .assert()
         .success();
     let db_before = FilesystemTagDb::open(&g).unwrap();

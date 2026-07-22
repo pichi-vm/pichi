@@ -40,7 +40,11 @@ async fn pichi_build_applies_a_copy_directive() {
     make_ext4(&src_img, &[("hello", "base rootfs content\n")]);
     assert_pichi_ok(
         "import source",
-        &pichi(g, &[], &["import", src_img.to_str().unwrap(), "base:1"]),
+        &pichi(
+            g,
+            &[],
+            &["import", "raw", src_img.to_str().unwrap(), "-t", "base:1"],
+        ),
     );
 
     // Project: copy a context file into the rootfs.

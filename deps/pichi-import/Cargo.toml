@@ -25,6 +25,11 @@ tempfile.workspace = true
 # `spawn_blocking` for the CPU-bound cow/verity/sha256 staging that must not
 # run on a runtime worker thread; the blob commits are awaited async.
 tokio = { workspace = true, features = ["rt"] }
+# SEEK_DATA/SEEK_HOLE (safe wrapper over lseek) so `import raw` skips the gaps
+# in large sparse disk images instead of reading (and zero-scanning) them.
+# Unix-only usage; the code falls back to sequential reads elsewhere.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 tempfile.workspace = true

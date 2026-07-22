@@ -18,6 +18,10 @@ fn chain_annotations() -> BTreeMap<String, String> {
         ("dev.pichi.carapace.verity.algo", "sha256"),
         ("dev.pichi.carapace.verity.data-block-size", "4096"),
         ("dev.pichi.carapace.verity.hash-block-size", "4096"),
+        (
+            "dev.pichi.carapace.verity.hash",
+            "abababababababababababababababababababababababababababababababab",
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -76,14 +80,71 @@ async fn inspect_bare_manifest_returns_full_schema() {
         .clone();
     let s = String::from_utf8(out).unwrap();
     let v: serde_json::Value = serde_json::from_str(&s).expect("inspect output must be JSON");
+    // Output is the manifest verbatim plus the resolved digest — no computed
+    // `_pichi` summary (everything is derivable from the manifest itself).
+    assert_eq!(v["digest"].as_str(), Some(digest.to_string().as_str()));
     assert_eq!(
         v["manifest"]["artifactType"].as_str(),
         Some(MEDIA_TYPE_PICHI_ARTIFACT_V1)
     );
-    assert_eq!(v["_pichi"]["scute_count"].as_u64(), Some(1));
-    assert_eq!(v["_pichi"]["pmi_present"].as_bool(), Some(true));
-    assert_eq!(v["_pichi"]["blob_count"].as_u64(), Some(2));
-    assert_eq!(v["_pichi"]["total_layer_size"].as_u64(), Some(4096 + 8192));
+    assert_eq!(v["manifest"]["layers"].as_array().map(Vec::len), Some(2));
+    // Default JSON keeps canonical (flat) OCI annotation keys.
+    assert_eq!(
+        v["manifest"]["annotations"]["dev.pichi.carapace.verity.hash"].as_str(),
+        Some("abababababababababababababababababababababababababababababababab")
+    );
+    assert!(v.get("_pichi").is_none(), "no computed sidecar");
+}
+
+/// The dotted annotation key is reachable via `--format` using minijinja's
+/// subscript syntax — no data reshaping.
+#[tokio::test]
+async fn inspect_format_reaches_dotted_annotation() {
+    let tmp = TempDir::new().unwrap();
+    let g = graphroot(&tmp);
+    let m = Manifest {
+        schema_version: 2,
+        media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+        config: ConfigDescriptor::canonical(),
+        layers: vec![Layer::Scute(ScuteDescriptor {
+            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                .into(),
+            size: 4096,
+            annotations: ScuteAnnotations {
+                salt: "dead".into(),
+            },
+        })],
+        annotations: chain_annotations(),
+    };
+    let bytes = m.to_bytes().unwrap();
+    let digest = m.digest().unwrap();
+    let bs = FilesystemBlobStore::new(&g);
+    bs.put_blob(&digest, &bytes).await.unwrap();
+    let db = FilesystemTagDb::open(&g).unwrap();
+    db.set_tag("docker.io/library/myapp:base", &digest)
+        .await
+        .unwrap();
+
+    let out = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args([
+            "inspect",
+            "myapp:base",
+            "--format",
+            r#"{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}"#,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(out).unwrap();
+    assert_eq!(
+        s.trim(),
+        "abababababababababababababababababababababababababababababababab"
+    );
 }
 
 #[tokio::test]

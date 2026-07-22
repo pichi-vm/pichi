@@ -178,14 +178,10 @@ mod tests {
         pichi_import::run(
             pichi_import::ImportArgs {
                 raw_image: raw_path,
-                tag: "base:1".into(),
+                tag: Some("base:1".into()),
                 salt_suffix: None,
                 quiet: true,
-                print_verity_info: false,
                 created_rfc3339: "2026-06-22T00:00:00Z".into(),
-                pmi: None,
-                dtb: None,
-                config_json: None,
             },
             &graphroot,
         )

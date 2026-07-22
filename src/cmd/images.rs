@@ -7,8 +7,9 @@
 //! - Default columns: REPOSITORY | TAG | BOOTABLE | DIGEST(12) | CREATED | SIZE
 //! - `--quiet` (`-q`): full sha256:... digests, one per line (D-18)
 //! - `--digests`: full DIGEST column (D-14)
-//! - `--format <tpl>`: tinytemplate render; D-17 syntax `{{.Field}}` translated
-//!   to native `{Field}` before render; HTML-escape disabled (Pitfall 1)
+//! - `--format <tpl>`: minijinja (Jinja2) render; docker-style `{{.Field}}` is
+//!   normalised to `{{ Field }}` before render; minijinja does not auto-escape
+//!   an unnamed template, so CLI output is emitted verbatim
 //! - Sort: most-recently-created first; alphabetical fallback (D-12)
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
@@ -16,8 +17,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
 use humansize::{BINARY, format_size};
+use minijinja::Environment;
 use serde::Serialize;
-use tinytemplate::{TinyTemplate, format_unescaped};
 
 use pichi_artifact::{Layer, Manifest};
 use pichi_storage::{
@@ -87,13 +88,12 @@ pub async fn run(args: ImagesArgs, config: &Config) -> Result<()> {
 
     if let Some(template_in) = &args.format {
         let template = translate_template_syntax(template_in);
-        let mut tt = TinyTemplate::new();
-        // Pitfall 1: disable HTML escaping for CLI output.
-        tt.set_default_formatter(&format_unescaped);
-        tt.add_template("row", &template)
+        let env = Environment::new();
+        let tmpl = env
+            .template_from_str(&template)
             .with_context(|| format!("invalid --format template: {template_in:?}"))?;
         for r in &rows {
-            match tt.render("row", r) {
+            match tmpl.render(r) {
                 Ok(out) => println!("{out}"),
                 Err(e) => {
                     return Err(anyhow::anyhow!(
@@ -224,8 +224,9 @@ fn humanize_age(dt: DateTime<Utc>) -> String {
 }
 
 fn translate_template_syntax(user: &str) -> String {
-    // D-17 user-facing syntax `{{.Field}}` → tinytemplate native `{Field}`.
-    user.replace("{{.", "{").replace("}}", "}")
+    // Accept docker-style `{{.Field}}` by normalising the leading dot to Jinja's
+    // `{{ Field }}` (minijinja render). D-17 field names are unchanged.
+    user.replace("{{.", "{{ ")
 }
 
 impl Row {
@@ -309,12 +310,13 @@ mod tests {
 
     #[tokio::test]
     async fn translate_template_syntax_d17() {
+        // docker-style leading dot is normalised to Jinja `{{ Field }}`.
         assert_eq!(
             translate_template_syntax("{{.Repository}}:{{.Tag}}"),
-            "{Repository}:{Tag}"
+            "{{ Repository}}:{{ Tag}}"
         );
-        // Single-brace passes through unchanged.
-        assert_eq!(translate_template_syntax("{Foo}"), "{Foo}");
+        // Native Jinja (no leading dot) passes through unchanged.
+        assert_eq!(translate_template_syntax("{{ Foo }}"), "{{ Foo }}");
     }
 
     #[tokio::test]

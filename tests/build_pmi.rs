@@ -44,7 +44,17 @@ async fn single_pichi_build_emits_bootable_artifact() {
     }
     assert_pichi_ok(
         "import fedora",
-        &pichi(g, &[], &["import", fedora.to_str().unwrap(), "fedora:base"]),
+        &pichi(
+            g,
+            &[],
+            &[
+                "import",
+                "raw",
+                fedora.to_str().unwrap(),
+                "-t",
+                "fedora:base",
+            ],
+        ),
     );
 
     // App root carapace: a small marked rootfs (no systemd → corium proves the
@@ -53,7 +63,11 @@ async fn single_pichi_build_emits_bootable_artifact() {
     make_ext4(&app, &[(MARKER, "hello from the root carapace\n")]);
     assert_pichi_ok(
         "import app",
-        &pichi(g, &[], &["import", app.to_str().unwrap(), "base:1"]),
+        &pichi(
+            g,
+            &[],
+            &["import", "raw", app.to_str().unwrap(), "-t", "base:1"],
+        ),
     );
 
     // Build image (conglobate): the real official image, pulled from GHCR.

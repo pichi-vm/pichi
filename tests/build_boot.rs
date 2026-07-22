@@ -41,7 +41,11 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     make_ext4(&src, &[("hello", "base rootfs content\n")]);
     assert_pichi_ok(
         "import source",
-        &pichi(g, &[], &["import", src.to_str().unwrap(), "base:1"]),
+        &pichi(
+            g,
+            &[],
+            &["import", "raw", src.to_str().unwrap(), "-t", "base:1"],
+        ),
     );
 
     let proj = tmp.path().join("proj");

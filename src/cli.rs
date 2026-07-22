@@ -43,11 +43,12 @@ pub struct ImagesArgs {
     /// Always include the full DIGEST column (per D-14).
     #[arg(long)]
     pub digests: bool,
-    /// Render each row using a `tinytemplate` template (per D-17).
-    /// Available fields: `{Repository}`, `{Tag}`, `{Bootable}`, `{ID}`,
-    /// `{Digest}`, `{Created}`, `{Size}`, `{ScuteCount}`. UTF-8 terminal
-    /// assumed for default `BOOTABLE` glyph (`✓` / `—`); use
-    /// `--format "{Bootable}"` for programmatic `true`/`false`.
+    /// Render each row using a minijinja (Jinja2) template (per D-17); docker's
+    /// `{{.Field}}` is accepted and normalised to `{{ Field }}`. Available
+    /// fields: `Repository`, `Tag`, `Bootable`, `ID`, `Digest`, `Created`,
+    /// `Size`, `ScuteCount`. UTF-8 terminal assumed for the default `BOOTABLE`
+    /// glyph (`✓` / `—`); use `--format '{{ Bootable }}'` for programmatic
+    /// `true`/`false`.
     #[arg(long)]
     pub format: Option<String>,
 }
@@ -58,7 +59,9 @@ pub struct InspectArgs {
     /// Image reference: `image:tag`, `image@sha256:...`, full registry path,
     /// or dockerhub shorthand (LOCAL-05).
     pub reference: String,
-    /// Output format: `json` (default, pretty-printed) or a tinytemplate string.
+    /// Output format: `json` (default, pretty-printed) or a minijinja (Jinja2)
+    /// template. Dotted annotation keys use subscripts, e.g.
+    /// `{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}`.
     #[arg(long)]
     pub format: Option<String>,
 }
@@ -84,44 +87,74 @@ pub struct TagArgs {
     pub dst: String,
 }
 
-/// Args for `pichi import <raw-image> <tag>` (IMPORT-01..07 / Phase 43).
+/// Sub-subcommands for `pichi import <verb>` — bring external bytes into the
+/// local store, keyed by what is being imported (BUILD.md §15). Two artifact
+/// axes compose: a carapace (rootfs) via `raw`, and a boot payload (PMI + DTB)
+/// via `pmi`; `pmi --carapace <ref>` combines them.
+#[derive(Debug, Subcommand)]
+pub enum ImportCmd {
+    /// Import a raw disk image as a base carapace (rootfs; no PMI).
+    Raw(ImportRawArgs),
+    /// Import a pre-built PMI as a bootable artifact, optionally on a carapace.
+    Pmi(ImportPmiArgs),
+}
+
+/// Args for `pichi import raw <raw-image> [-t <tag>]` (IMPORT-01..07).
 #[derive(Debug, ClapArgs)]
-pub struct ImportArgs {
+pub struct ImportRawArgs {
     /// Path to the raw image file to import (treated as opaque bytes per
     /// CONTEXT D-06 — no GPT parse, no CRC, no partition-table inspection).
     pub raw_image: std::path::PathBuf,
-    /// Tag to assign (e.g. `myapp:base`). Validated via
-    /// `pichi_artifact::Reference::from_str` before any I/O.
-    pub tag: String,
+    /// Tag to assign (e.g. `myapp:base`). Optional: omit to cache the carapace
+    /// without a tag (ephemeral — the root hash is still printed). Validated
+    /// via `pichi_artifact::Reference::from_str` before any I/O.
+    #[arg(short = 't', long)]
+    pub tag: Option<String>,
     /// Hex-encoded author suffix appended after the 32-byte zero salt
     /// prefix (D-01). Default (no flag): salt = 32 zero bytes only.
     #[arg(long)]
     pub salt: Option<String>,
-    /// Suppress progress reporting.
+    /// Suppress progress reporting. The carapace root hash is still printed to
+    /// stdout (docker `-q` style) — it is the value a detached PMI bakes into
+    /// its measured cmdline (`roothash=`) before `pichi import pmi`.
     #[arg(long, default_value_t = false)]
     pub quiet: bool,
-    /// Emit `{"cow_digest","verity_digest","root_hash"}` JSON on stdout
-    /// for CI `veritysetup verify` consumption (D-04 / RESEARCH Open-Q #1).
-    #[arg(long, default_value_t = false)]
-    pub print_verity_info: bool,
-    /// Optional path to a pre-built PMI file to bundle as a sibling layer.
-    /// When present, produces an appliance artifact (one Scute + one PMI layer).
-    /// The PMI file is treated as opaque bytes — pichi import does NOT
-    /// validate PMI format or measurement (producer owns PMI validity).
-    #[arg(long)]
-    pub pmi: Option<std::path::PathBuf>,
+}
 
-    /// Optional base DTB file for a detached-mode PMI. Bundled as a
+/// Args for `pichi import pmi <pmi> --dtb <file> [--carapace <ref>] -t <tag>` —
+/// import a pre-built, detached PMI (+ base DTB, + optional launch config) as a
+/// bootable artifact. Without `--carapace` the result is PMI-only (bootable,
+/// no rootfs); with `--carapace <ref>` the referenced carapace's scutes are
+/// combined in. The carapace reference is read-only — its tag is never changed.
+#[derive(Debug, ClapArgs)]
+pub struct ImportPmiArgs {
+    /// Pre-built PMI file (opaque bytes — pichi does NOT validate PMI format
+    /// or measurement; the producer owns PMI validity).
+    pub pmi: std::path::PathBuf,
+    /// Base DTB file for the detached-mode PMI. Bundled as a
     /// `vnd.pichi.dtb.v1` layer; `pichi run` supplies it to the VMM
     /// out-of-band. Treated as opaque bytes.
     #[arg(long)]
-    pub dtb: Option<std::path::PathBuf>,
-
+    pub dtb: std::path::PathBuf,
     /// Optional launch-contract config (JSON or YAML with a `requirements`
     /// section; memory in bytes). Stored as the manifest config blob
     /// (`vnd.pichi.config.v1+json`) instead of the OCI empty config.
     #[arg(long)]
     pub config: Option<std::path::PathBuf>,
+    /// Reference (`image:tag` or `image@sha256:...`) of a cached carapace whose
+    /// scutes are combined into the bootable artifact. Read-only: the
+    /// carapace's own tag is never modified. Omit for a PMI-only artifact.
+    #[arg(long)]
+    pub carapace: Option<String>,
+    /// Tag for the bootable artifact (e.g. `myapp:v1`). Optional: omit to cache
+    /// it untagged (referenceable by the printed digest). Either way this is a
+    /// NEW artifact; a carapace referenced via `--carapace` is left untouched.
+    #[arg(short = 't', long)]
+    pub tag: Option<String>,
+    /// Suppress progress reporting. The produced manifest digest is still
+    /// printed to stdout (docker `-q` style).
+    #[arg(long, default_value_t = false)]
+    pub quiet: bool,
 }
 
 /// Pull policy for `pichi pull --pull=...` (REGISTRY-03 / D-05 default `always`).
@@ -273,9 +306,9 @@ pub struct RunArgs {
 
 /// `--salt` hex decode is fallible — use TryFrom so bad hex is rejected
 /// at the dispatch boundary with `with_context`, not silently swallowed.
-impl TryFrom<ImportArgs> for pichi_import::ImportArgs {
+impl TryFrom<ImportRawArgs> for pichi_import::ImportArgs {
     type Error = anyhow::Error;
-    fn try_from(a: ImportArgs) -> anyhow::Result<Self> {
+    fn try_from(a: ImportRawArgs) -> anyhow::Result<Self> {
         use anyhow::Context as _;
         let salt_suffix = a
             .salt
@@ -288,11 +321,7 @@ impl TryFrom<ImportArgs> for pichi_import::ImportArgs {
             tag: a.tag,
             salt_suffix,
             quiet: a.quiet,
-            print_verity_info: a.print_verity_info,
-            created_rfc3339: String::new(), // overwritten by cmd::import::run
-            pmi: a.pmi,
-            dtb: a.dtb,
-            config_json: None, // set by cmd::import::run from --config
+            created_rfc3339: String::new(), // overwritten by cmd::import::run_raw
         })
     }
 }

@@ -641,6 +641,14 @@ base DTB — rather than two fixed kinds. Presence determines capability:
 - Top-level annotations carry the carapace verity-chain parameters
   `dev.pichi.carapace.verity.{algo,data-block-size,hash-block-size}`; each scute
   layer carries `dev.pichi.scute.verity.salt` (hex; the salt-chain binding).
+- Any manifest with scute layers MUST also carry
+  `dev.pichi.carapace.verity.hash` — the hex-encoded carapace top root
+  `rootₙ₋₁`. This is a *verify-against* value, never trusted blindly: the verity
+  tree is never distributed (D-04), so `pichi pull` / `pichi load` recompute the
+  root from the scute cows and reject a mismatch (corrupt transfer or tampered
+  manifest). The authoritative anchor is still the `rootₙ₋₁` measured inside the
+  PMI's boot manifest at launch; this annotation is a cheap integrity check and
+  the source of the `roothash=` value a detached PMI bakes.
 
 **Capability by composition:** bootable ⟺ a PMI is present; has a root carapace
 ⟺ scutes are present; the two are independent (a PMI-only artifact is a
@@ -977,6 +985,15 @@ are implemented today.
 
 ## 15. `pichi import`
 
+An artifact has two independent axes — a **carapace** (rootfs, one or more
+scutes) and a **boot payload** (a PMI + base DTB) — giving three valid kinds:
+carapace-only (a `from:` base), bootable-with-carapace (a rootfs appliance),
+and bootable-without-carapace (a PMI-only appliance, e.g. a build image or a
+diskless VM). `pichi import` brings external bytes into the store along whichever
+axis you feed it, via two subcommands keyed by input.
+
+### 15.1 `pichi import raw` — raw image → base carapace
+
 Equivalent in spirit to `podman import`: raw bytes in, base carapace out.
 
 **Input:** a raw disk image with an inner GPT per the Discoverable Partitions
@@ -988,7 +1005,44 @@ mounts. Implemented in `pichi-import` (`cow.rs` emits the dm-snapshot
 persistent COW append-only; `verity.rs` computes the dm-verity tree). Output is
 a one-scute base carapace (no PMI), usable as a `from:` source.
 
+`import raw` never produces a bootable appliance: a PMI must bake the carapace's
+dm-verity root into its measured cmdline (`roothash=`), and that root only
+exists once the raw image has been imported. On success it prints the carapace
+root hash to stdout (docker `-q` style — `--quiet` only silences progress on
+stderr), also recorded in the manifest as `dev.pichi.carapace.verity.hash`
+(readable later via `pichi inspect`), so the producer can build the PMI/DTB
+against it. `-t` is optional: omit it to cache an ephemeral carapace (just to
+obtain the hash) without leaving a tag.
+
 The same machinery is reused to pack the build _context_ (§4).
+
+### 15.2 `pichi import pmi` — detached PMI/DTB → bootable artifact
+
+Pichi distributes the PMI and its base DTB in **detached** form (separate
+layers, delivered to the VMM out-of-band). Once the PMI and DTB are built
+against the carapace root (§15.1), `import pmi` assembles the bootable artifact:
+
+```
+root=$(pichi import raw base.img -t app:base)   # carapace; prints the root hash
+# build the detached PMI + base DTB with arma, baking roothash=$root
+pichi import pmi boot.pmi --dtb base.dtb --carapace app:base -t app:1
+```
+
+- With `--carapace <ref>` (a **read-only** reference — tag or digest — whose tag
+  is never modified), the referenced carapace's scutes are combined in →
+  bootable-**with**-carapace. Its scute cows + `.verity` sidecars are already
+  cached, so nothing is re-imported.
+- Without `--carapace`, the result is PMI-only (bootable, **no** rootfs) — a
+  scute-less manifest carrying just the `vnd.pichi.pmi.v1` + `vnd.pichi.dtb.v1`
+  (and optional `vnd.pichi.config.v1+json`) layers.
+
+`-t` is required — the bootable artifact is always its own tag; a carapace
+referenced via `--carapace` is left untouched. (Retrieve a carapace's root later
+with `pichi inspect app:base --format '{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}'`.)
+
+The recipe-driven path (`pichi build`, §2–§5) resolves the same ordering
+internally — it builds the carapace first, then seals the PMI against its
+root — so `pichi build` needs no separate assembly step.
 
 ## 16. Software to build
 

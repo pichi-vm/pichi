@@ -21,6 +21,8 @@ use bytes::Bytes;
 use sha2::{Digest as _, Sha256};
 
 use pichi_artifact::{Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+
+use crate::cmd::manifest_ext::ManifestExt;
 use pichi_import::verity::{VerityBuilder, VerityOutput, VerityParams};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry, pick_pichi_entry_from_index};
 use pichi_storage::{
@@ -223,6 +225,15 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     while let Some(result) = downloads.next().await {
         result?;
     }
+
+    // 4b. Verify the declared carapace root against the value recomputed from
+    //     the now-present scute cows (D-04: never trust distributed verity).
+    //     The annotation's presence/shape was enforced by validate() above;
+    //     this catches a corrupt download or a tampered manifest.
+    manifest
+        .verify_carapace_root(blob_store)
+        .await
+        .with_context(|| format!("verifying carapace root for {final_digest}"))?;
 
     // 5. Atomic commit per D-03 refined per Pitfall 11 / Phase 42 Plan 05
     //    SUMMARY: live-walk refcounts; no sidecar; set_tag is the single
@@ -623,7 +634,25 @@ mod tests {
 
     /// Build a minimal D-07-valid pichi manifest with one Scute layer.
     /// Returns (canonical bytes, manifest digest).
-    fn make_pichi_manifest(scute_digest: &Digest, scute_size: u64) -> (Bytes, Digest) {
+    /// dm-verity root of `cow` under the 32-zero salt + locked 4 KiB blocks —
+    /// the value `pull` recomputes and checks against the manifest annotation.
+    fn zero_salt_root_hex(cow: &[u8]) -> String {
+        let out = pichi_import::verity::VerityParams {
+            data_block_size: 4096,
+            hash_block_size: 4096,
+            salt: vec![0u8; 32],
+            uuid: [0u8; 16],
+        }
+        .compute(cow)
+        .unwrap();
+        hex::encode(out.root_hash)
+    }
+
+    fn make_pichi_manifest(
+        scute_digest: &Digest,
+        scute_size: u64,
+        root_hex: &str,
+    ) -> (Bytes, Digest) {
         let mut annotations = BTreeMap::new();
         annotations.insert("dev.pichi.carapace.verity.algo".into(), "sha256".into());
         annotations.insert(
@@ -633,6 +662,10 @@ mod tests {
         annotations.insert(
             "dev.pichi.carapace.verity.hash-block-size".into(),
             "4096".into(),
+        );
+        annotations.insert(
+            "dev.pichi.carapace.verity.hash".into(),
+            root_hex.to_string(),
         );
         let manifest = Manifest {
             schema_version: 2,
@@ -725,8 +758,9 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         let mock = MockRegistry::new();
-        // Valid JSON, valid artifactType, but missing chain annotations →
-        // Manifest::from_reader_validated rejects it.
+        // Valid JSON, valid artifactType, has a scute layer (so the chain
+        // annotations are required) but carries none → from_reader_validated
+        // rejects it.
         let bad_pichi = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -737,8 +771,13 @@ mod tests {
                 "size": 2,
                 "data": "e30="
             },
-            "layers": []
-            // NOTE: no annotations field at all → missing chain annotations.
+            "layers": [{
+                "mediaType": "application/vnd.pichi.scute.v1",
+                "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "size": 1024,
+                "annotations": { "dev.pichi.scute.verity.salt": "00" }
+            }]
+            // NOTE: no top-level annotations → missing chain annotations.
         });
         let bytes = Bytes::from(serde_json::to_vec(&bad_pichi).unwrap());
         mock.insert_manifest("ghcr.io", "example/foo", "bar", bytes);
@@ -782,8 +821,9 @@ mod tests {
         // re-serialises, the stored bytes won't match the mock's bytes.
         let dummy_layer_data = b"hello-layer-data";
         let layer_digest = Digest::from_bytes_sha256(dummy_layer_data);
+        let root_hex = zero_salt_root_hex(dummy_layer_data);
         let (clean_manifest, _clean_digest) =
-            make_pichi_manifest(&layer_digest, dummy_layer_data.len() as u64);
+            make_pichi_manifest(&layer_digest, dummy_layer_data.len() as u64, &root_hex);
         let mut raw_with_ws: Vec<u8> = clean_manifest.to_vec();
         raw_with_ws.extend_from_slice(b"   \n"); // trailing whitespace
         let raw_bytes = Bytes::from(raw_with_ws);
@@ -864,8 +904,11 @@ mod tests {
         let mock = MockRegistry::new();
         let layer_data = b"layer-blob-bytes-for-end-state-check";
         let layer_digest = Digest::from_bytes_sha256(layer_data);
-        let (manifest_bytes, manifest_digest) =
-            make_pichi_manifest(&layer_digest, layer_data.len() as u64);
+        let (manifest_bytes, manifest_digest) = make_pichi_manifest(
+            &layer_digest,
+            layer_data.len() as u64,
+            &zero_salt_root_hex(layer_data),
+        );
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
             "ghcr.io",
@@ -913,8 +956,11 @@ mod tests {
         // Build a pichi manifest first (the picked entry).
         let layer_data = b"index-walk-layer-bytes";
         let layer_digest = Digest::from_bytes_sha256(layer_data);
-        let (picked_manifest_bytes, picked_manifest_digest) =
-            make_pichi_manifest(&layer_digest, layer_data.len() as u64);
+        let (picked_manifest_bytes, picked_manifest_digest) = make_pichi_manifest(
+            &layer_digest,
+            layer_data.len() as u64,
+            &zero_salt_root_hex(layer_data),
+        );
         // Insert the picked manifest by digest (no tag).
         mock.insert_manifest_by_digest("ghcr.io", "example/foo", picked_manifest_bytes.clone());
         // Build the index pointing at it.
@@ -980,6 +1026,7 @@ mod tests {
         scute_digest: &Digest,
         scute_size: u64,
         is_zstd: bool,
+        root_hex: &str,
     ) -> (Bytes, Digest) {
         let mut annotations = BTreeMap::new();
         annotations.insert("dev.pichi.carapace.verity.algo".into(), "sha256".into());
@@ -990,6 +1037,10 @@ mod tests {
         annotations.insert(
             "dev.pichi.carapace.verity.hash-block-size".into(),
             "4096".into(),
+        );
+        annotations.insert(
+            "dev.pichi.carapace.verity.hash".into(),
+            root_hex.to_string(),
         );
         let scute_desc = ScuteDescriptor {
             digest: scute_digest.to_string(),
@@ -1025,6 +1076,7 @@ mod tests {
         is_zstd_scute: bool,
         pmi_digest: &Digest,
         pmi_size: u64,
+        root_hex: &str,
     ) -> (Bytes, Digest) {
         let mut annotations = BTreeMap::new();
         annotations.insert("dev.pichi.carapace.verity.algo".into(), "sha256".into());
@@ -1035,6 +1087,10 @@ mod tests {
         annotations.insert(
             "dev.pichi.carapace.verity.hash-block-size".into(),
             "4096".into(),
+        );
+        annotations.insert(
+            "dev.pichi.carapace.verity.hash".into(),
+            root_hex.to_string(),
         );
         let scute_desc = ScuteDescriptor {
             digest: scute_digest.to_string(),
@@ -1106,6 +1162,9 @@ mod tests {
             &layer_digest,
             compressed.len() as u64,
             /* is_zstd= */ true,
+            // zstd carapace: verify_carapace_root is skipped, so any valid-hex
+            // root satisfies validate().
+            &hex::encode([0u8; 32]),
         );
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
@@ -1162,6 +1221,7 @@ mod tests {
             &layer_digest,
             layer_data.len() as u64,
             /* is_zstd= */ false,
+            &zero_salt_root_hex(&layer_data),
         );
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
@@ -1218,6 +1278,7 @@ mod tests {
             /* is_zstd_scute= */ false,
             &pmi_digest,
             pmi_bytes.len() as u64,
+            &hex::encode(expected_root),
         );
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
@@ -1273,8 +1334,12 @@ mod tests {
 
         let layer_data: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(4096 * 3).collect();
         let layer_digest = Digest::from_bytes_sha256(&layer_data);
-        let (manifest_bytes, _manifest_digest) =
-            make_scute_manifest(&layer_digest, layer_data.len() as u64, false);
+        let (manifest_bytes, _manifest_digest) = make_scute_manifest(
+            &layer_digest,
+            layer_data.len() as u64,
+            false,
+            &zero_salt_root_hex(&layer_data),
+        );
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
             "ghcr.io",

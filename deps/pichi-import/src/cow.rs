@@ -245,6 +245,139 @@ pub fn write_streaming<R: Read, W: Write + Seek>(
     output: &mut W,
     chunk_size_sectors: u32,
 ) -> Result<CowStreamMeta> {
+    write_streaming_impl(&mut SequentialReader { input }, output, chunk_size_sectors)
+}
+
+/// Sparse-aware [`write_streaming`] for real files. Uses `SEEK_DATA` /
+/// `SEEK_HOLE` to skip whole chunks that lie inside a sparse gap, so a
+/// multi-GB hole in a raw disk image costs a couple of `lseek`s instead of
+/// reading — and zero-scanning — every byte. The COW output is byte-identical
+/// to [`write_streaming`] over the same logical content (holes and explicit
+/// zeros both elide to no exception); only the read cost differs.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn write_streaming_sparse<W: Write + Seek>(
+    input: &std::fs::File,
+    input_len: u64,
+    output: &mut W,
+    chunk_size_sectors: u32,
+) -> Result<CowStreamMeta> {
+    let mut reader = SparseReader {
+        file: input,
+        len: input_len,
+        pos: 0,
+        data_start: 0,
+        data_end: 0,
+    };
+    write_streaming_impl(&mut reader, output, chunk_size_sectors)
+}
+
+/// One logical input chunk's disposition, produced by a [`ChunkReader`].
+enum ChunkKind {
+    /// End of input.
+    Eof,
+    /// The whole chunk is a sparse gap — treat as all-zero; no read performed.
+    Hole,
+    /// The chunk was read into the caller's buffer (zero-padded on a short
+    /// final read).
+    Data,
+}
+
+/// Source of fixed-size input chunks for [`write_streaming_impl`]. The caller
+/// zero-fills the buffer before each call, so a short final read is naturally
+/// zero-padded and a `Hole` needs no work.
+trait ChunkReader {
+    fn next_chunk(&mut self, buf: &mut [u8]) -> Result<ChunkKind>;
+}
+
+/// Plain sequential reader — every non-EOF chunk is `Data`; all-zero chunks are
+/// still elided downstream by the impl's zero check. Byte-identical to the
+/// pre-refactor `write_streaming`.
+struct SequentialReader<'a, R: Read> {
+    input: &'a mut R,
+}
+
+impl<R: Read> ChunkReader for SequentialReader<'_, R> {
+    fn next_chunk(&mut self, buf: &mut [u8]) -> Result<ChunkKind> {
+        let mut filled = 0usize;
+        while filled < buf.len() {
+            let n = self
+                .input
+                .read(&mut buf[filled..])
+                .context("cow::write_streaming: read input")?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        Ok(if filled == 0 {
+            ChunkKind::Eof
+        } else {
+            ChunkKind::Data
+        })
+    }
+}
+
+/// Sparse-aware reader over a real file (Unix `SEEK_DATA` / `SEEK_HOLE`). Holds
+/// the current data extent `[data_start, data_end)`; chunks fully before
+/// `data_start` are gaps, chunks overlapping the extent are read positionally.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct SparseReader<'a> {
+    file: &'a std::fs::File,
+    len: u64,
+    pos: u64,
+    data_start: u64,
+    data_end: u64,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl ChunkReader for SparseReader<'_> {
+    fn next_chunk(&mut self, buf: &mut [u8]) -> Result<ChunkKind> {
+        use std::os::unix::fs::FileExt as _;
+        let chunk_bytes = buf.len() as u64;
+        if self.pos >= self.len {
+            return Ok(ChunkKind::Eof);
+        }
+        // Re-probe the data extent once we've walked past the last one.
+        if self.pos >= self.data_end {
+            match rustix::fs::seek(self.file, rustix::fs::SeekFrom::Data(self.pos)) {
+                Ok(data) => {
+                    self.data_start = data;
+                    self.data_end =
+                        rustix::fs::seek(self.file, rustix::fs::SeekFrom::Hole(data))
+                            .map_err(|e| anyhow::anyhow!("cow: SEEK_HOLE at {data}: {e}"))?;
+                }
+                // No data at/after `pos` — the rest of the file is a hole.
+                Err(rustix::io::Errno::NXIO) => {
+                    self.data_start = self.len;
+                    self.data_end = self.len;
+                }
+                Err(e) => return Err(anyhow::anyhow!("cow: SEEK_DATA at {}: {e}", self.pos)),
+            }
+        }
+        let chunk_end = (self.pos + chunk_bytes).min(self.len);
+        if chunk_end <= self.data_start {
+            // Whole chunk precedes the next data extent — a gap. Skip it.
+            self.pos += chunk_bytes;
+            Ok(ChunkKind::Hole)
+        } else {
+            // Chunk overlaps real data; read it (any hole bytes read as zeros).
+            let want = (chunk_end - self.pos) as usize;
+            self.file
+                .read_exact_at(&mut buf[..want], self.pos)
+                .with_context(|| format!("cow: read_at offset {}", self.pos))?;
+            self.pos += chunk_bytes;
+            Ok(ChunkKind::Data)
+        }
+    }
+}
+
+/// Shared streaming COW writer driven by a [`ChunkReader`]. Byte layout,
+/// allocator, and traps are identical to the in-memory [`write`]; see its docs.
+fn write_streaming_impl<CR: ChunkReader, W: Write + Seek>(
+    reader: &mut CR,
+    output: &mut W,
+    chunk_size_sectors: u32,
+) -> Result<CowStreamMeta> {
     validate_chunk_size(chunk_size_sectors).context("cow::write_streaming: chunk_size_sectors")?;
 
     let chunk_bytes = (chunk_size_sectors as usize) * (SECTOR_SIZE as usize);
@@ -266,9 +399,9 @@ pub fn write_streaming<R: Read, W: Write + Seek>(
         .write_all(&header)
         .context("cow::write_streaming: write header")?;
 
-    // Read buffer reused across iterations. Always zero-fill before
-    // each read so a short last-chunk gets the correct zero-padding
-    // when written into its (chunk_bytes-aligned) data slot.
+    // Read buffer reused across iterations. Always zero-fill before each read
+    // so a short last-chunk (or a Hole) is correctly zero-padded when written
+    // into its (chunk_bytes-aligned) data slot.
     let mut buf = vec![0u8; chunk_bytes];
     let mut next_free: u64 = NUM_SNAPSHOT_HDR_CHUNKS;
     let mut src_idx: u64 = 0;
@@ -276,80 +409,56 @@ pub fn write_streaming<R: Read, W: Write + Seek>(
     let mut max_new_chunk: u64 = 0;
 
     loop {
-        // Re-zero the buffer so a short final read leaves the trailing
-        // bytes as zeros (matches in-memory `write`'s
-        // `vec![0u8; total_bytes]` zero-init).
         buf.fill(0);
+        match reader.next_chunk(&mut buf)? {
+            ChunkKind::Eof => break,
+            // A sparse gap is all-zero, so it yields no exception (IMPORT-03 /
+            // dm-zero origin) — just advance the source chunk index.
+            ChunkKind::Hole => src_idx += 1,
+            ChunkKind::Data => {
+                if buf.iter().all(|&b| b == 0) {
+                    // dm-zero origin: skip all-zero chunks (IMPORT-03).
+                    src_idx += 1;
+                } else {
+                    // Allocate a new_chunk slot, bumping past any metadata-chunk
+                    // landing position (per dm-snap-persistent.c:275-282).
+                    next_free = bump_past_metadata(next_free, area_stride_chunks);
+                    let new_chunk = next_free;
+                    next_free += 1;
+                    max_new_chunk = max_new_chunk.max(new_chunk);
 
-        // Fill the buffer with up to chunk_bytes from input. `read`
-        // may return short; we loop until we either fill the buffer or
-        // hit EOF.
-        let mut filled = 0usize;
-        while filled < chunk_bytes {
-            let n = input
-                .read(&mut buf[filled..])
-                .context("cow::write_streaming: read input")?;
-            if n == 0 {
-                break;
+                    // Write the exception entry at its metadata-area slot. Each
+                    // metadata chunk is a sparse hole (zeros); slots beyond the
+                    // last entry naturally form sentinels (trap 3).
+                    let exc_idx = exception_count as usize;
+                    let area = (exc_idx / exceptions_per_area) as u64;
+                    let slot_in_area = exc_idx % exceptions_per_area;
+                    let metadata_chunk = NUM_SNAPSHOT_HDR_CHUNKS + area * area_stride_chunks;
+                    let entry_off = (metadata_chunk as usize) * chunk_bytes
+                        + slot_in_area * DISK_EXCEPTION_SIZE;
+                    let mut entry = [0u8; DISK_EXCEPTION_SIZE];
+                    entry[0..8].copy_from_slice(&src_idx.to_le_bytes());
+                    entry[8..16].copy_from_slice(&new_chunk.to_le_bytes());
+                    output
+                        .seek(SeekFrom::Start(entry_off as u64))
+                        .context("cow::write_streaming: seek to metadata slot")?;
+                    output
+                        .write_all(&entry)
+                        .context("cow::write_streaming: write metadata entry")?;
+
+                    // Write the chunk's data into its `new_chunk` slot.
+                    let dst_off = new_chunk * (chunk_bytes as u64);
+                    output
+                        .seek(SeekFrom::Start(dst_off))
+                        .context("cow::write_streaming: seek to data slot")?;
+                    output
+                        .write_all(&buf)
+                        .context("cow::write_streaming: write data chunk")?;
+
+                    exception_count += 1;
+                    src_idx += 1;
+                }
             }
-            filled += n;
-        }
-        if filled == 0 {
-            // EOF on a chunk boundary — done.
-            break;
-        }
-
-        // IMPORT-03 / dm-zero origin: skip all-zero chunks.
-        if buf.iter().all(|&b| b == 0) {
-            src_idx += 1;
-            if filled < chunk_bytes {
-                // Last (short) chunk was all zeros; we're done.
-                break;
-            }
-            continue;
-        }
-
-        // Allocate a new_chunk slot, bumping past any metadata-chunk
-        // landing position (per dm-snap-persistent.c:275-282).
-        next_free = bump_past_metadata(next_free, area_stride_chunks);
-        let new_chunk = next_free;
-        next_free += 1;
-        max_new_chunk = max_new_chunk.max(new_chunk);
-
-        // Write the exception entry at the appropriate metadata-area
-        // slot. Each metadata chunk is a sparse hole (zeros); the slots
-        // beyond the last entry naturally form sentinels (trap 3).
-        let exc_idx = exception_count as usize;
-        let area = (exc_idx / exceptions_per_area) as u64;
-        let slot_in_area = exc_idx % exceptions_per_area;
-        let metadata_chunk = NUM_SNAPSHOT_HDR_CHUNKS + area * area_stride_chunks;
-        let entry_off =
-            (metadata_chunk as usize) * chunk_bytes + slot_in_area * DISK_EXCEPTION_SIZE;
-        let mut entry = [0u8; DISK_EXCEPTION_SIZE];
-        entry[0..8].copy_from_slice(&src_idx.to_le_bytes());
-        entry[8..16].copy_from_slice(&new_chunk.to_le_bytes());
-        output
-            .seek(SeekFrom::Start(entry_off as u64))
-            .context("cow::write_streaming: seek to metadata slot")?;
-        output
-            .write_all(&entry)
-            .context("cow::write_streaming: write metadata entry")?;
-
-        // Write the chunk's data into its `new_chunk` slot.
-        let dst_off = new_chunk * (chunk_bytes as u64);
-        output
-            .seek(SeekFrom::Start(dst_off))
-            .context("cow::write_streaming: seek to data slot")?;
-        output
-            .write_all(&buf)
-            .context("cow::write_streaming: write data chunk")?;
-
-        exception_count += 1;
-        src_idx += 1;
-
-        if filled < chunk_bytes {
-            // Last (short) chunk was processed; we're done.
-            break;
         }
     }
 
@@ -858,6 +967,94 @@ mod tests {
                 "src chunk {src_idx} round-trip mismatch"
             );
         }
+    }
+
+    /// The sparse reader produces byte-identical COW output to the sequential
+    /// reader over the same on-disk (sparse) file, and reports the same
+    /// exception / input-chunk counts. Data is placed at two chunks with a
+    /// large gap between them, so SEEK_DATA/SEEK_HOLE are exercised.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn sparse_matches_sequential() {
+        use std::os::unix::fs::FileExt as _;
+
+        let css = 8u32; // carapace-spec chunk size (4096 bytes)
+        let cb = (css as usize) * SECTOR_SIZE as usize;
+        let n_chunks = 64usize;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sparse.img");
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        // A sparse file: length covers 64 chunks, but only chunks 3 and 50 hold
+        // data — everything else is a hole.
+        f.set_len((n_chunks * cb) as u64).unwrap();
+        f.write_all_at(&vec![0xEEu8; cb], (3 * cb) as u64).unwrap();
+        f.write_all_at(&vec![0x77u8; cb], (50 * cb) as u64).unwrap();
+        f.sync_all().unwrap();
+        let len = f.metadata().unwrap().len();
+
+        // Sparse path.
+        let mut sparse_out = Cursor::new(Vec::<u8>::new());
+        let sparse_meta = write_streaming_sparse(&f, len, &mut sparse_out, css).unwrap();
+
+        // Sequential path over the identical bytes.
+        let mut seq_in = std::fs::File::open(&path).unwrap();
+        let mut seq_out = Cursor::new(Vec::<u8>::new());
+        let seq_meta = write_streaming(&mut seq_in, &mut seq_out, css).unwrap();
+
+        assert_eq!(
+            sparse_out.into_inner(),
+            seq_out.into_inner(),
+            "sparse COW must be byte-identical to sequential"
+        );
+        assert_eq!(sparse_meta.exception_count, 2, "two data chunks");
+        assert_eq!(sparse_meta.exception_count, seq_meta.exception_count);
+        assert_eq!(sparse_meta.input_chunks, seq_meta.input_chunks);
+        assert_eq!(sparse_meta.total_bytes, seq_meta.total_bytes);
+    }
+
+    /// The sparse reader handles a trailing hole (SEEK_DATA returns ENXIO past
+    /// the last data extent) and data in the very last, partial chunk.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn sparse_trailing_hole_and_partial_final_chunk() {
+        use std::os::unix::fs::FileExt as _;
+
+        let css = 8u32;
+        let cb = (css as usize) * SECTOR_SIZE as usize;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sparse2.img");
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        // Data at chunk 0, then a long hole. Total length is not a chunk
+        // multiple (a short final chunk, which is a hole).
+        f.set_len((10 * cb + 123) as u64).unwrap();
+        f.write_all_at(&vec![0x5Au8; cb], 0).unwrap();
+        f.sync_all().unwrap();
+        let len = f.metadata().unwrap().len();
+
+        let mut sparse_out = Cursor::new(Vec::<u8>::new());
+        let sparse_meta = write_streaming_sparse(&f, len, &mut sparse_out, css).unwrap();
+
+        let mut seq_in = std::fs::File::open(&path).unwrap();
+        let mut seq_out = Cursor::new(Vec::<u8>::new());
+        let seq_meta = write_streaming(&mut seq_in, &mut seq_out, css).unwrap();
+
+        assert_eq!(sparse_out.into_inner(), seq_out.into_inner());
+        assert_eq!(sparse_meta.exception_count, 1);
+        assert_eq!(sparse_meta.input_chunks, seq_meta.input_chunks);
     }
 
     /// BL-01: streaming rejects bad chunk sizes (same validation as `write`).

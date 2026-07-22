@@ -3,22 +3,24 @@
 
 //! `pichi inspect <ref>` (LOCAL-02 / D-20 image-index aware).
 //!
-//! Outputs the manifest as pretty-printed JSON augmented with a `_pichi`
-//! sidecar (blob list with sizes, scute count, PMI presence boolean). When
-//! the resolved digest's blob is an OCI Image Index (D-20), drills into the
+//! Outputs the manifest verbatim as pretty-printed JSON plus the resolved
+//! content `digest` (the one datum a content-addressed manifest can't carry
+//! about itself); everything else is derivable from the manifest. `--format`
+//! renders a minijinja (Jinja2) template — dotted OCI annotation keys are
+//! reached with subscripts, e.g.
+//! `{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}`. When the
+//! resolved digest's blob is an OCI Image Index (D-20), drills into the
 //! pichi-artifactType entry; if absent from the cache, lists the index
 //! entries and points at `pichi pull`.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use anyhow::{Context, Result, anyhow};
+use minijinja::Environment;
 use serde::Serialize;
 use serde_json::Value;
-use tinytemplate::{TinyTemplate, format_unescaped};
 
-use pichi_artifact::{
-    Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference, ReferenceKind,
-};
+use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference, ReferenceKind};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::InspectArgs;
@@ -26,28 +28,15 @@ use crate::config::Config;
 
 const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 
+/// `pichi inspect` output: the manifest verbatim (the artifact of record) plus
+/// the resolved content digest — the one datum a content-addressed manifest
+/// cannot carry about itself. Everything else callers might want (layer counts,
+/// sizes, the carapace verity hash) is already in the manifest; templating
+/// reaches it directly (see [`InspectArgs::emit`]).
 #[derive(Serialize)]
 struct InspectOutput {
+    digest: String,
     manifest: Value,
-    _pichi: PichiSidecar,
-}
-
-#[derive(Serialize)]
-struct PichiSidecar {
-    digest: String,
-    artifact_type: String,
-    blob_count: usize,
-    scute_count: usize,
-    pmi_present: bool,
-    total_layer_size: u64,
-    blobs: Vec<BlobEntry>,
-}
-
-#[derive(Serialize)]
-struct BlobEntry {
-    digest: String,
-    media_type: String,
-    size: u64,
 }
 
 #[derive(Serialize)]
@@ -107,13 +96,13 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
         return inspect_index(args, &digest, &value);
     }
 
-    // Bare manifest path.
-    let manifest = Manifest::from_reader_validated(bytes.as_slice())
+    // Bare manifest path. Validate defensively, then emit the manifest verbatim
+    // plus its resolved digest.
+    Manifest::from_reader_validated(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
-    let sidecar = PichiSidecar::from_manifest(&digest, &manifest);
     let output = InspectOutput {
+        digest: digest.to_string(),
         manifest: value,
-        _pichi: sidecar,
     };
     args.emit(&output)
 }
@@ -166,60 +155,38 @@ fn inspect_index(args: InspectArgs, digest: &Digest, value: &Value) -> Result<()
     args.emit(&output)
 }
 
-impl PichiSidecar {
-    /// Summarise a cached [`Manifest`] into the human-facing sidecar view.
-    fn from_manifest(digest: &Digest, m: &Manifest) -> Self {
-        let mut blobs = Vec::with_capacity(m.layers.len());
-        let mut pmi_present = false;
-        let mut scute_count = 0usize;
-        let mut total = 0u64;
-        for layer in &m.layers {
-            match layer {
-                Layer::Pmi(_) => pmi_present = true,
-                Layer::Scute(_) | Layer::ScuteZstd(_) => scute_count += 1,
-                Layer::Dtb(_) => {}
-            }
-            total += layer.size();
-            blobs.push(BlobEntry {
-                digest: layer.digest_str().to_string(),
-                media_type: layer.media_type_str().to_string(),
-                size: layer.size(),
-            });
-        }
-        Self {
-            digest: digest.to_string(),
-            artifact_type: m.artifact_type.clone(),
-            blob_count: m.layers.len(),
-            scute_count,
-            pmi_present,
-            total_layer_size: total,
-            blobs,
-        }
-    }
-}
-
 impl InspectArgs {
     /// Emit `value` per the `--format` selection (default: pretty JSON).
+    ///
+    /// Templates are rendered with minijinja (Jinja2). Dotted OCI annotation
+    /// keys are reached with subscript syntax — no data reshaping needed:
+    /// `{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}`. For
+    /// docker familiarity, a leading `{{.field}}` is accepted and normalised to
+    /// `{{ field }}`.
     fn emit<T: Serialize>(&self, value: &T) -> Result<()> {
-        if let Some(template_in) = &self.format {
-            if template_in == "json" {
-                let s = serde_json::to_string_pretty(value)?;
-                println!("{s}");
-            } else {
-                // tinytemplate render. D-17 syntax translation.
-                let template = template_in.replace("{{.", "{").replace("}}", "}");
-                let mut tt = TinyTemplate::new();
-                tt.set_default_formatter(&format_unescaped);
-                tt.add_template("inspect", &template)
+        match &self.format {
+            None => println!("{}", serde_json::to_string_pretty(value)?),
+            Some(t) if t == "json" => println!("{}", serde_json::to_string_pretty(value)?),
+            Some(template_in) => {
+                let template = normalize_template_syntax(template_in);
+                let env = Environment::new();
+                let tmpl = env
+                    .template_from_str(&template)
                     .with_context(|| format!("invalid --format template: {template_in:?}"))?;
-                let out = tt.render("inspect", value)?;
-                println!("{out}");
+                println!(
+                    "{}",
+                    tmpl.render(value)
+                        .with_context(|| format!("rendering --format template: {template_in:?}"))?
+                );
             }
-        } else {
-            // Default: pretty-printed JSON.
-            let s = serde_json::to_string_pretty(value)?;
-            println!("{s}");
         }
         Ok(())
     }
+}
+
+/// Accept docker-style `{{.Field}}` by normalising the leading dot to Jinja's
+/// `{{ Field }}`. Annotation subscripts (`["key"]`) are native minijinja and
+/// pass through untouched.
+fn normalize_template_syntax(user: &str) -> String {
+    user.replace("{{.", "{{ ")
 }
