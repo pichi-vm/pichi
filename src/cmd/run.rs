@@ -196,26 +196,38 @@ pub(crate) async fn build_gpt_spec(
         let cow_path = blob_store.blob_path(&cow_digest);
         let v_path = cow_path.verity_path();
 
-        let salt = hex::decode(&scute.annotations.salt)
-            .with_context(|| format!("scute salt is not valid hex: {}", scute.annotations.salt))?;
-        let cow_bytes = blob_store
-            .get_blob(&cow_digest)
-            .await
-            .with_context(|| format!("reading scute cow blob {cow_digest}"))?;
-
-        // dm-verity root computation is CPU-bound — run it off the runtime.
-        let params = pichi_import::verity::VerityParams {
-            data_block_size,
-            hash_block_size,
-            salt,
-            // Cosmetic for the root-hash computation (inputs are salt + data).
-            uuid: [0u8; 16],
+        // Fast path: for a single-scute carapace the chain verity root recorded
+        // in the manifest annotation IS this scute's root, so reuse it instead
+        // of reading the whole cow blob (hundreds of MB) and re-hashing it every
+        // launch. Falls back to recomputation for multi-scute stacks (where each
+        // scute has a distinct root not individually stored).
+        let root: [u8; 32] = match (scutes.len() == 1)
+            .then(|| manifest.carapace_verity_hash())
+            .flatten()
+        {
+            Some(h) => h,
+            None => {
+                let salt = hex::decode(&scute.annotations.salt).with_context(|| {
+                    format!("scute salt is not valid hex: {}", scute.annotations.salt)
+                })?;
+                let cow_bytes = blob_store
+                    .get_blob(&cow_digest)
+                    .await
+                    .with_context(|| format!("reading scute cow blob {cow_digest}"))?;
+                // dm-verity root computation is CPU-bound — run it off the runtime.
+                let params = pichi_import::verity::VerityParams {
+                    data_block_size,
+                    hash_block_size,
+                    salt,
+                    // Cosmetic for the root-hash computation (inputs are salt + data).
+                    uuid: [0u8; 16],
+                };
+                tokio::task::spawn_blocking(move || params.compute(&cow_bytes).map(|o| o.root_hash))
+                    .await
+                    .context("verity task panicked")?
+                    .context("dm-verity root computation failed")?
+            }
         };
-        let root =
-            tokio::task::spawn_blocking(move || params.compute(&cow_bytes).map(|o| o.root_hash))
-                .await
-                .context("verity task panicked")?
-                .context("dm-verity root computation failed")?;
 
         // D-run-01: cow PARTUUID = root[0..16], verity PARTUUID = root[16..32].
         //
