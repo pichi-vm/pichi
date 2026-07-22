@@ -24,12 +24,11 @@ use pichi_artifact::{Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Refe
 use pichi_import::verity::{VerityBuilder, VerityOutput, VerityParams};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry, pick_pichi_entry_from_index};
 use pichi_storage::{
-    BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb,
+    BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb,
     sidecar::{deflated_path, verity_path, write_sidecar_atomic},
 };
 
 use crate::cli::{PullArgs, PullPolicy};
-use crate::cmd::registry_helpers::build_http_registry;
 use crate::config::Config;
 use futures_util::stream::{self, StreamExt};
 
@@ -71,7 +70,7 @@ pub async fn run(args: PullArgs, config: &Config) -> Result<()> {
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
     let policy = args.pull.unwrap_or(PullPolicy::Always); // D-05 default.
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
     let tag_db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
@@ -253,7 +252,7 @@ pub(crate) async fn pull_inner(
     blob_store: &dyn BlobStore,
     tag_db: &FilesystemTagDb,
 ) -> Result<()> {
-    let registry = build_http_registry(config);
+    let registry = config.http_registry();
     pull_inner_with_registry(target, policy, quiet, &registry, blob_store, tag_db).await
 }
 
@@ -595,18 +594,6 @@ impl std::io::Read for ChannelReader {
         let _ = self.cur.split_to(n);
         Ok(n)
     }
-}
-
-/// Verbatim copy from `src/cmd/import.rs` lines 38-47.
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }
 
 #[cfg(test)]

@@ -35,10 +35,9 @@ use bytes::Bytes;
 use futures_util::stream;
 use pichi_artifact::{Digest, Manifest, Reference};
 use pichi_registry::Registry;
-use pichi_storage::{BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::PushArgs;
-use crate::cmd::registry_helpers::build_http_registry;
 use crate::config::Config;
 
 /// Content-type for OCI image manifests. Plan 05 always pushes the pichi
@@ -54,7 +53,7 @@ pub async fn run(args: PushArgs, config: &Config) -> Result<()> {
         .reference
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
     let tag_db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
@@ -62,7 +61,7 @@ pub async fn run(args: PushArgs, config: &Config) -> Result<()> {
     push_inner_with_registry(
         target_ref,
         args.quiet,
-        &build_http_registry(config),
+        &config.http_registry(),
         &blob_store,
         &tag_db,
     )
@@ -232,18 +231,6 @@ async fn blob_to_stream(
         .await
         .with_context(|| format!("open_blob {digest}"))?;
     Ok(tokio_util::io::ReaderStream::new(reader))
-}
-
-/// Verbatim copy from `src/cmd/import.rs` lines 38-47 / `src/cmd/pull.rs`.
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }
 
 #[cfg(test)]

@@ -14,6 +14,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use pichi_registry::{AuthEnv, AuthHint, HttpRegistry, RegistryEntry};
+use pichi_storage::CacheLayout;
 use serde::{Deserialize, Serialize};
 
 /// Top-level pichi configuration.
@@ -81,6 +83,67 @@ pub struct RegistryAuth {
 }
 
 impl Config {
+    /// Resolve the on-disk cache layout, applying this config's storage
+    /// overrides on top of the podman-convention defaults.
+    pub fn resolve_layout(&self) -> Result<CacheLayout> {
+        let mut layout = CacheLayout::resolve()?;
+        if let Some(p) = &self.storage.graphroot {
+            layout.graphroot.clone_from(p);
+        }
+        if let Some(p) = &self.storage.runroot {
+            layout.runroot.clone_from(p);
+        }
+        Ok(layout)
+    }
+
+    /// Translate `self.registries` into `pichi-registry`'s `RegistryEntry`
+    /// list. Honours the `PICHI_TEST_REGISTRY` / `PICHI_TEST_REGISTRY_INSECURE`
+    /// env-var pair so CI integration tests can target an HTTP-only zot without
+    /// a config file; the env bridge is a no-op outside CI.
+    pub fn registry_entries(&self) -> Vec<RegistryEntry> {
+        let test_reg = std::env::var("PICHI_TEST_REGISTRY").ok();
+        let test_insec = std::env::var("PICHI_TEST_REGISTRY_INSECURE")
+            .ok()
+            .is_some_and(|v| !v.is_empty());
+
+        let mut entries: Vec<RegistryEntry> = self
+            .registries
+            .iter()
+            .map(|r| {
+                let auth_hint = r.auth.as_ref().map(|a| AuthHint {
+                    username: a.username.clone(),
+                    password: a.password.clone(),
+                    identity_token: a.identity_token.clone(),
+                });
+                let insecure =
+                    r.insecure || (test_insec && test_reg.as_deref() == Some(r.prefix.as_str()));
+                RegistryEntry {
+                    prefix: r.prefix.clone(),
+                    insecure,
+                    auth_hint,
+                }
+            })
+            .collect();
+
+        // If the test registry isn't declared in config, synthesise an insecure
+        // entry so integration tests work without a config file.
+        if let Some(reg) = test_reg {
+            if test_insec && !entries.iter().any(|e| e.prefix == reg) {
+                entries.push(RegistryEntry {
+                    prefix: reg,
+                    insecure: true,
+                    auth_hint: None,
+                });
+            }
+        }
+        entries
+    }
+
+    /// Construct an [`HttpRegistry`] from this config.
+    pub fn http_registry(&self) -> HttpRegistry {
+        HttpRegistry::new(self.registry_entries(), AuthEnv::from_process_env())
+    }
+
     /// Load with the production 4-tier precedence chain.
     pub fn load() -> Result<Self> {
         let system = system_config_path();

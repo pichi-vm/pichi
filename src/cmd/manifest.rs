@@ -28,12 +28,11 @@ use std::path::PathBuf;
 
 use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference, ReferenceKind};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry};
-use pichi_storage::{BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cmd::push::push_manifest_and_blobs;
 
 use crate::cli::{ManifestAnnotateArgs, ManifestCreateArgs, ManifestPushArgs};
-use crate::cmd::registry_helpers::build_http_registry;
 use crate::config::Config;
 
 /// OCI image manifest media type (the per-arch entries' `mediaType`).
@@ -51,7 +50,7 @@ pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
 
     // Sources are LOCAL images (podman-style): resolve each from the cache,
     // never the registry. `pichi manifest push` uploads them together.
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
     let tag_db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
@@ -123,9 +122,9 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
         .with_context(|| format!("invalid destination reference: {}", args.dest))?;
     let ready = prepare_for_push(load_list(config, &list_ref)?, &list_ref)?;
 
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
-    let registry = build_http_registry(config);
+    let registry = config.http_registry();
 
     // podman `--all` semantics: push every referenced local image (blobs +
     // manifest, by digest into the dest repo), then the index last, so the
@@ -284,7 +283,7 @@ fn load_list(config: &Config, list_ref: &Reference) -> Result<Value> {
 }
 
 fn list_path(config: &Config, list_ref: &Reference) -> Result<PathBuf> {
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     Ok(layout
         .graphroot
         .join("manifests")
@@ -308,17 +307,6 @@ fn encode_ref(s: &str) -> String {
         }
     }
     out
-}
-
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }
 
 #[cfg(test)]

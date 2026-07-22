@@ -23,11 +23,12 @@ use pichi_artifact::{
     Reference, ReferenceKind, Requirements, ScuteAnnotations, ScuteDescriptor,
 };
 use pichi_storage::sidecar::{verity_path, write_sidecar_atomic};
-use pichi_storage::{BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::BuildArgs;
+use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
-use crate::cmd::run::{build_gpt_spec, find_dillo, partition_layers, path_arg, scute_layers};
+use crate::cmd::run::{build_gpt_spec, find_dillo, path_arg};
 use crate::config::Config;
 
 /// virtio-fs mount tags the host and conglobate agree on (BUILD.md §3).
@@ -46,7 +47,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     let build_image_ref = resolve_build_image(args.build_image.as_deref())?;
 
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
@@ -54,7 +55,8 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let (_, build_manifest) = resolve_manifest(&build_image_ref, &db, &blob_store)
         .await
         .with_context(|| format!("resolving build image {build_image_ref}"))?;
-    let (pmi, _) = partition_layers(&build_manifest)
+    let (pmi, _) = build_manifest
+        .partition_layers()
         .with_context(|| format!("build image {build_image_ref} is not bootable"))?;
     let pmi_digest: Digest = pmi
         .digest
@@ -75,7 +77,8 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         let (_, manifest) = resolve_manifest(&reference, &db, &blob_store)
             .await
             .with_context(|| format!("resolving source carapace {reference}"))?;
-        let scutes = scute_layers(&manifest)
+        let scutes = manifest
+            .scute_layers()
             .with_context(|| format!("reading scutes of source carapace {reference}"))?;
         if scutes.is_empty() {
             bail!("source carapace {reference} has no scute layers");
@@ -419,20 +422,6 @@ async fn boot_and_wait(dillo: &Path, args: &[String]) -> Result<()> {
         bail!("build VM exited with {status}");
     }
     Ok(())
-}
-
-/// Resolve the on-disk cache layout, applying config overrides. Mirrors
-/// `cmd::run::resolve_layout` verbatim (project convention: per-cmd
-/// duplication, do not factor into `cmd/mod.rs`).
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }
 
 #[cfg(test)]

@@ -43,7 +43,7 @@ use crate::config::Config;
 /// `pichi rmi <ref>...` entry point — remove tags + refcount-aware blob
 /// GC (LOCAL-03).
 pub async fn run(args: RmiArgs, config: &Config) -> Result<()> {
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     for input in &args.references {
         rmi_one(input, args.force, &layout)
             .await
@@ -170,15 +170,4 @@ async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
         "removed tag {target_key} (manifest {target_digest}); unlinked {deleted} orphan blob(s)"
     );
     Ok(())
-}
-
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }

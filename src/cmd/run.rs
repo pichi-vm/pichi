@@ -26,17 +26,13 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 
-use pichi_artifact::{
-    Digest, DtbDescriptor, Layer, Manifest, PmiDescriptor, Reference, ReferenceKind, Requirements,
-    ScuteDescriptor,
-};
-use pichi_storage::{
-    BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, sidecar::verity_path,
-};
+use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements, ScuteDescriptor};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb, sidecar::verity_path};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
+use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
 use crate::config::Config;
 
@@ -46,19 +42,9 @@ const SCUTE_COW_TYPEGUID: &str = "11dd804a-e1bf-4ab3-98c1-f9f48ceedbf1";
 /// GPT type GUID for scute verity partitions (carapace spec, registered value).
 const SCUTE_VERITY_TYPEGUID: &str = "40bb9571-2972-4547-b580-6a8cb13fd7d1";
 
-/// Chain-wide verity block-size annotation keys (mirror pichi-artifact's
-/// private consts). carapace D-06 locks both to 4096; we read them anyway and
-/// fall back to the lock if absent.
-const ANN_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
-const ANN_HASH_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.hash-block-size";
-const DEFAULT_BLOCK_SIZE: u32 = 4096;
-
-/// Standard OCI image-architecture annotation key (SC#3 fail-closed check).
-const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
-
 /// `pichi run <ref>` entry point.
 pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
@@ -99,7 +85,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
         .with_context(|| format!("validating manifest {digest}"))?;
 
     // 3. Architecture-mismatch fail-closed check (accept if absent).
-    check_architecture(&manifest)?;
+    manifest.check_architecture()?;
 
     // 4. Derive the dillo argv from the manifest + runtime resources, applying
     //    the artifact's requirements.yaml floors (BUILD.md §7) when present.
@@ -152,7 +138,7 @@ async fn build_dillo_args(
     memory_mib: Option<u32>,
     interfaces: usize,
 ) -> Result<Vec<String>> {
-    let (pmi, scutes) = partition_layers(manifest)?;
+    let (pmi, scutes) = manifest.partition_layers()?;
     let pmi_digest: Digest = pmi
         .digest
         .parse()
@@ -163,7 +149,7 @@ async fn build_dillo_args(
     // A detached-mode PMI carries its measured base DTB as a separate layer;
     // hand it to the VMM out-of-band. The operator never specifies this — it
     // rides in the artifact, like the PMI and scutes.
-    if let Some(dtb) = dtb_layer(manifest) {
+    if let Some(dtb) = manifest.dtb_layer() {
         let dtb_digest: Digest = dtb
             .digest
             .parse()
@@ -190,59 +176,6 @@ async fn build_dillo_args(
     Ok(argv)
 }
 
-/// The base-DTB layer, if the artifact carries one (a detached-mode PMI needs
-/// its base delivered out-of-band). Wired to `dillo --dtb` automatically.
-pub(crate) fn dtb_layer(manifest: &Manifest) -> Option<&DtbDescriptor> {
-    manifest.layers.iter().find_map(|l| match l {
-        Layer::Dtb(d) => Some(d),
-        _ => None,
-    })
-}
-
-/// Partition the manifest's layers into the single PMI descriptor and the
-/// ordered scute list. `+zstd` scutes are not yet supported by `run`.
-pub(crate) fn partition_layers(
-    manifest: &Manifest,
-) -> Result<(&PmiDescriptor, Vec<&ScuteDescriptor>)> {
-    let mut pmi: Option<&PmiDescriptor> = None;
-    let mut scutes: Vec<&ScuteDescriptor> = Vec::new();
-    for layer in &manifest.layers {
-        match layer {
-            Layer::Pmi(d) => pmi = Some(d),
-            Layer::Scute(d) => scutes.push(d),
-            Layer::Dtb(_) => {}
-            Layer::ScuteZstd(_) => bail!(
-                "this artifact has zstd-compressed scute layers; `pichi run` does not yet \
-                 support them (decompressed-COW handling is deferred)"
-            ),
-        }
-    }
-    let pmi = pmi.ok_or_else(|| {
-        anyhow!("artifact is not bootable (no PMI layer); usable as a `from:` source only")
-    })?;
-    Ok((pmi, scutes))
-}
-
-/// Collect a carapace's scute layers, with no PMI requirement. Source
-/// carapaces in a build (`carapace.yaml`/`pmi.yaml` `from:`) are non-bootable
-/// — they have no PMI — so [`partition_layers`] (which requires one) is the
-/// wrong tool for them. Rejects zstd scutes for the same reason as
-/// `partition_layers` (decompressed-COW handling is deferred).
-pub(crate) fn scute_layers(manifest: &Manifest) -> Result<Vec<&ScuteDescriptor>> {
-    let mut scutes: Vec<&ScuteDescriptor> = Vec::new();
-    for layer in &manifest.layers {
-        match layer {
-            Layer::Scute(d) => scutes.push(d),
-            Layer::Pmi(_) | Layer::Dtb(_) => {}
-            Layer::ScuteZstd(_) => bail!(
-                "this carapace has zstd-compressed scute layers; the build path does not yet \
-                 support them (decompressed-COW handling is deferred)"
-            ),
-        }
-    }
-    Ok(scutes)
-}
-
 /// Build the `--gpt` value: a chain-ordered partition list `[cow0, verity0,
 /// cow1, verity1, ...]`. device-id/disk-guid are omitted so dillo derives
 /// them from the PARTUUIDs (matching the carapace formula).
@@ -251,8 +184,8 @@ pub(crate) async fn build_gpt_spec(
     scutes: &[&ScuteDescriptor],
     blob_store: &FilesystemBlobStore,
 ) -> Result<String> {
-    let data_block_size = block_size(manifest, ANN_DATA_BLOCK_SIZE);
-    let hash_block_size = block_size(manifest, ANN_HASH_BLOCK_SIZE);
+    let data_block_size = manifest.data_block_size();
+    let hash_block_size = manifest.hash_block_size();
 
     let mut parts: Vec<String> = Vec::with_capacity(scutes.len() * 2);
     for scute in scutes {
@@ -323,37 +256,6 @@ pub(crate) async fn build_gpt_spec(
     Ok(format!("partitions=[{}]", parts.join(",")))
 }
 
-/// Read a u32 chain annotation, falling back to the carapace-locked default.
-fn block_size(manifest: &Manifest, key: &str) -> u32 {
-    manifest
-        .annotations
-        .get(key)
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(DEFAULT_BLOCK_SIZE)
-}
-
-/// Fail closed when the artifact declares an architecture that doesn't match
-/// the host. Absent annotation ⇒ accept (publisher's choice).
-fn check_architecture(manifest: &Manifest) -> Result<()> {
-    let Some(arch) = manifest.annotations.get(ARCH_ANNOTATION) else {
-        return Ok(());
-    };
-    let host = std::env::consts::ARCH;
-    let host_norm = match host {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => other,
-    };
-    if arch != host && arch != host_norm {
-        bail!(
-            "artifact architecture {arch:?} does not match host {host:?} \
-             (host normalised as {host_norm:?}; supported synonyms: \
-             x86_64=amd64, aarch64=arm64)"
-        );
-    }
-    Ok(())
-}
-
 /// Locate the `dillo` binary: `PICHI_DILLO` env override, then a sibling of
 /// the running `pichi` binary, then bare `dillo` (resolved via `PATH`).
 pub(crate) fn find_dillo() -> PathBuf {
@@ -410,24 +312,12 @@ pub(crate) fn path_arg(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// Resolve the on-disk cache layout, applying config overrides. Mirrors
-/// `cmd::inspect::resolve_layout` verbatim (project convention: per-cmd
-/// duplication, do not factor into `cmd/mod.rs`).
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
     use pichi_artifact::{
         ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
@@ -481,7 +371,7 @@ mod tests {
             annotations: ScuteAnnotations { salt: "00".into() },
         };
         let m = manifest_with(vec![pmi_layer(), Layer::Scute(scute)]);
-        let (_pmi, scutes) = partition_layers(&m).unwrap();
+        let (_pmi, scutes) = m.partition_layers().unwrap();
         assert_eq!(scutes.len(), 1);
     }
 
@@ -494,7 +384,7 @@ mod tests {
             annotations: ScuteAnnotations { salt: "00".into() },
         };
         let m = manifest_with(vec![Layer::Scute(scute)]);
-        let err = partition_layers(&m).unwrap_err();
+        let err = m.partition_layers().unwrap_err();
         assert!(err.to_string().contains("not bootable"), "got: {err}");
     }
 
@@ -507,7 +397,7 @@ mod tests {
             annotations: ScuteAnnotations { salt: "00".into() },
         };
         let m = manifest_with(vec![pmi_layer(), Layer::ScuteZstd(scute)]);
-        let err = partition_layers(&m).unwrap_err();
+        let err = m.partition_layers().unwrap_err();
         assert!(err.to_string().contains("zstd"), "got: {err}");
     }
 
@@ -629,13 +519,13 @@ mod tests {
     #[tokio::test]
     async fn check_architecture_accepts_absent_and_matching() {
         let m = manifest_with(vec![pmi_layer()]);
-        check_architecture(&m).unwrap(); // absent
+        m.check_architecture().unwrap(); // absent
 
         let mut m2 = manifest_with(vec![pmi_layer()]);
         let host = std::env::consts::ARCH;
         m2.annotations
             .insert(ARCH_ANNOTATION.to_string(), host.to_string());
-        check_architecture(&m2).unwrap(); // matching
+        m2.check_architecture().unwrap(); // matching
     }
 
     #[tokio::test]
@@ -645,7 +535,7 @@ mod tests {
             ARCH_ANNOTATION.to_string(),
             "totally-not-this-host".to_string(),
         );
-        let err = check_architecture(&m).unwrap_err();
+        let err = m.check_architecture().unwrap_err();
         assert!(
             err.to_string().contains("does not match host"),
             "got: {err}"

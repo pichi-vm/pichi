@@ -19,7 +19,7 @@ use tinytemplate::{TinyTemplate, format_unescaped};
 use pichi_artifact::{
     Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference, ReferenceKind,
 };
-use pichi_storage::{BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::InspectArgs;
 use crate::config::Config;
@@ -70,7 +70,7 @@ struct IndexEntryInfo {
 /// `pichi inspect <ref>` entry point — print the cached manifest as
 /// pretty-printed JSON augmented with a `_pichi` sidecar (LOCAL-02).
 pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
@@ -216,15 +216,4 @@ fn emit<T: Serialize>(args: &InspectArgs, value: &T) -> Result<()> {
         println!("{s}");
     }
     Ok(())
-}
-
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }

@@ -16,7 +16,7 @@ use serde_json::json;
 use std::path::Path;
 
 use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
-use pichi_storage::{BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::SaveArgs;
 use crate::config::Config;
@@ -31,7 +31,7 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
         .reference
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
     let tag_db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
@@ -120,15 +120,4 @@ async fn copy_blob(
         )
     })?;
     Ok(())
-}
-
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }

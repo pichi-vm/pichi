@@ -13,7 +13,7 @@
 use anyhow::{Context, Result, anyhow};
 
 use pichi_artifact::Reference;
-use pichi_storage::{CacheLayout, FilesystemTagDb, TagDb};
+use pichi_storage::{FilesystemTagDb, TagDb};
 
 use crate::cli::TagArgs;
 use crate::config::Config;
@@ -21,7 +21,7 @@ use crate::config::Config;
 /// `pichi tag <src> <dst>` entry point — create a new tag pointing at
 /// the same manifest digest as `src` (LOCAL-04).
 pub async fn run(args: TagArgs, config: &Config) -> Result<()> {
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
 
@@ -48,15 +48,4 @@ pub async fn run(args: TagArgs, config: &Config) -> Result<()> {
 
     log::info!("tagged {src_key} as {dst_key} (manifest {digest})");
     Ok(())
-}
-
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }

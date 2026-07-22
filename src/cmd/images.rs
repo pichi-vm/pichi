@@ -56,7 +56,7 @@ struct Row {
 
 /// `pichi images` entry point — list cached artifacts (LOCAL-01).
 pub async fn run(args: ImagesArgs, config: &Config) -> Result<()> {
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
@@ -294,17 +294,6 @@ fn print_table(rows: &[Row], full_digests: bool) {
         }
         println!("{}", line.trim_end());
     }
-}
-
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }
 
 #[cfg(test)]

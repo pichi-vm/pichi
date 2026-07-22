@@ -59,9 +59,7 @@ use anyhow::{Context, Result};
 use humansize::{BINARY, format_size};
 
 use pichi_artifact::{Digest, Manifest};
-use pichi_storage::{
-    BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, with_index_lock,
-};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb, with_index_lock};
 
 use crate::cli::PruneArgs;
 use crate::config::Config;
@@ -69,7 +67,7 @@ use crate::config::Config;
 /// `pichi system prune` entry point — garbage-collect orphan blobs +
 /// headless sidecars (PRUNE-01..04; Phase 47).
 pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
 
     // D-prune-LW1: ONE with_index_lock window covers the whole transaction
     // (live-set walk, source-orphan loop, headless-sidecar sweep). The
@@ -256,20 +254,6 @@ fn is_blob_filename(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
-}
-
-/// Mirrors `src/cmd/rmi.rs::resolve_layout` (D-prune-BP1 forbids touching
-/// rmi.rs to extract a shared helper; future cleanup is not Phase 47's
-/// concern).
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }
 
 #[cfg(test)]

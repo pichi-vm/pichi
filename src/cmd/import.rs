@@ -14,7 +14,6 @@
 use anyhow::{Context, Result};
 
 use pichi_artifact::Reference;
-use pichi_storage::CacheLayout;
 
 use crate::cli::ImportArgs;
 use crate::config::Config;
@@ -29,7 +28,7 @@ pub async fn run(args: ImportArgs, config: &Config) -> Result<()> {
         .parse()
         .with_context(|| format!("invalid tag reference: {}", args.tag))?;
 
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     // Read + validate the optional launch-contract config before consuming
     // `args`. YAML or JSON (serde_yaml reads both); memory is bytes. We
     // re-serialise to canonical config-blob JSON for storage.
@@ -55,15 +54,4 @@ pub async fn run(args: ImportArgs, config: &Config) -> Result<()> {
     // chrono -- Plan 03 manifest.rs decision).
     lib_args.created_rfc3339 = chrono::Utc::now().to_rfc3339();
     pichi_import::run(lib_args, &layout.graphroot).await
-}
-
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }

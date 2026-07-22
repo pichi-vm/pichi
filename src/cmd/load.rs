@@ -15,19 +15,17 @@ use std::fs;
 use pichi_artifact::{Digest, Layer, Manifest, Reference};
 use pichi_import::verity::{VerityParams, compute};
 use pichi_storage::sidecar::{deflated_path, verity_path, write_sidecar_atomic};
-use pichi_storage::{BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::LoadArgs;
+use crate::cmd::manifest_ext::ManifestExt;
 use crate::config::Config;
 
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
-const ANN_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
-const ANN_HASH_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.hash-block-size";
-const DEFAULT_BLOCK_SIZE: u32 = 4096;
 
 pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
     let dir = &args.input;
-    let layout = resolve_layout(config)?;
+    let layout = config.resolve_layout()?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
     let tag_db = FilesystemTagDb::open(&layout.graphroot)
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
@@ -112,8 +110,8 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
 /// (dm-verity hash tree). Idempotent — a scute whose `.verity` already exists
 /// is skipped. PMI/DTB layers carry no verity and are ignored.
 async fn prepare_sidecars(blob_store: &FilesystemBlobStore, manifest: &Manifest) -> Result<()> {
-    let data_block_size = block_size(manifest, ANN_DATA_BLOCK_SIZE);
-    let hash_block_size = block_size(manifest, ANN_HASH_BLOCK_SIZE);
+    let data_block_size = manifest.data_block_size();
+    let hash_block_size = manifest.hash_block_size();
     let scratch = blob_store
         .scratch_dir()
         .await
@@ -182,24 +180,4 @@ async fn prepare_sidecars(blob_store: &FilesystemBlobStore, manifest: &Manifest)
             .with_context(|| format!("write .verity sidecar for {digest}"))?;
     }
     Ok(())
-}
-
-/// Read a u32 chain annotation, falling back to the carapace-locked default.
-fn block_size(manifest: &Manifest, key: &str) -> u32 {
-    manifest
-        .annotations
-        .get(key)
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(DEFAULT_BLOCK_SIZE)
-}
-
-fn resolve_layout(config: &Config) -> Result<CacheLayout> {
-    let mut layout = CacheLayout::resolve()?;
-    if let Some(p) = &config.storage.graphroot {
-        layout.graphroot.clone_from(p);
-    }
-    if let Some(p) = &config.storage.runroot {
-        layout.runroot.clone_from(p);
-    }
-    Ok(layout)
 }
