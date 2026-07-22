@@ -51,6 +51,16 @@ impl Digest {
         }
     }
 
+    /// The raw 32-byte SHA-256 digest. Callers that need the bare bytes (e.g.
+    /// dm-verity salt/uuid derivation) use this instead of re-hex-decoding the
+    /// `Display` form.
+    #[must_use]
+    pub fn as_sha256_array(&self) -> [u8; 32] {
+        match self {
+            Self::Sha256(b) => *b,
+        }
+    }
+
     /// Return the lowercase hex string (64 chars for SHA-256).
     pub fn hex(&self) -> String {
         match self {

@@ -172,7 +172,7 @@ mod tests {
             salt: vec![0u8; 32],
             uuid: [0u8; 16],
         };
-        let expected_root = verity::compute(&cow_bytes, &params).unwrap().root_hash;
+        let expected_root = params.compute(&cow_bytes).unwrap().root_hash;
 
         // Import it into the cache as `base:1`.
         pichi_import::run(

@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use anyhow::{Context as _, Result, anyhow, bail};
 
 use pichi_artifact::{Digest, DtbDescriptor, Layer, Manifest, PmiDescriptor, ScuteDescriptor};
-use pichi_import::verity::{VerityParams, compute};
+use pichi_import::verity::VerityParams;
 use pichi_storage::{BlobStore, FilesystemBlobStore};
 
 /// Chain-wide verity annotation keys + the carapace-locked default block size.
@@ -159,7 +159,7 @@ impl ManifestExt for Manifest {
                 uuid: [0u8; 16],
             };
             let root = tokio::task::spawn_blocking(move || {
-                compute(&cow_bytes, &params).map(|o| o.root_hash)
+                params.compute(&cow_bytes).map(|o| o.root_hash)
             })
             .await
             .context("verity task panicked")?

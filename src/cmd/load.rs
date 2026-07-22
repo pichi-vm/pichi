@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::fs;
 
 use pichi_artifact::{Digest, Layer, Manifest, Reference};
-use pichi_import::verity::{VerityParams, compute};
+use pichi_import::verity::VerityParams;
 use pichi_storage::sidecar::write_sidecar_atomic;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
@@ -162,8 +162,9 @@ async fn prepare_sidecars(blob_store: &FilesystemBlobStore, manifest: &Manifest)
                     salt,
                     uuid: [0u8; 16], // metadata only; kernel ignores it at activation.
                 };
-                let output =
-                    compute(&cow, &params).with_context(|| format!("dm-verity for scute {d}"))?;
+                let output = params
+                    .compute(&cow)
+                    .with_context(|| format!("dm-verity for scute {d}"))?;
                 let deflated = if is_zstd { Some(cow) } else { None };
                 Ok((deflated, output.blob))
             })

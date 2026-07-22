@@ -303,8 +303,8 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
 
     // Step 4: derive deterministic uuid (RESEARCH Open-Q #3) and compute
     // the verity tree (D-03: re-callable from Phase 44).
-    let cow_digest_bytes: [u8; 32] = cow_digest_to_array(&cow_digest)?;
-    let uuid = verity::derive_uuid(&full_salt, &cow_digest_bytes);
+    let cow_digest_bytes = cow_digest.as_sha256_array();
+    let uuid = verity::VerityParams::derive_uuid(&full_salt, &cow_digest_bytes);
 
     let params = verity::VerityParams {
         data_block_size: VERITY_DBS,
@@ -500,26 +500,6 @@ fn stream_sha256(path: &Path) -> Result<[u8; 32]> {
     }
     let mut out = [0u8; 32];
     out.copy_from_slice(&hasher.finalize());
-    Ok(out)
-}
-
-/// Extract the 32 raw bytes from a `Digest::Sha256(...)`. Helper used
-/// by `verity::derive_uuid` which takes `&[u8; 32]` (the bare digest
-/// bytes, not the `"sha256:hex..."` string form).
-fn cow_digest_to_array(d: &Digest) -> Result<[u8; 32]> {
-    // Digest's Display is `"sha256:<hex>"`; we re-hex-decode the suffix.
-    // (The pichi-artifact API does not expose raw bytes directly, so
-    // this is the cleanest workspace-friendly path.)
-    let s = d.to_string();
-    let hex_part = s
-        .strip_prefix("sha256:")
-        .ok_or_else(|| anyhow::anyhow!("expected sha256: digest, got {s}"))?;
-    let bytes = hex::decode(hex_part).context("hex-decoding cow digest")?;
-    if bytes.len() != 32 {
-        bail!("cow digest has wrong length: {}", bytes.len());
-    }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes);
     Ok(out)
 }
 

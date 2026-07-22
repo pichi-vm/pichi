@@ -418,18 +418,21 @@ pub struct VerityOutput {
     pub root_hash: [u8; SHA256_DIGEST_SIZE],
 }
 
-/// Deterministic uuid derivation per RESEARCH §Open-Q #3 — keeps the
-/// verity blob byte-identical for the same `(cow, salt)` pair, aligning
-/// with CONTEXT D-03 ("verity blob is a deterministic function of (cow,
-/// salt, params)"). `uuid` is purely cosmetic — not a security boundary.
-pub fn derive_uuid(salt: &[u8], cow_digest_bytes: &[u8; SHA256_DIGEST_SIZE]) -> [u8; 16] {
-    let mut h = Sha256::new();
-    h.update(salt);
-    h.update(cow_digest_bytes);
-    let full = h.finalize();
-    let mut uuid = [0u8; 16];
-    uuid.copy_from_slice(&full[..16]);
-    uuid
+impl VerityParams {
+    /// Deterministic uuid for the verity superblock's `uuid` field, keeping the
+    /// blob byte-identical for the same `(cow, salt)` pair (CONTEXT D-03).
+    /// Cosmetic — not a security boundary. An associated function because it
+    /// produces a `VerityParams` field before the struct exists.
+    #[must_use]
+    pub fn derive_uuid(salt: &[u8], cow_digest_bytes: &[u8; SHA256_DIGEST_SIZE]) -> [u8; 16] {
+        let mut h = Sha256::new();
+        h.update(salt);
+        h.update(cow_digest_bytes);
+        let full = h.finalize();
+        let mut uuid = [0u8; 16];
+        uuid.copy_from_slice(&full[..16]);
+        uuid
+    }
 }
 
 /// Build the dm-verity v1 hash tree blob over `cow_bytes`.
@@ -459,26 +462,24 @@ pub fn derive_uuid(salt: &[u8], cow_digest_bytes: &[u8; SHA256_DIGEST_SIZE]) -> 
 /// - V7: levels are written TOP-DOWN (root level first).
 /// - V8: within each hash block, trailing slots are zero (initialize
 ///   block to zeros before writing hashes).
-pub fn compute(cow_bytes: &[u8], params: &VerityParams) -> Result<VerityOutput, VerityError> {
-    // WR-01: hard validation at the pub entry point. `VerityParams` is
-    // `pub` and Phase 44's pull path (CONTEXT D-03) is a documented
-    // re-user; the locked Phase 42 D-06 defaults make these errors
-    // unreachable from the in-tree caller, but we MUST NOT spin forever
-    // (hash_per_block < 2) or panic with a divide-by-zero (block size 0)
-    // for a future caller that picks non-default params.
-    //
-    // BL-01: `compute` is now a thin wrapper around the streaming
-    // `VerityBuilder` for in-memory inputs (tests, small fixtures).
-    // Production callers that read the cow from disk should drive the
-    // builder directly to avoid materialising the full cow as `Vec<u8>`.
-    let mut builder = VerityBuilder::new(params)?;
-    let dbs = params.data_block_size as usize;
-    for chunk in cow_bytes.chunks(dbs) {
-        builder
-            .add_data_block(chunk)
-            .expect("compute: chunks() emits blocks <= dbs and at most one short tail");
+impl VerityParams {
+    /// Compute the dm-verity tree for an in-memory cow (tests, small fixtures).
+    /// Production callers that stream the cow from disk should drive
+    /// [`VerityBuilder`] directly to avoid materialising the full cow.
+    ///
+    /// Hard-validates the params (WR-01): a future caller that picks non-default
+    /// params must not spin forever (hash_per_block < 2) or divide by zero
+    /// (block size 0).
+    pub fn compute(&self, cow_bytes: &[u8]) -> Result<VerityOutput, VerityError> {
+        let mut builder = VerityBuilder::new(self)?;
+        let dbs = self.data_block_size as usize;
+        for chunk in cow_bytes.chunks(dbs) {
+            builder
+                .add_data_block(chunk)
+                .expect("compute: chunks() emits blocks <= dbs and at most one short tail");
+        }
+        Ok(builder.finalize())
     }
-    Ok(builder.finalize())
 }
 
 // -- helpers ---------------------------------------------------------------
@@ -639,7 +640,7 @@ mod tests {
         };
         // 16 KiB cow → 4 data blocks.
         let cow = vec![0u8; 16 * 1024];
-        let out = compute(&cow, &params).unwrap();
+        let out = params.compute(&cow).unwrap();
 
         // Superblock checks.
         assert_eq!(
@@ -737,7 +738,7 @@ mod tests {
     fn root_hash_deterministic_for_known_fixture() {
         let salt = vec![0u8; 32];
         let cow_digest = [0x42u8; 32];
-        let uuid = derive_uuid(&salt, &cow_digest);
+        let uuid = VerityParams::derive_uuid(&salt, &cow_digest);
         let params = VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
@@ -745,13 +746,13 @@ mod tests {
             uuid,
         };
         let cow = vec![0u8; 16 * 1024];
-        let a = compute(&cow, &params).unwrap();
-        let b = compute(&cow, &params).unwrap();
+        let a = params.compute(&cow).unwrap();
+        let b = params.compute(&cow).unwrap();
         assert_eq!(a.blob, b.blob, "verity blob is deterministic");
         assert_eq!(a.root_hash, b.root_hash, "root_hash is deterministic");
 
         // derive_uuid is also deterministic.
-        assert_eq!(uuid, derive_uuid(&[0u8; 32], &[0x42u8; 32]));
+        assert_eq!(uuid, VerityParams::derive_uuid(&[0u8; 32], &[0x42u8; 32]));
     }
 
     /// WR-01: hash_block_size = digest_size (32) makes hashes_per_block
@@ -781,7 +782,7 @@ mod tests {
         }
         // compute() must surface the same error rather than spinning.
         let cow = vec![0u8; 4096];
-        let err2 = compute(&cow, &params).unwrap_err();
+        let err2 = params.compute(&cow).unwrap_err();
         assert!(matches!(err2, VerityError::HashBlockTooSmall { .. }));
     }
 
@@ -855,7 +856,7 @@ mod tests {
     fn streaming_builder_matches_compute() {
         let salt = vec![0u8; 32];
         let cow_digest = [0x42u8; 32];
-        let uuid = derive_uuid(&salt, &cow_digest);
+        let uuid = VerityParams::derive_uuid(&salt, &cow_digest);
         let params = VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
@@ -867,7 +868,7 @@ mod tests {
             .map(|i| (i & 0xFF) as u8)
             .take(16 * 1024 + 257)
             .collect();
-        let in_mem = compute(&cow, &params).unwrap();
+        let in_mem = params.compute(&cow).unwrap();
 
         let mut builder = VerityBuilder::new(&params).unwrap();
         for chunk in cow.chunks(params.data_block_size as usize) {
@@ -1027,7 +1028,7 @@ mod tests {
     fn feed_from_reader_matches_compute_on_block_boundary() {
         let salt = vec![0u8; 32];
         let cow_digest = [0x42u8; 32];
-        let uuid = derive_uuid(&salt, &cow_digest);
+        let uuid = VerityParams::derive_uuid(&salt, &cow_digest);
         let params = VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
@@ -1035,7 +1036,7 @@ mod tests {
             uuid,
         };
         let cow: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(16 * 1024).collect();
-        let in_mem = compute(&cow, &params).unwrap();
+        let in_mem = params.compute(&cow).unwrap();
         let mut builder = VerityBuilder::new(&params).unwrap();
         let mut reader = std::io::Cursor::new(&cow);
         feed_from_reader(&mut reader, &mut builder, params.data_block_size as usize).unwrap();
@@ -1053,7 +1054,7 @@ mod tests {
     fn feed_from_reader_matches_compute_on_partial_final_block() {
         let salt = vec![0u8; 32];
         let cow_digest = [0x42u8; 32];
-        let uuid = derive_uuid(&salt, &cow_digest);
+        let uuid = VerityParams::derive_uuid(&salt, &cow_digest);
         let params = VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
@@ -1062,7 +1063,7 @@ mod tests {
         };
         for &n in &[4097usize, 8191, 12289] {
             let cow: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(n).collect();
-            let in_mem = compute(&cow, &params).unwrap();
+            let in_mem = params.compute(&cow).unwrap();
             let mut builder = VerityBuilder::new(&params).unwrap();
             let mut reader = std::io::Cursor::new(&cow);
             feed_from_reader(&mut reader, &mut builder, params.data_block_size as usize)
@@ -1144,14 +1145,14 @@ mod tests {
             .map(|i| i.wrapping_mul(7).wrapping_add(1))
             .collect();
         let cow_digest: [u8; 32] = Sha256::digest(&data).into();
-        let uuid = derive_uuid(&salt, &cow_digest);
+        let uuid = VerityParams::derive_uuid(&salt, &cow_digest);
         let params = VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
             salt: salt.clone(),
             uuid,
         };
-        let out = compute(&data, &params).unwrap();
+        let out = params.compute(&data).unwrap();
 
         let tmp = tempfile::TempDir::new().unwrap();
         let datap = tmp.path().join("data.img");

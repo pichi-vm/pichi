@@ -211,12 +211,11 @@ pub(crate) async fn build_gpt_spec(
             // Cosmetic for the root-hash computation (inputs are salt + data).
             uuid: [0u8; 16],
         };
-        let root = tokio::task::spawn_blocking(move || {
-            pichi_import::verity::compute(&cow_bytes, &params).map(|o| o.root_hash)
-        })
-        .await
-        .context("verity task panicked")?
-        .context("dm-verity root computation failed")?;
+        let root =
+            tokio::task::spawn_blocking(move || params.compute(&cow_bytes).map(|o| o.root_hash))
+                .await
+                .context("verity task panicked")?
+                .context("dm-verity root computation failed")?;
 
         // D-run-01: cow PARTUUID = root[0..16], verity PARTUUID = root[16..32].
         //
