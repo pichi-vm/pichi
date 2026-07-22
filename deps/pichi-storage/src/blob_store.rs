@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
-use tempfile::NamedTempFile;
 use tokio::io::AsyncRead;
 
 use pichi_artifact::Digest;
@@ -116,41 +115,15 @@ impl BlobStore for FilesystemBlobStore {
 
         let parent = final_path
             .parent()
-            .expect("blob_path always has a parent directory")
-            .to_path_buf();
-        tokio::fs::create_dir_all(&parent)
+            .expect("blob_path always has a parent directory");
+        tokio::fs::create_dir_all(parent)
             .await
             .with_context(|| format!("failed to create blob dir: {}", parent.display()))?;
 
-        // The tempfile crate is sync-only, and persist() is a blocking
-        // rename(2); do the whole atomic write off the runtime. `data` is
-        // small here (config/manifest/DTB blobs) — large blobs use
-        // put_blob_from_path — so the clone is cheap.
-        let data = data.to_vec();
-        let digest = digest.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            use std::io::Write as _;
-            // CRITICAL: new_in(parent) — temp lives on the SAME filesystem as
-            // the final path, so persist()'s rename(2) can't fail with EXDEV.
-            let mut tmp = NamedTempFile::new_in(&parent).with_context(|| {
-                format!("failed to create temp blob file in: {}", parent.display())
-            })?;
-            tmp.write_all(&data)
-                .with_context(|| format!("failed to write temp blob for {digest}"))?;
-            tmp.flush()
-                .with_context(|| format!("failed to flush temp blob for {digest}"))?;
-            match tmp.persist(&final_path) {
-                Ok(_) => Ok(()),
-                // Race: another writer renamed first. Content identical.
-                Err(_) if final_path.exists() => Ok(()),
-                Err(e) => Err(anyhow::anyhow!(
-                    "failed to persist blob {digest}: {}",
-                    e.error
-                )),
-            }
-        })
-        .await
-        .context("blob write task panicked")?
+        // Atomic write via a same-fs temp + rename(2), fully async.
+        crate::atomic::write_atomic(parent, &final_path, data)
+            .await
+            .with_context(|| format!("failed to write blob {digest}"))
     }
 
     async fn put_blob_from_path(&self, src: &Path, digest: &Digest) -> Result<()> {

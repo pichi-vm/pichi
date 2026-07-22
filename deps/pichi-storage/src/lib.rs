@@ -24,6 +24,7 @@
 //! - [`sidecar`]: per-source-blob sidecar path resolvers + atomic write +
 //!   ENOENT-tolerant unlink (Phase 46 D-01, D-03, D-08).
 
+mod atomic;
 mod blob_store;
 mod layout;
 mod lock;

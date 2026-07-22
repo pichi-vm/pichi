@@ -48,6 +48,7 @@ http-client = [
     "dep:base64",
     "dep:anyhow",
     "dep:http",
+    "tokio/fs", # auth.rs reads credential files via tokio::fs
 ]
 
 [dev-dependencies]
@@ -55,7 +56,7 @@ ruzstd = "0.8"
 # Spike tests need an actual runtime + bridge. tokio-util "io-util" is
 # required for SyncIoBridge (per tokio-util 0.7 cfg gate); workspace
 # default just enables "io".
-tokio        = { workspace = true, features = ["rt", "io-util", "macros", "rt-multi-thread"] }
+tokio        = { workspace = true, features = ["rt", "io-util", "macros", "rt-multi-thread", "fs"] }
 tokio-util   = { workspace = true, features = ["io", "io-util"] }
 futures-util = { workspace = true }
 tempfile     = { workspace = true }

@@ -155,22 +155,18 @@ impl HttpRegistry {
     }
 
     /// Resolve credentials for `registry`. The resolution reads
-    /// `containers-auth.json` / `~/.docker/config.json` from disk, so it runs
-    /// on a blocking thread rather than stalling a runtime worker on every
-    /// registry call (the previous sync read was a hidden block on the async
-    /// path).
+    /// `containers-auth.json` / `~/.docker/config.json` via `tokio::fs`, so no
+    /// runtime worker is parked on a config read during a registry call.
     async fn auth_for(&self, registry: &str) -> Result<RegistryAuth> {
-        let hint = self.entries.get(registry).and_then(|e| e.auth_hint.clone());
-        let auth_env = self.auth_env.clone();
-        let registry = registry.to_string();
+        let hint = self
+            .entries
+            .get(registry)
+            .and_then(|e| e.auth_hint.as_ref());
         // Pitfall 14: any error here may include the registry name but NOT
         // auth values — auth.rs is designed to never inline values; we trust it.
-        tokio::task::spawn_blocking(move || {
-            resolve_for_registry(&registry, hint.as_ref(), &auth_env)
-                .map_err(|e| RegistryError::Auth(format!("auth resolution for {registry}: {e}")))
-        })
-        .await
-        .map_err(|e| RegistryError::Auth(format!("auth resolution task panicked: {e}")))?
+        resolve_for_registry(registry, hint, &self.auth_env)
+            .await
+            .map_err(|e| RegistryError::Auth(format!("auth resolution for {registry}: {e}")))
     }
 }
 

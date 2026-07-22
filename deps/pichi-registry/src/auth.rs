@@ -159,7 +159,7 @@ impl AuthEnv {
 /// missing the `user:pass` colon separator). Per Pitfall 14, error messages
 /// reference the registry hostname and field name only — never the decoded
 /// credential bytes themselves.
-pub fn resolve_for_registry(
+pub async fn resolve_for_registry(
     registry: &str,
     pichi_hint: Option<&AuthHint>,
     env: &AuthEnv,
@@ -172,9 +172,10 @@ pub fn resolve_for_registry(
     }
 
     // 2-4. Walk the search paths in order; first file that HAS a
-    // `auths.<registry>` entry wins.
+    // `auths.<registry>` entry wins. Reads are async so no worker is parked
+    // on a config read during a registry call.
     for path in env.auth_search_paths() {
-        if let Some(entry) = read_entry_for(&path, registry)? {
+        if let Some(entry) = read_entry_for(&path, registry).await? {
             return entry_to_registry_auth(registry, &entry);
         }
     }
@@ -185,8 +186,8 @@ pub fn resolve_for_registry(
 /// Read the auth file at `path`, returning `Some(entry)` only if the file
 /// exists, parses, and has an entry for `registry`. NotFound → Ok(None);
 /// parse errors propagated with path context.
-fn read_entry_for(path: &Path, registry: &str) -> Result<Option<AuthEntry>> {
-    let contents = match std::fs::read_to_string(path) {
+async fn read_entry_for(path: &Path, registry: &str) -> Result<Option<AuthEntry>> {
+    let contents = match tokio::fs::read_to_string(path).await {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).with_context(|| format!("read auth file {}", path.display())),
@@ -236,10 +237,10 @@ fn entry_to_registry_auth(registry: &str, entry: &AuthEntry) -> Result<RegistryA
 mod tests {
     use super::{AuthEnv, RegistryAuth, resolve_for_registry};
 
-    #[test]
-    fn anonymous_when_no_sources() {
+    #[tokio::test]
+    async fn anonymous_when_no_sources() {
         let env = AuthEnv::default();
-        let auth = resolve_for_registry("ghcr.io", None, &env).unwrap();
+        let auth = resolve_for_registry("ghcr.io", None, &env).await.unwrap();
         assert!(matches!(auth, RegistryAuth::Anonymous));
     }
 }

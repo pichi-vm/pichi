@@ -29,8 +29,6 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Context as _;
-
 /// Path of the decompressed-scute sidecar for a source blob at `blob_path`.
 ///
 /// Returns `<blob_path>.deflated`. The file may not exist (raw `+identity`
@@ -49,36 +47,9 @@ pub fn verity_path(blob_path: &Path) -> PathBuf {
     blob_path.with_extension("verity")
 }
 
-/// Synchronous body of [`write_sidecar_atomic`], run inside `spawn_blocking`.
-fn write_sidecar_atomic_sync(
-    scratch: &Path,
-    final_path: &Path,
-    bytes: &[u8],
-) -> anyhow::Result<()> {
-    let mut tmp = tempfile::NamedTempFile::new_in(scratch).with_context(|| {
-        format!(
-            "creating sidecar temp file in {} (same-fs as final path required)",
-            scratch.display()
-        )
-    })?;
-    std::io::Write::write_all(&mut tmp, bytes)
-        .with_context(|| format!("writing sidecar bytes for {}", final_path.display()))?;
-    tmp.as_file()
-        .sync_all()
-        .with_context(|| format!("fsync sidecar temp for {}", final_path.display()))?;
-    tmp.persist(final_path).map_err(|e| {
-        anyhow::anyhow!(
-            "failed to persist sidecar {}: {}",
-            final_path.display(),
-            e.error
-        )
-    })?;
-    Ok(())
-}
-
-/// Atomically write `bytes` to `final_path` via a temp file in `scratch`.
+/// Atomically write `bytes` to `final_path` via a same-fs temp + `rename(2)`,
+/// fully async (no blocking syscall on a runtime worker).
 ///
-/// The blocking temp-write + `fsync` + `rename(2)` runs on a blocking thread.
 /// `scratch` MUST live on the SAME filesystem as `final_path`'s parent (the
 /// underlying `rename(2)` fails with `EXDEV` otherwise); production callers
 /// pass `BlobStore::scratch_dir().await?`.
@@ -92,12 +63,7 @@ pub async fn write_sidecar_atomic(
     final_path: &Path,
     bytes: &[u8],
 ) -> anyhow::Result<()> {
-    let scratch = scratch.to_path_buf();
-    let final_path = final_path.to_path_buf();
-    let bytes = bytes.to_vec();
-    tokio::task::spawn_blocking(move || write_sidecar_atomic_sync(&scratch, &final_path, &bytes))
-        .await
-        .context("sidecar write task panicked")?
+    crate::atomic::write_atomic(scratch, final_path, bytes).await
 }
 
 /// Unlink a source blob plus its `.deflated` and `.verity` sidecars (D-08).

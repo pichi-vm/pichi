@@ -134,6 +134,7 @@ async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
         // "refcount-then-unlink" pattern; both steps are observable as a
         // single atomic transition because they're inside the same flock.
         db.delete_tag_locked(&target_key)
+            .await
             .with_context(|| format!("deleting tag {target_key}"))?;
 
         // Phase 46 D-08: every orphaned source blob's sidecars

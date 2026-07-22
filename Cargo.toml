@@ -216,6 +216,9 @@ futures-util = { version = "0.3", default-features = false }
 # Async fn in traits that are used as `&dyn` (BlobStore/TagDb) — native
 # async-fn-in-trait is not object-safe, so the storage traits erase via this.
 async-trait = "0.1"
+# Portable async advisory file locking (flock/LockFileEx) for the tokio runtime.
+# Pure-Rust, rustix-based (matches pichi-storage's existing rustix dep).
+fs4 = { version = "1", default-features = false, features = ["tokio"] }
 bytes = "1"
 oci-client = { version = "0.16", default-features = false, features = ["rustls-tls"] }
 http = { version = "1", default-features = false }

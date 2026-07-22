@@ -1,23 +1,56 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Cross-platform advisory file-lock helpers built on `std::fs::File`'s
-//! native locking (`File::lock` / `try_lock` / `unlock`, stable since Rust
-//! 1.89). These map to `flock(2)` on Unix and `LockFileEx` on Windows, so
-//! the cache is inter-process-safe on every supported OS without any
-//! platform-specific code here.
-//!
-//! Used by the Phase 44 partial-download path; defined in Phase 41 so the
-//! foundation is stable. Phase 41's `BlobStore` does not require locking
-//! because content-addressed atomic rename is sufficient (see RESEARCH
-//! §Focus Area 3 "What to lock in Phase 41").
+//! Cross-platform advisory file-lock helpers. The async path uses `fs4`'s
+//! portable `try_lock` (`flock(2)` on Unix / `LockFileEx` on Windows) polled
+//! with a short async backoff, so acquiring a contended lock never parks a
+//! runtime worker and never needs `spawn_blocking` — there is no OS-level
+//! truly-async file lock (locks don't integrate with epoll/IOCP), so
+//! try-then-yield is the non-blocking primitive. The sync `lock_exclusive` /
+//! `with_advisory_lock` helpers remain for non-async callers and tests.
 
 use std::fs::{File, OpenOptions};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Context as _;
+use fs4::AsyncFileExt as _;
+use fs4::TryLockError;
 
 use crate::layout::CacheLayout;
+
+/// Poll interval when an advisory lock is contended. Uncontended acquisition
+/// takes the first `try_lock` (no sleep); contention retries at this cadence.
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Take an exclusive advisory lock on `path` without blocking a runtime
+/// worker. The lock lives on the returned [`tokio::fs::File`]'s open file
+/// description, so holding the guard across `.await` keeps the lock; dropping
+/// it (closing the FD) releases it.
+///
+/// Uses `fs4::try_lock` (portable) and an async backoff on contention — no
+/// blocking syscall parks a thread and no `spawn_blocking` is involved.
+pub(crate) async fn lock_exclusive_async(path: &Path) -> anyhow::Result<tokio::fs::File> {
+    let mut opts = tokio::fs::OpenOptions::new();
+    opts.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        opts.mode(0o600); // tokio::fs::OpenOptions::mode is inherent on unix
+    }
+    let file = opts
+        .open(path)
+        .await
+        .with_context(|| format!("failed to open lock file: {}", path.display()))?;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => tokio::time::sleep(LOCK_POLL_INTERVAL).await,
+            Err(TryLockError::Error(e)) => {
+                return Err(e).with_context(|| format!("failed to lock: {}", path.display()));
+            }
+        }
+    }
+}
 
 /// Take a blocking exclusive lock on `path`. The lock is released when the
 /// returned [`File`] is dropped (closing the handle).
@@ -77,14 +110,8 @@ where
     if let Some(parent) = lock_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    // Acquire the flock off-runtime — it may block on a competing process.
-    // The lock lives on the open file description, so holding the returned
-    // `File` guard across `op().await` keeps it held regardless of which
-    // worker thread the task resumes on; dropping it (closing the FD) releases.
-    let lp = lock_path.clone();
-    let guard = tokio::task::spawn_blocking(move || lock_exclusive(&lp))
-        .await
-        .context("index lock task panicked")??;
+    // Non-blocking acquire; the guard holds the flock across `op().await`.
+    let guard = lock_exclusive_async(&lock_path).await?;
     let result = op().await;
     drop(guard);
     result

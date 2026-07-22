@@ -31,19 +31,16 @@
 //! [1]: https://github.com/opencontainers/image-spec/blob/main/image-layout.md
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 
+use crate::atomic::write_atomic;
+use crate::lock::lock_exclusive_async;
 use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1};
-
-use crate::lock::with_advisory_lock;
 
 /// OCI image-index media type per the image-spec.
 const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
@@ -138,7 +135,7 @@ impl FilesystemTagDb {
             }
         }
 
-        fs::create_dir_all(&root)
+        std::fs::create_dir_all(&root)
             .with_context(|| format!("failed to create tag db root: {}", root.display()))?;
         Ok(Self { root })
     }
@@ -155,12 +152,12 @@ impl FilesystemTagDb {
         self.root.join("oci-layout")
     }
 
-    /// Read index.json from disk. Returns a default (empty) index if the file
-    /// does not yet exist. Returns Err only on parse/IO failures other than
-    /// NotFound.
-    fn read_index(&self) -> Result<ImageIndex> {
+    /// Read index.json from disk (async, lock-free). Returns a default (empty)
+    /// index if the file does not yet exist. index.json is only ever replaced
+    /// by atomic rename, so a concurrent reader sees the old or new file whole.
+    async fn read_index(&self) -> Result<ImageIndex> {
         let path = self.index_path();
-        match fs::read(&path) {
+        match tokio::fs::read(&path).await {
             Ok(bytes) => serde_json::from_slice::<ImageIndex>(&bytes)
                 .with_context(|| format!("failed to parse index.json at {}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ImageIndex::default()),
@@ -168,104 +165,86 @@ impl FilesystemTagDb {
         }
     }
 
-    /// Atomically write `index` to disk: tempfile in same dir → fsync →
-    /// rename(2). Caller MUST hold the advisory flock.
-    fn write_index_atomic(&self, index: &ImageIndex) -> Result<()> {
+    /// Atomically write `index` (async: temp → fsync → rename). Caller MUST
+    /// hold the advisory flock.
+    async fn write_index_atomic(&self, index: &ImageIndex) -> Result<()> {
         let path = self.index_path();
         let parent = path
             .parent()
             .expect("index_path always has a parent (cache root)");
-
-        let tmp = NamedTempFile::new_in(parent).with_context(|| {
-            format!("failed to create temp index.json in: {}", parent.display())
-        })?;
-
         // Pretty-print for human readability and skopeo/oras compatibility.
         let bytes = serde_json::to_vec_pretty(index).context("failed to serialise index.json")?;
-
-        // Write + fsync the temp file before renaming.
-        {
-            let mut file = tmp.as_file();
-            file.write_all(&bytes)
-                .context("failed to write temp index.json")?;
-            file.sync_all().context("failed to fsync temp index.json")?;
-        }
-
-        // persist() = atomic rename(2) on Linux.
-        tmp.persist(&path).map_err(|e| {
-            anyhow::anyhow!(
-                "failed to persist index.json to {}: {}",
-                path.display(),
-                e.error
-            )
-        })?;
-        Ok(())
+        write_atomic(parent, &path, &bytes)
+            .await
+            .context("failed to write index.json")
     }
 
-    /// Idempotently emit the `oci-layout` marker file. Caller MUST hold the
-    /// advisory flock (call from inside set_tag / delete_tag write paths).
-    fn ensure_oci_layout_marker(&self) -> Result<()> {
+    /// Idempotently emit the `oci-layout` marker file (async). Caller MUST hold
+    /// the advisory flock (call from inside set_tag / delete_tag write paths).
+    async fn ensure_oci_layout_marker(&self) -> Result<()> {
         let path = self.oci_layout_marker_path();
-        if path.exists() {
+        if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             return Ok(());
         }
         let parent = path.parent().expect("oci-layout path has a parent");
-        let tmp = NamedTempFile::new_in(parent).with_context(|| {
-            format!("failed to create temp oci-layout in: {}", parent.display())
-        })?;
-        {
-            let mut file = tmp.as_file();
-            file.write_all(OCI_LAYOUT_MARKER.as_bytes())
-                .context("failed to write temp oci-layout")?;
-            file.sync_all().context("failed to fsync temp oci-layout")?;
-        }
-        // If a concurrent writer beat us, that's fine — the content is identical.
-        match tmp.persist(&path) {
-            Ok(_) => Ok(()),
-            Err(e) if path.exists() => {
-                drop(e);
-                Ok(())
-            }
-            Err(e) => Err(anyhow::anyhow!(
-                "failed to persist oci-layout to {}: {}",
-                path.display(),
-                e.error
-            )),
-        }
+        write_atomic(parent, &path, OCI_LAYOUT_MARKER.as_bytes())
+            .await
+            .context("failed to write oci-layout marker")
     }
 
-    // --- Synchronous bodies (run inside spawn_blocking) ---------------------
+    /// Lock-free-write variant of [`TagDb::delete_tag`] for use inside a
+    /// [`crate::with_index_lock`] window.
+    ///
+    /// **Caller MUST already hold the advisory flock on
+    /// `<root>/index.json.lock`** (via `with_index_lock`); this method does not
+    /// acquire it, so calling it outside the lock is a refcount-races bug
+    /// (T-42-02).
+    ///
+    /// Returns `Ok(true)` if the tag existed and was removed, `Ok(false)`
+    /// otherwise.
+    pub async fn delete_tag_locked(&self, tag: &str) -> Result<bool> {
+        let mut index = self.read_index().await?;
+        let before = index.manifests.len();
+        index
+            .manifests
+            .retain(|m| m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag));
+        let existed = index.manifests.len() != before;
+        if existed {
+            self.ensure_oci_layout_marker().await?;
+            self.write_index_atomic(&index).await?;
+        }
+        Ok(existed)
+    }
+}
 
-    fn set_tag_sync(&self, tag: &str, digest: &Digest) -> Result<()> {
-        let lock_path = self.lock_path();
-        with_advisory_lock(&lock_path, || {
-            self.ensure_oci_layout_marker()?;
-            let mut index = self.read_index()?;
+#[async_trait]
+impl TagDb for FilesystemTagDb {
+    async fn set_tag(&self, tag: &str, digest: &Digest) -> Result<()> {
+        // Read-modify-write under a non-blocking advisory flock; the guard is
+        // held across the awaited reads/writes and released on drop.
+        let _guard = lock_exclusive_async(&self.lock_path()).await?;
+        self.ensure_oci_layout_marker().await?;
+        let mut index = self.read_index().await?;
 
-            // Remove any existing entry for this tag (overwrite semantics).
-            index.manifests.retain(|m| {
-                m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag)
-            });
-
-            let descriptor = ManifestDescriptor {
-                media_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-                digest: digest.to_string(),
-                size: 0,
-                annotations: {
-                    let mut a = BTreeMap::new();
-                    a.insert(REF_NAME_ANNOTATION.to_string(), tag.to_string());
-                    a
-                },
-            };
-            index.manifests.push(descriptor);
-            self.write_index_atomic(&index)
-        })
+        // Overwrite semantics: drop any existing entry for this tag first.
+        index
+            .manifests
+            .retain(|m| m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag));
+        index.manifests.push(ManifestDescriptor {
+            media_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
+            digest: digest.to_string(),
+            size: 0,
+            annotations: {
+                let mut a = BTreeMap::new();
+                a.insert(REF_NAME_ANNOTATION.to_string(), tag.to_string());
+                a
+            },
+        });
+        self.write_index_atomic(&index).await
     }
 
-    fn resolve_tag_sync(&self, tag: &str) -> Result<Option<Digest>> {
-        // Lock-free read: index.json is replaced atomically by writers, so a
-        // concurrent reader sees either the old or the new file in full.
-        let index = self.read_index()?;
+    async fn resolve_tag(&self, tag: &str) -> Result<Option<Digest>> {
+        let index = self.read_index().await?;
         for m in &index.manifests {
             if m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) == Some(tag) {
                 let d = Digest::from_str(&m.digest).with_context(|| {
@@ -277,8 +256,8 @@ impl FilesystemTagDb {
         Ok(None)
     }
 
-    fn list_tags_sync(&self) -> Result<Vec<TagEntry>> {
-        let index = self.read_index()?;
+    async fn list_tags(&self) -> Result<Vec<TagEntry>> {
+        let index = self.read_index().await?;
         let mut out = Vec::with_capacity(index.manifests.len());
         for m in &index.manifests {
             let Some(tag) = m.annotations.get(REF_NAME_ANNOTATION) else {
@@ -295,71 +274,9 @@ impl FilesystemTagDb {
         Ok(out)
     }
 
-    /// Lock-free variant of [`TagDb::delete_tag`] for use inside a
-    /// [`crate::with_index_lock`] window.
-    ///
-    /// **Caller MUST hold the advisory flock on `<root>/index.json.lock`** —
-    /// either via `with_index_lock(layout, ...)` (the canonical path) or via
-    /// any other holder of the same flock. Calling this without the flock is
-    /// a refcount-races bug (T-42-02).
-    ///
-    /// This method is synchronous by design: it is meant to be called from
-    /// inside a `spawn_blocking` closure that already holds the index lock.
-    ///
-    /// Returns `Ok(true)` if the tag existed and was removed, `Ok(false)`
-    /// otherwise.
-    pub fn delete_tag_locked(&self, tag: &str) -> Result<bool> {
-        let mut index = self.read_index()?;
-        let before = index.manifests.len();
-        index
-            .manifests
-            .retain(|m| m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag));
-        let existed = index.manifests.len() != before;
-        if existed {
-            self.ensure_oci_layout_marker()?;
-            self.write_index_atomic(&index)?;
-        }
-        Ok(existed)
-    }
-
-    fn delete_tag_sync(&self, tag: &str) -> Result<bool> {
-        let lock_path = self.lock_path();
-        with_advisory_lock(&lock_path, || self.delete_tag_locked(tag))
-    }
-}
-
-#[async_trait]
-impl TagDb for FilesystemTagDb {
-    async fn set_tag(&self, tag: &str, digest: &Digest) -> Result<()> {
-        let this = self.clone();
-        let tag = tag.to_string();
-        let digest = digest.clone();
-        tokio::task::spawn_blocking(move || this.set_tag_sync(&tag, &digest))
-            .await
-            .context("set_tag task panicked")?
-    }
-
-    async fn resolve_tag(&self, tag: &str) -> Result<Option<Digest>> {
-        let this = self.clone();
-        let tag = tag.to_string();
-        tokio::task::spawn_blocking(move || this.resolve_tag_sync(&tag))
-            .await
-            .context("resolve_tag task panicked")?
-    }
-
-    async fn list_tags(&self) -> Result<Vec<TagEntry>> {
-        let this = self.clone();
-        tokio::task::spawn_blocking(move || this.list_tags_sync())
-            .await
-            .context("list_tags task panicked")?
-    }
-
     async fn delete_tag(&self, tag: &str) -> Result<bool> {
-        let this = self.clone();
-        let tag = tag.to_string();
-        tokio::task::spawn_blocking(move || this.delete_tag_sync(&tag))
-            .await
-            .context("delete_tag task panicked")?
+        let _guard = lock_exclusive_async(&self.lock_path()).await?;
+        self.delete_tag_locked(tag).await
     }
 }
 

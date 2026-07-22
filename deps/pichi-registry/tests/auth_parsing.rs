@@ -28,8 +28,8 @@ fn b64(s: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(s)
 }
 
-#[test]
-fn auth_parses_basic_auth() {
+#[tokio::test]
+async fn auth_parses_basic_auth() {
     let tmp = TempDir::new().unwrap();
     let xdg = tmp.path().join("xdg-config");
     let auth_b64 = b64("alice:secret");
@@ -42,7 +42,7 @@ fn auth_parses_basic_auth() {
         xdg_config_home: Some(xdg),
         ..AuthEnv::default()
     };
-    let auth = resolve_for_registry("ghcr.io", None, &env).unwrap();
+    let auth = resolve_for_registry("ghcr.io", None, &env).await.unwrap();
     match auth {
         RegistryAuth::Basic(u, p) => {
             assert_eq!(u, "alice");
@@ -52,8 +52,8 @@ fn auth_parses_basic_auth() {
     }
 }
 
-#[test]
-fn auth_parses_identity_token() {
+#[tokio::test]
+async fn auth_parses_identity_token() {
     let tmp = TempDir::new().unwrap();
     let xdg = tmp.path().join("xdg-config");
     write_at(
@@ -65,15 +65,17 @@ fn auth_parses_identity_token() {
         xdg_config_home: Some(xdg),
         ..AuthEnv::default()
     };
-    let auth = resolve_for_registry("registry.example.com", None, &env).unwrap();
+    let auth = resolve_for_registry("registry.example.com", None, &env)
+        .await
+        .unwrap();
     match auth {
         RegistryAuth::Bearer(t) => assert_eq!(t, "eyJhbGc.dummy.token"),
         other => panic!("expected Bearer, got {other:?}"),
     }
 }
 
-#[test]
-fn auth_credsstore_loud_error() {
+#[tokio::test]
+async fn auth_credsstore_loud_error() {
     let tmp = TempDir::new().unwrap();
     let xdg = tmp.path().join("xdg-config");
     write_at(
@@ -85,7 +87,9 @@ fn auth_credsstore_loud_error() {
         xdg_config_home: Some(xdg),
         ..AuthEnv::default()
     };
-    let err = resolve_for_registry("ghcr.io", None, &env).unwrap_err();
+    let err = resolve_for_registry("ghcr.io", None, &env)
+        .await
+        .unwrap_err();
     let msg = err.to_string();
     // VERBATIM D-04 wording — the `format!` in auth.rs MUST match this exactly.
     assert!(
@@ -100,8 +104,8 @@ fn auth_credsstore_loud_error() {
     );
 }
 
-#[test]
-fn auth_credsstore_unrelated_registry_skipped() {
+#[tokio::test]
+async fn auth_credsstore_unrelated_registry_skipped() {
     let tmp = TempDir::new().unwrap();
     let xdg = tmp.path().join("xdg-config");
     // The auth file declares credsStore for registry-a.io, but we ask for ghcr.io.
@@ -115,15 +119,15 @@ fn auth_credsstore_unrelated_registry_skipped() {
         xdg_config_home: Some(xdg),
         ..AuthEnv::default()
     };
-    let auth = resolve_for_registry("ghcr.io", None, &env).unwrap();
+    let auth = resolve_for_registry("ghcr.io", None, &env).await.unwrap();
     assert!(
         matches!(auth, RegistryAuth::Anonymous),
         "anonymous pull for unrelated registry must succeed despite credsStore in auth.json"
     );
 }
 
-#[test]
-fn auth_search_order_xdg_config_wins_over_docker_config() {
+#[tokio::test]
+async fn auth_search_order_xdg_config_wins_over_docker_config() {
     let tmp = TempDir::new().unwrap();
     let xdg = tmp.path().join("xdg-config");
     let home = tmp.path().join("home");
@@ -144,7 +148,7 @@ fn auth_search_order_xdg_config_wins_over_docker_config() {
         home: Some(home),
         ..AuthEnv::default()
     };
-    let auth = resolve_for_registry("ghcr.io", None, &env).unwrap();
+    let auth = resolve_for_registry("ghcr.io", None, &env).await.unwrap();
     match auth {
         RegistryAuth::Basic(u, _p) => assert_eq!(
             u, "xdguser",
@@ -154,8 +158,8 @@ fn auth_search_order_xdg_config_wins_over_docker_config() {
     }
 }
 
-#[test]
-fn auth_docker_config_fallback() {
+#[tokio::test]
+async fn auth_docker_config_fallback() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
     let docker_b64 = b64("dockuser:dockpass");
@@ -168,7 +172,7 @@ fn auth_docker_config_fallback() {
         home: Some(home),
         ..AuthEnv::default()
     };
-    let auth = resolve_for_registry("ghcr.io", None, &env).unwrap();
+    let auth = resolve_for_registry("ghcr.io", None, &env).await.unwrap();
     match auth {
         RegistryAuth::Basic(u, p) => {
             assert_eq!(u, "dockuser");
@@ -178,8 +182,8 @@ fn auth_docker_config_fallback() {
     }
 }
 
-#[test]
-fn auth_pichi_hint_wins_over_files() {
+#[tokio::test]
+async fn auth_pichi_hint_wins_over_files() {
     let tmp = TempDir::new().unwrap();
     let xdg = tmp.path().join("xdg-config");
     let auth_b64 = b64("file_user:file_pass");
@@ -196,7 +200,9 @@ fn auth_pichi_hint_wins_over_files() {
         identity_token: Some("from_pichi_config".into()),
         ..AuthHint::default()
     };
-    let auth = resolve_for_registry("ghcr.io", Some(&hint), &env).unwrap();
+    let auth = resolve_for_registry("ghcr.io", Some(&hint), &env)
+        .await
+        .unwrap();
     match auth {
         RegistryAuth::Bearer(t) => assert_eq!(
             t, "from_pichi_config",
