@@ -21,7 +21,10 @@ mod manifest;
 mod media_type;
 mod reference;
 
-pub use config::{Band, Config, ConfigError, Ingress, Interface, PortSpec, Requirements};
+pub use config::{
+    Band, CONFIG_SCHEMA_VERSION, Config, ConfigError, Ingress, Interface, Memory, PortSpec,
+    Requirements,
+};
 pub use digest::{Digest, DigestParseError};
 pub use error::Error;
 pub use manifest::{

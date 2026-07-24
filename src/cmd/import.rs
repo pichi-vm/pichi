@@ -227,9 +227,7 @@ async fn read_launch_contract(path: &Path) -> Result<(Digest, Vec<u8>)> {
         .with_context(|| format!("read --config: {}", path.display()))?;
     let cfg: Config = serde_yaml::from_str(&text)
         .with_context(|| format!("parse --config: {}", path.display()))?;
-    cfg.requirements
-        .validate()
-        .context("invalid requirements in --config")?;
+    cfg.validate().context("invalid --config")?;
     let bytes = cfg.to_json().context("serialise config blob")?;
     Ok((Digest::from_bytes_sha256(&bytes), bytes))
 }

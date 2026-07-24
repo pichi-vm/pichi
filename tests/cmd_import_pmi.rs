@@ -200,7 +200,7 @@ async fn import_pmi_with_config_sets_config_blob() {
     let cfg = tmp.path().join("config.yaml");
     std::fs::write(
         &cfg,
-        "requirements:\n  memory:\n    required: 536870912\n  cpus:\n    required: 2\n",
+        "version: 1\nrequirements:\n  memory:\n    required: 512\n  cpus:\n    required: 2\n",
     )
     .unwrap();
 
