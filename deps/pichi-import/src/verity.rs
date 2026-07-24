@@ -70,10 +70,12 @@ pub const VERITY_SIGNATURE: &[u8; 8] = b"verity\0\0";
 pub const VERITY_SB_SIZE: usize = 512;
 /// SHA-256 digest size in bytes.
 const SHA256_DIGEST_SIZE: usize = 32;
-/// Verity v1 superblock format version.
-const VERITY_FORMAT_VERSION: u32 = 1;
+/// Verity v1 superblock format version. Public so the manifest producer can
+/// convey it as a reconstruction input rather than re-hardcoding the literal.
+pub const VERITY_FORMAT_VERSION: u32 = 1;
 /// "normal" hash type per RESEARCH §3 lines 305–308 (Chrome OS would be 0).
-const VERITY_HASH_TYPE_NORMAL: u32 = 1;
+/// Public for the same reason as [`VERITY_FORMAT_VERSION`].
+pub const VERITY_HASH_TYPE_NORMAL: u32 = 1;
 /// Maximum salt bytes that fit in `verity_sb.salt[256]`.
 const VERITY_SB_SALT_MAX: usize = 256;
 /// Algorithm string field is 32 bytes, NUL-padded.

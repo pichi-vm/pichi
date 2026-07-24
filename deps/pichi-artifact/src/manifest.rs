@@ -20,11 +20,17 @@ use crate::media_type::{
     MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD,
 };
 
-/// Required chain-wide annotation keys (per D-06). All three MUST be present
-/// in `Manifest::annotations` per D-07 rule 3.
+/// Required chain-wide annotation keys (per D-06). These are the dm-verity
+/// superblock fields a consumer needs to *reconstruct* the (undistributed)
+/// verity layer from the cow — the sole reason pichi carries them. All MUST be
+/// present in `Manifest::annotations` per D-07 rule 3 when scute layers exist.
 const CHAIN_ANNOTATION_VERITY_ALGO: &str = "dev.pichi.carapace.verity.algo";
 const CHAIN_ANNOTATION_VERITY_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
 const CHAIN_ANNOTATION_VERITY_HASH_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.hash-block-size";
+/// dm-verity superblock `version` and `hash_type` — reconstruction inputs that
+/// were previously hardcoded in the builder rather than conveyed.
+const CHAIN_ANNOTATION_VERITY_VERSION: &str = "dev.pichi.carapace.verity.version";
+const CHAIN_ANNOTATION_VERITY_HASH_TYPE: &str = "dev.pichi.carapace.verity.hash-type";
 
 /// The carapace trust anchor `rootₙ₋₁`: the hex-encoded dm-verity root of the
 /// carapace's top scute (BUILD.md §7.1). MANDATORY on any manifest that carries
@@ -288,6 +294,16 @@ pub enum ManifestValidationError {
     /// D-07 rule 3: required chain annotation key is absent.
     #[error("missing required chain annotation: {0}")]
     MissingChainAnnotation(&'static str),
+    /// A chain annotation is present but malformed (e.g. non-integer
+    /// version/hash-type). This is a well-formedness check only — pichi imposes
+    /// no value whitelist (that is the guest consumer's control per the spec).
+    #[error("chain annotation {key} is malformed: {value}")]
+    BadChainAnnotation {
+        /// The annotation key.
+        key: &'static str,
+        /// The offending value.
+        value: String,
+    },
     /// D-07 rule 5: more than one PMI layer.
     #[error("artifact has more than one PMI layer (got {0}); per D-03 at most one is permitted")]
     MultiplePmi(usize),
@@ -396,9 +412,26 @@ impl Manifest {
                 CHAIN_ANNOTATION_VERITY_ALGO,
                 CHAIN_ANNOTATION_VERITY_DATA_BLOCK_SIZE,
                 CHAIN_ANNOTATION_VERITY_HASH_BLOCK_SIZE,
+                CHAIN_ANNOTATION_VERITY_VERSION,
+                CHAIN_ANNOTATION_VERITY_HASH_TYPE,
             ] {
                 if !self.annotations.contains_key(key) {
                     return Err(ManifestValidationError::MissingChainAnnotation(key));
+                }
+            }
+            // Well-formedness only (no value whitelist — that is the guest
+            // consumer's TCB control per the carapace spec, not storage's):
+            // version / hash-type must parse as integers.
+            for key in [
+                CHAIN_ANNOTATION_VERITY_VERSION,
+                CHAIN_ANNOTATION_VERITY_HASH_TYPE,
+            ] {
+                let v = &self.annotations[key];
+                if v.parse::<u32>().is_err() {
+                    return Err(ManifestValidationError::BadChainAnnotation {
+                        key,
+                        value: v.clone(),
+                    });
                 }
             }
             // The verity root anchor MUST be present and 32-byte hex; pull /
@@ -465,6 +498,8 @@ mod tests {
             CHAIN_ANNOTATION_VERITY_HASH_BLOCK_SIZE.into(),
             "4096".into(),
         );
+        a.insert(CHAIN_ANNOTATION_VERITY_VERSION.into(), "1".into());
+        a.insert(CHAIN_ANNOTATION_VERITY_HASH_TYPE.into(), "1".into());
         a.insert(CHAIN_ANNOTATION_VERITY_HASH.into(), "ab".repeat(32));
         a.insert(
             "org.opencontainers.image.created".into(),
@@ -681,6 +716,40 @@ mod tests {
         assert!(matches!(
             m.validate().unwrap_err(),
             ManifestValidationError::BadVerityRoot(_)
+        ));
+    }
+
+    #[test]
+    fn validate_requires_verity_version_and_hash_type_when_scutes_present() {
+        for key in [
+            CHAIN_ANNOTATION_VERITY_VERSION,
+            CHAIN_ANNOTATION_VERITY_HASH_TYPE,
+        ] {
+            let mut m = sample_base_manifest();
+            m.annotations.remove(key);
+            assert!(
+                matches!(
+                    m.validate().unwrap_err(),
+                    ManifestValidationError::MissingChainAnnotation(k) if k == key
+                ),
+                "missing {key} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_malformed_verity_version() {
+        // Well-formedness only: non-integer version is rejected (but any integer
+        // is accepted — pichi imposes no value whitelist).
+        let mut m = sample_base_manifest();
+        m.annotations.insert(
+            CHAIN_ANNOTATION_VERITY_VERSION.into(),
+            "not-a-number".into(),
+        );
+        assert!(matches!(
+            m.validate().unwrap_err(),
+            ManifestValidationError::BadChainAnnotation { key, .. }
+                if key == CHAIN_ANNOTATION_VERITY_VERSION
         ));
     }
 

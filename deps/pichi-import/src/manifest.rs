@@ -62,6 +62,14 @@ pub(crate) fn build(
         "4096".to_string(),
     );
     annotations.insert(
+        "dev.pichi.carapace.verity.version".to_string(),
+        crate::verity::VERITY_FORMAT_VERSION.to_string(),
+    );
+    annotations.insert(
+        "dev.pichi.carapace.verity.hash-type".to_string(),
+        crate::verity::VERITY_HASH_TYPE_NORMAL.to_string(),
+    );
+    annotations.insert(
         CHAIN_ANNOTATION_VERITY_HASH.to_string(),
         hex::encode(root_hash),
     );

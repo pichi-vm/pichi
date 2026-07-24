@@ -663,6 +663,8 @@ mod tests {
             "dev.pichi.carapace.verity.hash-block-size".into(),
             "4096".into(),
         );
+        annotations.insert("dev.pichi.carapace.verity.version".into(), "1".into());
+        annotations.insert("dev.pichi.carapace.verity.hash-type".into(), "1".into());
         annotations.insert(
             "dev.pichi.carapace.verity.hash".into(),
             root_hex.to_string(),
@@ -1038,6 +1040,8 @@ mod tests {
             "dev.pichi.carapace.verity.hash-block-size".into(),
             "4096".into(),
         );
+        annotations.insert("dev.pichi.carapace.verity.version".into(), "1".into());
+        annotations.insert("dev.pichi.carapace.verity.hash-type".into(), "1".into());
         annotations.insert(
             "dev.pichi.carapace.verity.hash".into(),
             root_hex.to_string(),
@@ -1088,6 +1092,8 @@ mod tests {
             "dev.pichi.carapace.verity.hash-block-size".into(),
             "4096".into(),
         );
+        annotations.insert("dev.pichi.carapace.verity.version".into(), "1".into());
+        annotations.insert("dev.pichi.carapace.verity.hash-type".into(), "1".into());
         annotations.insert(
             "dev.pichi.carapace.verity.hash".into(),
             root_hex.to_string(),

@@ -165,6 +165,14 @@ fn chain_annotations(created_rfc3339: &str) -> BTreeMap<String, String> {
         "4096".to_string(),
     );
     a.insert(
+        "dev.pichi.carapace.verity.version".to_string(),
+        pichi_import::verity::VERITY_FORMAT_VERSION.to_string(),
+    );
+    a.insert(
+        "dev.pichi.carapace.verity.hash-type".to_string(),
+        pichi_import::verity::VERITY_HASH_TYPE_NORMAL.to_string(),
+    );
+    a.insert(
         "org.opencontainers.image.created".to_string(),
         created_rfc3339.to_string(),
     );
