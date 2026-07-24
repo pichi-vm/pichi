@@ -119,6 +119,11 @@ pub struct ImportRawArgs {
     /// its measured cmdline (`roothash=`) before `pichi import pmi`.
     #[arg(long, default_value_t = false)]
     pub quiet: bool,
+    /// Extra manifest annotations, `KEY=VALUE` (repeatable) — e.g.
+    /// `-a org.opencontainers.image.source=<url>`. pichi carries them verbatim;
+    /// the structural `dev.pichi.carapace.verity.*` keys cannot be overridden.
+    #[arg(short = 'a', long = "annotation", value_name = "KEY=VALUE")]
+    pub annotations: Vec<String>,
 }
 
 /// Args for `pichi import pmi <pmi> --dtb <file> [--carapace <ref>] -t <tag>` —
@@ -155,6 +160,11 @@ pub struct ImportPmiArgs {
     /// printed to stdout (docker `-q` style).
     #[arg(long, default_value_t = false)]
     pub quiet: bool,
+    /// Extra manifest annotations, `KEY=VALUE` (repeatable) — e.g.
+    /// `-a org.opencontainers.image.source=<url>`. pichi carries them verbatim;
+    /// the structural `dev.pichi.carapace.verity.*` keys cannot be overridden.
+    #[arg(short = 'a', long = "annotation", value_name = "KEY=VALUE")]
+    pub annotations: Vec<String>,
 }
 
 /// Pull policy for `pichi pull --pull=...` (REGISTRY-03 / D-05 default `always`).
@@ -316,12 +326,14 @@ impl TryFrom<ImportRawArgs> for pichi_import::ImportArgs {
             .map(hex::decode)
             .transpose()
             .with_context(|| format!("invalid --salt hex: {:?}", a.salt))?;
+        let annotations = crate::cmd::import::parse_annotations(&a.annotations)?;
         Ok(Self {
             raw_image: a.raw_image,
             tag: a.tag,
             salt_suffix,
             quiet: a.quiet,
             created_rfc3339: String::new(), // overwritten by cmd::import::run_raw
+            annotations,
         })
     }
 }

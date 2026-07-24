@@ -97,6 +97,15 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         Some(carapace) => carapace_scutes_manifest(&blob_store, &db, carapace).await?,
         None => scuteless_manifest(),
     };
+    // Merge caller-supplied provenance annotations. Structural verity-chain keys
+    // are never overridable (they describe the carapace, not the operator's
+    // metadata); `created` and everything else the caller may set.
+    for (k, v) in parse_annotations(&args.annotations)? {
+        if k.starts_with("dev.pichi.carapace.verity.") {
+            continue;
+        }
+        manifest.annotations.insert(k, v);
+    }
     manifest.layers.push(Layer::Pmi(PmiDescriptor {
         digest: pmi_digest.to_string(),
         size: pmi_bytes.len() as u64,
@@ -216,6 +225,22 @@ fn scuteless_manifest() -> Manifest {
         layers: Vec::new(),
         annotations,
     }
+}
+
+/// Parse repeatable `KEY=VALUE` annotation flags into a map. The key is
+/// everything before the first `=`; the value may itself contain `=`.
+pub(crate) fn parse_annotations(pairs: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut map = BTreeMap::new();
+    for p in pairs {
+        let (k, v) = p
+            .split_once('=')
+            .ok_or_else(|| anyhow!("annotation must be KEY=VALUE, got {p:?}"))?;
+        if k.is_empty() {
+            bail!("annotation key is empty in {p:?}");
+        }
+        map.insert(k.to_string(), v.to_string());
+    }
+    Ok(map)
 }
 
 /// Read a launch-contract config file (JSON or YAML — `serde_yaml` reads both),

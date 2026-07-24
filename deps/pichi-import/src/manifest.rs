@@ -47,8 +47,12 @@ pub(crate) fn build(
     full_salt: &[u8],
     root_hash: &[u8; 32],
     created_rfc3339: &str,
+    extra: &BTreeMap<String, String>,
 ) -> Result<Manifest> {
-    let mut annotations = BTreeMap::new();
+    // Caller-supplied provenance annotations go in first; the structural
+    // `verity.*` keys below then overwrite (they can't be spoofed via `extra`),
+    // and `created` is filled only if the caller didn't supply one.
+    let mut annotations = extra.clone();
     annotations.insert(
         "dev.pichi.carapace.verity.algo".to_string(),
         "sha256".to_string(),
@@ -73,10 +77,9 @@ pub(crate) fn build(
         CHAIN_ANNOTATION_VERITY_HASH.to_string(),
         hex::encode(root_hash),
     );
-    annotations.insert(
-        "org.opencontainers.image.created".to_string(),
-        created_rfc3339.to_string(),
-    );
+    annotations
+        .entry("org.opencontainers.image.created".to_string())
+        .or_insert_with(|| created_rfc3339.to_string());
 
     let layers = vec![Layer::Scute(ScuteDescriptor {
         digest: cow_digest.to_string(),
@@ -118,6 +121,7 @@ mod tests {
             &salt,
             &[0u8; 32],
             "2026-05-07T12:00:00Z",
+            &BTreeMap::new(),
         )
         .unwrap();
         assert_eq!(
@@ -159,6 +163,7 @@ mod tests {
             &salt,
             &[0u8; 32],
             "2026-05-07T12:00:00Z",
+            &BTreeMap::new(),
         )
         .unwrap();
         let Layer::Scute(scute) = &m.layers[0] else {
@@ -184,6 +189,7 @@ mod tests {
             &salt,
             &[0u8; 32],
             "2026-05-07T12:00:00Z",
+            &BTreeMap::new(),
         )
         .unwrap();
         let Layer::Scute(scute) = &m.layers[0] else {
@@ -207,6 +213,7 @@ mod tests {
             &salt,
             &[0u8; 32],
             "2026-05-07T12:00:00Z",
+            &BTreeMap::new(),
         )
         .unwrap();
         // build() already calls validate() internally; double-check is
@@ -227,6 +234,7 @@ mod tests {
             &salt,
             &[0u8; 32],
             "2026-05-07T12:00:00Z",
+            &BTreeMap::new(),
         )
         .unwrap();
         assert_eq!(m.layers.len(), 1, "expected exactly 1 layer (Scute)");
@@ -236,5 +244,52 @@ mod tests {
             "base carapace carries no PMI layer"
         );
         assert!(m.config.is_empty(), "base carapace uses the empty config");
+    }
+
+    /// Caller annotations merge in, but structural verity keys can't be spoofed
+    /// and a caller-supplied `created` wins over the stamped one.
+    #[test]
+    fn extra_annotations_merge_with_structural_precedence() {
+        let mut extra = BTreeMap::new();
+        extra.insert(
+            "org.opencontainers.image.source".to_string(),
+            "https://example/repo".to_string(),
+        );
+        extra.insert(
+            "org.opencontainers.image.created".to_string(),
+            "2020-01-01T00:00:00Z".to_string(),
+        );
+        extra.insert(
+            "dev.pichi.carapace.verity.algo".to_string(),
+            "EVIL".to_string(),
+        );
+        let m = build(
+            &Digest::from_bytes_sha256(b"deadbeef"),
+            16384,
+            &[0u8; 32],
+            &[0u8; 32],
+            "2026-05-07T12:00:00Z",
+            &extra,
+        )
+        .unwrap();
+        // provenance carried verbatim
+        assert_eq!(
+            m.annotations
+                .get("org.opencontainers.image.source")
+                .unwrap(),
+            "https://example/repo"
+        );
+        // caller-supplied created wins over the stamped timestamp
+        assert_eq!(
+            m.annotations
+                .get("org.opencontainers.image.created")
+                .unwrap(),
+            "2020-01-01T00:00:00Z"
+        );
+        // structural verity key cannot be overridden by a caller annotation
+        assert_eq!(
+            m.annotations.get("dev.pichi.carapace.verity.algo").unwrap(),
+            "sha256"
+        );
     }
 }

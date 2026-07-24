@@ -57,6 +57,12 @@ pub struct ImportArgs {
     /// the root `pichi` binary already has chrono and supplies it via
     /// `src/cmd/import.rs`). Plan 03 manifest.rs decision.
     pub created_rfc3339: String,
+    /// Extra OCI/provenance annotations to stamp on the manifest, already
+    /// parsed from `KEY=VALUE`. Merged verbatim; the structural
+    /// `dev.pichi.carapace.verity.*` keys always take precedence, and a
+    /// caller-supplied `org.opencontainers.image.created` wins over the
+    /// timestamp above.
+    pub annotations: std::collections::BTreeMap<String, String>,
 }
 
 /// Entry point for `pichi import`.
@@ -342,6 +348,7 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
         &full_salt,
         &verity_out.root_hash,
         &args.created_rfc3339,
+        &args.annotations,
     )
     .context("manifest::build failed")?;
     let manifest_bytes = pichi_manifest
@@ -404,6 +411,7 @@ mod tests {
             salt_suffix: None,
             quiet: true,
             created_rfc3339: "2026-05-07T12:00:00Z".to_string(),
+            annotations: std::collections::BTreeMap::new(),
         };
         (args, graphroot)
     }

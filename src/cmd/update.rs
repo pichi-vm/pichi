@@ -182,6 +182,7 @@ mod tests {
                 salt_suffix: None,
                 quiet: true,
                 created_rfc3339: "2026-06-22T00:00:00Z".into(),
+                annotations: std::collections::BTreeMap::new(),
             },
             &graphroot,
         )
