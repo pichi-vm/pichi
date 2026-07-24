@@ -226,6 +226,11 @@ pub struct ManifestCreateArgs {
     /// registry (e.g. `ghcr.io/org/img:43-amd64`).
     #[arg(required = true)]
     pub sources: Vec<String>,
+    /// Index-level OCI annotations, `KEY=VALUE` (repeatable) — stamped on the
+    /// image index itself (e.g. source/revision/version). `created` is added
+    /// automatically if not supplied.
+    #[arg(short = 'a', long = "annotation", value_name = "KEY=VALUE")]
+    pub annotations: Vec<String>,
 }
 
 /// Args for `pichi manifest annotate <list> <source> --os <os> --arch <arch>`.

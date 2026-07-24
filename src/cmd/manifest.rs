@@ -86,7 +86,14 @@ pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
         }));
     }
 
-    let index = build_index(entries);
+    // Index-level provenance: carry caller annotations verbatim, and stamp
+    // `created` (the multi-arch image's build time) unless the caller gave one.
+    let mut annotations = crate::cmd::import::parse_annotations(&args.annotations)?;
+    annotations
+        .entry("org.opencontainers.image.created".to_string())
+        .or_insert_with(|| chrono::Utc::now().to_rfc3339());
+
+    let index = build_index(entries, &annotations);
     store_list(config, &list_ref, &index)?;
     println!(
         "created manifest list {list_ref} with {} manifest(s); annotate each with \
@@ -187,13 +194,21 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
 // Pure helpers (unit-tested; no I/O).
 // ---------------------------------------------------------------------------
 
-/// Wrap per-arch descriptor entries in an OCI image index.
-fn build_index(entries: Vec<Value>) -> Value {
-    json!({
+/// Wrap per-arch descriptor entries in an OCI image index, with optional
+/// index-level annotations (omitted from the JSON when empty).
+fn build_index(
+    entries: Vec<Value>,
+    annotations: &std::collections::BTreeMap<String, String>,
+) -> Value {
+    let mut index = json!({
         "schemaVersion": 2,
         "mediaType": OCI_IMAGE_INDEX_MEDIA_TYPE,
         "manifests": entries,
-    })
+    });
+    if !annotations.is_empty() {
+        index["annotations"] = json!(annotations);
+    }
+    index
 }
 
 /// Set `platform.os`/`platform.architecture` on the entry recorded for
@@ -313,6 +328,10 @@ fn encode_ref(s: &str) -> String {
 mod tests {
     use super::*;
 
+    fn empty() -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::new()
+    }
+
     fn entry(source: &str, digest: &str) -> Value {
         json!({
             "mediaType": OCI_MANIFEST_MEDIA_TYPE,
@@ -329,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_index_has_index_media_type() {
-        let idx = build_index(vec![entry("img:43-amd64", "sha256:aa")]);
+        let idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &empty());
         assert_eq!(
             idx["mediaType"], OCI_IMAGE_INDEX_MEDIA_TYPE,
             "index media type"
@@ -339,11 +358,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn index_annotations_are_carried_and_survive_prepare() {
+        let mut ann = std::collections::BTreeMap::new();
+        ann.insert(
+            "org.opencontainers.image.source".to_string(),
+            "https://example/repo".to_string(),
+        );
+        let mut idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &ann);
+        assert_eq!(
+            idx["annotations"]["org.opencontainers.image.source"],
+            "https://example/repo"
+        );
+        // prepare_for_push only touches per-entry annotations, so index-level
+        // annotations must remain on the pushed index.
+        set_platform(&mut idx, "img:43-amd64", "pichi", "amd64").unwrap();
+        let ready = prepare_for_push(idx, &list_ref()).unwrap();
+        assert_eq!(
+            ready["annotations"]["org.opencontainers.image.source"],
+            "https://example/repo"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_index_annotations_omit_the_field() {
+        let idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &empty());
+        assert!(idx.get("annotations").is_none());
+    }
+
+    #[tokio::test]
     async fn annotate_sets_platform_on_matching_source() {
-        let mut idx = build_index(vec![
-            entry("img:43-amd64", "sha256:aa"),
-            entry("img:43-arm64", "sha256:bb"),
-        ]);
+        let mut idx = build_index(
+            vec![
+                entry("img:43-amd64", "sha256:aa"),
+                entry("img:43-arm64", "sha256:bb"),
+            ],
+            &empty(),
+        );
         set_platform(&mut idx, "img:43-arm64", "pichi", "arm64").unwrap();
         let arm = &idx["manifests"][1];
         assert_eq!(arm["platform"]["os"], "pichi");
@@ -354,16 +404,19 @@ mod tests {
 
     #[tokio::test]
     async fn annotate_unknown_source_errors() {
-        let mut idx = build_index(vec![entry("img:43-amd64", "sha256:aa")]);
+        let mut idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &empty());
         assert!(set_platform(&mut idx, "img:43-ppc64le", "pichi", "ppc64le").is_err());
     }
 
     #[tokio::test]
     async fn push_requires_platform_on_every_entry() {
-        let mut idx = build_index(vec![
-            entry("img:43-amd64", "sha256:aa"),
-            entry("img:43-arm64", "sha256:bb"),
-        ]);
+        let mut idx = build_index(
+            vec![
+                entry("img:43-amd64", "sha256:aa"),
+                entry("img:43-arm64", "sha256:bb"),
+            ],
+            &empty(),
+        );
         set_platform(&mut idx, "img:43-amd64", "pichi", "amd64").unwrap();
         // arm64 left un-annotated → push must refuse.
         let err = prepare_for_push(idx, &list_ref()).unwrap_err();
@@ -372,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_strips_internal_annotation_and_keeps_platform() {
-        let mut idx = build_index(vec![entry("img:43-amd64", "sha256:aa")]);
+        let mut idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &empty());
         set_platform(&mut idx, "img:43-amd64", "pichi", "amd64").unwrap();
         let ready = prepare_for_push(idx, &list_ref()).unwrap();
         let m = &ready["manifests"][0];
