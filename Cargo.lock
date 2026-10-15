@@ -313,7 +313,7 @@ name = "carapace"
 version = "0.1.0"
 source = "git+https://github.com/pichi-vm/carapace#397ab3b1d6fa8dde156257bf2f68c2ba05569fa1"
 dependencies = [
- "iocuddle",
+ "iocuddle 0.2.0",
  "thiserror 2.0.18",
  "zerocopy",
 ]
@@ -663,6 +663,35 @@ checksum = "ab63b0e2bf4d5928aff72e83a7dace85d7bba5fe12dcc3c5a572d78caffd3f3c"
 dependencies = [
  "derive_builder_core",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "devmap-core"
+version = "0.1.0"
+source = "git+https://github.com/pichi-vm/devmap?rev=6c86672ad3da004ece96fb502a363de4873e42cb#6c86672ad3da004ece96fb502a363de4873e42cb"
+dependencies = [
+ "iocuddle 0.4.0",
+]
+
+[[package]]
+name = "devmap-linux"
+version = "0.1.0"
+source = "git+https://github.com/pichi-vm/devmap?rev=6c86672ad3da004ece96fb502a363de4873e42cb#6c86672ad3da004ece96fb502a363de4873e42cb"
+dependencies = [
+ "devmap-core",
+ "iocuddle 0.4.0",
+ "zerocopy",
+]
+
+[[package]]
+name = "devmap-verity"
+version = "0.1.0"
+source = "git+https://github.com/pichi-vm/devmap?rev=6c86672ad3da004ece96fb502a363de4873e42cb#6c86672ad3da004ece96fb502a363de4873e42cb"
+dependencies = [
+ "devmap-core",
+ "devmap-linux",
+ "digest",
+ "sha2",
 ]
 
 [[package]]
@@ -1553,6 +1582,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6a239b45d1a4561e861ae04c14539ae7b5608290b173a7bfbd666c915aeb662"
 
 [[package]]
+name = "iocuddle"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9faa2eb1051fb714783e08c74354aebf4ebf5c0cd3a11ed1059a4b474b4a5db"
+dependencies = [
+ "zerocopy",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1970,6 +2008,7 @@ dependencies = [
  "clap",
  "conglobate",
  "corium",
+ "devmap-verity",
  "dillo",
  "dillo-config",
  "env_logger",
@@ -2012,6 +2051,8 @@ name = "pichi-import"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "devmap-core",
+ "devmap-verity",
  "hex",
  "log",
  "pichi-artifact",

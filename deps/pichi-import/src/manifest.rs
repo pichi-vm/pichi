@@ -85,6 +85,7 @@ pub(crate) fn build(
         digest: cow_digest.to_string(),
         size: cow_size,
         annotations: ScuteAnnotations {
+            data_blocks: Some(cow_size.div_ceil(4096)),
             salt: hex::encode(full_salt),
         },
     })];
@@ -169,6 +170,7 @@ mod tests {
         let Layer::Scute(scute) = &m.layers[0] else {
             panic!("expected scute layer");
         };
+        assert_eq!(scute.annotations.data_blocks, Some(4));
         assert_eq!(
             scute.annotations.salt,
             "0".repeat(64),

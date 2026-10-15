@@ -27,6 +27,7 @@ clap.workspace = true
 pichi-artifact.workspace = true
 serde_yaml = { workspace = true }
 pichi-import.workspace = true
+devmap-verity.workspace = true
 conglobate.workspace = true
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true
@@ -125,6 +126,8 @@ uninlined_format_args = "allow"
 
 [workspace.dependencies]
 # Cross-product shared crates
+devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "6c86672ad3da004ece96fb502a363de4873e42cb" }
+devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "6c86672ad3da004ece96fb502a363de4873e42cb", features = ["sha2"] }
 pmi = { git = "https://github.com/pichi-vm/pmi" }
 devtree = { git = "https://github.com/pichi-vm/devtree" }
 # Dev-only caching URL downloader (shared by arma/dillo/e2e tests).

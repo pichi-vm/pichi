@@ -247,9 +247,42 @@ pub struct ScuteDescriptor {
 /// not enforced here; chain validation is v0.9 Phase 46 carapace work).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScuteAnnotations {
+    /// dm-verity header `data_blocks`: COW length rounded up to data blocks.
+    /// Optional for manifests published before streaming formatting.
+    #[serde(
+        rename = "dev.pichi.scute.verity.data-blocks",
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ScuteAnnotations::serialize_blocks",
+        deserialize_with = "ScuteAnnotations::deserialize_blocks"
+    )]
+    pub data_blocks: Option<u64>,
     /// Hex-encoded salt for this scute.
     #[serde(rename = "dev.pichi.scute.verity.salt")]
     pub salt: String,
+}
+
+impl ScuteAnnotations {
+    // OCI annotation values are strings; expose a typed length to callers.
+    #[allow(clippy::ref_option)] // Signature required by serde serialize_with.
+    fn serialize_blocks<S: serde::Serializer>(
+        blocks: &Option<u64>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        blocks.map(|n| n.to_string()).serialize(serializer)
+    }
+
+    fn deserialize_blocks<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<u64>, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(serde::de::Error::custom(
+                "data_blocks must be an unsigned decimal string",
+            ));
+        }
+        value.parse().map(Some).map_err(serde::de::Error::custom)
+    }
 }
 
 /// PMI layer descriptor (no annotations — D-09).
@@ -310,6 +343,10 @@ pub enum ManifestValidationError {
     /// D-07 rule 4: scute salt is not valid hex.
     #[error("scute salt is not valid hex: {0}")]
     BadSalt(String),
+
+    /// Declared data-block count is zero or contradicts a raw blob's size.
+    #[error("invalid data-block count for scute {0}")]
+    BadScuteBlocks(String),
 
     /// The carapace verity-root annotation is present but not a 32-byte hex
     /// string (BUILD.md §7.1). Presence-when-scutes is enforced separately via
@@ -472,6 +509,23 @@ impl Manifest {
             let (Layer::Scute(d) | Layer::ScuteZstd(d)) = layer else {
                 continue;
             };
+            if let Some(blocks) = d.annotations.data_blocks {
+                let value = &self.annotations[CHAIN_ANNOTATION_VERITY_DATA_BLOCK_SIZE];
+                let block_size = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|size| *size != 0)
+                    .ok_or_else(|| ManifestValidationError::BadChainAnnotation {
+                        key: CHAIN_ANNOTATION_VERITY_DATA_BLOCK_SIZE,
+                        value: value.clone(),
+                    })?;
+                if blocks == 0
+                    || (matches!(layer, Layer::Scute(_))
+                        && blocks != d.size.div_ceil(u64::from(block_size)))
+                {
+                    return Err(ManifestValidationError::BadScuteBlocks(d.digest.clone()));
+                }
+            }
             if hex::decode(&d.annotations.salt).is_err() {
                 return Err(ManifestValidationError::BadSalt(d.annotations.salt.clone()));
             }
@@ -486,6 +540,60 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_blocks_is_an_optional_decimal_annotation() {
+        let legacy: ScuteAnnotations =
+            serde_json::from_str(r#"{"dev.pichi.scute.verity.salt":"00"}"#).unwrap();
+        assert_eq!(legacy.data_blocks, None);
+        assert!(
+            !serde_json::to_value(&legacy)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("dev.pichi.scute.verity.data-blocks")
+        );
+        let annotations = ScuteAnnotations {
+            salt: "00".into(),
+            data_blocks: Some(2),
+        };
+        let json = serde_json::to_value(&annotations).unwrap();
+        assert_eq!(json["dev.pichi.scute.verity.data-blocks"], "2");
+        assert_eq!(
+            serde_json::from_value::<ScuteAnnotations>(json.clone()).unwrap(),
+            annotations
+        );
+        for invalid in [
+            serde_json::json!(4097),
+            serde_json::json!("-1"),
+            serde_json::json!("+1"),
+            serde_json::json!("18446744073709551616"),
+            serde_json::Value::Null,
+        ] {
+            let mut json = json.clone();
+            json["dev.pichi.scute.verity.data-blocks"] = invalid;
+            assert!(serde_json::from_value::<ScuteAnnotations>(json).is_err());
+        }
+    }
+
+    #[test]
+    fn validate_data_blocks_against_raw_descriptor() {
+        for blocks in [0, 1, 2, 1024] {
+            let mut manifest = sample_base_manifest();
+            let Layer::Scute(scute) = &mut manifest.layers[0] else {
+                unreachable!()
+            };
+            scute.annotations.data_blocks = Some(blocks);
+            assert_eq!(manifest.validate().is_ok(), blocks == 1);
+        }
+        let mut manifest = sample_base_manifest();
+        let Layer::Scute(mut scute) = manifest.layers.remove(0) else {
+            unreachable!()
+        };
+        scute.annotations.data_blocks = Some(2);
+        manifest.layers.push(Layer::ScuteZstd(scute));
+        assert!(manifest.validate().is_ok());
+    }
 
     fn sample_chain_annotations() -> BTreeMap<String, String> {
         let mut a = BTreeMap::new();
@@ -519,6 +627,7 @@ mod tests {
                     .into(),
                 size: 1024,
                 annotations: ScuteAnnotations {
+                    data_blocks: None,
                     salt: "00ff".into(),
                 },
             })],
@@ -801,6 +910,7 @@ mod tests {
             digest: "sha256:dead".into(),
             size: 0,
             annotations: ScuteAnnotations {
+                data_blocks: None,
                 salt: "deadbeef".into(),
             },
         };
@@ -819,6 +929,7 @@ mod tests {
             digest: "sha256:dead".into(),
             size: 0,
             annotations: ScuteAnnotations {
+                data_blocks: None,
                 salt: "deadbeef".into(),
             },
         };

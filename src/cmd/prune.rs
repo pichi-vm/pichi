@@ -407,6 +407,7 @@ mod tests {
                 digest: scute_digest_str.clone(),
                 size: 1024,
                 annotations: ScuteAnnotations {
+                    data_blocks: None,
                     salt: "00000000".into(),
                 },
             })],

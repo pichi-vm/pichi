@@ -641,6 +641,15 @@ base DTB — rather than two fixed kinds. Presence determines capability:
 - Top-level annotations carry the carapace verity-chain parameters
   `dev.pichi.carapace.verity.{algo,data-block-size,hash-block-size}`; each scute
   layer carries `dev.pichi.scute.verity.salt` (hex; the salt-chain binding).
+  New scute descriptors also carry `dev.pichi.scute.verity.data-blocks`, a decimal
+  string matching the dm-verity header's `data_blocks`: the COW byte length
+  rounded up to `data-block-size` blocks. Pull validates the decoded block count
+  and zero-pads only a short final block for formatting. This lets devmap write
+  the hash tree during download without retaining the tree in memory. Missing
+  annotations remain supported: raw scutes derive the count from descriptor
+  size; legacy zstd scutes are decoded to a tempfile before formatting. Freshly
+  computed roots are reused for the final manifest check; cached scutes are
+  streamed again to compute their roots.
 - Any manifest with scute layers MUST also carry
   `dev.pichi.carapace.verity.hash` — the hex-encoded carapace top root
   `rootₙ₋₁`. This is a *verify-against* value, never trusted blindly: the verity

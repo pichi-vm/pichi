@@ -289,6 +289,7 @@ mod tests {
                 digest: scute_digest.to_string(),
                 size: scute_size,
                 annotations: ScuteAnnotations {
+                    data_blocks: None,
                     salt: hex::encode([0u8; 32]),
                 },
             })],

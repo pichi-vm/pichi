@@ -48,6 +48,7 @@ async fn insert_manifest(
             digest: scute_digest.clone(),
             size: 1024,
             annotations: ScuteAnnotations {
+                data_blocks: None,
                 salt: format!("{:0<8}", salt_seed),
             },
         })],

@@ -15,6 +15,8 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+devmap-core.workspace = true
+devmap-verity.workspace = true
 thiserror.workspace = true
 pichi-artifact.workspace = true
 pichi-storage.workspace = true

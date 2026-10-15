@@ -51,6 +51,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
                     .into(),
                 size: 4096,
                 annotations: ScuteAnnotations {
+                    data_blocks: None,
                     salt: "dead".into(),
                 },
             }),
@@ -114,6 +115,7 @@ async fn inspect_format_reaches_dotted_annotation() {
                 .into(),
             size: 4096,
             annotations: ScuteAnnotations {
+                data_blocks: None,
                 salt: "dead".into(),
             },
         })],

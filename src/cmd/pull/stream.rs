@@ -1,0 +1,376 @@
+// SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Pull adapters: devmap drives network reads, validation, and cache writes.
+
+use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
+use std::path::Path;
+
+use anyhow::{Context as _, Result, bail};
+use pichi_artifact::{Digest, Layer, Manifest, Reference};
+use pichi_import::verity::VerityFormat as _;
+use pichi_registry::Registry;
+use pichi_storage::{BlobSidecarExt, BlobStore};
+use sha2::{Digest as _, Sha256};
+use tempfile::NamedTempFile;
+use tokio_util::io::{StreamReader, SyncIoBridge};
+
+use crate::cmd::manifest_ext::ManifestExt as _;
+
+const DECOMPRESSED_CAP: u64 = 16 * 1024 * 1024 * 1024;
+
+pub(super) struct PreparedLayer {
+    source: NamedTempFile,
+    deflated: Option<NamedTempFile>,
+    verity: Option<NamedTempFile>,
+    root: Option<[u8; 32]>,
+}
+
+impl PreparedLayer {
+    pub(super) async fn fetch<R: Registry>(
+        registry: &R,
+        target: &Reference,
+        manifest: &Manifest,
+        layer: &Layer,
+        store: &dyn BlobStore,
+    ) -> Result<Option<[u8; 32]>> {
+        let digest: Digest = layer.digest_str().parse()?;
+        let scratch = store.scratch_dir().await?;
+        let stream = registry
+            .pull_blob_stream(&target.registry, &target.repo, &digest, layer.size())
+            .await?;
+        // Capture the runtime handle before entering the blocking pool. Each
+        // read polls the network only when the formatter needs more bytes.
+        let input = SyncIoBridge::new(StreamReader::new(stream));
+        let manifest = manifest.clone();
+        let layer = layer.clone();
+        let prepared =
+            tokio::task::spawn_blocking(move || Self::read(input, &manifest, &layer, &scratch))
+                .await
+                .context("layer formatting task panicked")??;
+        prepared.commit(store, &digest).await
+    }
+
+    fn read<R: Read>(input: R, manifest: &Manifest, layer: &Layer, scratch: &Path) -> Result<Self> {
+        let source = NamedTempFile::new_in(scratch)?;
+        let mut wire = WireReader {
+            input,
+            output: BufWriter::new(source.as_file()),
+            hash: Sha256::new(),
+            count: 0,
+            expected: layer.size(),
+        };
+        let mut deflated = None;
+        let mut verity = None;
+        let root = match layer {
+            Layer::Scute(scute) => {
+                let mut output = NamedTempFile::new_in(scratch)?;
+                let root = manifest
+                    .verity_header(scute, Some(scute.size))?
+                    .format_padded(&mut wire, output.as_file_mut())?;
+                verity = Some(output);
+                Some(root)
+            }
+            Layer::ScuteZstd(scute) => {
+                let mut data = NamedTempFile::new_in(scratch)?;
+                let mut output = NamedTempFile::new_in(scratch)?;
+                let decoder = ruzstd::decoding::StreamingDecoder::new(&mut wire)?;
+                let mut decoded = DecodedReader {
+                    input: decoder,
+                    output: BufWriter::new(data.as_file()),
+                    count: 0,
+                };
+                let root = if scute.annotations.data_blocks.is_some() {
+                    let header = manifest.verity_header(scute, None)?;
+                    if header.data.count.get()
+                        > DECOMPRESSED_CAP / u64::from(header.data.size.bytes().get())
+                    {
+                        bail!("decompressed size exceeds cap");
+                    }
+                    let root = header.format_padded(&mut decoded, output.as_file_mut())?;
+                    decoded.output.flush()?;
+                    drop(decoded);
+                    root
+                } else {
+                    // Legacy compressed manifests lack the geometry needed to
+                    // place tree levels. Decode once, then format the saved COW.
+                    io::copy(&mut decoded, &mut io::sink())?;
+                    decoded.output.flush()?;
+                    let size = decoded.count;
+                    drop(decoded);
+                    data.as_file_mut().rewind()?;
+                    manifest
+                        .verity_header(scute, Some(size))?
+                        .format_padded(BufReader::new(data.as_file()), output.as_file_mut())?
+                };
+                deflated = Some(data);
+                verity = Some(output);
+                Some(root)
+            }
+            Layer::Pmi(_) | Layer::Dtb(_) => {
+                io::copy(&mut wire, &mut io::sink())?;
+                None
+            }
+        };
+        wire.finish(&layer.digest_str().parse()?)?;
+        source.as_file().sync_all()?;
+        for file in deflated.iter().chain(verity.iter()) {
+            file.as_file().sync_all()?;
+        }
+        Ok(Self {
+            source,
+            deflated,
+            verity,
+            root,
+        })
+    }
+
+    async fn commit(self, store: &dyn BlobStore, digest: &Digest) -> Result<Option<[u8; 32]>> {
+        let path = store.blob_path(digest);
+        tokio::fs::create_dir_all(path.parent().context("blob path has no parent")?).await?;
+        // Publish sidecars first: the source blob is the cache-presence marker.
+        if let Some(file) = &self.deflated {
+            tokio::fs::rename(file.path(), path.deflated_path()).await?;
+        }
+        if let Some(file) = &self.verity {
+            tokio::fs::rename(file.path(), path.verity_path()).await?;
+        }
+        store.put_blob_from_path(self.source.path(), digest).await?;
+        Ok(self.root)
+    }
+}
+
+/// Wire-byte side effects, before decompression or verity padding.
+struct WireReader<R, W> {
+    input: R,
+    output: W,
+    hash: Sha256,
+    count: u64,
+    expected: u64,
+}
+
+impl<R: Read, W: Write> Read for WireReader<R, W> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let count = self.input.read(out)?;
+        self.count = self
+            .count
+            .checked_add(count as u64)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        if self.count > self.expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "layer exceeds descriptor size",
+            ));
+        }
+        self.output.write_all(&out[..count])?;
+        self.hash.update(&out[..count]);
+        Ok(count)
+    }
+}
+
+impl<R: Read, W: Write> WireReader<R, W> {
+    fn finish(mut self, digest: &Digest) -> Result<()> {
+        // A decoder can stop at a frame boundary. Reject trailing wire bytes
+        // and observe late transport errors before accepting the layer.
+        if self.read(&mut [0])? != 0 {
+            bail!("trailing bytes after compressed scute");
+        }
+        if self.count != self.expected {
+            bail!("layer size mismatch");
+        }
+        let actual = Digest::Sha256(self.hash.finalize().into());
+        if &actual != digest {
+            bail!("layer digest mismatch: expected {digest}, got {actual}");
+        }
+        self.output.flush()?;
+        Ok(())
+    }
+}
+
+/// Decoded-byte side effects; synthetic verity padding never reaches this writer.
+struct DecodedReader<R, W> {
+    input: R,
+    output: W,
+    count: u64,
+}
+
+impl<R: Read, W: Write> Read for DecodedReader<R, W> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let count = self.input.read(out)?;
+        self.count = self
+            .count
+            .checked_add(count as u64)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        if self.count > DECOMPRESSED_CAP {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "decompressed size exceeds cap",
+            ));
+        }
+        self.output.write_all(&out[..count])?;
+        Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pichi_import::verity::VerityParams;
+
+    struct Fixture {
+        data: Vec<u8>,
+        wire: Vec<u8>,
+        manifest: Manifest,
+    }
+
+    impl Fixture {
+        fn new(compressed: bool, declared: Option<u64>) -> Self {
+            let data = vec![0x5a; 4097];
+            let wire = if compressed {
+                ruzstd::encoding::compress_to_vec(
+                    data.as_slice(),
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                )
+            } else {
+                data.clone()
+            };
+            let root = VerityParams {
+                data_block_size: 4096,
+                hash_block_size: 4096,
+                salt: vec![0; 32],
+                uuid: [0; 16],
+            }
+            .compute(&data)
+            .unwrap()
+            .root_hash;
+            let mut annotations =
+                serde_json::json!({ "dev.pichi.scute.verity.salt": hex::encode([0; 32]) });
+            if let Some(blocks) = declared {
+                annotations["dev.pichi.scute.verity.data-blocks"] = blocks.to_string().into();
+            }
+            let manifest = serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                "config": pichi_artifact::ConfigDescriptor::canonical(),
+                "layers": [{
+                    "mediaType": if compressed { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
+                    "digest": Digest::from_bytes_sha256(&wire).to_string(),
+                    "size": wire.len(), "annotations": annotations,
+                }],
+                "annotations": {
+                    "dev.pichi.carapace.verity.algo": "sha256",
+                    "dev.pichi.carapace.verity.data-block-size": "4096",
+                    "dev.pichi.carapace.verity.hash-block-size": "4096",
+                    "dev.pichi.carapace.verity.version": "1",
+                    "dev.pichi.carapace.verity.hash-type": "1",
+                    "dev.pichi.carapace.verity.hash": hex::encode(root),
+                },
+            });
+            Self {
+                data,
+                wire,
+                manifest: serde_json::from_value(manifest).unwrap(),
+            }
+        }
+
+        fn prepare(&self, scratch: &Path) -> Result<PreparedLayer> {
+            PreparedLayer::read(
+                self.wire.as_slice(),
+                &self.manifest,
+                &self.manifest.layers[0],
+                scratch,
+            )
+        }
+    }
+
+    #[test]
+    fn streams_raw_and_zstd_with_legacy_fallback() {
+        for compressed in [false, true] {
+            for declared in [None, Some(2)] {
+                let fixture = Fixture::new(compressed, declared);
+                let scratch = tempfile::tempdir().unwrap();
+                let result = fixture.prepare(scratch.path()).unwrap();
+                assert_eq!(result.root, fixture.manifest.carapace_verity_hash());
+                assert_eq!(std::fs::read(result.source.path()).unwrap(), fixture.wire);
+                if let Some(deflated) = result.deflated.as_ref() {
+                    // The partial final block's padding is only a formatter input.
+                    assert_eq!(std::fs::read(deflated.path()).unwrap(), fixture.data);
+                }
+                let params = VerityParams {
+                    data_block_size: 4096,
+                    hash_block_size: 4096,
+                    salt: vec![0; 32],
+                    uuid: [0; 16],
+                };
+                let verity_bytes = std::fs::read(result.verity.as_ref().unwrap().path()).unwrap();
+                let header =
+                    devmap_verity::header::Header::decode(verity_bytes[..512].try_into().unwrap())
+                        .unwrap();
+                assert_eq!(header.data.count.get(), 2);
+                assert_eq!(verity_bytes, params.compute(&fixture.data).unwrap().blob);
+                drop(result);
+                assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_lengths_digests_and_trailing_frames_without_leaking_temps() {
+        let scratch = tempfile::tempdir().unwrap();
+        for declared in [0, 1, 3, DECOMPRESSED_CAP / 4096 + 1, u64::MAX] {
+            let fixture = Fixture::new(true, Some(declared));
+            assert!(fixture.prepare(scratch.path()).is_err());
+        }
+        for compressed in [false, true] {
+            let mut fixture = Fixture::new(compressed, Some(2));
+            fixture.wire.pop();
+            assert!(fixture.prepare(scratch.path()).is_err());
+            let mut fixture = Fixture::new(compressed, Some(2));
+            let (Layer::Scute(d) | Layer::ScuteZstd(d)) = &mut fixture.manifest.layers[0] else {
+                unreachable!()
+            };
+            d.digest = Digest::from_bytes_sha256(b"wrong").to_string();
+            assert!(fixture.prepare(scratch.path()).is_err());
+        }
+        let mut fixture = Fixture::new(true, Some(2));
+        fixture.wire.extend_from_within(..);
+        let Layer::ScuteZstd(d) = &mut fixture.manifest.layers[0] else {
+            unreachable!()
+        };
+        d.size = fixture.wire.len() as u64;
+        d.digest = Digest::from_bytes_sha256(&fixture.wire).to_string();
+        let error = fixture.prepare(scratch.path()).err().unwrap();
+        assert!(error.to_string().contains("trailing bytes"), "{error:#}");
+        assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+    }
+
+    struct LateFailure<'a>(&'a [u8]);
+
+    impl Read for LateFailure<'_> {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            if self.0.is_empty() {
+                return Err(io::Error::other("late network failure"));
+            }
+            self.0.read(out)
+        }
+    }
+
+    #[test]
+    fn observes_network_error_after_declared_extent() {
+        let scratch = tempfile::tempdir().unwrap();
+        for compressed in [false, true] {
+            let fixture = Fixture::new(compressed, Some(2));
+            let error = PreparedLayer::read(
+                LateFailure(&fixture.wire),
+                &fixture.manifest,
+                &fixture.manifest.layers[0],
+                scratch.path(),
+            )
+            .err()
+            .unwrap();
+            assert!(format!("{error:#}").contains("late network failure"));
+        }
+        assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+    }
+}

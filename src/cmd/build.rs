@@ -239,6 +239,7 @@ async fn package_artifact(
             digest: cow_digest.to_string(),
             size: cow_bytes.len() as u64,
             annotations: ScuteAnnotations {
+                data_blocks: Some((cow_bytes.len() as u64).div_ceil(4096)),
                 salt: s.salt.clone(),
             },
         }));
@@ -657,6 +658,7 @@ mod tests {
                 digest: d0.to_string(),
                 size: cow0.len() as u64,
                 annotations: ScuteAnnotations {
+                    data_blocks: None,
                     salt: hex::encode(&salt0),
                 },
             },
@@ -664,6 +666,7 @@ mod tests {
                 digest: d1.to_string(),
                 size: cow1.len() as u64,
                 annotations: ScuteAnnotations {
+                    data_blocks: None,
                     salt: hex::encode(&salt1),
                 },
             },

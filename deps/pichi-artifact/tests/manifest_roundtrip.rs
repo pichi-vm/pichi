@@ -41,6 +41,7 @@ fn appliance_manifest() -> Manifest {
                     .into(),
                 size: 4096,
                 annotations: ScuteAnnotations {
+                    data_blocks: None,
                     salt: "dead".into(),
                 },
             }),

@@ -43,6 +43,7 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> pichi_artifac
                 .into(),
             size: 1024,
             annotations: ScuteAnnotations {
+                data_blocks: None,
                 salt: "00ff".into(),
             },
         })],

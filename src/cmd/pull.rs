@@ -1,38 +1,27 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `pichi pull <ref>` — REGISTRY-01..07.
-//!
-//! Throwaway tokio runtime per call (Pattern 1; Plan 01 SPIKE A3 confirmed
-//! `current_thread + enable_all` works as a one-shot driver). Pulls the
-//! manifest (raw — REGISTRY-05/Pitfall 1), walks OCI Image Indices per
-//! D-02, validates host-side per Phase 42 D-11, streams each layer through
-//! the D-10 pipeline (compressed-side digest + optional zstd decode +
-//! decompressed-side digest + verity feed + LimitWriter + BlobStore
-//! tempfile), commits atomically per D-03 refined per Pitfall 11 (live-walk
-//! refcounts; no sidecar; `set_tag` is the single commit point and takes
-//! its own flock — DO NOT wrap in the cache-wide advisory-lock helper per
-//! Pitfall 2 (the helper would self-deadlock against set_tag's internal flock).
+//! Fetch and validate manifests, then stream missing layers through devmap.
+//! The formatter drives source writes, digest checks, and optional decompression.
+//! Computed roots are retained for chain verification before publishing the tag.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
-use sha2::{Digest as _, Sha256};
 
-use pichi_artifact::{Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
 
-use crate::cmd::manifest_ext::ManifestExt;
-use pichi_import::verity::{VerityBuilder, VerityOutput, VerityParams};
+use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
+
+mod stream;
+use self::stream::PreparedLayer;
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry, pick_pichi_entry_from_index};
-use pichi_storage::{
-    BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb,
-    sidecar::write_sidecar_atomic,
-};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::{PullArgs, PullPolicy};
 use crate::config::Config;
-use futures_util::stream::{self, StreamExt};
+use futures_util::stream::{self as futures_stream, StreamExt};
 
 /// Target platform `os` for D-02 index walks. A carapace is NOT "used on" an
 /// OS — it *is* a pichi VM guest's root filesystem — so the OCI `platform.os`
@@ -54,13 +43,6 @@ fn target_arch() -> &'static str {
         other => other,
     }
 }
-/// Default per-layer decompressed-bytes cap (compressed-bomb defence;
-/// RESEARCH §"Known Threat Patterns" line 1620). Default 16 GiB; future
-/// enhancement: per-layer override = `descriptor.size + slack`.
-const DEFAULT_DECOMPRESSED_CAP: u64 = 16 * 1024 * 1024 * 1024;
-/// Phase 42 D-06 locked verity defaults — used by the pull-side verity feed.
-const VERITY_DBS: u32 = 4096;
-const VERITY_HBS: u32 = 4096;
 /// Max layers downloaded concurrently, matching podman's default of 3.
 const PULL_CONCURRENCY: usize = 3;
 
@@ -185,54 +167,32 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         }
     }
 
-    // 4. Pull each layer via the streaming pipeline (REGISTRY-01 dedup via
-    //    blob_exists). Sidecars (`.deflated` for `+zstd` only, `.verity`
-    //    for every scute) are written by `fetch_one_layer` after the
-    //    source blob commits. pichi never reads or validates the PMI
-    //    cmdline's `roothash=`; consistency between cmdline and verity
-    //    tree is the publisher's responsibility, validated at boot time
-    //    inside the guest's dm-verity activation.
-    // REGISTRY-01: dedup by descriptor digest before any network I/O. D-01
-    // implicit refcount: source present ⇒ sidecars present (no partial-cache
-    // regeneration in v0.9; Phase 47 prune cleans up partial states). A
-    // malformed digest fails fast here, before a single byte is fetched.
-    let mut pending: Vec<&Layer> = Vec::new();
-    for layer in &manifest.layers {
-        let layer_digest: Digest = layer
-            .digest_str()
-            .parse()
-            .with_context(|| format!("parse layer digest {}", layer.digest_str()))?;
-        if !blob_store.blob_exists(&layer_digest).await {
-            pending.push(layer);
-        }
-    }
-
-    // Download the missing layers concurrently, bounded to PULL_CONCURRENCY —
-    // podman's default parallel-layer behaviour. `buffer_unordered` polls on
-    // this task, so the `&registry`/`&blob_store` borrows need no `'static`;
-    // each layer's blocking verity pipeline spreads across the runtime pool.
+    // Download missing layers concurrently. Cached scutes need a bounded-memory
+    // root recomputation; freshly downloaded scutes return their formatter root.
     let target_ref = &target;
-    let mut downloads = stream::iter(pending)
-        .map(|layer| {
-            let layer_digest = layer.digest_str().to_string();
-            async move {
-                fetch_one_layer(registry, target_ref, layer, blob_store)
+    let manifest_ref = &manifest;
+    let mut downloads = futures_stream::iter(&manifest.layers)
+        .map(|layer| async move {
+            let digest: Digest = layer.digest_str().parse()?;
+            let root = if blob_store.blob_exists(&digest).await {
+                manifest_ref.cached_scute_root(layer, blob_store).await?
+            } else {
+                PreparedLayer::fetch(registry, target_ref, manifest_ref, layer, blob_store)
                     .await
-                    .with_context(|| format!("fetch layer {layer_digest}"))
-            }
+                    .with_context(|| format!("fetch layer {digest}"))?
+            };
+            Ok::<_, anyhow::Error>((layer, root))
         })
         .buffer_unordered(PULL_CONCURRENCY);
+    let mut roots = ScuteRoots::default();
     while let Some(result) = downloads.next().await {
-        result?;
+        let (layer, root) = result?;
+        if let Some(root) = root {
+            roots.add(layer, root)?;
+        }
     }
-
-    // 4b. Verify the declared carapace root against the value recomputed from
-    //     the now-present scute cows (D-04: never trust distributed verity).
-    //     The annotation's presence/shape was enforced by validate() above;
-    //     this catches a corrupt download or a tampered manifest.
-    manifest
-        .verify_carapace_root(blob_store)
-        .await
+    roots
+        .verify(&manifest)
         .with_context(|| format!("verifying carapace root for {final_digest}"))?;
 
     // 5. Atomic commit per D-03 refined per Pitfall 11 / Phase 42 Plan 05
@@ -267,350 +227,11 @@ pub(crate) async fn pull_inner(
     pull_inner_with_registry(target, policy, quiet, &registry, blob_store, tag_db).await
 }
 
-/// One-layer fetch with a zero-copy, multi-consumer fan-out.
-///
-/// The transport yields owned `Bytes` chunks (`pull_blob_stream` — no copy).
-/// Each chunk is fanned out to parallel consumers by `Bytes::clone` (an `Arc`
-/// refcount bump, NOT a byte copy), so they all read the same buffer:
-///
-/// - **disk writer** (async I/O) — streams the wire bytes into a temp blob.
-/// - **outer SHA-256** (CPU) — verifies the descriptor digest.
-/// - for a raw scute: **verity builder** (CPU) consumes the same wire bytes.
-/// - for a `+zstd` scute: a **decoder** (CPU) consumes the wire bytes and
-///   re-fans-out the decompressed bytes to the verity builder and a
-///   **`.deflated` writer** (async I/O).
-///
-/// All consumers run concurrently (I/O on the runtime, CPU on the blocking
-/// pool) and are joined on completion; only then is the digest verified and
-/// the blob + sidecars atomically committed.
-async fn fetch_one_layer<R: Registry>(
-    registry: &R,
-    target: &Reference,
-    layer: &Layer,
-    blob_store: &dyn BlobStore,
-) -> Result<()> {
-    use tokio::io::AsyncWriteExt as _;
-    use tokio::sync::mpsc;
-
-    let descriptor_digest: Digest = layer.digest_str().parse()?;
-    let scratch = blob_store
-        .scratch_dir()
-        .await
-        .context("preparing scratch dir for streaming layer")?;
-    let is_zstd = layer.is_zstd_variant();
-    // Scute layers carry a per-scute salt and get a verity tree; PMI/DTB don't.
-    // The salt is used verbatim (it already is the full salt — matches carapace
-    // and the importer; do NOT prepend a zero prefix).
-    let scute_salt: Option<Vec<u8>> = match layer {
-        Layer::Scute(d) | Layer::ScuteZstd(d) => Some(
-            hex::decode(&d.annotations.salt)
-                .with_context(|| format!("decode scute salt for layer {}", d.digest))?,
-        ),
-        Layer::Pmi(_) | Layer::Dtb(_) => None,
-    };
-
-    let mut source = registry
-        .pull_blob_stream(
-            &target.registry,
-            &target.repo,
-            &descriptor_digest,
-            layer.size(),
-        )
-        .await
-        .map_err(|e| anyhow!("pull_blob_stream {descriptor_digest}: {e}"))?;
-
-    const CHAN_DEPTH: usize = 8;
-    let verity_params = scute_salt.as_ref().map(|salt| VerityParams {
-        data_block_size: VERITY_DBS,
-        hash_block_size: VERITY_HBS,
-        salt: salt.clone(),
-        uuid: [0u8; 16],
-    });
-
-    // Consumer: disk writer (async) → wire bytes into a same-fs temp blob.
-    let src_temp = scratch.join(unique_temp_name("src"));
-    let (disk_tx, mut disk_rx) = mpsc::channel::<Bytes>(CHAN_DEPTH);
-    let disk_path = src_temp.clone();
-    let disk_task = tokio::spawn(async move {
-        let mut f = tokio::fs::File::create(&disk_path)
-            .await
-            .with_context(|| format!("create layer temp {}", disk_path.display()))?;
-        while let Some(chunk) = disk_rx.recv().await {
-            f.write_all(&chunk).await.context("write layer temp")?;
-        }
-        f.sync_all().await.context("fsync layer temp")?;
-        Ok::<(), anyhow::Error>(())
-    });
-
-    // Consumer: outer SHA-256 (CPU) over the wire bytes.
-    let (ohash_tx, ohash_rx) = mpsc::channel::<Bytes>(CHAN_DEPTH);
-    let ohash_task = tokio::task::spawn_blocking(move || outer_hash(ohash_rx));
-
-    // Consumer: verity builder (CPU), fed either the wire bytes (raw) or the
-    // decompressed bytes (zstd, via the decoder below).
-    let (verity_task, verity_content_tx) = match &verity_params {
-        Some(params) => {
-            let params = params.clone();
-            let (vtx, vrx) = mpsc::channel::<Bytes>(CHAN_DEPTH);
-            let d = descriptor_digest.clone();
-            let handle = tokio::task::spawn_blocking(move || verity_consumer(vrx, params, d));
-            (Some(handle), Some(vtx))
-        }
-        None => (None, None),
-    };
-
-    // For `+zstd` scutes: a `.deflated` writer (async) + a decoder (CPU) that
-    // re-fans-out the decompressed bytes to verity + the `.deflated` writer.
-    let want_deflated = is_zstd && verity_params.is_some();
-    let deflated_temp = want_deflated.then(|| scratch.join(unique_temp_name("deflated")));
-    let (deflated_task, deflated_tx) = match &deflated_temp {
-        Some(path) => {
-            let (dtx, mut drx) = mpsc::channel::<Bytes>(CHAN_DEPTH);
-            let dpath = path.clone();
-            let handle = tokio::spawn(async move {
-                let mut f = tokio::fs::File::create(&dpath)
-                    .await
-                    .with_context(|| format!("create deflated temp {}", dpath.display()))?;
-                while let Some(chunk) = drx.recv().await {
-                    f.write_all(&chunk).await.context("write deflated temp")?;
-                }
-                f.sync_all().await.context("fsync deflated temp")?;
-                Ok::<(), anyhow::Error>(())
-            });
-            (Some(handle), Some(dtx))
-        }
-        None => (None, None),
-    };
-
-    // Decoder (zstd only): owns the verity + deflated senders so they close
-    // when decoding finishes.
-    let (decode_task, decode_tx) = if is_zstd && verity_params.is_some() {
-        let (dctx, dcrx) = mpsc::channel::<Bytes>(CHAN_DEPTH);
-        let vtx = verity_content_tx.clone();
-        let dtx = deflated_tx.clone();
-        let d = descriptor_digest.clone();
-        let handle = tokio::task::spawn_blocking(move || decode_consumer(dcrx, vtx, dtx, d));
-        (Some(handle), Some(dctx))
-    } else {
-        (None, None)
-    };
-    // The raw path feeds verity directly; the zstd path feeds the decoder.
-    // Drop the distributor's copies of the inner senders so only the decoder
-    // (zstd) keeps them alive.
-    let raw_verity_tx = if is_zstd {
-        None
-    } else {
-        verity_content_tx.clone()
-    };
-    drop(verity_content_tx);
-    drop(deflated_tx);
-
-    // Distributor: fan each wire chunk out to the compressed-side consumers.
-    let drive_result = async {
-        while let Some(item) = source.next().await {
-            let chunk =
-                item.map_err(|e| anyhow!("pull_blob_stream chunk {descriptor_digest}: {e}"))?;
-            if disk_tx.send(chunk.clone()).await.is_err() {
-                break;
-            }
-            if ohash_tx.send(chunk.clone()).await.is_err() {
-                break;
-            }
-            if let Some(tx) = &decode_tx {
-                if tx.send(chunk).await.is_err() {
-                    break;
-                }
-            } else if let Some(tx) = &raw_verity_tx {
-                if tx.send(chunk).await.is_err() {
-                    break;
-                }
-            }
-        }
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-    // Close the compressed-side channels so consumers observe EOF.
-    drop(disk_tx);
-    drop(ohash_tx);
-    drop(decode_tx);
-    drop(raw_verity_tx);
-    drive_result?;
-
-    // Join all consumers (surfaces the first real error).
-    disk_task.await.context("disk writer join")??;
-    let outer: [u8; 32] = ohash_task.await.context("outer hash join")?;
-    if let Some(t) = decode_task {
-        t.await.context("decoder join")??;
-    }
-    let verity_out = match verity_task {
-        Some(t) => Some(t.await.context("verity join")??),
-        None => None,
-    };
-    if let Some(t) = deflated_task {
-        t.await.context("deflated writer join")??;
-    }
-
-    // Verify the descriptor digest before committing anything.
-    let outer_digest = Digest::Sha256(outer);
-    if outer_digest != descriptor_digest {
-        let _ = tokio::fs::remove_file(&src_temp).await;
-        if let Some(d) = &deflated_temp {
-            let _ = tokio::fs::remove_file(d).await;
-        }
-        bail!("layer digest mismatch: expected {descriptor_digest}, got {outer_digest}");
-    }
-
-    // Commit: rename the wire blob into place, then its sidecars.
-    blob_store
-        .put_blob_from_path(&src_temp, &descriptor_digest)
-        .await
-        .with_context(|| format!("put_blob_from_path layer {descriptor_digest}"))?;
-    let blob_path = blob_store.blob_path(&descriptor_digest);
-    if let Some(dtemp) = &deflated_temp {
-        tokio::fs::rename(dtemp, blob_path.deflated_path())
-            .await
-            .with_context(|| format!("commit deflated sidecar for {descriptor_digest}"))?;
-    }
-    if let Some(vout) = verity_out {
-        write_sidecar_atomic(&scratch, &blob_path.verity_path(), &vout.blob)
-            .await
-            .with_context(|| format!("write verity sidecar for {descriptor_digest}"))?;
-    }
-    Ok(())
-}
-
-/// Unique temp filename within the scratch dir (pid + process-local counter),
-/// avoiding a random-number dependency.
-fn unique_temp_name(kind: &str) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    format!(
-        ".pichi-{kind}-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    )
-}
-
-/// Outer SHA-256 consumer (CPU): hashes every wire chunk. Runs on the blocking
-/// pool, reading via `blocking_recv`.
-fn outer_hash(mut rx: tokio::sync::mpsc::Receiver<Bytes>) -> [u8; 32] {
-    let mut h = Sha256::new();
-    while let Some(chunk) = rx.blocking_recv() {
-        h.update(&chunk);
-    }
-    h.finalize().into()
-}
-
-/// Verity consumer (CPU): feeds the dm-verity builder in `data_block_size`
-/// blocks, buffering across chunk boundaries. Runs on the blocking pool.
-fn verity_consumer(
-    mut rx: tokio::sync::mpsc::Receiver<Bytes>,
-    params: VerityParams,
-    digest: Digest,
-) -> Result<VerityOutput> {
-    let dbs = params.data_block_size as usize;
-    let mut builder =
-        VerityBuilder::new(&params).with_context(|| format!("VerityBuilder::new for {digest}"))?;
-    let mut buf: Vec<u8> = Vec::with_capacity(dbs * 2);
-    while let Some(chunk) = rx.blocking_recv() {
-        buf.extend_from_slice(&chunk);
-        let mut off = 0;
-        while buf.len() - off >= dbs {
-            builder
-                .add_data_block(&buf[off..off + dbs])
-                .with_context(|| format!("verity block for {digest}"))?;
-            off += dbs;
-        }
-        if off > 0 {
-            buf.drain(..off);
-        }
-    }
-    if !buf.is_empty() {
-        builder
-            .add_data_block(&buf)
-            .with_context(|| format!("final verity block for {digest}"))?;
-    }
-    Ok(builder.finalize())
-}
-
-/// Decoder consumer (CPU, `+zstd` only): decompresses the wire stream and
-/// re-fans-out the decompressed bytes to the verity + `.deflated` consumers.
-/// Enforces the decompressed-size cap (compression-bomb defence).
-fn decode_consumer(
-    rx: tokio::sync::mpsc::Receiver<Bytes>,
-    verity_tx: Option<tokio::sync::mpsc::Sender<Bytes>>,
-    deflated_tx: Option<tokio::sync::mpsc::Sender<Bytes>>,
-    digest: Digest,
-) -> Result<()> {
-    use std::io::Read as _;
-    let mut dec = ruzstd::decoding::StreamingDecoder::new(ChannelReader::new(rx))
-        .map_err(|e| anyhow!("zstd decoder init for {digest}: {e}"))?;
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut total: u64 = 0;
-    loop {
-        let n = dec
-            .read(&mut buf)
-            .with_context(|| format!("zstd decode {digest}"))?;
-        if n == 0 {
-            break;
-        }
-        total += n as u64;
-        if total > DEFAULT_DECOMPRESSED_CAP {
-            bail!("decompressed size exceeds cap ({DEFAULT_DECOMPRESSED_CAP} bytes) for {digest}");
-        }
-        // One copy out of the decoder's buffer (inherent); the fan-out clones
-        // are refcount-only.
-        let chunk = Bytes::copy_from_slice(&buf[..n]);
-        if let Some(tx) = &verity_tx {
-            if tx.blocking_send(chunk.clone()).is_err() {
-                break;
-            }
-        }
-        if let Some(tx) = &deflated_tx {
-            if tx.blocking_send(chunk).is_err() {
-                break;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// `std::io::Read` over an mpsc channel of `Bytes`, for driving the sync zstd
-/// decoder from the async fan-out. `blocking_recv` blocks the decoder's own
-/// blocking-pool thread only; `Bytes::split_to` advances without copying.
-struct ChannelReader {
-    rx: tokio::sync::mpsc::Receiver<Bytes>,
-    cur: Bytes,
-}
-
-impl ChannelReader {
-    fn new(rx: tokio::sync::mpsc::Receiver<Bytes>) -> Self {
-        Self {
-            rx,
-            cur: Bytes::new(),
-        }
-    }
-}
-
-impl std::io::Read for ChannelReader {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        while self.cur.is_empty() {
-            match self.rx.blocking_recv() {
-                Some(b) => self.cur = b,
-                None => return Ok(0),
-            }
-        }
-        let n = out.len().min(self.cur.len());
-        out[..n].copy_from_slice(&self.cur[..n]);
-        let _ = self.cur.split_to(n);
-        Ok(n)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use pichi_artifact::Layer;
     use pichi_artifact::{
         ConfigDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
     };
@@ -678,6 +299,7 @@ mod tests {
                 digest: scute_digest.to_string(),
                 size: scute_size,
                 annotations: ScuteAnnotations {
+                    data_blocks: None,
                     // 32 zero bytes (SALT_ZERO_PREFIX) so the verity feed has
                     // a valid salt to use on the pull side.
                     salt: hex::encode([0u8; 32]),
@@ -1050,6 +672,7 @@ mod tests {
             digest: scute_digest.to_string(),
             size: scute_size,
             annotations: ScuteAnnotations {
+                data_blocks: None,
                 salt: hex::encode([0u8; 32]),
             },
         };
@@ -1102,6 +725,7 @@ mod tests {
             digest: scute_digest.to_string(),
             size: scute_size,
             annotations: ScuteAnnotations {
+                data_blocks: None,
                 salt: hex::encode([0u8; 32]),
             },
         };
@@ -1139,7 +763,7 @@ mod tests {
             hash_block_size: 4096,
             // The per-scute salt annotation, used verbatim (no extra prefix).
             salt: vec![0u8; 32],
-            // pull-side uuid is hard-coded to 0u8; 16 in build_layer_pipeline.
+            // UUID is metadata only and does not affect the root.
             uuid: [0u8; 16],
         }
     }
@@ -1168,9 +792,7 @@ mod tests {
             &layer_digest,
             compressed.len() as u64,
             /* is_zstd= */ true,
-            // zstd carapace: verify_carapace_root is skipped, so any valid-hex
-            // root satisfies validate().
-            &hex::encode([0u8; 32]),
+            &zero_salt_root_hex(&decompressed),
         );
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
@@ -1367,5 +989,66 @@ mod tests {
             on_disk_verity, expected,
             "<src>.verity bytes must equal verity::compute(layer_bytes, params).blob"
         );
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn pull_checks_compressed_roots_before_tagging_including_cached_layers() {
+        for declared in [false, true] {
+            for cached in [false, true] {
+                for valid in [false, true] {
+                    let (_tmp, g) = graphroot();
+                    let db = open_db(&g);
+                    let store = FilesystemBlobStore::new(&g);
+                    let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
+                    let registry = MockRegistry::new();
+                    let data = vec![0x5a; 4097];
+                    let wire = ruzstd::encoding::compress_to_vec(
+                        data.as_slice(),
+                        ruzstd::encoding::CompressionLevel::Fastest,
+                    );
+                    let digest = Digest::from_bytes_sha256(&wire);
+                    let root = if valid {
+                        zero_salt_root_hex(&data)
+                    } else {
+                        hex::encode([0; 32])
+                    };
+                    let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, true, &root);
+                    let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+                    if declared {
+                        let Layer::ScuteZstd(scute) = &mut manifest.layers[0] else {
+                            unreachable!()
+                        };
+                        scute.annotations.data_blocks = Some((data.len() as u64).div_ceil(4096));
+                    }
+                    let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
+                    registry.insert_manifest("ghcr.io", "example/foo", "bar", bytes);
+                    if cached {
+                        store.put_blob(&digest, &wire).await.unwrap();
+                        tokio::fs::write(store.blob_path(&digest).deflated_path(), &data)
+                            .await
+                            .unwrap();
+                    } else {
+                        registry.insert_blob("ghcr.io", "example/foo", digest, Bytes::from(wire));
+                    }
+                    let result = pull_inner_with_registry(
+                        target.clone(),
+                        PullPolicy::Always,
+                        true,
+                        &registry,
+                        &store,
+                        &db,
+                    )
+                    .await;
+                    assert_eq!(
+                        result.is_ok(),
+                        valid,
+                        "declared={declared}, cached={cached}: {result:?}"
+                    );
+                    assert_eq!(
+                        db.resolve_tag(&target.to_string()).await.unwrap().is_some(),
+                        valid
+                    );
+                }
+            }
+        }
     }
 }

@@ -22,6 +22,8 @@ pub const SCUTE_CHUNK_SIZE_SECTORS: u32 = 8;
 
 mod manifest;
 
+use verity::VerityFormat as _;
+
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -30,10 +32,7 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest as _, Sha256};
 
 use pichi_artifact::{Digest, Reference};
-use pichi_storage::{
-    BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb,
-    sidecar::write_sidecar_atomic,
-};
+use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 /// 32-byte zero salt prefix per CONTEXT D-01 / D-02.
 const SALT_ZERO_PREFIX: [u8; 32] = [0u8; 32];
@@ -101,13 +100,9 @@ pub async fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
         .await
         .with_context(|| format!("put_blob_from_path cow {}", staged.cow_digest))?;
     let cow_blob_path = blob_store.blob_path(&staged.cow_digest);
-    let scratch2 = blob_store
-        .scratch_dir()
+    tokio::fs::rename(staged.verity_temp.path(), cow_blob_path.verity_path())
         .await
-        .context("scratch_dir for verity sidecar")?;
-    write_sidecar_atomic(&scratch2, &cow_blob_path.verity_path(), &staged.verity_blob)
-        .await
-        .with_context(|| format!("write verity sidecar for cow {}", staged.cow_digest))?;
+        .with_context(|| format!("commit verity sidecar for cow {}", staged.cow_digest))?;
     blob_store
         .put_blob(&staged.manifest_digest, &staged.manifest_bytes)
         .await
@@ -149,7 +144,7 @@ pub async fn run(args: ImportArgs, graphroot: &Path) -> Result<()> {
 struct StagedImport {
     cow_temp_path: PathBuf,
     cow_digest: Digest,
-    verity_blob: Vec<u8>,
+    verity_temp: tempfile::NamedTempFile,
     manifest_bytes: Vec<u8>,
     manifest_digest: Digest,
     tag_key: Option<String>,
@@ -176,21 +171,8 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
         })
         .transpose()?;
 
-    // BL-01 / T-43-01 mitigation: STREAM the input into a temp COW file
-    // rather than slurping `args.raw_image` into a `Vec<u8>` (which would
-    // OOM on multi-GB inputs). The pipeline is:
-    //
-    //   input file ──read chunks──> cow::write_streaming ──> cow temp file
-    //   cow temp file ──read 4 KiB blocks──> VerityBuilder ──> verity blob
-    //
-    // Memory profile (any input size):
-    //   - input read buffer: 1 chunk (default 16 KiB, max 1 MiB)
-    //   - cow exception list: 16 bytes per non-zero input chunk
-    //   - verity leaf hashes: 32 bytes per 4 KiB cow block (~0.78%)
-    //   - verity blob: ~1/127 of cow size (kept in memory; small)
-    //
-    // The cow + verity temps live in the caller-provided `scratch` dir (same
-    // filesystem as the blob dir) so the final `rename(2)` cannot EXDEV.
+    // Stream the input to a COW tempfile, then format its verity sidecar with
+    // devmap. Both files stay on the cache filesystem for atomic renames.
     let raw_size = std::fs::metadata(&args.raw_image)
         .with_context(|| format!("stat input image: {}", args.raw_image.display()))?
         .len();
@@ -257,9 +239,7 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
         full_salt.extend_from_slice(suffix);
     }
 
-    // Step 3: stream-hash the cow file in 4 KiB blocks, simultaneously
-    // computing its SHA-256 digest AND feeding the VerityBuilder. One
-    // pass over the cow file; no full-cow Vec<u8>.
+    // Hash the completed COW for its content address and deterministic UUID.
     const VERITY_DBS: u32 = 4096; // Phase 42 D-06 locked default
     const VERITY_HBS: u32 = 4096; // Phase 42 D-06 locked default
 
@@ -297,46 +277,15 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
         uuid,
     };
 
-    // Stream the cow file into the VerityBuilder one data block at a time.
-    let mut builder =
-        verity::VerityBuilder::new(&params).context("verity::VerityBuilder::new failed")?;
-    let mut cow_reader = BufReader::new(
-        File::open(cow_temp.path())
-            .with_context(|| format!("re-opening cow temp file: {}", cow_temp.path().display()))?,
-    );
-    let mut block_buf = vec![0u8; VERITY_DBS as usize];
-    loop {
-        // Fill a full block (or short final read at EOF).
-        let mut filled = 0usize;
-        while filled < block_buf.len() {
-            let n = cow_reader
-                .read(&mut block_buf[filled..])
-                .context("reading cow temp file for verity")?;
-            if n == 0 {
-                break;
-            }
-            filled += n;
-        }
-        if filled == 0 {
-            break;
-        }
-        builder
-            .add_data_block(&block_buf[..filled])
-            .context("VerityBuilder::add_data_block failed")?;
-        if filled < block_buf.len() {
-            // Short read = EOF.
-            break;
-        }
-    }
-    let verity_out = builder.finalize();
-    let verity_digest = Digest::from_bytes_sha256(&verity_out.blob);
+    let cow_reader = BufReader::new(File::open(cow_temp.path())?);
+    let mut verity_temp = tempfile::NamedTempFile::new_in(scratch)?;
+    let root_hash = params
+        .header(cow_size)?
+        .format_padded(cow_reader, verity_temp.as_file_mut())
+        .context("formatting verity")?;
+    verity_temp.as_file().sync_all()?;
     if !args.quiet {
-        log::info!(
-            "pichi import: verity blob {} bytes, digest {}, root {}",
-            verity_out.blob.len(),
-            verity_digest,
-            hex::encode(verity_out.root_hash)
-        );
+        log::info!("pichi import: verity root {}", hex::encode(root_hash));
     }
 
     // Step 5: build the base-carapace manifest (one Scute, no PMI). The single
@@ -346,7 +295,7 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
         &cow_digest,
         cow_size,
         &full_salt,
-        &verity_out.root_hash,
+        &root_hash,
         &args.created_rfc3339,
         &args.annotations,
     )
@@ -365,7 +314,7 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
     Ok(StagedImport {
         cow_temp_path,
         cow_digest,
-        verity_blob: verity_out.blob,
+        verity_temp,
         manifest_bytes,
         manifest_digest,
         tag_key,

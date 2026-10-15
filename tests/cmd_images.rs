@@ -42,6 +42,7 @@ async fn populate(
         digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111".into(),
         size: 4096,
         annotations: ScuteAnnotations {
+            data_blocks: None,
             salt: "dead".into(),
         },
     })];

@@ -73,7 +73,10 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
             Layer::Scute(ScuteDescriptor {
                 digest: cow_digest.to_string(),
                 size: cow_bytes.len() as u64,
-                annotations: ScuteAnnotations { salt: "00".into() },
+                annotations: ScuteAnnotations {
+                    data_blocks: None,
+                    salt: "00".into(),
+                },
             }),
             Layer::Pmi(PmiDescriptor {
                 digest: pmi_digest.to_string(),

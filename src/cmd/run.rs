@@ -381,7 +381,10 @@ mod tests {
             digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .into(),
             size: 4096,
-            annotations: ScuteAnnotations { salt: "00".into() },
+            annotations: ScuteAnnotations {
+                data_blocks: None,
+                salt: "00".into(),
+            },
         };
         let m = manifest_with(vec![pmi_layer(), Layer::Scute(scute)]);
         let (_pmi, scutes) = m.partition_layers().unwrap();
@@ -394,7 +397,10 @@ mod tests {
             digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .into(),
             size: 4096,
-            annotations: ScuteAnnotations { salt: "00".into() },
+            annotations: ScuteAnnotations {
+                data_blocks: None,
+                salt: "00".into(),
+            },
         };
         let m = manifest_with(vec![Layer::Scute(scute)]);
         let err = m.partition_layers().unwrap_err();
@@ -407,7 +413,10 @@ mod tests {
             digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .into(),
             size: 4096,
-            annotations: ScuteAnnotations { salt: "00".into() },
+            annotations: ScuteAnnotations {
+                data_blocks: None,
+                salt: "00".into(),
+            },
         };
         let m = manifest_with(vec![pmi_layer(), Layer::ScuteZstd(scute)]);
         let err = m.partition_layers().unwrap_err();
@@ -501,7 +510,10 @@ mod tests {
         let scute = ScuteDescriptor {
             digest: cow_digest.to_string(),
             size: cow_bytes.len() as u64,
-            annotations: ScuteAnnotations { salt: "00".into() },
+            annotations: ScuteAnnotations {
+                data_blocks: None,
+                salt: "00".into(),
+            },
         };
         let m = manifest_with(vec![pmi_layer(), Layer::Scute(scute.clone())]);
 
