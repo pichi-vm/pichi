@@ -11,6 +11,7 @@ pub mod build;
 pub mod images;
 pub mod import;
 pub mod inspect;
+mod layer;
 pub mod load;
 pub mod manifest;
 pub mod manifest_ext;

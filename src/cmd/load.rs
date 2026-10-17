@@ -12,13 +12,12 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use std::fs;
 
-use pichi_artifact::{Digest, Layer, Manifest, Reference};
-use pichi_import::verity::VerityParams;
-use pichi_storage::sidecar::write_sidecar_atomic;
-use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_artifact::{Digest, Manifest, Reference};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::LoadArgs;
-use crate::cmd::manifest_ext::ManifestExt;
+use crate::cmd::layer::PreparedLayer;
+use crate::cmd::manifest_ext::ScuteRoots;
 use crate::config::Config;
 
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
@@ -79,13 +78,15 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
             .with_context(|| format!("read loaded manifest {digest}"))?;
         let manifest = Manifest::from_reader_validated(&raw[..])
             .with_context(|| format!("parse loaded manifest {digest}"))?;
-        prepare_sidecars(&blob_store, &manifest).await?;
-        // Verify the declared carapace root against the recomputed value
-        // (D-04). The sidecars above already recomputed each scute's verity;
-        // this cross-checks the chain top against the manifest annotation.
-        manifest
-            .verify_carapace_root(&blob_store)
-            .await
+        let mut roots = ScuteRoots::default();
+        for layer in &manifest.layers {
+            if let Some(root) = PreparedLayer::prepare_cached(&manifest, layer, &blob_store).await?
+            {
+                roots.add(layer, root)?;
+            }
+        }
+        roots
+            .verify(&manifest)
             .with_context(|| format!("verifying carapace root for loaded manifest {digest}"))?;
 
         let tag = args.tag.clone().or_else(|| {
@@ -108,84 +109,6 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
             }
             None => println!("loaded {digest} (untagged)"),
         }
-    }
-    Ok(())
-}
-
-/// Recompute the prepared sidecars for every scute layer of `manifest`:
-/// `<blob>.deflated` (decompressed cow, `+zstd` only) and `<blob>.verity`
-/// (dm-verity hash tree). Idempotent — a scute whose `.verity` already exists
-/// is skipped. PMI/DTB layers carry no verity and are ignored.
-async fn prepare_sidecars(blob_store: &FilesystemBlobStore, manifest: &Manifest) -> Result<()> {
-    let data_block_size = manifest.data_block_size();
-    let hash_block_size = manifest.hash_block_size();
-    let scratch = blob_store
-        .scratch_dir()
-        .await
-        .context("preparing scratch dir for sidecars")?;
-
-    for layer in &manifest.layers {
-        let (salt_hex, is_zstd) = match layer {
-            Layer::Scute(d) => (&d.annotations.salt, false),
-            Layer::ScuteZstd(d) => (&d.annotations.salt, true),
-            _ => continue,
-        };
-        let digest: Digest = layer
-            .digest_str()
-            .parse()
-            .with_context(|| format!("parse scute digest {}", layer.digest_str()))?;
-        let blob_path = blob_store.blob_path(&digest);
-        let v_path = blob_path.verity_path();
-        if tokio::fs::try_exists(&v_path).await.unwrap_or(false) {
-            continue;
-        }
-
-        let raw = blob_store
-            .get_blob(&digest)
-            .await
-            .with_context(|| format!("read scute cow blob {digest}"))?;
-        let salt = hex::decode(salt_hex)
-            .with_context(|| format!("scute salt is not valid hex: {salt_hex}"))?;
-
-        // The zstd decode + dm-verity hash are CPU-bound — run them off the
-        // runtime. Returns the optional `.deflated` bytes (only for `+zstd`;
-        // raw scutes ARE the deflated bytes) and the `.verity` blob.
-        let d = digest.clone();
-        let (deflated, verity_blob) =
-            tokio::task::spawn_blocking(move || -> Result<(Option<Vec<u8>>, Vec<u8>)> {
-                let cow = if is_zstd {
-                    let mut decoder = ruzstd::decoding::StreamingDecoder::new(&raw[..])
-                        .map_err(|e| anyhow!("zstd decoder init for {d}: {e}"))?;
-                    let mut out = Vec::new();
-                    std::io::Read::read_to_end(&mut decoder, &mut out)
-                        .with_context(|| format!("zstd decode scute {d}"))?;
-                    out
-                } else {
-                    raw
-                };
-                let params = VerityParams {
-                    data_block_size,
-                    hash_block_size,
-                    salt,
-                    uuid: [0u8; 16], // metadata only; kernel ignores it at activation.
-                };
-                let output = params
-                    .compute(&cow)
-                    .with_context(|| format!("dm-verity for scute {d}"))?;
-                let deflated = if is_zstd { Some(cow) } else { None };
-                Ok((deflated, output.blob))
-            })
-            .await
-            .context("sidecar computation task panicked")??;
-
-        if let Some(deflated) = deflated {
-            write_sidecar_atomic(&scratch, &blob_path.deflated_path(), &deflated)
-                .await
-                .with_context(|| format!("write .deflated sidecar for {digest}"))?;
-        }
-        write_sidecar_atomic(&scratch, &v_path, &verity_blob)
-            .await
-            .with_context(|| format!("write .verity sidecar for {digest}"))?;
     }
     Ok(())
 }

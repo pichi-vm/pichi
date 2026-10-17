@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Pull adapters: devmap drives network reads, validation, and cache writes.
+//! Streaming layer preparation shared by pull and load.
 
 use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
 use std::path::Path;
@@ -20,7 +20,7 @@ use crate::cmd::manifest_ext::ManifestExt as _;
 const DECOMPRESSED_CAP: u64 = 16 * 1024 * 1024 * 1024;
 
 pub(super) struct PreparedLayer {
-    source: NamedTempFile,
+    source: Option<NamedTempFile>,
     deflated: Option<NamedTempFile>,
     verity: Option<NamedTempFile>,
     root: Option<[u8; 32]>,
@@ -51,11 +51,59 @@ impl PreparedLayer {
         prepared.commit(store, &digest).await
     }
 
+    pub(super) async fn prepare_cached(
+        manifest: &Manifest,
+        layer: &Layer,
+        store: &dyn BlobStore,
+    ) -> Result<Option<[u8; 32]>> {
+        let is_zstd = match layer {
+            Layer::Scute(_) => false,
+            Layer::ScuteZstd(_) => true,
+            _ => return Ok(None),
+        };
+        let digest: Digest = layer.digest_str().parse()?;
+        let path = store.blob_path(&digest);
+        if tokio::fs::try_exists(path.verity_path()).await?
+            && (!is_zstd || tokio::fs::try_exists(path.deflated_path()).await?)
+        {
+            return manifest.cached_scute_root(layer, store).await;
+        }
+        let scratch = store.scratch_dir().await?;
+        let manifest = manifest.clone();
+        let layer = layer.clone();
+        let prepared = tokio::task::spawn_blocking(move || {
+            let input = BufReader::new(std::fs::File::open(path)?);
+            Self::read_into(input, io::sink(), &manifest, &layer, &scratch)
+        })
+        .await
+        .context("layer formatting task panicked")??;
+        prepared.commit(store, &digest).await
+    }
+
     fn read<R: Read>(input: R, manifest: &Manifest, layer: &Layer, scratch: &Path) -> Result<Self> {
         let source = NamedTempFile::new_in(scratch)?;
+        let mut prepared = Self::read_into(
+            input,
+            BufWriter::new(source.as_file()),
+            manifest,
+            layer,
+            scratch,
+        )?;
+        source.as_file().sync_all()?;
+        prepared.source = Some(source);
+        Ok(prepared)
+    }
+
+    fn read_into<R: Read, W: Write>(
+        input: R,
+        output: W,
+        manifest: &Manifest,
+        layer: &Layer,
+        scratch: &Path,
+    ) -> Result<Self> {
         let mut wire = WireReader {
             input,
-            output: BufWriter::new(source.as_file()),
+            output,
             hash: Sha256::new(),
             count: 0,
             expected: layer.size(),
@@ -113,12 +161,11 @@ impl PreparedLayer {
             }
         };
         wire.finish(&layer.digest_str().parse()?)?;
-        source.as_file().sync_all()?;
         for file in deflated.iter().chain(verity.iter()) {
             file.as_file().sync_all()?;
         }
         Ok(Self {
-            source,
+            source: None,
             deflated,
             verity,
             root,
@@ -135,7 +182,9 @@ impl PreparedLayer {
         if let Some(file) = &self.verity {
             tokio::fs::rename(file.path(), path.verity_path()).await?;
         }
-        store.put_blob_from_path(self.source.path(), digest).await?;
+        if let Some(source) = &self.source {
+            store.put_blob_from_path(source.path(), digest).await?;
+        }
         Ok(self.root)
     }
 }
@@ -292,7 +341,10 @@ mod tests {
                 let scratch = tempfile::tempdir().unwrap();
                 let result = fixture.prepare(scratch.path()).unwrap();
                 assert_eq!(result.root, fixture.manifest.carapace_verity_hash());
-                assert_eq!(std::fs::read(result.source.path()).unwrap(), fixture.wire);
+                assert_eq!(
+                    std::fs::read(result.source.as_ref().unwrap().path()).unwrap(),
+                    fixture.wire
+                );
                 if let Some(deflated) = result.deflated.as_ref() {
                     // The partial final block's padding is only a formatter input.
                     assert_eq!(std::fs::read(deflated.path()).unwrap(), fixture.data);
@@ -311,6 +363,41 @@ mod tests {
                 assert_eq!(verity_bytes, params.compute(&fixture.data).unwrap().blob);
                 drop(result);
                 assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_preparation_formats_repairs_and_reuses_sidecars() {
+        for compressed in [false, true] {
+            for blocks in [None, Some(2)] {
+                let fixture = Fixture::new(compressed, blocks);
+                let dir = tempfile::tempdir().unwrap();
+                let store = pichi_storage::FilesystemBlobStore::new(dir.path());
+                let layer = &fixture.manifest.layers[0];
+                let digest = layer.digest_str().parse().unwrap();
+                store.put_blob(&digest, &fixture.wire).await.unwrap();
+                let path = store.blob_path(&digest);
+                let expected = fixture.prepare(dir.path()).unwrap();
+                for _ in 0..2 {
+                    let root = PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
+                        .await
+                        .unwrap();
+                    assert_eq!(root, expected.root);
+                    assert_eq!(
+                        std::fs::read(path.verity_path()).unwrap(),
+                        std::fs::read(expected.verity.as_ref().unwrap().path()).unwrap()
+                    );
+                    assert_eq!(std::fs::read(&path).unwrap(), fixture.wire);
+                }
+                if compressed {
+                    std::fs::remove_file(path.deflated_path()).unwrap();
+                    let root = PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
+                        .await
+                        .unwrap();
+                    assert_eq!(root, expected.root);
+                    assert_eq!(std::fs::read(path.deflated_path()).unwrap(), fixture.data);
+                }
             }
         }
     }

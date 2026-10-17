@@ -17,10 +17,9 @@ use pichi_artifact::{Digest, DtbDescriptor, Layer, Manifest, PmiDescriptor, Scut
 use pichi_import::verity::{VerityFormat as _, VerityParams};
 use pichi_storage::{BlobSidecarExt, BlobStore};
 
-/// Chain-wide verity annotation keys + the carapace-locked default block size.
+/// Chain-wide verity annotation keys.
 const ANN_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
 const ANN_HASH_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.hash-block-size";
-const DEFAULT_BLOCK_SIZE: u32 = 4096;
 
 /// Standard OCI image-architecture annotation key.
 const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
@@ -28,10 +27,6 @@ const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 /// pichi-side queries and validations on a cached [`Manifest`].
 #[allow(async_fn_in_trait)] // used only via static dispatch on Manifest values
 pub trait ManifestExt {
-    /// dm-verity data block size (annotation, falling back to the locked 4096).
-    fn data_block_size(&self) -> u32;
-    /// dm-verity hash block size (annotation, falling back to the locked 4096).
-    fn hash_block_size(&self) -> u32;
     /// The base-DTB layer, if the artifact carries one (detached-mode PMI).
     fn dtb_layer(&self) -> Option<&DtbDescriptor>;
     /// Partition layers into the single PMI descriptor + ordered scute list.
@@ -51,23 +46,9 @@ pub trait ManifestExt {
     ) -> Result<Option<[u8; 32]>>;
     /// The carapace trust anchor `rootₙ₋₁`: the top scute's dm-verity root.
     async fn carapace_top_root(&self, blob_store: &dyn BlobStore) -> Result<[u8; 32]>;
-    /// Recompute the carapace top root from the (undistributed) scute cows and
-    /// verify it matches the declared `dev.pichi.carapace.verity.hash`
-    /// annotation. D-04: never trust distributed verity — recompute and
-    /// compare. Errors on mismatch (corrupt download / tampered manifest).
-    /// No-op for scute-less manifests.
-    async fn verify_carapace_root(&self, blob_store: &dyn BlobStore) -> Result<()>;
 }
 
 impl ManifestExt for Manifest {
-    fn data_block_size(&self) -> u32 {
-        annotation_u32(self, ANN_DATA_BLOCK_SIZE)
-    }
-
-    fn hash_block_size(&self) -> u32 {
-        annotation_u32(self, ANN_HASH_BLOCK_SIZE)
-    }
-
     fn dtb_layer(&self) -> Option<&DtbDescriptor> {
         self.layers.iter().find_map(|l| match l {
             Layer::Dtb(d) => Some(d),
@@ -211,16 +192,6 @@ impl ManifestExt for Manifest {
         }
         roots.top()
     }
-
-    async fn verify_carapace_root(&self, blob_store: &dyn BlobStore) -> Result<()> {
-        let mut roots = ScuteRoots::default();
-        for layer in &self.layers {
-            if let Some(root) = self.cached_scute_root(layer, blob_store).await? {
-                roots.add(layer, root)?;
-            }
-        }
-        roots.verify(self)
-    }
 }
 
 /// Roots computed from the data in this operation, never read from sidecar metadata.
@@ -280,13 +251,4 @@ impl ScuteRoots {
         }
         Ok(())
     }
-}
-
-/// Read a u32 chain annotation, falling back to the carapace-locked default.
-fn annotation_u32(manifest: &Manifest, key: &str) -> u32 {
-    manifest
-        .annotations
-        .get(key)
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(DEFAULT_BLOCK_SIZE)
 }

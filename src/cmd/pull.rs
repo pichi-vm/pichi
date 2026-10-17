@@ -14,8 +14,7 @@ use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
 
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 
-mod stream;
-use self::stream::PreparedLayer;
+use super::layer::PreparedLayer;
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry, pick_pichi_entry_from_index};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
