@@ -239,18 +239,10 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
         full_salt.extend_from_slice(suffix);
     }
 
-    // Hash the completed COW for its content address and deterministic UUID.
+    // Hash the completed COW for its content address.
     const VERITY_DBS: u32 = 4096; // Phase 42 D-06 locked default
     const VERITY_HBS: u32 = 4096; // Phase 42 D-06 locked default
 
-    // We need a uuid before constructing VerityParams, but the uuid
-    // depends on the cow digest. Compute the cow digest first (one
-    // pass, hash-only), then re-stream for verity. This is two passes
-    // over the cow file but one pass over the (much larger) input.
-    //
-    // Alternative: compute uuid lazily after both passes — but then we
-    // can't construct VerityParams up-front. The two-pass cow read is
-    // cheap (cow << input for sparse images) and keeps the API typed.
     let cow_digest_arr = stream_sha256(cow_temp.path())
         .with_context(|| format!("hashing cow temp file {}", cow_temp.path().display()))?;
     let cow_digest = Digest::Sha256(cow_digest_arr);
@@ -265,16 +257,12 @@ fn stage_import(args: ImportArgs, scratch: &Path) -> Result<StagedImport> {
         );
     }
 
-    // Step 4: derive deterministic uuid (RESEARCH Open-Q #3) and compute
-    // the verity tree (D-03: re-callable from Phase 44).
-    let cow_digest_bytes = cow_digest.as_sha256_array();
-    let uuid = verity::VerityParams::derive_uuid(&full_salt, &cow_digest_bytes);
-
+    // Step 4: compute the verity tree with the same zero UUID as pull/load.
     let params = verity::VerityParams {
         data_block_size: VERITY_DBS,
         hash_block_size: VERITY_HBS,
         salt: full_salt.clone(),
-        uuid,
+        uuid: [0; 16],
     };
 
     let cow_reader = BufReader::new(File::open(cow_temp.path())?);
@@ -384,6 +372,16 @@ mod tests {
             3,
             "expected exactly 3 blobs (cow, verity, manifest)"
         );
+
+        let verity_path = std::fs::read_dir(&blobs_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "verity"))
+            .unwrap();
+        let bytes = std::fs::read(verity_path).unwrap();
+        let header =
+            devmap_verity::header::Header::decode(bytes[..512].try_into().unwrap()).unwrap();
+        assert_eq!(header.uuid, [0; 16]);
 
         // Tag resolves (stored under canonical form after Reference::from_str normalization).
         let db = FilesystemTagDb::open(&graphroot).unwrap();

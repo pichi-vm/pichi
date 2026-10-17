@@ -11,7 +11,6 @@ use devmap_verity::{
     Format as _,
     header::{Algorithm, HashType, Header, Salt},
 };
-use sha2::{Digest as _, Sha256};
 
 pub const VERITY_FORMAT_VERSION: u32 = 1;
 pub const VERITY_HASH_TYPE_NORMAL: u32 = 1;
@@ -73,16 +72,6 @@ impl VerityParams {
             blob: output.into_inner(),
             root_hash,
         })
-    }
-
-    /// Preserve the existing import-side deterministic identifier policy.
-    pub fn derive_uuid(salt: &[u8], cow_digest: &[u8; 32]) -> [u8; 16] {
-        let mut hash = Sha256::new();
-        hash.update(salt);
-        hash.update(cow_digest);
-        let mut uuid = [0; 16];
-        uuid.copy_from_slice(&hash.finalize()[..16]);
-        uuid
     }
 }
 
