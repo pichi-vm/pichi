@@ -184,9 +184,6 @@ pub(crate) async fn build_gpt_spec(
     scutes: &[&ScuteDescriptor],
     blob_store: &FilesystemBlobStore,
 ) -> Result<String> {
-    let data_block_size = manifest.data_block_size();
-    let hash_block_size = manifest.hash_block_size();
-
     let mut parts: Vec<String> = Vec::with_capacity(scutes.len() * 2);
     for scute in scutes {
         let cow_digest: Digest = scute
@@ -206,27 +203,10 @@ pub(crate) async fn build_gpt_spec(
             .flatten()
         {
             Some(h) => h,
-            None => {
-                let salt = hex::decode(&scute.annotations.salt).with_context(|| {
-                    format!("scute salt is not valid hex: {}", scute.annotations.salt)
-                })?;
-                let cow_bytes = blob_store
-                    .get_blob(&cow_digest)
-                    .await
-                    .with_context(|| format!("reading scute cow blob {cow_digest}"))?;
-                // dm-verity root computation is CPU-bound — run it off the runtime.
-                let params = pichi_import::verity::VerityParams {
-                    data_block_size,
-                    hash_block_size,
-                    salt,
-                    // Cosmetic for the root-hash computation (inputs are salt + data).
-                    uuid: [0u8; 16],
-                };
-                tokio::task::spawn_blocking(move || params.compute(&cow_bytes).map(|o| o.root_hash))
-                    .await
-                    .context("verity task panicked")?
-                    .context("dm-verity root computation failed")?
-            }
+            None => manifest
+                .cached_scute_root(&pichi_artifact::Layer::Scute((*scute).clone()), blob_store)
+                .await?
+                .context("scute has no verity root")?,
         };
 
         // D-run-01: cow PARTUUID = root[0..16], verity PARTUUID = root[16..32].
@@ -494,6 +474,49 @@ mod tests {
             serde_keyvalue::from_key_values(crate::cmd::build::USER_NET_SPEC)
                 .expect("user-net spec parses as dillo NetSpec");
         assert_eq!(spec.backend, dillo_config::NetBackendKind::User);
+    }
+
+    #[tokio::test]
+    async fn multi_scute_gpt_uses_manifest_hash_type_without_writing_sidecars() {
+        use pichi_import::verity::VerityFormat as _;
+
+        let tmp = TempDir::new().unwrap();
+        let store = FilesystemBlobStore::new(tmp.path());
+        let mut scutes = Vec::new();
+        for byte in [0x42, 0x73] {
+            let data = vec![byte; 8193];
+            let digest = sha256_digest(&data);
+            store.put_blob(&digest, &data).await.unwrap();
+            scutes.push(ScuteDescriptor {
+                digest: digest.to_string(),
+                size: data.len() as u64,
+                annotations: ScuteAnnotations {
+                    data_blocks: Some(3),
+                    salt: "abcd".into(),
+                },
+            });
+        }
+        let mut manifest = manifest_with(scutes.iter().cloned().map(Layer::Scute).collect());
+        manifest
+            .annotations
+            .insert("dev.pichi.carapace.verity.hash-type".into(), "0".into());
+        let refs = scutes.iter().collect::<Vec<_>>();
+        let spec = build_gpt_spec(&manifest, &refs, &store).await.unwrap();
+        let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(&spec).unwrap();
+        for (index, scute) in scutes.iter().enumerate() {
+            let digest = scute.digest.parse().unwrap();
+            let path = store.blob_path(&digest);
+            let data = std::fs::read(&path).unwrap();
+            let header = manifest.verity_header(scute, Some(scute.size)).unwrap();
+            let mut output = std::io::Cursor::new(Vec::new());
+            let root = header.format_padded(data.as_slice(), &mut output).unwrap();
+            assert_eq!(
+                gpt.partitions[index * 2].label,
+                format!("c:{}", &hex::encode(root)[..34])
+            );
+            assert_eq!(gpt.partitions[index * 2].partuuid.to_bytes_le(), root[..16]);
+            assert!(!path.verity_path().exists());
+        }
     }
 
     /// The `--gpt` kv string we emit must parse back through dillo's own
