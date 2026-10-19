@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bytes::Bytes;
-use futures_util::stream::Stream;
+use futures_util::stream::{Stream, StreamExt as _};
 use oci_client::{
     Client, Reference as OciRef, RegistryOperation,
     client::{ClientConfig, ClientProtocol},
@@ -384,7 +384,9 @@ impl Registry for HttpRegistry {
             .pull_blob_stream(&oci_ref, &descriptor)
             .await
             .map_err(RegistryError::from)?;
-        Ok(sized.stream)
+        // oci-client finalizes (and resets) its digest on EOF. Fuse the stream
+        // so repeated EOF reads by adapters cannot finalize an empty digest.
+        Ok(sized.stream.fuse().boxed())
     }
 
     async fn head_blob(&self, registry: &str, repo: &str, digest: &Digest) -> Result<bool> {
@@ -598,5 +600,84 @@ mod tests {
             by_digest.to_string().contains(&format!("@{full}")),
             "expected '@{full}' in ref display, got: {by_digest}"
         );
+    }
+    #[tokio::test]
+    async fn blob_stream_keeps_eof_and_reports_digest_errors() {
+        use super::{HttpRegistry, RegistryEntry};
+        use crate::{Registry as _, auth::AuthEnv};
+        use pichi_artifact::Digest;
+        use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
+        use tokio::net::TcpListener;
+        use tokio_util::io::StreamReader;
+
+        for valid in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let server = tokio::spawn(async move {
+                loop {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    let mut socket = BufReader::new(socket);
+                    let mut request = String::new();
+                    socket.read_line(&mut request).await.unwrap();
+                    let blob = request.contains("/blobs/");
+                    let body = if blob {
+                        b"scute bytes".as_slice()
+                    } else {
+                        b"{}".as_slice()
+                    };
+                    loop {
+                        let mut line = String::new();
+                        assert_ne!(socket.read_line(&mut line).await.unwrap(), 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    socket.get_mut().write_all(header.as_bytes()).await.unwrap();
+                    socket.get_mut().write_all(body).await.unwrap();
+                    socket.get_mut().shutdown().await.unwrap();
+                    if blob {
+                        break;
+                    }
+                }
+            });
+            let registry = HttpRegistry::new(
+                vec![RegistryEntry {
+                    prefix: address.clone(),
+                    insecure: true,
+                    auth_hint: None,
+                }],
+                AuthEnv::default(),
+            );
+            let digest = Digest::from_bytes_sha256(if valid {
+                b"scute bytes"
+            } else {
+                b"wrong bytes"
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let stream = registry
+                    .pull_blob_stream(&address, "test/scute", &digest, 11)
+                    .await
+                    .unwrap();
+                let mut reader = StreamReader::new(stream);
+                let mut data = Vec::new();
+                let result = reader.read_to_end(&mut data).await;
+                if valid {
+                    result.unwrap();
+                    assert_eq!(data, b"scute bytes");
+                    // Formatter EOF validation and the wire adapter both check EOF.
+                    assert_eq!(reader.read(&mut [0]).await.unwrap(), 0);
+                    assert_eq!(reader.read(&mut [0]).await.unwrap(), 0);
+                } else {
+                    assert!(result.unwrap_err().to_string().contains("Invalid digest"));
+                }
+                server.await.unwrap();
+            })
+            .await
+            .unwrap();
+        }
     }
 }
