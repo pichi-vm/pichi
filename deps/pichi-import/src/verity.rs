@@ -7,10 +7,7 @@ use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::num::NonZero;
 
 use devmap_core::{BlockSize, Geometry};
-use devmap_verity::{
-    Format as _,
-    header::{Algorithm, HashType, Header, Salt},
-};
+use devmap_verity::{Algorithm, Format as _, HashType, Header, Parameters, Salt};
 
 pub const VERITY_FORMAT_VERSION: u32 = 1;
 pub const VERITY_HASH_TYPE_NORMAL: u32 = 1;
@@ -55,11 +52,13 @@ impl VerityParams {
         let count = NonZero::new(data_blocks).ok_or_else(invalid)?;
         Ok(Header {
             uuid: self.uuid,
-            hash_type: HashType::Normal,
-            algorithm: Algorithm::Sha256,
-            salt: Salt::new(&self.salt).ok_or_else(invalid)?,
-            data: Geometry { size, count },
-            hash,
+            parameters: Parameters {
+                hash_type: HashType::Normal,
+                algorithm: Algorithm::Sha256,
+                salt: Salt::new(&self.salt).ok_or_else(invalid)?,
+                data: Geometry { size, count },
+                hash,
+            },
         })
     }
 
@@ -83,8 +82,9 @@ pub trait VerityFormat {
 
 impl VerityFormat for Header {
     fn format_padded<R: Read, W: Write + Seek>(self, data: R, hash: W) -> io::Result<[u8; 32]> {
-        let block_size = u64::from(self.data.size.bytes().get());
+        let block_size = u64::from(self.parameters.data.size.bytes().get());
         let remaining = self
+            .parameters
             .data
             .count
             .get()

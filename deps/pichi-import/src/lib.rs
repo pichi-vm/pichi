@@ -379,8 +379,7 @@ mod tests {
             .find(|path| path.extension().is_some_and(|ext| ext == "verity"))
             .unwrap();
         let bytes = std::fs::read(verity_path).unwrap();
-        let header =
-            devmap_verity::header::Header::decode(bytes[..512].try_into().unwrap()).unwrap();
+        let header = devmap_verity::Header::decode(bytes[..512].try_into().unwrap()).unwrap();
         assert_eq!(header.uuid, [0; 16]);
 
         // Tag resolves (stored under canonical form after Reference::from_str normalization).

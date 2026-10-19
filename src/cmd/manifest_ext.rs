@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
-use devmap_verity::header::{HashType, Header};
+use devmap_verity::{HashType, Header};
 use pichi_artifact::{Digest, DtbDescriptor, Layer, Manifest, PmiDescriptor, ScuteDescriptor};
 use pichi_import::verity::{VerityFormat as _, VerityParams};
 use pichi_storage::{BlobSidecarExt, BlobStore};
@@ -136,11 +136,12 @@ impl ManifestExt for Manifest {
                 .header(size.context("scute has neither data_blocks nor a known byte length")?)?,
         };
         if size.is_some_and(|size| {
-            size.div_ceil(u64::from(header.data.size.bytes().get())) != header.data.count.get()
+            size.div_ceil(u64::from(header.parameters.data.size.bytes().get()))
+                != header.parameters.data.count.get()
         }) {
             bail!("scute data_blocks disagrees with COW length");
         }
-        header.hash_type =
+        header.parameters.hash_type =
             match annotation("dev.pichi.carapace.verity.hash-type")?.parse::<u32>()? {
                 0 => HashType::ChromeOs,
                 1 => HashType::Normal,

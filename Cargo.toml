@@ -126,8 +126,8 @@ uninlined_format_args = "allow"
 
 [workspace.dependencies]
 # Cross-product shared crates
-devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "6c86672ad3da004ece96fb502a363de4873e42cb" }
-devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "6c86672ad3da004ece96fb502a363de4873e42cb", features = ["sha2"] }
+devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "b4bf66ac9dea45f79c5f672b642abe4da1ab6870" }
+devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "b4bf66ac9dea45f79c5f672b642abe4da1ab6870", features = ["sha2"] }
 pmi = { git = "https://github.com/pichi-vm/pmi" }
 devtree = { git = "https://github.com/pichi-vm/devtree" }
 # Dev-only caching URL downloader (shared by arma/dillo/e2e tests).

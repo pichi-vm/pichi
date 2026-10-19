@@ -130,8 +130,8 @@ impl PreparedLayer {
                 };
                 let root = if scute.annotations.data_blocks.is_some() {
                     let header = manifest.verity_header(scute, None)?;
-                    if header.data.count.get()
-                        > DECOMPRESSED_CAP / u64::from(header.data.size.bytes().get())
+                    if header.parameters.data.count.get()
+                        > DECOMPRESSED_CAP / u64::from(header.parameters.data.size.bytes().get())
                     {
                         bail!("decompressed size exceeds cap");
                     }
@@ -357,9 +357,8 @@ mod tests {
                 };
                 let verity_bytes = std::fs::read(result.verity.as_ref().unwrap().path()).unwrap();
                 let header =
-                    devmap_verity::header::Header::decode(verity_bytes[..512].try_into().unwrap())
-                        .unwrap();
-                assert_eq!(header.data.count.get(), 2);
+                    devmap_verity::Header::decode(verity_bytes[..512].try_into().unwrap()).unwrap();
+                assert_eq!(header.parameters.data.count.get(), 2);
                 assert_eq!(verity_bytes, params.compute(&fixture.data).unwrap().blob);
                 drop(result);
                 assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
