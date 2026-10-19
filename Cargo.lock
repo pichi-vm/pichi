@@ -311,7 +311,7 @@ dependencies = [
 [[package]]
 name = "carapace"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/carapace?rev=184c28879cb3cdeadb7bdd82f1b0dae63df6f079#184c28879cb3cdeadb7bdd82f1b0dae63df6f079"
+source = "git+https://github.com/pichi-vm/carapace?rev=99caf7941ac8930a5761f6f843b6d8e53dd89587#99caf7941ac8930a5761f6f843b6d8e53dd89587"
 dependencies = [
  "devmap-core",
  "devmap-linux",
@@ -681,7 +681,7 @@ dependencies = [
 [[package]]
 name = "devmap-core"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?rev=b4bf66ac9dea45f79c5f672b642abe4da1ab6870#b4bf66ac9dea45f79c5f672b642abe4da1ab6870"
+source = "git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd#2679426fa1d4508fc5c3bbdf643efbdbe64a3edd"
 dependencies = [
  "iocuddle 0.4.0",
 ]
@@ -689,7 +689,7 @@ dependencies = [
 [[package]]
 name = "devmap-linux"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?rev=b4bf66ac9dea45f79c5f672b642abe4da1ab6870#b4bf66ac9dea45f79c5f672b642abe4da1ab6870"
+source = "git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd#2679426fa1d4508fc5c3bbdf643efbdbe64a3edd"
 dependencies = [
  "devmap-core",
  "iocuddle 0.4.0",
@@ -699,7 +699,7 @@ dependencies = [
 [[package]]
 name = "devmap-snapshot"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?rev=b4bf66ac9dea45f79c5f672b642abe4da1ab6870#b4bf66ac9dea45f79c5f672b642abe4da1ab6870"
+source = "git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd#2679426fa1d4508fc5c3bbdf643efbdbe64a3edd"
 dependencies = [
  "devmap-core",
  "devmap-linux",
@@ -708,7 +708,7 @@ dependencies = [
 [[package]]
 name = "devmap-verity"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?rev=b4bf66ac9dea45f79c5f672b642abe4da1ab6870#b4bf66ac9dea45f79c5f672b642abe4da1ab6870"
+source = "git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd#2679426fa1d4508fc5c3bbdf643efbdbe64a3edd"
 dependencies = [
  "devmap-core",
  "devmap-linux",
@@ -2026,7 +2026,7 @@ dependencies = [
  "assert_cmd",
  "burrow",
  "bytes",
- "carapace 0.1.0 (git+https://github.com/pichi-vm/carapace?rev=184c28879cb3cdeadb7bdd82f1b0dae63df6f079)",
+ "carapace 0.1.0 (git+https://github.com/pichi-vm/carapace?rev=99caf7941ac8930a5761f6f843b6d8e53dd89587)",
  "chrono",
  "clap",
  "conglobate",

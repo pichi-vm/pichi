@@ -126,9 +126,9 @@ uninlined_format_args = "allow"
 [workspace.dependencies]
 # Cross-product shared crates
 pichi-artifact = { git = "https://github.com/pichi-vm/pichi-artifact", rev = "64feac956d4539fb79b9490a90480a81ef098ebb" }
-carapace = { git = "https://github.com/pichi-vm/carapace", rev = "184c28879cb3cdeadb7bdd82f1b0dae63df6f079", default-features = false, features = ["image"] }
-devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "b4bf66ac9dea45f79c5f672b642abe4da1ab6870" }
-devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "b4bf66ac9dea45f79c5f672b642abe4da1ab6870", features = ["sha2"] }
+carapace = { git = "https://github.com/pichi-vm/carapace", rev = "99caf7941ac8930a5761f6f843b6d8e53dd89587", default-features = false, features = ["image"] }
+devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "2679426fa1d4508fc5c3bbdf643efbdbe64a3edd" }
+devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "2679426fa1d4508fc5c3bbdf643efbdbe64a3edd", features = ["sha2"] }
 pmi = { git = "https://github.com/pichi-vm/pmi" }
 devtree = { git = "https://github.com/pichi-vm/devtree" }
 # Dev-only caching URL downloader (shared by arma/dillo/e2e tests).
