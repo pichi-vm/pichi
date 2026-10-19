@@ -257,7 +257,7 @@ mod tests {
     /// dm-verity root of `cow` under the 32-zero salt + locked 4 KiB blocks —
     /// the value `pull` recomputes and checks against the manifest annotation.
     fn zero_salt_root_hex(cow: &[u8]) -> String {
-        let out = pichi_import::verity::VerityParams {
+        let out = crate::cmd::verity::VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
             salt: vec![0u8; 32],
@@ -756,8 +756,8 @@ mod tests {
     /// scute with the SAME salt the pull pipeline uses — the full salt from
     /// the `dev.pichi.scute.verity.salt` annotation, verbatim (here the base
     /// scute's 32 zero bytes from make_scute_manifest's hex::encode([0u8; 32])).
-    fn pull_side_verity_params() -> pichi_import::verity::VerityParams {
-        pichi_import::verity::VerityParams {
+    fn pull_side_verity_params() -> crate::cmd::verity::VerityParams {
+        crate::cmd::verity::VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
             // The per-scute salt annotation, used verbatim (no extra prefix).
@@ -947,7 +947,7 @@ mod tests {
     }
 
     /// Plan 02 Task 1 (d): pull a raw scute, then assert the on-disk
-    /// `<src>.verity` bytes equal `pichi_import::verity::compute(layer_bytes,
+    /// `<src>.verity` bytes equal `crate::cmd::verity::compute(layer_bytes,
     /// &params).blob` for the same params the pull pipeline uses.
     /// Cross-validates pull-side verity output against the in-memory
     /// reference path.

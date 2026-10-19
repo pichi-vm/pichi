@@ -40,7 +40,7 @@ pub trait BlobSidecarExt {
     #[must_use]
     fn deflated_path(&self) -> PathBuf;
     /// `<self>.verity` — the dm-verity hash tree (byte-exact with
-    /// `pichi_import::verity::compute`), exposed to the guest as the hash device.
+    /// devmap's verity formatter), exposed to the guest as the hash device.
     #[must_use]
     fn verity_path(&self) -> PathBuf;
     /// Unlink this blob path plus its `.deflated`/`.verity` siblings (D-08),

@@ -6,7 +6,7 @@
 //!
 //! - `import raw <raw.img>` — a raw disk image becomes a base **carapace**
 //!   (rootfs; no PMI). `-t` is optional: omit it to cache an ephemeral carapace
-//!   (the root hash is still printed). Implemented in `pichi-import`.
+//!   (the manifest digest is printed).
 //! - `import pmi <boot.pmi> --dtb <d>` — a pre-built, detached PMI (+ base DTB,
 //!   + optional launch config) becomes a **bootable** artifact. With
 //!   `--carapace <ref>` the referenced carapace's scutes are combined in (a
@@ -20,6 +20,8 @@
 //! PMI/DTB against it, then `import pmi --carapace` binds them on.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
+
+pub(crate) mod raw;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -47,11 +49,9 @@ pub async fn run_raw(args: ImportRawArgs, config: &PichiConfig) -> Result<()> {
     }
 
     let layout = config.resolve_layout()?;
-    let mut lib_args: pichi_import::ImportArgs = args.try_into()?;
-    // Supply the RFC3339 timestamp here (chrono is a workspace dep of the root
-    // `pichi` crate; pichi-import deliberately doesn't pull chrono).
+    let mut lib_args: raw::ImportArgs = args.try_into()?;
     lib_args.created_rfc3339 = chrono::Utc::now().to_rfc3339();
-    pichi_import::run(lib_args, &layout.graphroot).await
+    lib_args.run(&layout.graphroot).await
 }
 
 /// `pichi import pmi` — import a pre-built PMI (+ DTB, + optional config) as a

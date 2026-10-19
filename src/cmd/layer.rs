@@ -6,9 +6,9 @@
 use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
 use std::path::Path;
 
+use crate::cmd::verity::VerityFormat as _;
 use anyhow::{Context as _, Result, bail};
 use pichi_artifact::{Digest, Layer, Manifest, Reference};
-use pichi_import::verity::VerityFormat as _;
 use pichi_registry::Registry;
 use pichi_storage::{BlobSidecarExt, BlobStore};
 use sha2::{Digest as _, Sha256};
@@ -264,7 +264,7 @@ impl<R: Read, W: Write> Read for DecodedReader<R, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pichi_import::verity::VerityParams;
+    use crate::cmd::verity::VerityParams;
 
     struct Fixture {
         data: Vec<u8>,

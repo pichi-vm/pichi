@@ -143,13 +143,13 @@ async fn resolve_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::{test_support::ScuteFixture as _, verity};
     use crate::config::{Config, StorageConfig};
-    use pichi_import::{cow, verity};
     use tempfile::TempDir;
 
     /// `pichi update` pins an imported carapace's reference with the exact
-    /// top-scute root the importer produced — verified against an
-    /// independent `cow::write` + `verity::compute` over the same image.
+    /// top-scute root the importer produced — verified against
+    /// fixture conversion and verity formatting over the same image.
     #[tokio::test]
     async fn pins_imported_carapace_root() {
         let tmp = TempDir::new().unwrap();
@@ -162,10 +162,10 @@ mod tests {
         let raw_path = tmp.path().join("img.raw");
         std::fs::write(&raw_path, &raw).unwrap();
 
-        // Independent expected single-scute root, the way the importer
+        // Expected single-scute root, the way the importer
         // computes it: the carapace-mandated scute chunk size, verity over
         // 4096-byte blocks with the 32-byte zero salt (uuid irrelevant).
-        let cow_bytes = cow::write(&raw, pichi_import::SCUTE_CHUNK_SIZE_SECTORS).unwrap();
+        let cow_bytes = raw.scute();
         let params = verity::VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
@@ -175,17 +175,15 @@ mod tests {
         let expected_root = params.compute(&cow_bytes).unwrap().root_hash;
 
         // Import it into the cache as `base:1`.
-        pichi_import::run(
-            pichi_import::ImportArgs {
-                raw_image: raw_path,
-                tag: Some("base:1".into()),
-                salt_suffix: None,
-                quiet: true,
-                created_rfc3339: "2026-06-22T00:00:00Z".into(),
-                annotations: std::collections::BTreeMap::new(),
-            },
-            &graphroot,
-        )
+        crate::cmd::import::raw::ImportArgs {
+            raw_image: raw_path,
+            tag: Some("base:1".into()),
+            salt_suffix: None,
+            quiet: true,
+            created_rfc3339: "2026-06-22T00:00:00Z".into(),
+            annotations: std::collections::BTreeMap::new(),
+        }
+        .run(&graphroot)
         .await
         .unwrap();
 

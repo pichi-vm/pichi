@@ -3,18 +3,20 @@
 
 //! Carapace formatting policy around devmap's streaming dm-verity formatter.
 
-use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+#[cfg(test)]
+use std::io::Cursor;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::num::NonZero;
 
 use devmap_core::{BlockSize, Geometry};
 use devmap_verity::{Algorithm, Format as _, HashType, Header, Parameters, Salt};
 
-pub const VERITY_FORMAT_VERSION: u32 = 1;
-pub const VERITY_HASH_TYPE_NORMAL: u32 = 1;
+pub(crate) const VERITY_FORMAT_VERSION: u32 = 1;
+pub(crate) const VERITY_HASH_TYPE_NORMAL: u32 = 1;
 
 /// Parameters used when producing SHA-256 format-1 carapaces.
 #[derive(Debug, Clone)]
-pub struct VerityParams {
+pub(crate) struct VerityParams {
     pub data_block_size: u32,
     pub hash_block_size: u32,
     pub salt: Vec<u8>,
@@ -22,21 +24,22 @@ pub struct VerityParams {
 }
 
 /// In-memory convenience output for callers that already hold the data.
+#[cfg(test)]
 #[derive(Debug)]
-pub struct VerityOutput {
+pub(crate) struct VerityOutput {
     pub blob: Vec<u8>,
     pub root_hash: [u8; 32],
 }
 
 impl VerityParams {
     /// Derive a header from a known COW byte length.
-    pub fn header(&self, data_size: u64) -> io::Result<Header> {
+    pub(super) fn header(&self, data_size: u64) -> io::Result<Header> {
         let block_size = NonZero::new(self.data_block_size).ok_or(io::ErrorKind::InvalidInput)?;
         self.header_for_blocks(data_size.div_ceil(u64::from(block_size.get())))
     }
 
     /// Build a header from its declared `data_blocks` reconstruction input.
-    pub fn header_for_blocks(&self, data_blocks: u64) -> io::Result<Header> {
+    pub(super) fn header_for_blocks(&self, data_blocks: u64) -> io::Result<Header> {
         let invalid = || {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -63,7 +66,8 @@ impl VerityParams {
     }
 
     /// Format an in-memory COW; streaming callers should use `format_padded`.
-    pub fn compute(&self, cow: &[u8]) -> io::Result<VerityOutput> {
+    #[cfg(test)]
+    pub(super) fn compute(&self, cow: &[u8]) -> io::Result<VerityOutput> {
         let mut output = Cursor::new(Vec::new());
         let size = cow.len() as u64;
         let root_hash = self.header(size)?.format_padded(cow, &mut output)?;
@@ -75,7 +79,7 @@ impl VerityParams {
 }
 
 /// Validate the declared data-block count and zero-pad only a short final block.
-pub trait VerityFormat {
+pub(crate) trait VerityFormat {
     fn format_padded<R: Read, W: Write + Seek>(self, data: R, hash: W) -> io::Result<[u8; 32]>;
     fn root<R: Read>(self, data: R) -> io::Result<[u8; 32]>;
 }

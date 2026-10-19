@@ -166,11 +166,11 @@ fn chain_annotations(created_rfc3339: &str) -> BTreeMap<String, String> {
     );
     a.insert(
         "dev.pichi.carapace.verity.version".to_string(),
-        pichi_import::verity::VERITY_FORMAT_VERSION.to_string(),
+        crate::cmd::verity::VERITY_FORMAT_VERSION.to_string(),
     );
     a.insert(
         "dev.pichi.carapace.verity.hash-type".to_string(),
-        pichi_import::verity::VERITY_HASH_TYPE_NORMAL.to_string(),
+        crate::cmd::verity::VERITY_HASH_TYPE_NORMAL.to_string(),
     );
     a.insert(
         "org.opencontainers.image.created".to_string(),
@@ -554,7 +554,7 @@ mod tests {
 
     #[tokio::test]
     async fn package_artifact_builds_and_tags_a_carapace() {
-        use pichi_import::{cow, verity};
+        use crate::cmd::{test_support::ScuteFixture as _, verity};
 
         let tmp = tempfile::TempDir::new().unwrap();
         let out = tmp.path().join("out");
@@ -563,7 +563,7 @@ mod tests {
         // One base scute: cow + verity blob + 32-byte zero salt.
         let mut raw = vec![0u8; 4096 * 3];
         raw[100] = 7;
-        let cow_bytes = cow::write(&raw, 8).unwrap();
+        let cow_bytes = raw.scute();
         std::fs::write(out.join("0000.cow"), &cow_bytes).unwrap();
         let salt = vec![0u8; 32];
         let params = verity::VerityParams {
@@ -608,7 +608,7 @@ mod tests {
 
     #[tokio::test]
     async fn package_artifact_prepends_source_scutes() {
-        use pichi_import::{cow, verity};
+        use crate::cmd::{test_support::ScuteFixture as _, verity};
 
         let tmp = tempfile::TempDir::new().unwrap();
         let out = tmp.path().join("out");
@@ -636,7 +636,7 @@ mod tests {
         let make_cow = |seed: u8| {
             let mut v = vec![0u8; 4096 * 2];
             v[10] = seed;
-            cow::write(&v, 8).unwrap()
+            v.scute()
         };
 
         // Two pass-through source scutes; their cow blobs are cached (as in a

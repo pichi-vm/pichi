@@ -1010,9 +1010,12 @@ Specification. How the user produces it is out of scope (recommended: mkosi).
 Pichi does not validate contents beyond a parseable GPT.
 
 **Operation:** pure host-side userspace — no root, no kernel modules, no
-mounts. Implemented in `pichi-import` (`cow.rs` emits the dm-snapshot
-persistent COW append-only; `verity.rs` computes the dm-verity tree). Output is
-a one-scute base carapace (no PMI), usable as a `from:` source.
+mounts. Carapace plans the image-to-COW conversion, then devmap drives the
+COW reader while pichi writes and content-hashes the COW and formats its verity
+sidecar. Pichi constructs the manifest and commits it to the cache. Output is
+a one-scute base carapace (no PMI), usable as a `from:` source. The source must
+remain unchanged during planning and streaming; it must be a nonempty regular
+file no larger than 64 GiB. Conversion supports Linux, macOS, and Windows.
 
 `import raw` never produces a bootable appliance: a PMI must bake the carapace's
 dm-verity root into its measured cmdline (`roothash=`), and that root only
@@ -1077,8 +1080,8 @@ the integrators below.
 | dillo build wiring      | `dillo`                                                             | Attach source carapaces (each its own vGPT) + two read-only virtiofs mounts (`$DIR`, manifests) + the virtiofs output sink + the `maxmem` ceiling / lazy-acceptance config.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | build image + bootstrap | new                                                                 | A **PMI-only** pichi artifact (no carapace, §1): a kernel (`EROFS`+`DM_VERITY`+`DM_SNAPSHOT`+unaccepted-memory) + an initramfs whose **`/init` is conglobate**, carrying **arma** (PMI packager) + erofs tooling + build tooling (`mount`, dm/verity/loop tools). Everything runs in RAM (§12). The erofs tool version is part of the PMI measurement. Selectable per build (`--build-image`); a one-off host-side `arma` seal of a kernel + conglobate cpio seeds the first.                                                                                                                                                                                                                      |
 
-Reused as-is: `pichi-import` (`cow.rs`, `verity.rs`), the `carapace` crate
-(guest assembly), `dillo-virtio-gpt` (vgpt), the `pichi run` device-assembly +
+Shared format implementations: carapace (image conversion and guest assembly)
+and devmap (verity formatting). Also reused: `dillo-virtio-gpt` (vgpt), the `pichi run` device-assembly +
 exec path, and the snuffler-style musl build for corium.
 
 ## 17. Non-goals, deferrals, open questions

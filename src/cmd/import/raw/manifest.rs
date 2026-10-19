@@ -4,12 +4,6 @@
 //! Builds the typed `Manifest` for a base scute (one cow, no PMI)
 //! per Phase 42's typed schema and Phase 42 D-06 locked chain annotations.
 //!
-//! Private — only `lib::run` calls this. The chain-annotation values
-//! (`sha256` / `4096` / `4096`) MUST match Phase 42's locked defaults
-//! (verified against `tests/cmd_tag.rs::chain_annotations` lines 15–24).
-//! Caller supplies `created_rfc3339` so this crate doesn't need its own
-//! `chrono` dep — the root `pichi` binary already pulls chrono.
-
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
@@ -41,69 +35,82 @@ use pichi_artifact::{
 /// Calls `Manifest::validate()` defensively to catch any drift in
 /// our own builder against Phase 42 D-07 validation rules. Returns the
 /// validated manifest ready for `to_bytes()` + `BlobStore::put_blob`.
-pub(crate) fn build(
-    cow_digest: &Digest,
-    cow_size: u64,
-    full_salt: &[u8],
-    root_hash: &[u8; 32],
-    created_rfc3339: &str,
-    extra: &BTreeMap<String, String>,
-) -> Result<Manifest> {
-    // Caller-supplied provenance annotations go in first; the structural
-    // `verity.*` keys below then overwrite (they can't be spoofed via `extra`),
-    // and `created` is filled only if the caller didn't supply one.
-    let mut annotations = extra.clone();
-    annotations.insert(
-        "dev.pichi.carapace.verity.algo".to_string(),
-        "sha256".to_string(),
-    );
-    annotations.insert(
-        "dev.pichi.carapace.verity.data-block-size".to_string(),
-        "4096".to_string(),
-    );
-    annotations.insert(
-        "dev.pichi.carapace.verity.hash-block-size".to_string(),
-        "4096".to_string(),
-    );
-    annotations.insert(
-        "dev.pichi.carapace.verity.version".to_string(),
-        crate::verity::VERITY_FORMAT_VERSION.to_string(),
-    );
-    annotations.insert(
-        "dev.pichi.carapace.verity.hash-type".to_string(),
-        crate::verity::VERITY_HASH_TYPE_NORMAL.to_string(),
-    );
-    annotations.insert(
-        CHAIN_ANNOTATION_VERITY_HASH.to_string(),
-        hex::encode(root_hash),
-    );
-    annotations
-        .entry("org.opencontainers.image.created".to_string())
-        .or_insert_with(|| created_rfc3339.to_string());
+pub(super) trait BaseManifest {
+    fn base(
+        cow_digest: &Digest,
+        cow_size: u64,
+        full_salt: &[u8],
+        root_hash: &[u8; 32],
+        created_rfc3339: &str,
+        extra: &BTreeMap<String, String>,
+    ) -> Result<Manifest>;
+}
 
-    let layers = vec![Layer::Scute(ScuteDescriptor {
-        digest: cow_digest.to_string(),
-        size: cow_size,
-        annotations: ScuteAnnotations {
-            data_blocks: Some(cow_size.div_ceil(4096)),
-            salt: hex::encode(full_salt),
-        },
-    })];
+impl BaseManifest for Manifest {
+    fn base(
+        cow_digest: &Digest,
+        cow_size: u64,
+        full_salt: &[u8],
+        root_hash: &[u8; 32],
+        created_rfc3339: &str,
+        extra: &BTreeMap<String, String>,
+    ) -> Result<Manifest> {
+        // Caller-supplied provenance annotations go in first; the structural
+        // `verity.*` keys below then overwrite (they can't be spoofed via `extra`),
+        // and `created` is filled only if the caller didn't supply one.
+        let mut annotations = extra.clone();
+        annotations.insert(
+            "dev.pichi.carapace.verity.algo".to_string(),
+            "sha256".to_string(),
+        );
+        annotations.insert(
+            "dev.pichi.carapace.verity.data-block-size".to_string(),
+            "4096".to_string(),
+        );
+        annotations.insert(
+            "dev.pichi.carapace.verity.hash-block-size".to_string(),
+            "4096".to_string(),
+        );
+        annotations.insert(
+            "dev.pichi.carapace.verity.version".to_string(),
+            crate::cmd::verity::VERITY_FORMAT_VERSION.to_string(),
+        );
+        annotations.insert(
+            "dev.pichi.carapace.verity.hash-type".to_string(),
+            crate::cmd::verity::VERITY_HASH_TYPE_NORMAL.to_string(),
+        );
+        annotations.insert(
+            CHAIN_ANNOTATION_VERITY_HASH.to_string(),
+            hex::encode(root_hash),
+        );
+        annotations
+            .entry("org.opencontainers.image.created".to_string())
+            .or_insert_with(|| created_rfc3339.to_string());
 
-    let manifest = Manifest {
-        schema_version: 2,
-        media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-        config: ConfigDescriptor::canonical(),
-        layers,
-        annotations,
-    };
+        let layers = vec![Layer::Scute(ScuteDescriptor {
+            digest: cow_digest.to_string(),
+            size: cow_size,
+            annotations: ScuteAnnotations {
+                data_blocks: Some(cow_size.div_ceil(4096)),
+                salt: hex::encode(full_salt),
+            },
+        })];
 
-    manifest
-        .validate()
-        .context("internally constructed manifest failed self-validation (bug)")?;
+        let manifest = Manifest {
+            schema_version: 2,
+            media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
+            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
+            config: ConfigDescriptor::canonical(),
+            layers,
+            annotations,
+        };
 
-    Ok(manifest)
+        manifest
+            .validate()
+            .context("internally constructed manifest failed self-validation (bug)")?;
+
+        Ok(manifest)
+    }
 }
 
 #[cfg(test)]
@@ -116,7 +123,7 @@ mod tests {
     fn manifest_has_locked_chain_annotations() {
         let cow_digest = Digest::from_bytes_sha256(b"deadbeef");
         let salt = vec![0u8; 32];
-        let m = build(
+        let m = Manifest::base(
             &cow_digest,
             16384,
             &salt,
@@ -158,7 +165,7 @@ mod tests {
     fn bottom_scute_salt_is_zero_prefix() {
         let cow_digest = Digest::from_bytes_sha256(b"deadbeef");
         let salt = vec![0u8; 32]; // default: just the prefix, no suffix
-        let m = build(
+        let m = Manifest::base(
             &cow_digest,
             16384,
             &salt,
@@ -185,7 +192,7 @@ mod tests {
         let cow_digest = Digest::from_bytes_sha256(b"deadbeef");
         let mut salt = vec![0u8; 32];
         salt.extend_from_slice(&[0xAB, 0xCD, 0xEF]);
-        let m = build(
+        let m = Manifest::base(
             &cow_digest,
             16384,
             &salt,
@@ -209,7 +216,7 @@ mod tests {
     fn build_passes_validate() {
         let cow_digest = Digest::from_bytes_sha256(b"deadbeef");
         let salt = vec![0u8; 32];
-        let m = build(
+        let m = Manifest::base(
             &cow_digest,
             16384,
             &salt,
@@ -218,7 +225,7 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        // build() already calls validate() internally; double-check is
+        // base() already calls validate() internally; double-check is
         // cheap and proves the invariant.
         assert!(m.validate().is_ok());
     }
@@ -230,7 +237,7 @@ mod tests {
     fn build_is_carapace_only() {
         let cow_digest = Digest::from_bytes_sha256(b"deadbeef");
         let salt = vec![0u8; 32];
-        let m = build(
+        let m = Manifest::base(
             &cow_digest,
             16384,
             &salt,
@@ -265,7 +272,7 @@ mod tests {
             "dev.pichi.carapace.verity.algo".to_string(),
             "EVIL".to_string(),
         );
-        let m = build(
+        let m = Manifest::base(
             &Digest::from_bytes_sha256(b"deadbeef"),
             16384,
             &[0u8; 32],

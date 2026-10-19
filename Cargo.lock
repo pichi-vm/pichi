@@ -311,6 +311,19 @@ dependencies = [
 [[package]]
 name = "carapace"
 version = "0.1.0"
+source = "git+https://github.com/pichi-vm/carapace?rev=184c28879cb3cdeadb7bdd82f1b0dae63df6f079#184c28879cb3cdeadb7bdd82f1b0dae63df6f079"
+dependencies = [
+ "devmap-core",
+ "devmap-linux",
+ "devmap-snapshot",
+ "devmap-verity",
+ "rustix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "carapace"
+version = "0.1.0"
 source = "git+https://github.com/pichi-vm/carapace#397ab3b1d6fa8dde156257bf2f68c2ba05569fa1"
 dependencies = [
  "iocuddle 0.2.0",
@@ -454,7 +467,7 @@ version = "0.1.0"
 source = "git+https://github.com/pichi-vm/conglobate#1b4773372006b77c7ea26109f185faddc31280f5"
 dependencies = [
  "bytesize",
- "carapace",
+ "carapace 0.1.0 (git+https://github.com/pichi-vm/carapace)",
  "hex",
  "rustix",
  "serde",
@@ -505,7 +518,7 @@ name = "corium"
 version = "0.1.0"
 source = "git+https://github.com/pichi-vm/corium#9aa206b503ca54866be4a46a5a99f558e52ed1f8"
 dependencies = [
- "carapace",
+ "carapace 0.1.0 (git+https://github.com/pichi-vm/carapace)",
  "rustix",
 ]
 
@@ -681,6 +694,15 @@ dependencies = [
  "devmap-core",
  "iocuddle 0.4.0",
  "zerocopy",
+]
+
+[[package]]
+name = "devmap-snapshot"
+version = "0.1.0"
+source = "git+https://github.com/pichi-vm/devmap?rev=b4bf66ac9dea45f79c5f672b642abe4da1ab6870#b4bf66ac9dea45f79c5f672b642abe4da1ab6870"
+dependencies = [
+ "devmap-core",
+ "devmap-linux",
 ]
 
 [[package]]
@@ -2004,10 +2026,12 @@ dependencies = [
  "assert_cmd",
  "burrow",
  "bytes",
+ "carapace 0.1.0 (git+https://github.com/pichi-vm/carapace?rev=184c28879cb3cdeadb7bdd82f1b0dae63df6f079)",
  "chrono",
  "clap",
  "conglobate",
  "corium",
+ "devmap-core",
  "devmap-verity",
  "dillo",
  "dillo-config",
@@ -2018,7 +2042,6 @@ dependencies = [
  "log",
  "minijinja",
  "pichi-artifact",
- "pichi-import",
  "pichi-registry",
  "pichi-storage",
  "ruzstd",
@@ -2044,24 +2067,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "pichi-import"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "devmap-core",
- "devmap-verity",
- "hex",
- "log",
- "pichi-artifact",
- "pichi-storage",
- "rustix",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]

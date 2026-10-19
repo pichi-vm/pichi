@@ -478,7 +478,7 @@ mod tests {
 
     #[tokio::test]
     async fn multi_scute_gpt_uses_manifest_hash_type_without_writing_sidecars() {
-        use pichi_import::verity::VerityFormat as _;
+        use crate::cmd::verity::VerityFormat as _;
 
         let tmp = TempDir::new().unwrap();
         let store = FilesystemBlobStore::new(tmp.path());

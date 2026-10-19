@@ -12,9 +12,9 @@ use std::collections::HashSet;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
+use crate::cmd::verity::{VerityFormat as _, VerityParams};
 use devmap_verity::{HashType, Header};
 use pichi_artifact::{Digest, DtbDescriptor, Layer, Manifest, PmiDescriptor, ScuteDescriptor};
-use pichi_import::verity::{VerityFormat as _, VerityParams};
 use pichi_storage::{BlobSidecarExt, BlobStore};
 
 /// Chain-wide verity annotation keys.

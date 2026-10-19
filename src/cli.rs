@@ -321,7 +321,7 @@ pub struct RunArgs {
 
 /// `--salt` hex decode is fallible — use TryFrom so bad hex is rejected
 /// at the dispatch boundary with `with_context`, not silently swallowed.
-impl TryFrom<ImportRawArgs> for pichi_import::ImportArgs {
+impl TryFrom<ImportRawArgs> for crate::cmd::import::raw::ImportArgs {
     type Error = anyhow::Error;
     fn try_from(a: ImportRawArgs) -> anyhow::Result<Self> {
         use anyhow::Context as _;

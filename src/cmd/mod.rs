@@ -24,3 +24,7 @@ pub mod run;
 pub mod save;
 pub mod tag;
 pub mod update;
+
+#[cfg(test)]
+mod test_support;
+mod verity;

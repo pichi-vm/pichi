@@ -26,7 +26,8 @@ chrono.workspace = true
 clap.workspace = true
 pichi-artifact.workspace = true
 serde_yaml = { workspace = true }
-pichi-import.workspace = true
+carapace.workspace = true
+devmap-core.workspace = true
 devmap-verity.workspace = true
 conglobate.workspace = true
 pichi-registry = { workspace = true, features = ["http-client"] }
@@ -89,7 +90,6 @@ members = [
     # `pichi` crate).
     "deps/pichi-artifact",
     "deps/pichi-storage",
-    "deps/pichi-import",
     "deps/pichi-registry",
 ]
 
@@ -126,6 +126,7 @@ uninlined_format_args = "allow"
 
 [workspace.dependencies]
 # Cross-product shared crates
+carapace = { git = "https://github.com/pichi-vm/carapace", rev = "184c28879cb3cdeadb7bdd82f1b0dae63df6f079", default-features = false, features = ["image"] }
 devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "b4bf66ac9dea45f79c5f672b642abe4da1ab6870" }
 devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "b4bf66ac9dea45f79c5f672b642abe4da1ab6870", features = ["sha2"] }
 pmi = { git = "https://github.com/pichi-vm/pmi" }
@@ -140,7 +141,6 @@ dillo-config = { git = "https://github.com/pichi-vm/dillo" }
 # pichi-internal crates
 pichi-artifact = { path = "deps/pichi-artifact" }
 pichi-storage = { path = "deps/pichi-storage" }
-pichi-import = { path = "deps/pichi-import" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate's portable lib (recipe I/O types) — consumed by the pichi CLI.
 conglobate = { git = "https://github.com/pichi-vm/conglobate" }
