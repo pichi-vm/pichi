@@ -2061,6 +2061,7 @@ dependencies = [
 [[package]]
 name = "pichi-artifact"
 version = "0.1.0"
+source = "git+https://github.com/pichi-vm/pichi-artifact?rev=64feac956d4539fb79b9490a90480a81ef098ebb#64feac956d4539fb79b9490a90480a81ef098ebb"
 dependencies = [
  "hex",
  "serde",

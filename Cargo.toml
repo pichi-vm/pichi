@@ -88,7 +88,6 @@ resolver = "2"
 members = [
     # pichi-owned library crates (nested by their sole consumer, the root
     # `pichi` crate).
-    "deps/pichi-artifact",
     "deps/pichi-storage",
     "deps/pichi-registry",
 ]
@@ -126,6 +125,7 @@ uninlined_format_args = "allow"
 
 [workspace.dependencies]
 # Cross-product shared crates
+pichi-artifact = { git = "https://github.com/pichi-vm/pichi-artifact", rev = "64feac956d4539fb79b9490a90480a81ef098ebb" }
 carapace = { git = "https://github.com/pichi-vm/carapace", rev = "184c28879cb3cdeadb7bdd82f1b0dae63df6f079", default-features = false, features = ["image"] }
 devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "b4bf66ac9dea45f79c5f672b642abe4da1ab6870" }
 devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "b4bf66ac9dea45f79c5f672b642abe4da1ab6870", features = ["sha2"] }
@@ -139,7 +139,6 @@ burrow = { git = "https://github.com/pichi-vm/burrow" }
 dillo-config = { git = "https://github.com/pichi-vm/dillo" }
 
 # pichi-internal crates
-pichi-artifact = { path = "deps/pichi-artifact" }
 pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate's portable lib (recipe I/O types) — consumed by the pichi CLI.
