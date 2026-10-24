@@ -97,7 +97,7 @@ async fn single_pichi_build_emits_bootable_artifact() {
          derive:\n\
          \x20 - run: /context/arma build --profile x86-64-v2 --config /context/kernel.config \
          --kernel /context/vmlinuz --initrd /context/corium-initrd.cpio \
-         --cmdline \"console=hvc0 root.carapace=$PICHI_CARAPACE_ROOT\" /tmp/boot.pmi\n\
+         --cmdline \"console=hvc0 corium=$PICHI_CARAPACE_ROOT\" /tmp/boot.pmi\n\
          into: /tmp/boot.pmi\n",
     )
     .unwrap();

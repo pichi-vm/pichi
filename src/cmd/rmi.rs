@@ -146,7 +146,7 @@ async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
         //   - partial-derivation states (D-03 mid-write crash) may be
         //     missing one or more sidecars
         // No `.roothash` sidecar exists — pichi never reads the roothash;
-        // the publisher bakes `roothash=<hex>` into the PMI cmdline at
+        // the publisher bakes `corium=<hex>` into the PMI cmdline at
         // arma-build time. The `existed` check preserves the deleted-count
         // metric meaning (number of source blobs that actually got unlinked,
         // ignoring sidecar absence).
