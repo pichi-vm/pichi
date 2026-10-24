@@ -338,9 +338,10 @@ pub(crate) fn build_dillo_args(
 /// pichi wires. `NetSpec` defaults `backend` to user; we state it explicitly.
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
-/// The official build image, published multi-arch by the conglobate repo's CI.
-/// Used by default when neither `--build-image` nor `PICHI_BUILD_IMAGE` is set.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate:latest";
+/// Default build-image OCI reference used when neither `--build-image` nor
+/// `PICHI_BUILD_IMAGE` is set. Digest-pinned so the tag cannot float.
+pub const DEFAULT_BUILD_IMAGE: &str =
+    "ghcr.io/pichi-vm/conglobate@sha256:a299e3503eb14f4edda66551d26753393b3c19cedb343c22fbd76a635490adf9";
 
 /// Resolve the build-image reference: `--build-image`, then
 /// `PICHI_BUILD_IMAGE`, then the [`DEFAULT_BUILD_IMAGE`].
