@@ -13,6 +13,22 @@ env:
 # Supported platforms are Linux x86_64/aarch64 (KVM), Windows x86_64 (WHP),
 # and macOS arm64 (HVF on bare-metal organization runners).
 jobs:
+  license-headers:
+    name: license headers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: korandoru/hawkeye@v6
+
+  commit-messages:
+    name: commit messages
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+      - run: pipx run gitlint --commits "origin/${{ github.base_ref || 'main' }}..HEAD"
+
   fmt:
     name: cargo fmt
     runs-on: ubuntu-24.04
