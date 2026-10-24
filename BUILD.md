@@ -520,7 +520,7 @@ An artifact's envelope packages these logical objects:
 | ---------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Carapace         | 0..N scute layers                             | A stack of scutes composed into a single read-only block device. When it is an artifact's root carapace, it backs the root; it may also be attached elsewhere.                                               |
 | PMI              | ≤1 PMI layer (makes it bootable)              | Boot payload (kernel, initramfs incl. corium, cmdline, measured platform layout, measured boot manifest binding the carapace top-hash). The cmdline lives in the base DTB (`/chosen/bootargs`).              |
-| Base DTB         | ≤1 DTB layer (detached-mode PMI)              | The measured base devicetree for a detached-channel PMI; supplied to the VMM out-of-band at run time (`dillo --dtb`). Carries the cmdline, incl. `root.carapace=<top-hash>`.                                 |
+| Base DTB         | ≤1 DTB layer (detached-mode PMI)              | The measured base devicetree for a detached-channel PMI; supplied to the VMM out-of-band at run time (`dillo --dtb`). Carries the cmdline, incl. `corium=<top-hash>`.                                 |
 | config (requirements) | the manifest **config** blob              | The host-facing launch contract — the filtered projection of `config.yaml` (§7), carried in `application/vnd.pichi.config.v1+json`. Consumed by `pichi run` to size and wire the VM.                         |
 
 - A **scute** is a layer: one cow file (dm-snapshot persistent COW format) and
@@ -657,7 +657,7 @@ base DTB — rather than two fixed kinds. Presence determines capability:
   root from the scute cows and reject a mismatch (corrupt transfer or tampered
   manifest). The authoritative anchor is still the `rootₙ₋₁` measured inside the
   PMI's boot manifest at launch; this annotation is a cheap integrity check and
-  the source of the `roothash=` value a detached PMI bakes.
+  the source of the `corium=` value a detached PMI bakes.
 
 **Capability by composition:** bootable ⟺ a PMI is present; has a root carapace
 ⟺ scutes are present; the two are independent (a PMI-only artifact is a
@@ -1018,7 +1018,7 @@ remain unchanged during planning and streaming; it must be a nonempty regular
 file no larger than 64 GiB. Conversion supports Linux, macOS, and Windows.
 
 `import raw` never produces a bootable appliance: a PMI must bake the carapace's
-dm-verity root into its measured cmdline (`roothash=`), and that root only
+dm-verity root into its measured cmdline (`corium=`), and that root only
 exists once the raw image has been imported. On success it prints the carapace
 root hash to stdout (docker `-q` style — `--quiet` only silences progress on
 stderr), also recorded in the manifest as `dev.pichi.carapace.verity.hash`
@@ -1036,7 +1036,7 @@ against the carapace root (§15.1), `import pmi` assembles the bootable artifact
 
 ```
 root=$(pichi import raw base.img -t app:base)   # carapace; prints the root hash
-# build the detached PMI + base DTB with arma, baking roothash=$root
+# build the detached PMI + base DTB with arma, baking corium=$root
 pichi import pmi boot.pmi --dtb base.dtb --carapace app:base -t app:1
 ```
 

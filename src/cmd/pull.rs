@@ -695,7 +695,7 @@ mod tests {
 
     /// Plan 02 helper: build a 2-layer manifest (1 Scute + 1 PMI) with a
     /// 32-zero salt on the scute. The PMI bytes are caller-supplied so a
-    /// test can poke a `roothash=<hex>` token in there.
+    /// test can poke a `corium=<hex>` token in there.
     fn make_scute_plus_pmi_manifest(
         scute_digest: &Digest,
         scute_size: u64,
@@ -893,9 +893,9 @@ mod tests {
             .expect("verity compute")
             .root_hash;
 
-        // Synthetic PMI bytes: zero pad + a `roothash=<hex>` token.
+        // Synthetic PMI bytes: zero pad + a `corium=<hex>` token.
         let mut pmi_bytes = vec![0u8; 4096];
-        let pattern = format!("roothash={}", hex::encode(expected_root));
+        let pattern = format!("corium={}", hex::encode(expected_root));
         pmi_bytes[100..100 + pattern.len()].copy_from_slice(pattern.as_bytes());
         let pmi_digest = Digest::from_bytes_sha256(&pmi_bytes);
 

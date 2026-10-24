@@ -116,7 +116,7 @@ pub struct ImportRawArgs {
     pub salt: Option<String>,
     /// Suppress progress reporting. The carapace root hash is still printed to
     /// stdout (docker `-q` style) — it is the value a detached PMI bakes into
-    /// its measured cmdline (`roothash=`) before `pichi import pmi`.
+    /// its measured cmdline (`corium=`) before `pichi import pmi`.
     #[arg(long, default_value_t = false)]
     pub quiet: bool,
     /// Extra manifest annotations, `KEY=VALUE` (repeatable) — e.g.
