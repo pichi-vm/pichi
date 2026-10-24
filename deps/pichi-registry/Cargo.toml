@@ -52,7 +52,7 @@ http-client = [
 ]
 
 [dev-dependencies]
-ruzstd = "0.8"
+ruzstd = "0.9.1"
 # Spike tests need an actual runtime + bridge. tokio-util "io-util" is
 # required for SyncIoBridge (per tokio-util 0.7 cfg gate); workspace
 # default just enables "io".
