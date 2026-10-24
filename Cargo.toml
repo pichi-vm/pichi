@@ -47,7 +47,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "mac
 tokio-util = { workspace = true, features = ["io", "io-util"] }
 toml.workspace = true
 uuid.workspace = true
-ruzstd = "0.8"
+ruzstd = "0.9.1"
 # Product binaries the boot tests orchestrate (host target). Optional so only
 # `vm-tests` resolves them; a plain `cargo test` pulls zero product artifacts.
 arma = { git = "https://github.com/pichi-vm/arma", artifact = "bin", optional = true }

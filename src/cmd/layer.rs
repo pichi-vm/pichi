@@ -122,7 +122,22 @@ impl PreparedLayer {
             Layer::ScuteZstd(scute) => {
                 let mut data = NamedTempFile::new_in(scratch)?;
                 let mut output = NamedTempFile::new_in(scratch)?;
-                let decoder = ruzstd::decoding::StreamingDecoder::new(&mut wire)?;
+                let decoder = match ruzstd::decoding::StreamingDecoder::new(&mut wire) {
+                    Ok(decoder) => decoder,
+                    Err(ruzstd::decoding::errors::FrameDecoderError::WindowSizeTooBig {
+                        requested,
+                        max,
+                    }) => {
+                        // ruzstd's default ceiling is 128 MiB (DEFAULT_MAX_WINDOW_SIZE).
+                        // Surface a clean message on the pull/decode path rather than
+                        // a Debug dump of the decoder error enum.
+                        bail!(
+                            "zstd window size too large: requested {requested} bytes (limit {max} bytes / {} MiB)",
+                            max / (1024 * 1024)
+                        );
+                    }
+                    Err(err) => return Err(err.into()),
+                };
                 let mut decoded = DecodedReader {
                     input: decoder,
                     output: BufWriter::new(data.as_file()),
@@ -440,6 +455,64 @@ mod tests {
             }
             self.0.read(out)
         }
+    }
+
+    #[test]
+    fn rejects_zstd_window_above_default_max() {
+        use ruzstd::decoding::DEFAULT_MAX_WINDOW_SIZE;
+
+        // Minimal zstd frame with Window_Descriptor for 256 MiB — above
+        // ruzstd's DEFAULT_MAX_WINDOW_SIZE (128 MiB). Bytes from
+        // `printf 'window-size rejection fixture\n' | zstd --long=28`.
+        // Orthogonal to DECOMPRESSED_CAP: the decoder must refuse the
+        // frame header before any decompressed-size accounting runs.
+        const WIRE: &[u8] = &[
+            0x28, 0xb5, 0x2f, 0xfd, 0x04, 0x90, 0xf1, 0x00, 0x00, 0x77, 0x69, 0x6e, 0x64, 0x6f,
+            0x77, 0x2d, 0x73, 0x69, 0x7a, 0x65, 0x20, 0x72, 0x65, 0x6a, 0x65, 0x63, 0x74, 0x69,
+            0x6f, 0x6e, 0x20, 0x66, 0x69, 0x78, 0x74, 0x75, 0x72, 0x65, 0x0a, 0xd6, 0xc6, 0x80,
+            0xf8,
+        ];
+        assert_eq!(DEFAULT_MAX_WINDOW_SIZE, 128 * 1024 * 1024);
+
+        let digest = Digest::from_bytes_sha256(WIRE);
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            "config": pichi_artifact::ConfigDescriptor::canonical(),
+            "layers": [{
+                "mediaType": pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD,
+                "digest": digest.to_string(),
+                "size": WIRE.len(),
+                "annotations": {
+                    "dev.pichi.scute.verity.salt": hex::encode([0; 32]),
+                    "dev.pichi.scute.verity.data-blocks": "1",
+                },
+            }],
+            "annotations": {
+                "dev.pichi.carapace.verity.algo": "sha256",
+                "dev.pichi.carapace.verity.data-block-size": "4096",
+                "dev.pichi.carapace.verity.hash-block-size": "4096",
+                "dev.pichi.carapace.verity.version": "1",
+                "dev.pichi.carapace.verity.hash-type": "1",
+                "dev.pichi.carapace.verity.hash": hex::encode([0; 32]),
+            },
+        });
+        let manifest: Manifest = serde_json::from_value(manifest).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let error = PreparedLayer::read(WIRE, &manifest, &manifest.layers[0], scratch.path())
+            .err()
+            .expect("oversized zstd window must fail");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("zstd window size too large"),
+            "expected clean user-facing window error, got: {message}"
+        );
+        assert!(
+            message.contains(&DEFAULT_MAX_WINDOW_SIZE.to_string()) || message.contains("128"),
+            "error should mention the 128 MiB limit, got: {message}"
+        );
+        assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
     }
 
     #[test]
