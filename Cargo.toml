@@ -53,12 +53,12 @@ ruzstd = "0.8"
 arma = { git = "https://github.com/pichi-vm/arma", artifact = "bin", optional = true }
 dillo = { git = "https://github.com/pichi-vm/dillo", artifact = "bin", optional = true }
 
-# conglobate (build-image /init) + corium (guest initramfs /init), cross-built
-# for the guest musl target (the binaries). corium's library half is consumed
-# (CORIUM_ROOT_OK); conglobate's lib (the portable recipe types) is the host
-# `conglobate` dep above — this entry shares that name to add only the
-# cross-built `bin` artifact (lib = false), so cargo unifies them rather than
-# rejecting a second name for the same package. Optional, gated on `vm-tests`.
+# Optional guest musl binaries for `vm-tests` only. Production `pichi build`
+# launches Conglobate's shipped pichi image (see BUILD.md); it does not treat
+# conglobate as build-image `/init`. corium's library half is consumed
+# (CORIUM_ROOT_OK); conglobate's lib (types only) is the host `conglobate` dep
+# above — this entry shares that name to add only the cross-built `bin`
+# artifact (lib = false), so cargo unifies them. Gated on `vm-tests`.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 conglobate = { git = "https://github.com/pichi-vm/conglobate", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 corium = { git = "https://github.com/pichi-vm/corium", artifact = "bin", lib = true, target = "x86_64-unknown-linux-musl", optional = true }
@@ -141,7 +141,7 @@ dillo-config = { git = "https://github.com/pichi-vm/dillo" }
 # pichi-internal crates
 pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
-# conglobate's portable lib (recipe I/O types) — consumed by the pichi CLI.
+# conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
 conglobate = { git = "https://github.com/pichi-vm/conglobate" }
 # Error handling
 anyhow = "1"

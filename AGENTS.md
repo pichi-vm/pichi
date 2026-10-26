@@ -4,6 +4,13 @@ Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-s
 
 # 0. Architecture Contract
 
+**Build contract:** [`BUILD.md`](BUILD.md) is the source of truth for
+`pichi build` (thin launcher: same path as `pichi run`, virtiofs
+`repo`/`cache`/`output`, named console `dev.pichi.build` CBOR). Conglobate
+owns recipes, OCI layout, and inventory. Do not revive Conglobate-as-`/init`,
+virtiofs `$DIR`+manifests, guest `$DIR`→erofs, or host OCI reassembly from
+scutes as the product contract.
+
 Reference specs: PMI (`https://github.com/pichi-vm/pmi`) and Arma's device model (`arma/docs/device-model.md`).
 
 - **PMI**: portable image contract. It defines target actions, vCPU state, CPU profile, and base-DTB/overlay rules.
