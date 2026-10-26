@@ -34,10 +34,17 @@ is still a valid image — a base others derive from.
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
 | `pichi run` | Boot a cached artifact (prepares the environment, execs dillo) |
-| `pichi build` | Build an artifact from a `pichi.build/` project inside a VM |
+| `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |
 | `pichi system` | System-level inspection and maintenance |
 
 Run `pichi <command> --help` for details.
+
+## Build
+
+`pichi build` is a specialization of `pichi run`: same launch path, plus
+virtiofs wires and a one-shot build CBOR on named console `dev.pichi.build`.
+The host is a thin launcher; Conglobate's pichi image performs the build and
+writes an OCI layout to the output mount. Full contract: [BUILD.md](BUILD.md).
 
 ## License
 
