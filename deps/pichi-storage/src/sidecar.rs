@@ -13,7 +13,7 @@
 //!   guest's hash device so dm-verity activation can read pre-computed hashes
 //!
 //! No `.roothash` sidecar: pichi never reads the roothash. The publisher
-//! bakes `roothash=<hex>` into the PMI cmdline at arma-build time; the
+//! bakes `corium=<hex>` into the PMI cmdline at arma-build time; the
 //! guest reads it from cmdline at boot. pichi is dumb storage.
 //!
 //! The write/unlink helpers are async: the atomic temp-write-then-rename
