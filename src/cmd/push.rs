@@ -274,12 +274,6 @@ mod tests {
         );
         annotations.insert("dev.pichi.carapace.verity.version".into(), "1".into());
         annotations.insert("dev.pichi.carapace.verity.hash-type".into(), "1".into());
-        // push does not recompute verity, so a well-formed (32-byte hex) root
-        // annotation is enough to satisfy validate().
-        annotations.insert(
-            "dev.pichi.carapace.verity.hash".into(),
-            hex::encode([0u8; 32]),
-        );
         let manifest = Manifest {
             schema_version: 2,
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),

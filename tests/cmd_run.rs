@@ -32,10 +32,6 @@ fn chain_annotations() -> std::collections::BTreeMap<String, String> {
         ("dev.pichi.carapace.verity.hash-block-size", "4096"),
         ("dev.pichi.carapace.verity.version", "1"),
         ("dev.pichi.carapace.verity.hash-type", "1"),
-        (
-            "dev.pichi.carapace.verity.hash",
-            "abababababababababababababababababababababababababababababababab",
-        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))

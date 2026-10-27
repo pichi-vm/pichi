@@ -9,8 +9,7 @@
 //! `pmi.yaml` (`from:`); `config.yaml` `carapaces:` are deferred with the
 //! rest of the config-filter work. Each reference must already be in the
 //! local cache (no registry pull yet). For each, the lock records the
-//! manifest digest (sha256 over the OCI manifest bytes) and the
-//! carapace's top-scute dm-verity root (`rootₙ₋₁`).
+//! OCI manifest digest only. It does not write a carapace tip.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
@@ -24,7 +23,6 @@ use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::UpdateArgs;
-use crate::cmd::manifest_ext::ManifestExt;
 use crate::config::Config;
 
 /// Generated-file header prepended to `refs.lock` (BUILD.md §2.4).
@@ -53,17 +51,14 @@ pub async fn run(args: UpdateArgs, config: &Config) -> Result<()> {
 
         let mut entries: BTreeMap<String, LockEntry> = BTreeMap::new();
         for reference in refs {
-            let (manifest_digest, manifest) =
+            let (manifest_digest, _manifest) =
                 resolve_manifest(&reference, &db, &blob_store).await?;
-            let top_root = manifest
-                .carapace_top_root(&blob_store)
-                .await
-                .with_context(|| format!("computing carapace root for {reference}"))?;
+            // Validate the cached manifest parses; pin only its OCI digest.
             entries.insert(
                 reference,
                 LockEntry {
                     manifest: manifest_digest.to_string(),
-                    carapace: format!("sha256:{}", hex::encode(top_root)),
+                    carapace: None,
                 },
             );
         }
@@ -143,38 +138,21 @@ async fn resolve_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::{test_support::ScuteFixture as _, verity};
     use crate::config::{Config, StorageConfig};
     use tempfile::TempDir;
 
-    /// `pichi update` pins an imported carapace's reference with the exact
-    /// top-scute root the importer produced — verified against
-    /// fixture conversion and verity formatting over the same image.
+    /// `pichi update` pins an imported carapace's OCI manifest digest only.
     #[tokio::test]
-    async fn pins_imported_carapace_root() {
+    async fn pins_imported_manifest_digest() {
         let tmp = TempDir::new().unwrap();
         let graphroot = tmp.path().join("storage");
         std::fs::create_dir_all(&graphroot).unwrap();
 
-        // A small raw image with one non-zero chunk.
         let mut raw = vec![0u8; 64 * 1024];
         raw[20_000] = 0x42;
         let raw_path = tmp.path().join("img.raw");
         std::fs::write(&raw_path, &raw).unwrap();
 
-        // Expected single-scute root, the way the importer
-        // computes it: the carapace-mandated scute chunk size, verity over
-        // 4096-byte blocks with the 32-byte zero salt (uuid irrelevant).
-        let cow_bytes = raw.scute();
-        let params = verity::VerityParams {
-            data_block_size: 4096,
-            hash_block_size: 4096,
-            salt: vec![0u8; 32],
-            uuid: [0u8; 16],
-        };
-        let expected_root = params.compute(&cow_bytes).unwrap().root_hash;
-
-        // Import it into the cache as `base:1`.
         crate::cmd::import::raw::ImportArgs {
             raw_image: raw_path,
             tag: Some("base:1".into()),
@@ -187,12 +165,12 @@ mod tests {
         .await
         .unwrap();
 
-        // A project that derives from it.
         let project = tmp.path().join("proj");
         std::fs::create_dir_all(project.join("pichi.build")).unwrap();
         std::fs::write(
             project.join("pichi.build").join("carapace.yaml"),
-            "from: base:1\n",
+            "from: base:1
+",
         )
         .unwrap();
 
@@ -214,12 +192,14 @@ mod tests {
 
         let lock_text =
             std::fs::read_to_string(project.join("pichi.build").join("refs.lock")).unwrap();
+        assert!(
+            !lock_text.contains("carapace:"),
+            "refs.lock must not write a carapace tip:
+{lock_text}"
+        );
         let lock = conglobate::RefsLock::parse(&lock_text).unwrap();
         let entry = lock.get("base:1").expect("base:1 must be pinned");
-        assert_eq!(
-            entry.carapace,
-            format!("sha256:{}", hex::encode(expected_root))
-        );
+        assert!(entry.carapace.is_none(), "{:?}", entry.carapace);
         assert!(entry.manifest.starts_with("sha256:"), "{}", entry.manifest);
     }
 }

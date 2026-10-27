@@ -19,7 +19,6 @@ use common::{
     ARMA_BIN, CORIUM_BIN, assemble_initrd_with, assert_pichi_ok, fedora_ext4, kvm_available,
     make_ext4, pichi, pull_build_image,
 };
-use corium::CORIUM_ROOT_OK;
 
 const MARKER: &str = "corium-root-marker";
 
@@ -99,7 +98,7 @@ async fn single_pichi_build_emits_bootable_artifact() {
          derive:\n\
          \x20 - run: /context/arma build --profile x86-64-v2 --config /context/kernel.config \
          --kernel /context/vmlinuz --initrd /context/corium-initrd.cpio \
-         --cmdline \"console=hvc0 root.carapace=$PICHI_CARAPACE_ROOT\" /tmp/boot.pmi\n\
+         --cmdline \"console=hvc0 corium=$PICHI_CARAPACE_ROOT\" /tmp/boot.pmi\n\
          into: /tmp/boot.pmi\n",
     )
     .unwrap();
@@ -159,8 +158,10 @@ async fn single_pichi_build_emits_bootable_artifact() {
         status.success(),
         "pichi run exited non-zero ({status}):\n{combined}"
     );
+    // Tip corium dropped CORIUM_ROOT_OK; re-enable needs the new log/halt
+    // contract. Keep the marker check as the deferred proof.
     assert!(
-        combined.contains(CORIUM_ROOT_OK) && combined.contains(MARKER),
+        combined.contains(MARKER),
         "corium did not mount the root carapace from the single-build artifact:\n{combined}"
     );
 }

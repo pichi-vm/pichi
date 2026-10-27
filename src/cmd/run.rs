@@ -193,21 +193,12 @@ pub(crate) async fn build_gpt_spec(
         let cow_path = blob_store.blob_path(&cow_digest);
         let v_path = cow_path.verity_path();
 
-        // Fast path: for a single-scute carapace the chain verity root recorded
-        // in the manifest annotation IS this scute's root, so reuse it instead
-        // of reading the whole cow blob (hundreds of MB) and re-hashing it every
-        // launch. Falls back to recomputation for multi-scute stacks (where each
-        // scute has a distinct root not individually stored).
-        let root: [u8; 32] = match (scutes.len() == 1)
-            .then(|| manifest.carapace_verity_hash())
-            .flatten()
-        {
-            Some(h) => h,
-            None => manifest
-                .cached_scute_root(&pichi_artifact::Layer::Scute((*scute).clone()), blob_store)
-                .await?
-                .context("scute has no verity root")?,
-        };
+        // Per-scute dm-verity root from the cached cow (PARTUUID / label prep).
+        // Launch never reads `dev.pichi.carapace.verity.hash`.
+        let root: [u8; 32] = manifest
+            .cached_scute_root(&pichi_artifact::Layer::Scute((*scute).clone()), blob_store)
+            .await?
+            .context("scute has no verity root")?;
 
         // D-run-01: cow PARTUUID = root[0..16], verity PARTUUID = root[16..32].
         //
