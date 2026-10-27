@@ -94,11 +94,12 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
-    // The build image is a PMI-only appliance: --pmi is its PMI blob.
+    // The build image launches like `pichi run` (BUILD.md §2.6): --pmi,
+    // optional detached --dtb, and a vGPT for the appliance carapace scutes.
     let (_, build_manifest) = resolve_manifest(&build_image_ref, &db, &blob_store)
         .await
         .with_context(|| format!("resolving build image {build_image_ref}"))?;
-    let (pmi, _) = build_manifest
+    let (pmi, build_scutes) = build_manifest
         .partition_layers()
         .with_context(|| format!("build image {build_image_ref} is not bootable"))?;
     let pmi_digest: Digest = pmi
@@ -106,6 +107,15 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .parse()
         .context("invalid build-image PMI digest")?;
     let pmi_path = blob_store.blob_path(&pmi_digest);
+    let dtb_path = if let Some(dtb) = build_manifest.dtb_layer() {
+        let dtb_digest: Digest = dtb
+            .digest
+            .parse()
+            .with_context(|| format!("invalid build-image DTB digest: {}", dtb.digest))?;
+        Some(blob_store.blob_path(&dtb_digest))
+    } else {
+        None
+    };
 
     // Transitional source-carapace pass-through (BUILD.md §3): resolve the
     // locked images from the RO cache and wire each as a vGPT. Prefer
@@ -131,6 +141,15 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     };
 
     let mut gpt_specs = Vec::new();
+    // Appliance root carapace first (corium discovers it by PARTUUID), then
+    // transitional source-carapace vGPTs for lock-pinned inputs.
+    if !build_scutes.is_empty() {
+        gpt_specs.push(
+            build_gpt_spec(&build_manifest, &build_scutes, &blob_store)
+                .await
+                .with_context(|| format!("building vGPT for build image {build_image_ref}"))?,
+        );
+    }
     let mut source_scutes: Vec<ScuteDescriptor> = Vec::new();
     for reference in &source_refs {
         let (digest, manifest) = resolve_manifest(reference, &db, &blob_store)
@@ -205,6 +224,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     let argv = build_dillo_args(
         &pmi_path,
+        dtb_path.as_deref(),
         &gpt_specs,
         &repo_dir,
         &cache_dir,
@@ -390,6 +410,7 @@ async fn package_artifact(
 /// excluded). The pure core, split out for testing without a boot.
 pub(crate) fn build_dillo_args(
     pmi_path: &Path,
+    dtb_path: Option<&Path>,
     gpt_specs: &[String],
     repo_dir: &Path,
     cache_dir: &Path,
@@ -399,6 +420,12 @@ pub(crate) fn build_dillo_args(
     cpus: Option<u32>,
 ) -> Vec<String> {
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(pmi_path)];
+    // Detached-mode PMI (Conglobate 0.2.0+): measured base DTB rides as its
+    // own layer; pass it out-of-band like `pichi run` does.
+    if let Some(dtb) = dtb_path {
+        argv.push("--dtb".to_string());
+        argv.push(path_arg(dtb));
+    }
     if let Some(m) = memory_mib {
         argv.push("--memory".to_string());
         argv.push(m.to_string());
@@ -745,6 +772,7 @@ mod tests {
         let console = console_arg(3, 4);
         let argv = build_dillo_args(
             Path::new("/cache/blobs/sha256/deadbeef"),
+            None,
             &["partitions=[[path=/c,partuuid=u,typeguid=t,label=c:x]]".to_string()],
             Path::new("/proj"),
             Path::new("/var/cache/pichi"),
@@ -820,6 +848,7 @@ mod tests {
     async fn argv_omits_resource_flags_when_unset() {
         let argv = build_dillo_args(
             Path::new("/p.pmi"),
+            None,
             &[],
             Path::new("/proj"),
             Path::new("/cache"),
@@ -832,6 +861,23 @@ mod tests {
         assert!(!argv.iter().any(|a| a == "--cpus"));
         assert!(!argv.iter().any(|a| a == "--gpt"));
         assert!(!argv.iter().any(|a| a == "--console"));
+    }
+
+    #[tokio::test]
+    async fn argv_passes_dtb_when_present() {
+        let argv = build_dillo_args(
+            Path::new("/p.pmi"),
+            Some(Path::new("/cache/blobs/sha256/dtbdead")),
+            &[],
+            Path::new("/proj"),
+            Path::new("/cache"),
+            Path::new("/out"),
+            None,
+            None,
+            None,
+        );
+        let i = argv.iter().position(|a| a == "--dtb").expect("--dtb");
+        assert_eq!(argv[i + 1], "/cache/blobs/sha256/dtbdead");
     }
 
     #[tokio::test]
@@ -1082,6 +1128,7 @@ mod tests {
         let console = console_arg(5, 6);
         let argv = build_dillo_args(
             Path::new("/cache/blobs/sha256/deadbeef"),
+            None,
             &[],
             Path::new("/proj"),
             Path::new("/var/cache/pichi"),
@@ -1268,5 +1315,4 @@ mod tests {
             "resolved manifest should partition as a bootable appliance"
         );
     }
-
 }
