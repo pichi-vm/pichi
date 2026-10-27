@@ -1,14 +1,12 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `pichi build [-t <tag>] [--build-image <ref>] [--memory N] [--cpus N] <dir>`
-//! — the host side of a build (BUILD.md §3).
+//! `pichi build` — thin host launcher (BUILD.md).
 //!
-//! MVP skeleton (Phase 0): resolve the build image + source carapaces,
-//! assemble the `dillo` argv (one read-only `context` virtiofs mount, one
-//! writable `output` sink, one vGPT per source carapace), boot the build
-//! VM, and wait for power-off. The in-guest build (conglobate) and the
-//! output packaging land in later phases.
+//! Specializes `pichi run`: same launch path, plus virtiofs wires and the
+//! bidirectional named-console build-port protocol on `dev.pichi.build`
+//! (guest requests build-input; host replies with CBOR). On guest exit 0 the
+//! host takes the OCI layout from the output mount.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
@@ -27,14 +25,19 @@ use pichi_storage::sidecar::write_sidecar_atomic;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::BuildArgs;
+#[cfg(unix)]
+use crate::cmd::build_port::clear_device_cloexec;
+use crate::cmd::build_port::{
+    self, BuildInput, console_arg, create_build_port_pipes, serve_build_port,
+};
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
 use crate::cmd::run::{build_gpt_spec, find_dillo, path_arg};
 use crate::config::Config;
 
-/// virtio-fs mount tags the host and conglobate agree on (BUILD.md §3).
-/// conglobate selects each share by tag, so these are a host↔guest contract.
-const CONTEXT_TAG: &str = "context";
+/// virtio-fs mount tags the host and Conglobate agree on (BUILD.md §2.3).
+const REPO_TAG: &str = "repo";
+const CACHE_TAG: &str = "cache";
 const OUTPUT_TAG: &str = "output";
 
 pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
@@ -94,13 +97,16 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         );
     }
 
-    // Output sink: a fresh directory the guest writes scutes/PMI into.
+    // Thin-launcher mounts (BUILD.md §2.2–§2.3): empty RW output, RO cache,
+    // RO repo (git object store / work tree the guest resolves `--ref` against).
     let output_dir = tempfile::TempDir::new().context("creating build output dir")?;
-    let context_dir = std::fs::canonicalize(&args.dir)
-        .with_context(|| format!("canonicalizing build context {}", args.dir.display()))?;
+    let repo_dir = std::fs::canonicalize(&args.dir)
+        .with_context(|| format!("canonicalizing repo dir {}", args.dir.display()))?;
+    let cache_dir = std::fs::canonicalize(&layout.graphroot)
+        .with_context(|| format!("canonicalizing cache {}", layout.graphroot.display()))?;
 
-    // Size the build VM from the build image's requirements.yaml (BUILD.md §7),
-    // with the operator's --memory/--cpus overriding (but not below required).
+    // Size the build VM from the build image's requirements, with the
+    // operator's --memory/--cpus overriding (but not below required).
     let reqs = requirements::load_requirements(&build_manifest, &blob_store).await?;
     let cpus = requirements::resolve_sized(
         args.cpus,
@@ -115,11 +121,36 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         "memory (MiB)",
     )?;
 
+    let build_input = BuildInput {
+        git_ref: args
+            .git_ref
+            .clone()
+            .ok_or_else(|| anyhow!("pichi build requires --ref (BUILD.md §2.4)"))?,
+        recipe: args
+            .recipe
+            .clone()
+            .ok_or_else(|| anyhow!("pichi build requires --recipe (BUILD.md §2.4)"))?,
+        lock: args
+            .lock
+            .clone()
+            .ok_or_else(|| anyhow!("pichi build requires --lock (BUILD.md §2.4)"))?,
+        subdir: args.subdir.clone(),
+        location: args.location.clone(),
+    };
+    let response = build_input
+        .encode_success()
+        .context("encoding build-input success response")?;
+
+    let pipes = create_build_port_pipes().context("creating build-port pipes")?;
+    let console = console_arg(pipes.device_rx_fd, pipes.device_tx_fd);
+
     let argv = build_dillo_args(
         &pmi_path,
         &gpt_specs,
-        &context_dir,
+        &repo_dir,
+        &cache_dir,
         output_dir.path(),
+        Some(&console),
         memory,
         cpus,
     );
@@ -130,7 +161,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .ok_or_else(|| anyhow!("pichi build requires -t <tag> to name the result"))?;
 
     let dillo = find_dillo();
-    boot_and_wait(&dillo, &argv).await?;
+    boot_serve_and_wait(&dillo, &argv, pipes, response).await?;
 
     // The VM powered off; package what it wrote to the output sink.
     let created = chrono::Utc::now().to_rfc3339();
@@ -179,9 +210,11 @@ fn chain_annotations(created_rfc3339: &str) -> BTreeMap<String, String> {
     a
 }
 
-/// Read the build VM's output sink (`build.yaml` + scute/PMI blobs), insert
+/// Transitional host packaging (see BUILD.md §3 "Transitional host packaging"):
+/// read the build VM's output sink (`build.yaml` + scute/PMI blobs), insert
 /// the blobs into the cache, build + validate the OCI artifact manifest, and
-/// tag it. Returns the manifest digest.
+/// tag it. Returns the manifest digest. Follow-up: replace with pure
+/// OCI-directory import per locked §2.2/§2.5/§2.7.
 ///
 /// The output carapace is `source_scutes` (the carapace recipe's `from:`,
 /// passed through unchanged — their blobs already live in the cache) followed
@@ -299,8 +332,10 @@ async fn package_artifact(
 pub(crate) fn build_dillo_args(
     pmi_path: &Path,
     gpt_specs: &[String],
-    context_dir: &Path,
+    repo_dir: &Path,
+    cache_dir: &Path,
     output_dir: &Path,
+    console: Option<&str>,
     memory_mib: Option<u32>,
     cpus: Option<u32>,
 ) -> Vec<String> {
@@ -313,22 +348,31 @@ pub(crate) fn build_dillo_args(
         argv.push("--cpus".to_string());
         argv.push(c.to_string());
     }
-    // Read-only build context; writable output sink (BUILD.md §3, §5.3).
+    // Virtiofs tags by convention (BUILD.md §2.3).
     argv.push("--fs".to_string());
     argv.push(format!(
-        "tag={CONTEXT_TAG},source={},readonly",
-        path_arg(context_dir)
+        "tag={REPO_TAG},source={},readonly",
+        path_arg(repo_dir)
+    ));
+    argv.push("--fs".to_string());
+    argv.push(format!(
+        "tag={CACHE_TAG},source={},readonly",
+        path_arg(cache_dir)
     ));
     argv.push("--fs".to_string());
     argv.push(format!("tag={OUTPUT_TAG},source={}", path_arg(output_dir)));
-    // One vGPT per source carapace.
+    if let Some(console) = console {
+        argv.push("--console".to_string());
+        argv.push(console.to_string());
+    }
+    // Transitional: source-carapace vGPTs (retired as the product API; kept
+    // while packaging still consumes them). Follow-up: drop with OCI-import
+    // rewrite — see BUILD.md §3 "Transitional host packaging".
     for spec in gpt_specs {
         argv.push("--gpt".to_string());
         argv.push(spec.clone());
     }
-    // `pichi build` always wires a user-mode NIC. The host always provides the
-    // interface (BUILD.md §3.4); conglobate brings it up/down per stage. The
-    // guest gets nothing routable unless a stage opts in with `network: true`.
+    // User-mode NIC for stages that opt in with `network: true`.
     argv.push("--net".to_string());
     argv.push(USER_NET_SPEC.to_string());
     argv
@@ -425,18 +469,96 @@ async fn resolve_manifest(
     Ok((digest, manifest))
 }
 
-/// Boot the build VM and wait for it to power off. Unlike `pichi run`
-/// (which `exec`s dillo), build spawns and waits so it can package the
-/// output afterwards.
-async fn boot_and_wait(dillo: &Path, args: &[String]) -> Result<()> {
+/// Boot the build VM, serve the v0 build-port request/response on
+/// `dev.pichi.build`, and wait for power-off. Unlike `pichi run` (which
+/// `exec`s dillo), build spawns and waits so it can take the OCI output.
+async fn boot_serve_and_wait(
+    dillo: &Path,
+    args: &[String],
+    pipes: build_port::BuildPortPipes,
+    response: Vec<u8>,
+) -> Result<()> {
     log::info!("boot build VM: {} {}", dillo.display(), args.join(" "));
-    // The build VM can run for minutes; drive it via tokio::process so it never
-    // blocks a runtime worker.
-    let status = tokio::process::Command::new(dillo)
-        .args(args)
-        .status()
-        .await
+
+    let build_port::BuildPortPipes {
+        host_tx,
+        host_rx,
+        device_rx_fd,
+        device_tx_fd,
+        device_rx,
+        device_tx,
+    } = pipes;
+
+    let mut cmd = tokio::process::Command::new(dillo);
+    cmd.args(args);
+    // Tear down dillo if the host drops the child (exchange/error paths).
+    cmd.kill_on_drop(true);
+
+    #[cfg(unix)]
+    {
+        // Clear CLOEXEC in the child so `pipe:N` fds survive exec under the
+        // numbers named in `--console`.
+        #[allow(unsafe_code)]
+        // SAFETY: the closure only fcntl-clears FD_CLOEXEC on descriptors this
+        // process created and still owns (`device_rx` / `device_tx` below).
+        unsafe {
+            cmd.pre_exec(move || {
+                clear_device_cloexec(device_rx_fd, device_tx_fd)
+                    .map_err(|err| std::io::Error::other(err.to_string()))
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        // FDs are only consumed by the unix pre_exec path; silence -D warnings.
+        let _ = (device_rx_fd, device_tx_fd);
+        // tokio::process::Command does not wrap inherit_handles; apply it on
+        // the inner std::process::Command (nightly feature gated in lib.rs).
+        use std::os::windows::process::CommandExt as _;
+        cmd.as_std_mut().inherit_handles(true);
+    }
+
+    let mut child = cmd
+        .spawn()
         .with_context(|| format!("spawning dillo at {}", dillo.display()))?;
+    // Child has inherited the device ends; drop our copies.
+    drop(device_rx);
+    drop(device_tx);
+
+    let mut serve =
+        tokio::task::spawn_blocking(move || serve_build_port(host_rx, host_tx, &response));
+
+    let status = tokio::select! {
+        serve_result = &mut serve => {
+            serve_result
+                .context("build-port task join")?
+                .context("build-port exchange")?;
+            child
+                .wait()
+                .await
+                .context("waiting for build VM")?
+        }
+        status = child.wait() => {
+            let status = status.context("waiting for build VM")?;
+            serve.abort();
+            match serve.await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    bail!(
+                        "guest exited before completing build-port exchange ({status}): {err}"
+                    );
+                }
+                Err(join) if join.is_cancelled() => {
+                    bail!("guest exited before build-input request ({status})");
+                }
+                Err(join) => {
+                    return Err(join).context("build-port task join");
+                }
+            }
+            status
+        }
+    };
+
     if !status.success() {
         bail!("build VM exited with {status}");
     }
@@ -453,12 +575,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn argv_has_pmi_context_output_and_one_gpt_per_carapace() {
+    async fn argv_has_pmi_repo_cache_output_console_and_one_gpt() {
+        let console = console_arg(3, 4);
         let argv = build_dillo_args(
             Path::new("/cache/blobs/sha256/deadbeef"),
             &["partitions=[[path=/c,partuuid=u,typeguid=t,label=c:x]]".to_string()],
             Path::new("/proj"),
+            Path::new("/var/cache/pichi"),
             Path::new("/run/out"),
+            Some(&console),
             Some(4096),
             Some(8),
         );
@@ -489,24 +614,40 @@ mod tests {
             serde_keyvalue::from_key_values(net_values[0]).expect("--net parses as NetSpec");
         assert_eq!(net.backend, dillo_config::NetBackendKind::User);
 
-        // two --fs mounts that parse as dillo FsSpecs: ro context + rw output
+        // three --fs mounts: ro repo + ro cache + rw output
         let fs_values: Vec<&String> = argv
             .iter()
             .enumerate()
             .filter(|(i, a)| *a == "--fs" && *i + 1 < argv.len())
             .map(|(i, _)| &argv[i + 1])
             .collect();
-        assert_eq!(fs_values.len(), 2);
+        assert_eq!(fs_values.len(), 3);
 
-        let ctx = parse_fs(fs_values[0]);
-        assert_eq!(ctx.tag, CONTEXT_TAG);
-        assert_eq!(ctx.source, Path::new("/proj"));
-        assert!(ctx.readonly, "context mount must be read-only");
+        let repo = parse_fs(fs_values[0]);
+        assert_eq!(repo.tag, REPO_TAG);
+        assert_eq!(repo.source, Path::new("/proj"));
+        assert!(repo.readonly, "repo mount must be read-only");
 
-        let out = parse_fs(fs_values[1]);
+        let cache = parse_fs(fs_values[1]);
+        assert_eq!(cache.tag, CACHE_TAG);
+        assert_eq!(cache.source, Path::new("/var/cache/pichi"));
+        assert!(cache.readonly, "cache mount must be read-only");
+
+        let out = parse_fs(fs_values[2]);
         assert_eq!(out.tag, OUTPUT_TAG);
         assert_eq!(out.source, Path::new("/run/out"));
         assert!(!out.readonly, "output sink must be writable");
+
+        // bidirectional named build port
+        let console_i = argv.iter().position(|a| a == "--console").unwrap();
+        let console_val = &argv[console_i + 1];
+        let spec: dillo_config::ConsoleSpec =
+            serde_keyvalue::from_key_values(console_val).expect("--console parses");
+        assert_eq!(spec.endpoint.as_deref(), Some("stdio"));
+        assert_eq!(spec.ports.len(), 1);
+        assert_eq!(spec.ports[0].name, build_port::BUILD_PORT_NAME);
+        assert!(spec.ports[0].rx.is_some());
+        assert!(spec.ports[0].tx.is_some());
     }
 
     #[tokio::test]
@@ -515,13 +656,16 @@ mod tests {
             Path::new("/p.pmi"),
             &[],
             Path::new("/proj"),
+            Path::new("/cache"),
             Path::new("/out"),
+            None,
             None,
             None,
         );
         assert!(!argv.iter().any(|a| a == "--memory"));
         assert!(!argv.iter().any(|a| a == "--cpus"));
         assert!(!argv.iter().any(|a| a == "--gpt"));
+        assert!(!argv.iter().any(|a| a == "--console"));
     }
 
     #[tokio::test]
