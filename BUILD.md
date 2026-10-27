@@ -166,6 +166,16 @@ partial output as an artifact.
 Resource sizing (`--memory` / `--cpus` and similar) follows the same
 patterns as `pichi run` against the appliance image's launch contract.
 
+### Transitional host packaging (follow-up)
+
+The locked contract (§2.2 step 6, §2.5, §2.7) requires the host to take a
+guest-published OCI layout from the output mount and import it. Today's
+`pichi build` host path still packages from transitional leftovers:
+`build.yaml` plus scute/PMI blobs via `package_artifact`, with source-carapace
+vGPTs still wired for that path. Rewriting host packaging to pure
+OCI-directory import (matching the locked contract) is an explicit follow-up
+and does **not** block landing the v0 build-port protocol cut.
+
 ---
 
 ## 4. Build-port CBOR (logical shape)

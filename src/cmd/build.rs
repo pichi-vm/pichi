@@ -210,9 +210,11 @@ fn chain_annotations(created_rfc3339: &str) -> BTreeMap<String, String> {
     a
 }
 
-/// Read the build VM's output sink (`build.yaml` + scute/PMI blobs), insert
+/// Transitional host packaging (see BUILD.md §3 "Transitional host packaging"):
+/// read the build VM's output sink (`build.yaml` + scute/PMI blobs), insert
 /// the blobs into the cache, build + validate the OCI artifact manifest, and
-/// tag it. Returns the manifest digest.
+/// tag it. Returns the manifest digest. Follow-up: replace with pure
+/// OCI-directory import per locked §2.2/§2.5/§2.7.
 ///
 /// The output carapace is `source_scutes` (the carapace recipe's `from:`,
 /// passed through unchanged — their blobs already live in the cache) followed
@@ -364,7 +366,8 @@ pub(crate) fn build_dillo_args(
         argv.push(console.to_string());
     }
     // Transitional: source-carapace vGPTs (retired as the product API; kept
-    // while packaging still consumes them).
+    // while packaging still consumes them). Follow-up: drop with OCI-import
+    // rewrite — see BUILD.md §3 "Transitional host packaging".
     for spec in gpt_specs {
         argv.push("--gpt".to_string());
         argv.push(spec.clone());
