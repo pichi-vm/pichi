@@ -581,7 +581,24 @@ async fn resolve_manifest(
         .parse()
         .with_context(|| format!("invalid reference: {reference}"))?;
     let digest = match &target.kind {
-        ReferenceKind::Digest(d) => d.clone(),
+        ReferenceKind::Digest(d) => {
+            if blob_store.blob_exists(d).await {
+                d.clone()
+            } else {
+                // D-02: `pichi pull` of an OCI index digest-ref drops the
+                // index and tags `name@digest` → picked platform manifest.
+                // Conglobate `tag@digest` pins for DEFAULT_BUILD_IMAGE hit
+                // that path; fall back to the tag db when the pin digest
+                // itself is not a stored blob. Lock-seeded source indexes
+                // still hit the blob_exists branch above.
+                let key = target.to_string();
+                db.resolve_tag(&key).await?.ok_or_else(|| {
+                    anyhow!(
+                        "ref not in cache: {key} (digest blob {d} missing)\n  hint: pichi pull {key}"
+                    )
+                })?
+            }
+        }
         ReferenceKind::Tag(_) => {
             let key = target.to_string();
             db.resolve_tag(&key)
@@ -1190,4 +1207,66 @@ mod tests {
             "sha256:deadbeef"
         );
     }
+    /// D-02 pull drops OCI indexes: a Conglobate `tag@digest` pin whose
+    /// digest is an index is cached as `name@digest` → platform manifest
+    /// only. `resolve_manifest` must fall back to the tag db so
+    /// DEFAULT_BUILD_IMAGE resolves after `pichi pull`.
+    #[tokio::test]
+    async fn resolve_manifest_digest_pin_falls_back_to_tag_db() {
+        use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let graphroot = tmp.path().join("storage");
+        std::fs::create_dir_all(&graphroot).unwrap();
+        let db = FilesystemTagDb::open(&graphroot).unwrap();
+        let blob_store = FilesystemBlobStore::new(&graphroot);
+
+        // Minimal D-07-valid PMI-only appliance manifest (empty config).
+        let platform_bytes = br#"{
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "artifactType": "application/vnd.pichi.artifact.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.empty.v1+json",
+                "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "size": 2,
+                "data": "e30="
+            },
+            "layers": [{
+                "mediaType": "application/vnd.pichi.pmi.v1",
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "size": 1
+            }],
+            "annotations": {}
+        }"#;
+        // Compact JSON so digest is stable-ish; recompute after parse round-trip.
+        let platform_val: serde_json::Value = serde_json::from_slice(platform_bytes).unwrap();
+        let platform = serde_json::to_vec(&platform_val).unwrap();
+        let platform_digest = Digest::from_bytes_sha256(&platform);
+        blob_store
+            .put_blob(&platform_digest, &platform)
+            .await
+            .unwrap();
+
+        // Fake index digest — deliberately NOT stored as a blob.
+        let index_digest: Digest =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .parse()
+                .unwrap();
+        assert!(!blob_store.blob_exists(&index_digest).await);
+
+        let tag_key = format!("ghcr.io/pichi-vm/conglobate@{index_digest}");
+        db.set_tag(&tag_key, &platform_digest).await.unwrap();
+
+        let pinned = format!("ghcr.io/pichi-vm/conglobate:0.2.0@{index_digest}");
+        let (got, manifest) = resolve_manifest(&pinned, &db, &blob_store)
+            .await
+            .expect("digest pin must resolve via tag db when index blob absent");
+        assert_eq!(got, platform_digest);
+        assert!(
+            manifest.partition_layers().is_ok(),
+            "resolved manifest should partition as a bootable appliance"
+        );
+    }
+
 }
