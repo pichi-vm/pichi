@@ -88,7 +88,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "official Conglobate smoke: guest did not power off within {}s after launch (expected after Conglobate #11+#12 SuccessAction=poweroff + cache path-read). Pin is ghcr.io/pichi-vm/conglobate:0.2.0@sha256:b5f90b127be429e02fb5315c7d2c1e9c8f0889f9a75f15732c98103b2b0ae7a7. Appliance logs go to the journal only (not hvc0). Output mount stays empty when Pipeline fails.",
+                "official Conglobate smoke: guest did not power off within {}s after launch (expected after Conglobate #11+#12+#13 SuccessAction=poweroff + cache path-read + /dev runtime-target). Pin is ghcr.io/pichi-vm/conglobate:0.2.0@sha256:5e70175b1610ac791d67ee1ef18520ce6b9a2156c91464a4b4a56b68dbb86710. Appliance logs go to the journal only (not hvc0). Output mount stays empty when Pipeline fails.",
                 OFFICIAL_SMOKE_TIMEOUT.as_secs()
             );
         }
