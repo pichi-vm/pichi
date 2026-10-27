@@ -1,0 +1,35 @@
+# cargo-deny configuration for carapace.
+#
+# The license allowlist is tailored to carapace's actual dependency tree
+# (verify with `cargo metadata`). Adding a dependency whose license is not
+# listed here fails CI by design — a deliberate prompt to review the new
+# license before accepting it.
+
+[licenses]
+allow = [
+    "Apache-2.0",   # this crate + many deps
+    "MIT",          # many deps (dual MIT/Apache)
+    "Unicode-3.0",  # required by the `unicode-ident` family (AND expression)
+]
+confidence-threshold = 0.8
+
+[advisories]
+version = 2
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Substrate Git dependencies are pinned by revision rather than version.
+allow-wildcard-paths = true
+
+[sources]
+# carapace depends on crates.io packages plus the pichi-vm substrate crates
+# (devmap/lodown) pulled directly from their GitHub repos.
+unknown-registry = "deny"
+unknown-git = "deny"
+
+# Allow git dependencies from the pichi-vm org (devmap, lodown). Pinned to a
+# rev in Cargo.toml; the org allowlist keeps any other git source denied.
+[sources.allow-org]
+github = ["pichi-vm"]

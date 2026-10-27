@@ -1,0 +1,84 @@
+Planned image-to-scute reader prototype (2026-10-18)
+
+Current public API, behind feature image:
+    trait Plan: Sized {
+        fn plan(image: std::fs::File) -> io::Result<Self>;
+    }
+    impl Plan for Planned<std::fs::File>
+    impl Read for Planned<std::fs::File>
+
+With image + tokio:
+    trait AsyncPlan: Sized {
+        fn plan(image: tokio::fs::File)
+            -> impl Future<Output = io::Result<Self>> + Send;
+    }
+    impl AsyncPlan for Planned<tokio::fs::File>
+    impl AsyncRead for Planned<tokio::fs::File>
+
+    impl<R> Planned<R> {
+        fn exceptions(&self) -> u64;
+        fn size(&self) -> u64;
+    }
+
+Import one construction trait, or use qualified syntax if both are in scope.
+There is no Image wrapper, freestanding conversion function, conversion-result
+struct, into_reader transition, or hash output. This
+replaces the earlier sealed-file conversion prototype.
+
+Construction is the first pass. It scans allocated extents in batches up to
+1 MiB, skips sparse holes with SEEK_DATA/SEEK_HOLE, checks allocated chunks for
+zeros, and generates all exception metadata. Memory retains 16 bytes per
+exception plus metadata-area padding and container overhead. Source data is not
+retained. Filesystems lacking sparse-query support fall back to scanning; they
+may also conservatively expose holes as data without affecting correctness.
+
+The resulting value is the reader for the second pass: it emits the header,
+prepared metadata, and selected image chunks in COW order. Only selected chunks
+are reread. A partial final image chunk is padded to 4096 bytes. No metadata-group
+data buffer or output seeking is required. The async variant has a resumable
+seek/read state machine and uses Tokio file I/O; only sparse queries are sent to
+the blocking pool. Dropping construction does not leave a whole-file worker
+running, though an already-dispatched file operation may finish.
+
+Planned::size() returns the compact encoded length, including header,
+data, and retained metadata chunks. An exactly full metadata area is followed
+by an empty terminating area; the source size bound also bounds the output size. This is
+not a size formula for arbitrary preexisting stores with holes/extra capacity.
+Carapace uses fixed 4096-byte chunks. This known size lets callers configure the
+existing verity formatter before consuming Planned. Tests compose the synchronous
+reader through a tee to store COW bytes while hashing, and feed the async reader
+directly to AsyncFormat. Verity's known-length contract is unchanged.
+
+The source must remain immutable and exclusively used across BOTH passes,
+including any duplicated descriptors. Construction requires a nonempty regular
+file within the assembler's current 64 GiB dm-zero origin. Source I/O failures
+propagate; after a read failure, subsequent nonempty reads fail. Caller storage,
+publication, hashing, and persistence remain outside this API.
+
+Snapshot wire API:
+- Header::encode/decode, exceptions_per_chunk, metadata_chunk_index;
+- Exception::encode/decode. Replay now uses decode to find selected source chunks.
+The existing carapace assembly header reader also consumes Header::decode.
+
+Validation:
+- Both readers reconstruct fixtures at partial-block and metadata-area boundaries.
+- Short/empty reads and repeat EOF, read failures, and async lazy construction.
+- Dense and sparse representations produce identical bytes; blocking/async readers
+  and existing verity formatters produce identical COW bytes/hash trees/roots.
+- A 16 GiB sparse fixture with one nonzero and one allocated-zero chunk requires
+  at most 1 MiB of planning reads and produces one exception in both paths.
+- Output size checked against emitted bytes across metadata-area boundaries.
+- Kernel dm-verity/snapshot assembly and readback passed using the planned reader
+  streamed to a COW file and existing verity formatter together.
+- Full carapace library tests, blocking-only image feature, default-disabled build,
+  warnings-denied Clippy, formatting and diff checks run locally.
+
+Cargo.toml pins devmap to committed revision 2679426fa1d4508fc5c3bbdf643efbdbe64a3edd;
+no adjacent checkout or local dependency patches are required.
+Conglobate and pichi consumers are not migrated; no remote CI run or commits are
+part of this prototype. The separate bounded-memory, one-pass buffered converter
+is not implemented by this planned-reader API.
+
+Portability: conversion supports Linux, macOS, and Windows. Linux/macOS query
+sparse extents; Windows queries allocated ranges through DeviceIoControl.
+Device-mapper assembly and discovery remain Linux-only.

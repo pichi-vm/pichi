@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  license-headers:
+    name: license headers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: korandoru/hawkeye@v6
+
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  commit-messages:
+    name: commit messages
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: pipx run gitlint --commits "origin/${{ github.base_ref || 'main' }}..HEAD"
+
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features
+
+  # conglobate's library half (the pichi.build recipe I/O types) is portable;
+  # its binary half (the device-mapper/virtio-fs build driver) is Linux-only
+  # and excluded by target cfg off-Linux. The matrix proves the portable lib
+  # builds and its recipe tests pass on every host, with the bin compiled as
+  # the `#[cfg(not(target_os = "linux"))]` stub away from Linux.
+  test:
+    name: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-2025]
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build
+      - run: cargo test
+
+  # Build the official pichi build image (a PMI-only pichi VM whose /init is
+  # conglobate) once per architecture, on a native runner — no cross-compile,
+  # no qemu. conglobate is compiled static-musl for the initramfs, the kernel +
+  # modules come from Alpine in a native container, and arma seals the PMI.
+  # Each arch's PMI is uploaded; the publish job assembles the multi-arch index.
+  build-image:
+    name: build image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: checkout arma
+        uses: actions/checkout@v4
+        with:
+          repository: pichi-vm/arma
+          path: .arma
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+      - name: build image
+        env:
+          ARMA_DIR: ${{ github.workspace }}/.arma
+          OUT: ${{ github.workspace }}/image-out
+        run: bash scripts/build-image.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-image-${{ matrix.arch }}
+          path: image-out/boot.pmi
+          if-no-files-found: error
+
+  # Publish the per-arch PMIs as one multi-arch OCI index (platform.os=pichi)
+  # to this repo's GHCR, so `pichi build` can pull it. The image is rebuilt and
+  # republished on every push; the tag follows the ref name (branch, or the tag
+  # name on a tag push), and :latest tracks the default branch (the ref pichi
+  # defaults to). Uses the built-in GITHUB_TOKEN — no manual seeding.
+  publish-image:
+    name: publish image
+    needs: build-image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: oras-project/setup-oras@v1
+      - name: log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: publish multi-arch build image
+        env:
+          REPO: ghcr.io/${{ github.repository_owner }}/conglobate
+        run: |
+          set -euo pipefail
+          amd64=artifacts/build-image-amd64/boot.pmi
+          arm64=artifacts/build-image-arm64/boot.pmi
+          TAG="${GITHUB_REF_NAME//\//-}" bash scripts/publish-image.sh \
+            "amd64=$amd64" "arm64=$arm64"
+          if [ "$GITHUB_REF_TYPE" = branch ] && \
+             [ "$GITHUB_REF_NAME" = "${{ github.event.repository.default_branch }}" ]; then
+            TAG=latest bash scripts/publish-image.sh "amd64=$amd64" "arm64=$arm64"
+          fi

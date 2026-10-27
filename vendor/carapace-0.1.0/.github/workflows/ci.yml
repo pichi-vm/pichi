@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  license-headers:
+    name: license headers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: korandoru/hawkeye@v6
+
+  commit-messages:
+    name: commit messages
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commit messages
+        env:
+          PR_BASE: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -n "$PR_BASE" ]; then
+            commit_range="origin/$PR_BASE..HEAD"
+          elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            commit_range="$PUSH_BEFORE..HEAD"
+          else
+            commit_range="HEAD^..HEAD"
+          fi
+          pipx run gitlint --commits "$commit_range"
+
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  lint:
+    name: fmt + clippy + unsafe-gate
+    runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features
+      # Enforce the single private Windows unsafe exception.
+      - run: bash ci/grep-unsafe.sh
+
+  msrv:
+    name: minimum supported Rust
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-features --lib --bins
+
+  test:
+    name: unit + integration (root)
+    runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install integration test deps
+        run: sudo apt-get update && sudo apt-get install -y cryptsetup-bin gdisk dmsetup e2fsprogs python3
+      - name: Unit tests and feature combinations
+        run: |
+          cargo test --locked --lib --bins
+          cargo test --locked --no-default-features --lib --bins
+          cargo test --locked --no-default-features --features loop --lib --bins
+          cargo test --locked --no-default-features --features tokio --lib --bins
+          cargo test --locked --no-default-features --features loop,tokio --lib --bins
+          cargo test --locked --no-default-features --features image --lib --bins
+          cargo test --locked --no-default-features --features image,tokio --lib --bins
+          cargo test --locked --features tokio --lib --bins
+          cargo test --locked --features loop --lib --bins
+          cargo test --locked --all-features --lib --bins
+          cargo check --locked --no-default-features --all-targets
+          cargo doc --locked --all-features --no-deps
+      # Integration tests build a real layered ext4 carapace and need root
+      # (loop devices, device-mapper). Run as root with the runner user's
+      # cargo/rustup env so the toolchain resolves under sudo.
+      - name: Integration tests (root)
+        run: |
+          sudo env "PATH=$PATH" "HOME=$HOME" \
+            "RUSTUP_HOME=$HOME/.rustup" "CARGO_HOME=$HOME/.cargo" \
+            "RUSTFLAGS=-D warnings" \
+            cargo test --locked --all-features --tests -- --test-threads=1
+          sudo env "PATH=$PATH" "HOME=$HOME" \
+            "RUSTUP_HOME=$HOME/.rustup" "CARGO_HOME=$HOME/.cargo" \
+            "RUSTFLAGS=-D warnings" \
+            cargo test --locked --all-features --lib image::tests::kernel_reads_planned_scute -- --ignored --test-threads=1
+      - name: Block-device benchmark smoke test (root)
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -n
+        run: cargo bench --locked --target x86_64-unknown-linux-gnu --bench block_device -- --test
+
+  portable:
+    name: portable image conversion (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-features --all-targets
+      - run: cargo test --locked --no-default-features --features image --lib --bins
+      - run: cargo test --locked --all-features --lib --bins
+      - run: cargo clippy --locked --all-features --all-targets -- -D warnings
+      - run: cargo doc --locked --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
