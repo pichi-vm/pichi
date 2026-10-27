@@ -196,8 +196,7 @@ index blob for `qualification.local/fedora:43` →
 `sha256:4e335e141a3f950ed68c68f23c112930c51af5ec9658d1263353eb229a6429d1`
 (343 index bytes; placeholder inner manifest `sha256:` + 32×`0x11`) and
 supply a tiny imported carapace behind that descriptor. Default build
-image remains `ghcr.io/pichi-vm/conglobate:0.2.0` (`PICHI_BUILD_IMAGE`
-digest override later). Prefer Conglobate `main` once Follow-up A merges.
+image remains `ghcr.io/pichi-vm/conglobate:0.2.0@sha256:6420d9ec5b6bfc6e1c499852b2028f8281b7a9960f65ec02ac62752f0a0ff237` (same index as `:latest`; amd64/arm64 digests unchanged). Prefer Conglobate `main` once Follow-up A merges.
 
 ---
 

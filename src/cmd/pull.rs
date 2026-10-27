@@ -48,8 +48,10 @@ const PULL_CONCURRENCY: usize = 3;
 /// Entry point for `pichi pull`.
 pub async fn run(args: PullArgs, config: &Config) -> Result<()> {
     // Defense-in-depth: parse + canonicalise BEFORE any I/O (BL-02 / T-43-02).
-    let target_ref: Reference = args
-        .reference
+    // Also strip informational `:tag` from Conglobate `tag@digest` pins so
+    // `pichi-artifact::Reference` keeps a clean repo (see canonicalize_reference).
+    let canonical = crate::cmd::build::canonicalize_reference(&args.reference);
+    let target_ref: Reference = canonical
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
     let policy = args.pull.unwrap_or(PullPolicy::Always); // D-05 default.

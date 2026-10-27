@@ -3,7 +3,7 @@
 
 //! End-to-end smoke: `pichi build` against Conglobate's locked context inputs
 //! (`tests/distro/context` + `qualification.local/fedora:43`) with the real
-//! published build image (`ghcr.io/pichi-vm/conglobate:0.2.0`).
+//! published build image (`ghcr.io/pichi-vm/conglobate:0.2.0@sha256:…`).
 //!
 //! Host duties under test:
 //! - seed the exact Conglobate Follow-up A index blob
@@ -39,9 +39,9 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     std::fs::create_dir_all(&graphroot).unwrap();
     let g = &graphroot;
 
-    // Official build image (DEFAULT_BUILD_IMAGE = :0.2.0). Skip (do not fail
-    // CI) until Conglobate publishes that tag; when present, pull succeeds and
-    // the real smoke runs.
+    // Official build image (DEFAULT_BUILD_IMAGE = :0.2.0@sha256:…). Skip
+    // (do not fail CI) until Conglobate publishes that pin; when present,
+    // pull succeeds and the real smoke runs.
     if !pull_build_image(g) {
         return;
     }
