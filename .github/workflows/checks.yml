@@ -1,0 +1,50 @@
+name: checks
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  NIGHTLY: nightly-2026-07-06
+
+# Cheap / fail-fast tier (parallel). The platform matrix and registry
+# round-trips wait on this whole workflow via ci.yml, so a red fmt,
+# header, or commit-message check skips that expensive work.
+jobs:
+  license-headers:
+    name: license headers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: korandoru/hawkeye@v6
+
+  commit-messages:
+    name: commit messages
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+      - run: pipx run gitlint --commits "origin/${{ github.base_ref || 'main' }}..HEAD"
+
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rustfmt
+          rustup default "$NIGHTLY"
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          cargo fmt --all -- --check
