@@ -25,7 +25,7 @@ use common::{
     kvm_available, pichi, prepare_smoke_repo, pull_build_image, seed_smoke_source_carapace,
 };
 
-/// Bound so a missing guest poweroff (Conglobate appliance gap) cannot hang CI.
+/// Bound so a missing guest poweroff cannot hang CI (safety after Conglobate #11).
 const OFFICIAL_SMOKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 #[tokio::test]
@@ -52,10 +52,10 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     // Conglobate Follow-up A tip (lock.yaml lands in PR #8 @ 9fa7f204).
     let (repo, git_ref) = prepare_smoke_repo(tmp.path());
 
-    // Timed spawn: BUILD.md requires guest exit 0 after the build. Published
-    // Conglobate 0.2.0 oneshot has no SuccessAction=poweroff, so without a
-    // bound this waited forever after a successful build-port exchange.
-    // Inherit stdio so console noise cannot fill a pipe and deadlock dillo.
+    // Timed spawn: BUILD.md requires guest exit 0 after the build.
+    // Conglobate #11 adds SuccessAction=poweroff; keep a bound so a
+    // regression cannot hang CI. Inherit stdio so console noise cannot
+    // fill a pipe and deadlock dillo.
     let mut child = std::process::Command::new(common::PICHI_BIN)
         .env("XDG_DATA_HOME", g)
         .env("PICHI_DILLO", common::DILLO_BIN)
@@ -88,7 +88,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "official Conglobate smoke: guest did not power off within {}s after launch. Host pin/resolve/DTB cleared; build-port exchange can complete, but published conglobate-build.service has no SuccessAction=poweroff (BUILD.md requires guest exit 0). Appliance logs go to the journal only (not hvc0). Output mount stays empty when Pipeline fails. Fix in Conglobate image, then re-pin digest.",
+                "official Conglobate smoke: guest did not power off within {}s after launch (expected after Conglobate #11 SuccessAction=poweroff). Pin is ghcr.io/pichi-vm/conglobate:0.2.0@sha256:1d526628421ff5841ceb9054bf0bd4c94aebaadfb45b5c1a83f46740edb10a74. Appliance logs go to the journal only (not hvc0). Output mount stays empty when Pipeline fails.",
                 OFFICIAL_SMOKE_TIMEOUT.as_secs()
             );
         }
