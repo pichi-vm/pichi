@@ -21,9 +21,8 @@
 mod common;
 
 use common::{
-    assert_pichi_ok, kvm_available, pichi, prepare_smoke_repo, pull_build_image,
-    seed_smoke_source_carapace, SMOKE_LOCK, SMOKE_LOCK_INDEX, SMOKE_RECIPE, SMOKE_SOURCE_REF,
-    SMOKE_SUBDIR,
+    SMOKE_LOCK, SMOKE_LOCK_INDEX, SMOKE_RECIPE, SMOKE_SOURCE_REF, SMOKE_SUBDIR, assert_pichi_ok,
+    kvm_available, pichi, prepare_smoke_repo, pull_build_image, seed_smoke_source_carapace,
 };
 
 // conglobate's console readiness marker (the guest emits it; matched here).

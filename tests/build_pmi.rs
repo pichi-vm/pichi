@@ -16,8 +16,8 @@
 mod common;
 
 use common::{
-    assemble_initrd_with, assert_pichi_ok, fedora_ext4, kvm_available, make_ext4, pichi,
-    pull_build_image, ARMA_BIN, CORIUM_BIN,
+    ARMA_BIN, CORIUM_BIN, assemble_initrd_with, assert_pichi_ok, fedora_ext4, kvm_available,
+    make_ext4, pichi, pull_build_image,
 };
 use corium::CORIUM_ROOT_OK;
 

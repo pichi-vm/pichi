@@ -19,8 +19,8 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{
-    assemble_initrd_with, assert_pichi_ok, kvm_available, make_ext4, pichi, pull_build_image, seal,
-    CORIUM_BIN, DILLO_BIN,
+    CORIUM_BIN, DILLO_BIN, assemble_initrd_with, assert_pichi_ok, kvm_available, make_ext4, pichi,
+    pull_build_image, seal,
 };
 use corium::CORIUM_ROOT_OK;
 use pichi_artifact::{Digest, Layer, Manifest, PmiDescriptor, Reference};
