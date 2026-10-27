@@ -21,7 +21,7 @@ Conglobate owns recipes, locks, OCI packaging, and inventory; see
 
 Both share the same launch path: resolve a pichi image, prepare a dillo
 device set, and boot. Build adds only the wires the guest needs to produce
-an artifact — virtiofs mounts and a named-console CBOR request — then waits
+an artifact — virtiofs mounts and a named-console CBOR exchange — then waits
 for a finished OCI layout in the output mount when the guest exits 0.
 
 Building is launching. The host does not check out Conglobate sources, does
@@ -38,7 +38,7 @@ These seven points are locked. Implementation and docs conform to them.
 Same launch path as `pichi run`. Build adds:
 
 - virtiofs wires (`repo`, `cache`, `output`);
-- one-shot named console port `dev.pichi.build` (host→guest CBOR);
+- bidirectional named console port `dev.pichi.build` (v0 CBOR request/response);
 - wait for guest exit 0, then take the OCI layout from the output mount.
 
 ### 2.2 Thin launcher
@@ -47,10 +47,12 @@ Host steps, in order:
 
 1. Prepare an **empty** host output directory (RW).
 2. Prepare a **read-only** cache of pichi images / carapaces the build needs.
-3. Encode the build request as CBOR (see §4).
-4. Launch **Conglobate's pichi image** via dillo (same exec path as run),
-   with the virtiofs tags and named console attached.
-5. On guest exit 0, take the OCI layout from the output directory and import
+3. Prepare the build-input payload (see §4) — do not push it yet.
+4. Launch **Conglobate's pichi image** via dillo with both rx and tx pipe
+   ends on named console `dev.pichi.build` (bidirectional; not rx-only).
+5. After dillo starts, wait for the guest's build-input request on the
+   port, then write the prepared response (hold-until-open / Linux discard).
+6. On guest exit 0, take the OCI layout from the output directory and import
    / tag it locally as needed.
 
 Explicitly **not** on the host:
@@ -70,15 +72,26 @@ Explicitly **not** on the host:
 Tag names and guest mount points are convention. The CBOR does not carry
 mount tags or commit identities for those mounts.
 
-### 2.4 Named console `dev.pichi.build`
+### 2.4 Named console `dev.pichi.build` (v0 build-port)
 
-Port name: `dev.pichi.build` (dillo named-console convention; host→guest
-only — typically `rx=pipe:…`).
+Port name: `dev.pichi.build` (dillo named-console convention). The port is
+**bidirectional**: launch dillo with both `rx=pipe:…` and `tx=pipe:…`
+(not rx-only). dillo named MULTIPORT ports supply the pipe inheritance
+model (`pipe:N` = inherited host FD/handle).
 
-The host writes **one-shot CBOR once**, then closes. No request/response
-protocol on this port.
+Wire (self-delimiting CBOR, no length prefix; **one round trip**; no
+streaming or multiplexing in v0):
 
-CBOR fields:
+1. **Guest → host** — one request map: `{"v":1,"op":"build-input"}`
+2. **Host → guest** — one response map:
+   - success: `{"v":1,"ok":true, …}` plus build-input fields below
+   - failure: `{"v":1,"ok":false,"error":"…"}`
+
+The host prepares the build-input payload **before** launch, but writes
+the response only **after** the guest request arrives (hold-until-open /
+Linux discard of early console bytes).
+
+Build-input fields (success response body, in addition to `v` / `ok`):
 
 | Field      | Required | Notes |
 | ---------- | -------- | ----- |
@@ -89,7 +102,8 @@ CBOR fields:
 | `location` | no       | optional locator / provenance hint |
 
 No commit field and no mount-tag fields in CBOR. Mount wiring is entirely
-the virtiofs convention in §2.3.
+the virtiofs convention in §2.3. This supersedes the earlier host one-shot
+CBOR push (bytes written before the guest opened the port).
 
 ### 2.5 Types and outputs
 
@@ -132,16 +146,19 @@ operator
 pichi (thin launcher)
   │  empty output dir
   │  RO cache
-  │  encode CBOR → named console dev.pichi.build
+  │  prepare build-input payload
   │  virtiofs: repo / cache / output
+  │  named console dev.pichi.build (rx+tx pipes)
   ▼
 dillo  ──boots──►  Conglobate pichi image
-                      │  reads CBOR once
+                      │  writes {"v":1,"op":"build-input"}
+                      │     ◄── host success/failure CBOR
                       │  builds from /run/pichi/{repo,cache}
                       │  writes OCI (+ inventory) to /run/pichi/output
                       ▼  exit 0
 pichi imports OCI from output dir → local tag
 ```
+
 
 Failure: non-zero guest exit means no successful product. Do not treat
 partial output as an artifact.
@@ -151,25 +168,44 @@ patterns as `pichi run` against the appliance image's launch contract.
 
 ---
 
-## 4. Build request CBOR (logical shape)
+## 4. Build-port CBOR (logical shape)
 
-Logical map (encoding is CBOR; field names as strings):
+Encoding is self-delimiting CBOR (no length prefix). Field names are
+strings. One guest request, then one host response.
+
+### 4.1 Guest request
 
 ```yaml
-# required
+v: 1
+op: "build-input"
+```
+
+### 4.2 Host success response
+
+```yaml
+v: 1
+ok: true
+# required build-input fields
 ref: <git-ref-or-full-commit-id>
 recipe: <path-relative-to-subdir>
 lock: <path-relative-to-subdir>
-
 # optional
-subdir: "."          # default
+subdir: "."          # default when omitted
 location: <string>   # optional provenance / locator hint
 ```
 
+### 4.3 Host failure response
+
+```yaml
+v: 1
+ok: false
+error: <string>
+```
+
 `recipe` and `lock` are always relative to `subdir`. The guest resolves
-`ref` against the `repo` virtiofs git object store. Exact CBOR wire
-profile for this request may live alongside Conglobate's portable types;
-this document locks the field set and the one-shot host→guest delivery.
+`ref` against the `repo` virtiofs git object store. This document locks
+the field set and the v0 request/response delivery; Conglobate owns guest
+consumption of the success payload.
 
 ---
 
@@ -177,7 +213,7 @@ this document locks the field set and the one-shot host→guest delivery.
 
 | Component | Owns |
 | --------- | ---- |
-| **pichi** (`pichi build`) | Thin launcher: dirs, CBOR, dillo launch, import OCI on success |
+| **pichi** (`pichi build`) | Thin launcher: dirs, build-port CBOR, dillo launch, import OCI on success |
 | **dillo** | VMM + virtiofs + named console wiring |
 | **Conglobate image** | Guest appliance: init/wrapper, invoke Conglobate, export OCI+inventory, shut down |
 | **Conglobate binary / lib** | Recipes, locks, build execution, OCI layout, `inventory.cbor` (see its DESIGN.md) |
@@ -207,7 +243,7 @@ Recipe and lock formats are Conglobate's, not redefined here.
 
 ## 7. Trust boundary (host vs guest)
 
-- Host supplies git objects, RO cache bytes, and the CBOR request.
+- Host supplies git objects, RO cache bytes, and the build-port response.
 - Guest verifies inputs it consumes, runs the build, and emits OCI +
   inventory into the output mount.
 - Product integrity is guest-defined (inventory / attestation in the
@@ -227,7 +263,7 @@ Recipe and lock formats are Conglobate's, not redefined here.
 | [conglobate `DESIGN.md`](https://github.com/pichi-vm/conglobate/blob/main/DESIGN.md) | Builder, recipes, locks, OCI+inventory, sandbox |
 | [README.md](README.md) | Operator overview of the pichi CLI |
 | [AGENTS.md](AGENTS.md) | Agent / contributor architecture pointers |
-| dillo named-console design | Port naming; `dev.pichi.build` is a consumer convention |
+| dillo named-console design | Port naming + `pipe:N` inheritance; `dev.pichi.build` is a consumer convention |
 
 ---
 

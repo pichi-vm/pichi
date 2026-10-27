@@ -8,6 +8,7 @@
 //! mirroring the pattern set by `crate::system::run`.
 
 pub mod build;
+mod build_port;
 pub mod images;
 pub mod import;
 pub mod inspect;

@@ -1,0 +1,422 @@
+// SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+//! v0 build-port protocol on named virtio-console `dev.pichi.build` (BUILD.md §2.4).
+//!
+//! Bidirectional, self-delimiting CBOR, one round trip:
+//! 1. Guest → host: `{"v":1,"op":"build-input"}`
+//! 2. Host → guest: success (`ok:true` + build-input fields) or failure
+//!    (`ok:false` + `error`).
+//!
+//! The host prepares the build-input payload before launch, then waits for the
+//! guest request after dillo starts (hold-until-open / Linux discard).
+
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
+
+/// Named MULTIPORT port the host and Conglobate appliance agree on.
+pub(crate) const BUILD_PORT_NAME: &str = "dev.pichi.build";
+
+/// Guest → host request (v0).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct GuestRequest {
+    pub v: u32,
+    pub op: String,
+}
+
+impl GuestRequest {
+    pub(crate) fn expected() -> Self {
+        Self {
+            v: 1,
+            op: "build-input".to_string(),
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.v != 1 {
+            bail!("build-port request unsupported version {}", self.v);
+        }
+        if self.op != "build-input" {
+            bail!("build-port request unknown op {:?}", self.op);
+        }
+        Ok(())
+    }
+}
+
+/// Host-prepared build-input fields (encoded into a success response).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BuildInput {
+    pub git_ref: String,
+    pub recipe: String,
+    pub lock: String,
+    pub subdir: Option<String>,
+    pub location: Option<String>,
+}
+
+impl BuildInput {
+    /// Encode as the success response map (`v`/`ok` plus build-input fields).
+    pub(crate) fn encode_success(&self) -> Result<Vec<u8>> {
+        let mut map = Vec::new();
+        map.push((
+            ciborium::Value::Text("v".into()),
+            ciborium::Value::Integer(1.into()),
+        ));
+        map.push((
+            ciborium::Value::Text("ok".into()),
+            ciborium::Value::Bool(true),
+        ));
+        map.push((
+            ciborium::Value::Text("ref".into()),
+            ciborium::Value::Text(self.git_ref.clone()),
+        ));
+        map.push((
+            ciborium::Value::Text("recipe".into()),
+            ciborium::Value::Text(self.recipe.clone()),
+        ));
+        map.push((
+            ciborium::Value::Text("lock".into()),
+            ciborium::Value::Text(self.lock.clone()),
+        ));
+        if let Some(subdir) = &self.subdir {
+            map.push((
+                ciborium::Value::Text("subdir".into()),
+                ciborium::Value::Text(subdir.clone()),
+            ));
+        }
+        if let Some(location) = &self.location {
+            map.push((
+                ciborium::Value::Text("location".into()),
+                ciborium::Value::Text(location.clone()),
+            ));
+        }
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&ciborium::Value::Map(map), &mut bytes)
+            .context("encoding build-port success response")?;
+        Ok(bytes)
+    }
+}
+
+/// Encode a failure response map.
+pub(crate) fn encode_failure(error: &str) -> Result<Vec<u8>> {
+    let map = vec![
+        (
+            ciborium::Value::Text("v".into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Text("ok".into()),
+            ciborium::Value::Bool(false),
+        ),
+        (
+            ciborium::Value::Text("error".into()),
+            ciborium::Value::Text(error.to_string()),
+        ),
+    ];
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&ciborium::Value::Map(map), &mut bytes)
+        .context("encoding build-port failure response")?;
+    Ok(bytes)
+}
+
+/// Read one guest request, validate it, write the prepared response bytes.
+pub(crate) fn serve_build_port(
+    mut host_rx: impl Read,
+    mut host_tx: impl Write,
+    response: &[u8],
+) -> Result<()> {
+    let request: GuestRequest =
+        ciborium::from_reader(&mut host_rx).context("reading build-port guest request")?;
+    request.validate()?;
+    host_tx
+        .write_all(response)
+        .context("writing build-port host response")?;
+    host_tx
+        .flush()
+        .context("flushing build-port host response")?;
+    Ok(())
+}
+
+/// Format the dillo `--console` value for a bidirectional `dev.pichi.build`
+/// port. `rx_fd` / `tx_fd` are the **device-side** inherited pipe ends
+/// (`rx` = host→guest, `tx` = guest→host; dillo polarity).
+pub(crate) fn console_arg(rx_fd: u64, tx_fd: u64) -> String {
+    format!("endpoint=stdio,ports=[[name={BUILD_PORT_NAME},rx=pipe:{rx_fd},tx=pipe:{tx_fd}]]")
+}
+
+/// Host-held ends of the two anonymous pipes that back the named port.
+#[derive(Debug)]
+pub(crate) struct BuildPortPipes {
+    /// Host writes build-input response here (host→guest / device rx).
+    pub host_tx: std::fs::File,
+    /// Host reads the guest request here (guest→host / device tx).
+    pub host_rx: std::fs::File,
+    /// Device-side end for `rx=pipe:N` (dillo reads; host→guest).
+    pub device_rx_fd: u64,
+    /// Device-side end for `tx=pipe:N` (dillo writes; guest→host).
+    pub device_tx_fd: u64,
+    /// Owned device-side files kept alive until after dillo is spawned.
+    pub device_rx: std::fs::File,
+    pub device_tx: std::fs::File,
+}
+
+/// Create the bidirectional pipe pair for `dev.pichi.build`.
+pub(crate) fn create_build_port_pipes() -> Result<BuildPortPipes> {
+    let (device_rx, host_tx) = pipe_pair().context("creating host→guest build-port pipe")?;
+    let (host_rx, device_tx) = pipe_pair().context("creating guest→host build-port pipe")?;
+    let device_rx_fd = fd_number(&device_rx);
+    let device_tx_fd = fd_number(&device_tx);
+    // `std::io::pipe` ends are CLOEXEC / non-inheritable. Host ends stay that
+    // way; device ends must be inheritable so dillo can adopt `pipe:N`.
+    set_device_inheritable(&device_rx)?;
+    set_device_inheritable(&device_tx)?;
+    Ok(BuildPortPipes {
+        host_tx,
+        host_rx,
+        device_rx_fd,
+        device_tx_fd,
+        device_rx,
+        device_tx,
+    })
+}
+
+fn fd_number(file: &std::fs::File) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        file.as_raw_fd() as u64
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        file.as_raw_handle() as usize as u64
+    }
+}
+
+fn pipe_pair() -> Result<(std::fs::File, std::fs::File)> {
+    let (read_end, write_end) = std::io::pipe().context("std::io::pipe")?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::OwnedFd;
+        Ok((
+            std::fs::File::from(OwnedFd::from(read_end)),
+            std::fs::File::from(OwnedFd::from(write_end)),
+        ))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::OwnedHandle;
+        Ok((
+            std::fs::File::from(OwnedHandle::from(read_end)),
+            std::fs::File::from(OwnedHandle::from(write_end)),
+        ))
+    }
+}
+
+/// Mark a device-side pipe end inheritable (Windows). On Unix, inheritance is
+/// handled by clearing `FD_CLOEXEC` in the child's `pre_exec` instead.
+fn set_device_inheritable(file: &std::fs::File) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = file;
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        let handle = file.as_raw_handle();
+        // SAFETY: `handle` is an owned pipe end from std::io::pipe; we only
+        // set HANDLE_FLAG_INHERIT so CreateProcess can pass it to dillo.
+        #[allow(unsafe_code)]
+        let ok = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("SetHandleInformation set inherit on device end");
+        }
+        Ok(())
+    }
+}
+
+/// Clear `FD_CLOEXEC` on the device-side ends so they survive `exec` into dillo
+/// under the same descriptor numbers referenced by `--console … pipe:N`.
+#[cfg(unix)]
+pub(crate) fn clear_device_cloexec(device_rx_fd: u64, device_tx_fd: u64) -> Result<()> {
+    clear_cloexec_fd(device_rx_fd)?;
+    clear_cloexec_fd(device_tx_fd)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn clear_cloexec_fd(fd: u64) -> Result<()> {
+    use std::os::fd::{BorrowedFd, RawFd};
+    let raw = RawFd::try_from(fd).context("build-port device fd does not fit RawFd")?;
+    // SAFETY: `fd` is a descriptor this process still owns (device-side pipe
+    // end kept alive in `BuildPortPipes`); we only clear FD_CLOEXEC on it.
+    #[allow(unsafe_code)]
+    let borrowed = unsafe { BorrowedFd::borrow_raw(raw) };
+    let flags = nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_GETFD)
+        .map_err(std::io::Error::from)
+        .context("F_GETFD on build-port device fd")?;
+    let cleared = nix::fcntl::FdFlag::from_bits_truncate(flags) & !nix::fcntl::FdFlag::FD_CLOEXEC;
+    nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_SETFD(cleared))
+        .map_err(std::io::Error::from)
+        .context("F_SETFD clear CLOEXEC on build-port device fd")?;
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn clear_device_cloexec(_device_rx_fd: u64, _device_tx_fd: u64) -> Result<()> {
+    // Windows path marks device ends inheritable at creation; host ends were
+    // cleared in `clear_inherit_flag`. Spawn uses inherit_handles(true).
+    Ok(())
+}
+
+/// True when `path` parses as a dillo console spec naming our build port with
+/// both rx and tx `pipe:` backends (unit-test helper).
+#[cfg(test)]
+pub(crate) fn console_arg_names_build_port(value: &str) -> bool {
+    value.contains(&format!("name={BUILD_PORT_NAME}"))
+        && value.contains("rx=pipe:")
+        && value.contains("tx=pipe:")
+        && value.contains("endpoint=stdio")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn success_response_round_trips_required_fields() {
+        let input = BuildInput {
+            git_ref: "abc".into(),
+            recipe: "recipe.yaml".into(),
+            lock: "refs.lock".into(),
+            subdir: None,
+            location: None,
+        };
+        let bytes = input.encode_success().unwrap();
+        let value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let ciborium::Value::Map(entries) = value else {
+            panic!("expected map");
+        };
+        let mut got = std::collections::BTreeMap::new();
+        for (k, v) in entries {
+            let ciborium::Value::Text(key) = k else {
+                panic!("key");
+            };
+            got.insert(key, v);
+        }
+        assert_eq!(got["v"], ciborium::Value::Integer(1.into()));
+        assert_eq!(got["ok"], ciborium::Value::Bool(true));
+        assert_eq!(got["ref"], ciborium::Value::Text("abc".into()));
+        assert_eq!(got["recipe"], ciborium::Value::Text("recipe.yaml".into()));
+        assert_eq!(got["lock"], ciborium::Value::Text("refs.lock".into()));
+        assert!(!got.contains_key("subdir"));
+        assert!(!got.contains_key("location"));
+        assert!(!got.contains_key("commit"));
+    }
+
+    #[test]
+    fn success_includes_optional_fields_when_set() {
+        let input = BuildInput {
+            git_ref: "main".into(),
+            recipe: "r.yaml".into(),
+            lock: "l.lock".into(),
+            subdir: Some("crates/x".into()),
+            location: Some("https://example.test/x".into()),
+        };
+        let bytes = input.encode_success().unwrap();
+        let value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let ciborium::Value::Map(entries) = value else {
+            panic!("map");
+        };
+        let mut got = std::collections::BTreeMap::new();
+        for (k, v) in entries {
+            let ciborium::Value::Text(key) = k else {
+                panic!("key");
+            };
+            got.insert(key, v);
+        }
+        assert_eq!(got["subdir"], ciborium::Value::Text("crates/x".into()));
+        assert_eq!(
+            got["location"],
+            ciborium::Value::Text("https://example.test/x".into())
+        );
+    }
+
+    #[test]
+    fn failure_response_shape() {
+        let bytes = encode_failure("cache missing").unwrap();
+        let value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let ciborium::Value::Map(entries) = value else {
+            panic!("map");
+        };
+        let mut got = std::collections::BTreeMap::new();
+        for (k, v) in entries {
+            let ciborium::Value::Text(key) = k else {
+                panic!("key");
+            };
+            got.insert(key, v);
+        }
+        assert_eq!(got["v"], ciborium::Value::Integer(1.into()));
+        assert_eq!(got["ok"], ciborium::Value::Bool(false));
+        assert_eq!(got["error"], ciborium::Value::Text("cache missing".into()));
+    }
+
+    #[test]
+    fn serve_accepts_expected_request_and_writes_response() {
+        let req = {
+            let mut b = Vec::new();
+            ciborium::into_writer(&GuestRequest::expected(), &mut b).unwrap();
+            b
+        };
+        let response = encode_failure("nope").unwrap();
+        let mut rx = Cursor::new(req);
+        let mut tx = Vec::new();
+        serve_build_port(&mut rx, &mut tx, &response).unwrap();
+        assert_eq!(tx, response);
+    }
+
+    #[test]
+    fn serve_rejects_wrong_op() {
+        let bad = GuestRequest {
+            v: 1,
+            op: "other".into(),
+        };
+        let mut b = Vec::new();
+        ciborium::into_writer(&bad, &mut b).unwrap();
+        let err = serve_build_port(Cursor::new(b), Vec::new(), b"x").unwrap_err();
+        assert!(
+            err.to_string().contains("unknown op"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn console_arg_is_bidirectional_named_port() {
+        let s = console_arg(3, 4);
+        assert!(console_arg_names_build_port(&s), "{s}");
+        assert!(s.contains("rx=pipe:3"));
+        assert!(s.contains("tx=pipe:4"));
+        // Must parse as dillo ConsoleSpec.
+        let spec: dillo_config::ConsoleSpec =
+            serde_keyvalue::from_key_values(&s).expect("console parses");
+        assert_eq!(spec.endpoint.as_deref(), Some("stdio"));
+        assert_eq!(spec.ports.len(), 1);
+        assert_eq!(spec.ports[0].name, BUILD_PORT_NAME);
+        assert!(spec.ports[0].rx.is_some());
+        assert!(spec.ports[0].tx.is_some());
+    }
+
+    #[test]
+    fn create_pipes_assigns_distinct_device_fds() {
+        let pipes = create_build_port_pipes().unwrap();
+        assert_ne!(pipes.device_rx_fd, pipes.device_tx_fd);
+        let s = console_arg(pipes.device_rx_fd, pipes.device_tx_fd);
+        assert!(console_arg_names_build_port(&s), "{s}");
+    }
+}
