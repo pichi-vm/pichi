@@ -53,8 +53,8 @@ pub fn pichi(graphroot: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::pro
 /// Returns `true` when the pull succeeded. Returns `false` (and prints a skip
 /// line naming the unpublished tag) when GHCR does not yet have
 /// `DEFAULT_BUILD_IMAGE` — callers that need the real appliance must early-
-/// return so CI stays green until Conglobate publishes `:0.2.0`. Does **not**
-/// change the pin; when the tag exists the pull succeeds and the real smoke runs.
+/// return so CI stays green until Conglobate publishes the locked pin. Does **not**
+/// change the pin; when the digest exists the pull succeeds and the real smoke runs.
 pub fn pull_build_image(graphroot: &Path) -> bool {
     let image = pichi::cmd::build::DEFAULT_BUILD_IMAGE;
     let out = pichi(graphroot, &[], &["pull", image]);
@@ -64,7 +64,7 @@ pub fn pull_build_image(graphroot: &Path) -> bool {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     eprintln!(
-        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate:0.2.0.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate:0.2.0@sha256:6420d9ec5b6bfc6e1c499852b2028f8281b7a9960f65ec02ac62752f0a0ff237.\nstdout:\n{stdout}\nstderr:\n{stderr}",
         out.status,
     );
     false

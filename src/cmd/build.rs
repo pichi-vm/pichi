@@ -441,11 +441,10 @@ pub(crate) fn build_dillo_args(
 /// pichi wires. `NetSpec` defaults `backend` to user; we state it explicitly.
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
-/// Durable Conglobate appliance pin (Follow-up A). Conglobate also publishes
-/// `:latest`; prefer this version tag (or a digest via `PICHI_BUILD_IMAGE` /
-/// `--build-image`) for smoke and defaults — do not pin smoke on `:latest`
-/// alone.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate:0.2.0";
+/// Durable Conglobate appliance pin (Follow-up A / locked tag@digest).
+/// Index digest matches `:latest` and `:0.2.0` on GHCR; amd64/arm64 child
+/// digests unchanged. Prefer this over floating `:latest` alone.
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate:0.2.0@sha256:6420d9ec5b6bfc6e1c499852b2028f8281b7a9960f65ec02ac62752f0a0ff237";
 
 /// Resolve the build-image reference: `--build-image`, then
 /// `PICHI_BUILD_IMAGE`, then the [`DEFAULT_BUILD_IMAGE`].
@@ -464,6 +463,26 @@ fn resolve_build_image(flag: Option<&str>) -> Result<String> {
 /// Strip an optional `sha256:` prefix for lock-pin comparisons.
 fn normalize_digest(s: &str) -> &str {
     s.strip_prefix("sha256:").unwrap_or(s)
+}
+
+/// Map OCI `name:tag@digest` → `name@digest` before [`Reference`] parse.
+///
+/// Conglobate locks pins as `tag@digest`. `pichi-artifact::Reference` currently
+/// folds `:tag` into `repo` when `@digest` is present, so GHCR blob paths 404.
+/// Digest wins; the tag is informational. No-op without `@digest` or without a
+/// `:tag` after the last `/`.
+pub(crate) fn canonicalize_reference(s: &str) -> std::borrow::Cow<'_, str> {
+    let Some(at) = s.find('@') else {
+        return std::borrow::Cow::Borrowed(s);
+    };
+    let name = &s[..at];
+    let digest = &s[at..]; // includes '@'
+    let search_from = name.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let Some(rel_colon) = name[search_from..].find(':') else {
+        return std::borrow::Cow::Borrowed(s);
+    };
+    let abs = search_from + rel_colon;
+    std::borrow::Cow::Owned(format!("{}{}", &name[..abs], digest))
 }
 
 /// Resolve `rel` under optional `--subdir` inside the repo mount.
@@ -557,7 +576,8 @@ async fn resolve_manifest(
     db: &FilesystemTagDb,
     blob_store: &FilesystemBlobStore,
 ) -> Result<(Digest, Manifest)> {
-    let target: Reference = reference
+    let canonical = canonicalize_reference(reference);
+    let target: Reference = canonical
         .parse()
         .with_context(|| format!("invalid reference: {reference}"))?;
     let digest = match &target.kind {
@@ -805,6 +825,43 @@ mod tests {
         if std::env::var_os("PICHI_BUILD_IMAGE").is_none() {
             assert_eq!(resolve_build_image(None).unwrap(), DEFAULT_BUILD_IMAGE);
         }
+    }
+
+    #[test]
+    fn canonicalize_reference_strips_tag_before_digest() {
+        let pinned = DEFAULT_BUILD_IMAGE;
+        let canon = canonicalize_reference(pinned);
+        assert_eq!(
+            canon.as_ref(),
+            "ghcr.io/pichi-vm/conglobate@sha256:6420d9ec5b6bfc6e1c499852b2028f8281b7a9960f65ec02ac62752f0a0ff237"
+        );
+        let parsed: Reference = canon.parse().unwrap();
+        assert_eq!(parsed.registry, "ghcr.io");
+        assert_eq!(parsed.repo, "pichi-vm/conglobate");
+        match parsed.kind {
+            ReferenceKind::Digest(d) => {
+                assert_eq!(
+                    d.to_string(),
+                    "sha256:6420d9ec5b6bfc6e1c499852b2028f8281b7a9960f65ec02ac62752f0a0ff237"
+                );
+            }
+            ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),
+        }
+    }
+
+    #[test]
+    fn canonicalize_reference_noop_without_digest_or_tag() {
+        assert_eq!(
+            canonicalize_reference("ghcr.io/pichi-vm/conglobate:0.2.0").as_ref(),
+            "ghcr.io/pichi-vm/conglobate:0.2.0"
+        );
+        assert_eq!(
+            canonicalize_reference(
+                "ghcr.io/pichi-vm/conglobate@sha256:6420d9ec5b6bfc6e1c499852b2028f8281b7a9960f65ec02ac62752f0a0ff237"
+            )
+            .as_ref(),
+            "ghcr.io/pichi-vm/conglobate@sha256:6420d9ec5b6bfc6e1c499852b2028f8281b7a9960f65ec02ac62752f0a0ff237"
+        );
     }
 
     #[tokio::test]
