@@ -7,7 +7,7 @@
 //!
 //! Flow: import a marked ext4 → `pichi build` a from:-only carapace (the
 //! source scutes pass through) → seal a corium PMI whose cmdline carries
-//! `root.carapace=<the carapace's top root>` → package the built carapace's
+//! `corium=<the carapace's top root>` → package the built carapace's
 //! scutes + that PMI into one application artifact → `pichi run` it. corium
 //! reads the root off the cmdline, assembles the carapace, mounts it, and
 //! prints its root listing. x86_64 + KVM only.
@@ -133,16 +133,12 @@ async fn pichi_build_then_run_mounts_root_carapace() {
         ),
     );
 
-    // --- Seal a corium PMI carrying root.carapace=<carapace top root>. ---
+    // --- Seal a corium PMI carrying corium=<carapace top root>. ---
     let root = carapace_root(&proj.join("pichi.build/refs.lock"));
     let cor = tmp.path().join("cor");
     std::fs::create_dir_all(&cor).unwrap();
     let cor_initrd = assemble_initrd_with(&cor, CORIUM_BIN, &["dm_verity"]);
-    let cor_pmi = seal(
-        &cor,
-        &cor_initrd,
-        &format!("console=hvc0 root.carapace={root}"),
-    );
+    let cor_pmi = seal(&cor, &cor_initrd, &format!("console=hvc0 corium={root}"));
 
     // --- Package the built carapace + corium PMI into an app artifact. ---
     package_app(&xdg, "appcara:1", "app:1", &cor_pmi).await;
