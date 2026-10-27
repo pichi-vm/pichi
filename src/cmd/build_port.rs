@@ -311,8 +311,8 @@ mod tests {
     fn success_response_round_trips_required_fields() {
         let input = BuildInput {
             git_ref: "abc".into(),
-            recipe: "recipe.yaml".into(),
-            lock: "refs.lock".into(),
+            recipe: "pichi.yaml".into(),
+            lock: "pichi.lock".into(),
             subdir: None,
             location: None,
         };
@@ -331,8 +331,8 @@ mod tests {
         assert_eq!(got["v"], ciborium::Value::Integer(1.into()));
         assert_eq!(got["ok"], ciborium::Value::Bool(true));
         assert_eq!(got["ref"], ciborium::Value::Text("abc".into()));
-        assert_eq!(got["recipe"], ciborium::Value::Text("recipe.yaml".into()));
-        assert_eq!(got["lock"], ciborium::Value::Text("refs.lock".into()));
+        assert_eq!(got["recipe"], ciborium::Value::Text("pichi.yaml".into()));
+        assert_eq!(got["lock"], ciborium::Value::Text("pichi.lock".into()));
         assert!(!got.contains_key("subdir"));
         assert!(!got.contains_key("location"));
         assert!(!got.contains_key("commit"));
