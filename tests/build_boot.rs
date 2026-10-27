@@ -47,7 +47,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     }
 
     // Seed lock-pinned index + carapace behind placeholder (not real Fedora).
-    seed_smoke_source_carapace(g, tmp.path());
+    seed_smoke_source_carapace(g, tmp.path()).await;
 
     // Conglobate Follow-up A tip (lock.yaml lands in PR #8 @ 9fa7f204).
     let (repo, git_ref) = prepare_smoke_repo(tmp.path());
