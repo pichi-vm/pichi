@@ -176,6 +176,29 @@ vGPTs still wired for that path. Rewriting host packaging to pure
 OCI-directory import (matching the locked contract) is an explicit follow-up
 and does **not** block landing the v0 build-port protocol cut.
 
+### Transitional `lock.yaml` host glue (Conglobate Follow-up A)
+
+Until Conglobate's Follow-up A lands `lock.yaml` on `main`, the host
+reads a Conglobate-shaped lock (when present under `--subdir`/`--lock`)
+solely for **source-carapace reference keys + index digest pins** used in
+the transitional vGPT / `package_artifact` pass-through. The host does
+**not** parse Conglobate recipes (still guest-owned; §2.2). Shape:
+
+```yaml
+version: 1
+images:
+  qualification.local/fedora:43:
+    index: sha256:<digest>
+```
+
+Smoke pin (Conglobate PR #8 @ `9fa7f204`, until `main`): seed the exact
+index blob for `qualification.local/fedora:43` →
+`sha256:4e335e141a3f950ed68c68f23c112930c51af5ec9658d1263353eb229a6429d1`
+(343 index bytes; placeholder inner manifest `sha256:` + 32×`0x11`) and
+supply a tiny imported carapace behind that descriptor. Default build
+image remains `ghcr.io/pichi-vm/conglobate:0.2.0` (`PICHI_BUILD_IMAGE`
+digest override later). Prefer Conglobate `main` once Follow-up A merges.
+
 ---
 
 ## 4. Build-port CBOR (logical shape)

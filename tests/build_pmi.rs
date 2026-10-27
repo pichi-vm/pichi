@@ -24,7 +24,7 @@ use corium::CORIUM_ROOT_OK;
 const MARKER: &str = "corium-root-marker";
 
 #[tokio::test]
-#[ignore = "pichi build deferred; re-enable with build work"]
+#[ignore = "legacy pichi.build layout; re-enable after Conglobate Follow-up A / OCI-import"]
 #[cfg(target_arch = "x86_64")]
 async fn single_pichi_build_emits_bootable_artifact() {
     if !kvm_available() {
@@ -71,7 +71,9 @@ async fn single_pichi_build_emits_bootable_artifact() {
     );
 
     // Build image (conglobate): the real official image, pulled from GHCR.
-    pull_build_image(g);
+    if !pull_build_image(g) {
+        return;
+    }
 
     // Project + build context: pmi.yaml's `run: arma build` references the
     // kernel / initrd / arma via the chroot-bound /context.
