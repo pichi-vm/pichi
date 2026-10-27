@@ -470,9 +470,9 @@ pub(crate) fn build_dillo_args(
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
 /// Durable Conglobate appliance pin (Follow-up A / locked tag@digest).
-/// Index digest matches `:latest` and `:0.2.0` on GHCR after Conglobate #14
-/// (loop-detach fix, tip 57e29c44). Prefer this over floating `:latest` alone.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate:0.2.0@sha256:d42ba62f362c871d5c504c998bf322d1548113c599e8653f7a1955f9a4351fff";
+/// Index digest identifies Conglobate #15 (output-staging fix, main 54a2072a).
+/// The Apollo smoke verifies guest output, poweroff, and host packaging.
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate:0.2.0@sha256:48bda98cf9b59cebd58d3eaa36dfc2e3153126db64c6f8596badc7cc0cb0312d";
 
 /// Resolve the build-image reference: `--build-image`, then
 /// `PICHI_BUILD_IMAGE`, then the [`DEFAULT_BUILD_IMAGE`].
@@ -916,7 +916,7 @@ mod tests {
         let canon = canonicalize_reference(pinned);
         assert_eq!(
             canon.as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:d42ba62f362c871d5c504c998bf322d1548113c599e8653f7a1955f9a4351fff"
+            "ghcr.io/pichi-vm/conglobate@sha256:48bda98cf9b59cebd58d3eaa36dfc2e3153126db64c6f8596badc7cc0cb0312d"
         );
         let parsed: Reference = canon.parse().unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
@@ -925,7 +925,7 @@ mod tests {
             ReferenceKind::Digest(d) => {
                 assert_eq!(
                     d.to_string(),
-                    "sha256:d42ba62f362c871d5c504c998bf322d1548113c599e8653f7a1955f9a4351fff"
+                    "sha256:48bda98cf9b59cebd58d3eaa36dfc2e3153126db64c6f8596badc7cc0cb0312d"
                 );
             }
             ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),
@@ -940,10 +940,10 @@ mod tests {
         );
         assert_eq!(
             canonicalize_reference(
-                "ghcr.io/pichi-vm/conglobate@sha256:d42ba62f362c871d5c504c998bf322d1548113c599e8653f7a1955f9a4351fff"
+                "ghcr.io/pichi-vm/conglobate@sha256:48bda98cf9b59cebd58d3eaa36dfc2e3153126db64c6f8596badc7cc0cb0312d"
             )
             .as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:d42ba62f362c871d5c504c998bf322d1548113c599e8653f7a1955f9a4351fff"
+            "ghcr.io/pichi-vm/conglobate@sha256:48bda98cf9b59cebd58d3eaa36dfc2e3153126db64c6f8596badc7cc0cb0312d"
         );
     }
 
