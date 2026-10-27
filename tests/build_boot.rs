@@ -25,8 +25,8 @@ use common::{
     kvm_available, pichi, prepare_smoke_repo, pull_build_image, seed_smoke_source_carapace,
 };
 
-// conglobate's console readiness marker (the guest emits it; matched here).
-const CONGLOBATE_READY: &str = "CONGLOBATE-READY";
+/// Bound so a missing guest poweroff (Conglobate appliance gap) cannot hang CI.
+const OFFICIAL_SMOKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 #[tokio::test]
 async fn pichi_build_boots_official_image_to_poweroff() {
@@ -52,10 +52,14 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     // Conglobate Follow-up A tip (lock.yaml lands in PR #8 @ 9fa7f204).
     let (repo, git_ref) = prepare_smoke_repo(tmp.path());
 
-    let build = pichi(
-        g,
-        &[],
-        &[
+    // Timed spawn: BUILD.md requires guest exit 0 after the build. Published
+    // Conglobate 0.2.0 oneshot has no SuccessAction=poweroff, so without a
+    // bound this waited forever after a successful build-port exchange.
+    // Inherit stdio so console noise cannot fill a pipe and deadlock dillo.
+    let mut child = std::process::Command::new(common::PICHI_BIN)
+        .env("XDG_DATA_HOME", g)
+        .env("PICHI_DILLO", common::DILLO_BIN)
+        .args([
             "build",
             repo.to_str().unwrap(),
             "-t",
@@ -72,18 +76,34 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             "2048",
             "--cpus",
             "1",
-        ],
-    );
+        ])
+        .spawn()
+        .expect("spawn pichi build");
+    let deadline = tokio::time::Instant::now() + OFFICIAL_SMOKE_TIMEOUT;
+    let status = loop {
+        if let Some(st) = child.try_wait().expect("try_wait pichi build") {
+            break st;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "official Conglobate smoke: guest did not power off within {}s after launch. Host pin/resolve/DTB cleared; build-port exchange can complete, but published conglobate-build.service has no SuccessAction=poweroff (BUILD.md requires guest exit 0). Appliance logs go to the journal only (not hvc0). Output mount stays empty when Pipeline fails. Fix in Conglobate image, then re-pin digest.",
+                OFFICIAL_SMOKE_TIMEOUT.as_secs()
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    let build = std::process::Output {
+        status,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
     assert_pichi_ok("build", &build);
 
-    let mut console = String::from_utf8_lossy(&build.stdout).into_owned();
-    console.push_str(&String::from_utf8_lossy(&build.stderr));
-    assert!(
-        console.contains(CONGLOBATE_READY),
-        "build image did not reach conglobate (no {CONGLOBATE_READY:?}):\n{console}"
-    );
-
     // Packaged tag must resolve (flat BuildOutput → package_artifact).
+    // Success criterion is guest exit 0 + inspectable tag — not a console
+    // marker (Conglobate never emitted CONGLOBATE-READY).
     let inspect = pichi(
         g,
         &[],

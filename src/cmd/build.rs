@@ -12,6 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -723,13 +724,32 @@ async fn boot_serve_and_wait(
 
     let status = tokio::select! {
         serve_result = &mut serve => {
-            serve_result
-                .context("build-port task join")?
-                .context("build-port exchange")?;
-            child
-                .wait()
-                .await
-                .context("waiting for build VM")?
+            match serve_result.context("build-port task join")? {
+                Ok(()) => child.wait().await.context("waiting for build VM")?,
+                Err(err) => {
+                    // dillo often exits first (e.g. missing detached --dtb). The
+                    // failure-response write then hits Broken pipe — secondary.
+                    // Prefer the guest/dillo exit so CI surfaces the real cause.
+                    match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                        Ok(Ok(st)) => {
+                            bail!(
+                                "build-port exchange failed after guest/dillo exit ({st}): {err}"
+                            );
+                        }
+                        Ok(Err(wait_err)) => {
+                            return Err(err).context(format!(
+                                "build-port exchange failed (also waiting for build VM: {wait_err})"
+                            ));
+                        }
+                        Err(_elapsed) => {
+                            let _ = child.start_kill();
+                            return Err(err).context(
+                                "build-port exchange failed (dillo still running; killed)",
+                            );
+                        }
+                    }
+                }
+            }
         }
         status = child.wait() => {
             let status = status.context("waiting for build VM")?;
