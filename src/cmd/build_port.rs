@@ -36,10 +36,11 @@ impl GuestRequest {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.v != 1 {
+        let expected = Self::expected();
+        if self.v != expected.v {
             bail!("build-port request unsupported version {}", self.v);
         }
-        if self.op != "build-input" {
+        if self.op != expected.op {
             bail!("build-port request unknown op {:?}", self.op);
         }
         Ok(())
@@ -122,20 +123,44 @@ pub(crate) fn encode_failure(error: &str) -> Result<Vec<u8>> {
 }
 
 /// Read one guest request, validate it, write the prepared response bytes.
+///
+/// On a bad request (decode or validate failure), writes a v0 failure map
+/// (`ok:false` + `error`) before returning `Err`, so the guest still gets a
+/// self-delimiting reply.
 pub(crate) fn serve_build_port(
     mut host_rx: impl Read,
     mut host_tx: impl Write,
     response: &[u8],
 ) -> Result<()> {
-    let request: GuestRequest =
-        ciborium::from_reader(&mut host_rx).context("reading build-port guest request")?;
-    request.validate()?;
+    let request: GuestRequest = match ciborium::from_reader(&mut host_rx) {
+        Ok(request) => request,
+        Err(err) => {
+            let msg = format!("reading build-port guest request: {err}");
+            write_failure_response(&mut host_tx, &msg)?;
+            bail!("{msg}");
+        }
+    };
+    if let Err(err) = request.validate() {
+        write_failure_response(&mut host_tx, &err.to_string())?;
+        return Err(err);
+    }
     host_tx
         .write_all(response)
         .context("writing build-port host response")?;
     host_tx
         .flush()
         .context("flushing build-port host response")?;
+    Ok(())
+}
+
+fn write_failure_response(host_tx: &mut impl Write, error: &str) -> Result<()> {
+    let failure = encode_failure(error)?;
+    host_tx
+        .write_all(&failure)
+        .context("writing build-port failure response")?;
+    host_tx
+        .flush()
+        .context("flushing build-port failure response")?;
     Ok(())
 }
 
@@ -389,11 +414,39 @@ mod tests {
         };
         let mut b = Vec::new();
         ciborium::into_writer(&bad, &mut b).unwrap();
-        let err = serve_build_port(Cursor::new(b), Vec::new(), b"x").unwrap_err();
+        let mut tx = Vec::new();
+        let err = serve_build_port(Cursor::new(b), &mut tx, b"x").unwrap_err();
         assert!(
             err.to_string().contains("unknown op"),
             "unexpected error: {err}"
         );
+        let expected = encode_failure(&err.to_string()).unwrap();
+        assert_eq!(tx, expected);
+    }
+
+    #[test]
+    fn serve_writes_failure_on_decode_error() {
+        let mut tx = Vec::new();
+        let err = serve_build_port(Cursor::new(b"\xffnot-cbor"), &mut tx, b"x").unwrap_err();
+        assert!(
+            err.to_string().contains("reading build-port guest request"),
+            "unexpected error: {err}"
+        );
+        assert!(!tx.is_empty());
+        let value: ciborium::Value = ciborium::from_reader(tx.as_slice()).unwrap();
+        let ciborium::Value::Map(entries) = value else {
+            panic!("map");
+        };
+        let mut got = std::collections::BTreeMap::new();
+        for (k, v) in entries {
+            let ciborium::Value::Text(key) = k else {
+                panic!("key");
+            };
+            got.insert(key, v);
+        }
+        assert_eq!(got["v"], ciborium::Value::Integer(1.into()));
+        assert_eq!(got["ok"], ciborium::Value::Bool(false));
+        assert!(matches!(got.get("error"), Some(ciborium::Value::Text(_))));
     }
 
     #[test]
