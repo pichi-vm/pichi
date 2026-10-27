@@ -292,13 +292,6 @@ fn clear_cloexec_fd(fd: u64) -> Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
-pub(crate) fn clear_device_cloexec(_device_rx_fd: u64, _device_tx_fd: u64) -> Result<()> {
-    // Windows path marks device ends inheritable at creation; host ends were
-    // cleared in `clear_inherit_flag`. Spawn uses inherit_handles(true).
-    Ok(())
-}
-
 /// True when `path` parses as a dillo console spec naming our build port with
 /// both rx and tx `pipe:` backends (unit-test helper).
 #[cfg(test)]

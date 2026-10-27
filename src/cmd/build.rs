@@ -25,8 +25,10 @@ use pichi_storage::sidecar::write_sidecar_atomic;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::BuildArgs;
+#[cfg(unix)]
+use crate::cmd::build_port::clear_device_cloexec;
 use crate::cmd::build_port::{
-    self, BuildInput, clear_device_cloexec, console_arg, create_build_port_pipes, serve_build_port,
+    self, BuildInput, console_arg, create_build_port_pipes, serve_build_port,
 };
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
@@ -503,8 +505,12 @@ async fn boot_serve_and_wait(
     }
     #[cfg(windows)]
     {
+        // FDs are only consumed by the unix pre_exec path; silence -D warnings.
+        let _ = (device_rx_fd, device_tx_fd);
+        // tokio::process::Command does not wrap inherit_handles; apply it on
+        // the inner std::process::Command (nightly feature gated in lib.rs).
         use std::os::windows::process::CommandExt as _;
-        cmd.inherit_handles(true);
+        cmd.as_std_mut().inherit_handles(true);
     }
 
     let mut child = cmd
