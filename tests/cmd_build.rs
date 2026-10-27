@@ -72,3 +72,73 @@ fn build_missing_appliance_attempts_pull() {
         "stderr should show an auto-pull attempt: {stderr}"
     );
 }
+
+fn build_with(extra: &[&str]) -> assert_cmd::assert::Assert {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut args = vec!["build", tmp.path().to_str().unwrap(), "--ref", "HEAD"];
+    args.extend_from_slice(extra);
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args(&args)
+        .assert()
+}
+
+#[test]
+fn build_rejects_absolute_recipe_path() {
+    let assert = build_with(&["-f", "/etc/pichi.yaml"]).failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("recipe path must be relative: /etc/pichi.yaml"),
+        "unexpected stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn build_rejects_absolute_lock_path() {
+    let assert = build_with(&["--lock", "/etc/pichi.lock"]).failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("lock path must be relative: /etc/pichi.lock"),
+        "unexpected stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn build_accepts_relative_overrides() {
+    // Relative overrides pass argument parsing (failure, if any, comes later
+    // from the missing appliance/lock, never from path validation).
+    let assert = build_with(&["-f", "sub/other.yaml", "-l", "../other.lock"]);
+    let out = assert.get_output();
+    let stderr = String::from_utf8(out.stderr.clone()).unwrap();
+    assert!(
+        !stderr.contains("must be relative") && out.status.code() != Some(2),
+        "relative override rejected:\n{stderr}"
+    );
+}
+
+/// Drive and UNC paths are absolute on Windows. `/etc/...` above is the
+/// cross-platform rooted form (`has_root` even when `is_absolute` is false).
+#[cfg(windows)]
+#[test]
+fn build_rejects_windows_absolute_paths() {
+    for (flag, path, needle) in [
+        (
+            "-f",
+            r"C:\pichi.yaml",
+            r"recipe path must be relative: C:\pichi.yaml",
+        ),
+        (
+            "--lock",
+            r"\\server\share\pichi.lock",
+            r"lock path must be relative: \\server\share\pichi.lock",
+        ),
+    ] {
+        let assert = build_with(&[flag, path]).failure();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+        assert!(
+            stderr.contains(needle),
+            "unexpected stderr for {path}:\n{stderr}"
+        );
+    }
+}
