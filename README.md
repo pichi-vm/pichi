@@ -41,11 +41,20 @@ Run `pichi <command> --help` for details.
 
 ## Build
 
-`pichi build` is a specialization of `pichi run`: same launch path, plus
-virtiofs wires and a bidirectional build-port CBOR exchange on named console
-`dev.pichi.build` (guest requests build-input; host replies). The host is a
-thin launcher; Conglobate's pichi image performs the build and writes an OCI
-layout to the output mount. Full contract: [BUILD.md](BUILD.md).
+`pichi build <dir> --ref <ref> -t <tag>` is a specialization of `pichi run`:
+same launch path, plus virtiofs wires and a bidirectional build-port CBOR
+exchange on named console `dev.pichi.build` (guest requests build-input; host
+replies). The host is a thin launcher; Conglobate's pichi image performs the
+build and writes an OCI layout to the output mount.
+
+Recipe and lock paths are relative to `--subdir` (default `.`). The defaults
+are `pichi.yaml` and `pichi.lock`. `-f`/`--file` and `-l`/`--lock` override
+them. The build-port response carries those resolved relative paths as
+`recipe` and `lock`.
+
+`-b`/`--build-image` selects the build appliance image. When it is omitted,
+pichi uses the digest-pinned default. If that image is not already cached,
+the first build pulls it and continues. Full contract: [BUILD.md](BUILD.md).
 
 ## License
 

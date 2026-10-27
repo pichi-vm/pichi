@@ -50,6 +50,8 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     seed_smoke_source_carapace(g, tmp.path()).await;
 
     // Use the same Conglobate main revision as the pinned appliance.
+    // That tree stores `recipe.yaml` / `lock.yaml`; the smoke passes
+    // those paths with `-f` / `-l`.
     let (repo, git_ref) = prepare_smoke_repo(tmp.path());
 
     // Timed spawn: BUILD.md requires guest exit 0 after the build.
@@ -68,9 +70,9 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             &git_ref,
             "--subdir",
             SMOKE_SUBDIR,
-            "--recipe",
+            "-f",
             SMOKE_RECIPE,
-            "--lock",
+            "-l",
             SMOKE_LOCK,
             "--memory",
             "2048",

@@ -25,7 +25,7 @@ use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
 use pichi_storage::sidecar::write_sidecar_atomic;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
-use crate::cli::BuildArgs;
+use crate::cli::{BuildArgs, DEFAULT_LOCK, DEFAULT_RECIPE, PullArgs, PullPolicy};
 #[cfg(unix)]
 use crate::cmd::build_port::clear_device_cloexec;
 use crate::cmd::build_port::{
@@ -52,9 +52,10 @@ fn target_arch() -> &'static str {
     }
 }
 
-/// Conglobate Follow-up A `lock.yaml` (images → index digest). Host reads
-/// only the image reference keys + pins for transitional source-carapace
-/// pass-through; recipe parse stays on the guest (BUILD.md §2.2).
+/// Conglobate Follow-up A lock (images → index digest). Default name is
+/// `pichi.lock`. Host reads only the image reference keys + pins for
+/// transitional source-carapace pass-through; `pichi.yaml` stays on the
+/// guest (BUILD.md §2.2).
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BuildLockFile {
@@ -70,21 +71,17 @@ struct BuildLockImage {
 }
 
 pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
-    let build_image_ref = resolve_build_image(args.build_image.as_deref())?;
+    let build_image_ref = resolve_build_image(args.build_image.as_deref());
 
-    // Thin-launcher build-input (BUILD.md §2.4): required for every build.
+    // Thin-launcher build-input (BUILD.md §2.4): `ref` is required; recipe
+    // and lock default to `pichi.yaml` / `pichi.lock` (`-f`/`--file`,
+    // `-l`/`--lock` override). CBOR carries the resolved relative paths.
     let git_ref = args
         .git_ref
         .clone()
         .ok_or_else(|| anyhow!("pichi build requires --ref (BUILD.md §2.4)"))?;
-    let recipe = args
-        .recipe
-        .clone()
-        .ok_or_else(|| anyhow!("pichi build requires --recipe (BUILD.md §2.4)"))?;
-    let lock = args
-        .lock
-        .clone()
-        .ok_or_else(|| anyhow!("pichi build requires --lock (BUILD.md §2.4)"))?;
+    let recipe = args.recipe.clone();
+    let lock = args.lock.clone();
     let subdir = args.subdir.clone();
 
     let build_dir = args.dir.join("pichi.build");
@@ -93,6 +90,8 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
+
+    ensure_build_image(&build_image_ref, config, &db, &blob_store).await?;
 
     // The build image launches like `pichi run` (BUILD.md §2.6): --pmi,
     // optional detached --dtb, and a vGPT for the appliance carapace scutes.
@@ -119,7 +118,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     // Transitional source-carapace pass-through (BUILD.md §3): resolve the
     // locked images from the RO cache and wire each as a vGPT. Prefer
-    // Conglobate `lock.yaml` under `--subdir`; fall back to legacy
+    // `pichi.lock` (or `-l`/`--lock`) under `--subdir`; fall back to legacy
     // `pichi.build/` recipe `from:` keys when that layout is present.
     let build_lock = load_build_lock(&args.dir, subdir.as_deref(), &lock)?;
     let (source_refs, carapace_source) = if let Some(parsed) = build_lock.as_ref() {
@@ -134,9 +133,11 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         (collect_source_refs(&build_dir)?, cara)
     } else {
         bail!(
-            "no build lock at {} and no pichi.build/ under {} — provide Conglobate lock.yaml (Follow-up A) or a legacy pichi.build project",
+            "no build lock at {} and no pichi.build/ under {} — expected {} (-l/--lock) and {} (-f/--file), or a legacy pichi.build project",
             path_under_subdir(&args.dir, subdir.as_deref(), &lock).display(),
-            args.dir.display()
+            args.dir.display(),
+            DEFAULT_LOCK,
+            DEFAULT_RECIPE,
         );
     };
 
@@ -470,18 +471,55 @@ pub(crate) const USER_NET_SPEC: &str = "backend=user";
 /// Official-image smoke verifies guest output, poweroff, and host packaging.
 pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate:0.2.0@sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829";
 
-/// Resolve the build-image reference: `--build-image`, then
-/// `PICHI_BUILD_IMAGE`, then the [`DEFAULT_BUILD_IMAGE`].
-fn resolve_build_image(flag: Option<&str>) -> Result<String> {
-    if let Some(r) = flag {
-        return Ok(r.to_string());
+/// Resolve the build appliance: `-b`/`--build-image`, else
+/// [`DEFAULT_BUILD_IMAGE`].
+fn resolve_build_image(flag: Option<&str>) -> String {
+    flag.map(str::to_owned)
+        .unwrap_or_else(|| DEFAULT_BUILD_IMAGE.to_owned())
+}
+
+/// Pull the resolved appliance when it is not already cached.
+///
+/// Same download path as `pichi pull` (`--pull=missing`). A tag-db hit, or
+/// a stored digest blob, skips the network.
+async fn ensure_build_image(
+    reference: &str,
+    config: &Config,
+    db: &FilesystemTagDb,
+    blob_store: &FilesystemBlobStore,
+) -> Result<()> {
+    if build_image_cached(reference, db, blob_store).await? {
+        return Ok(());
     }
-    if let Some(env) = std::env::var_os("PICHI_BUILD_IMAGE") {
-        return env
-            .into_string()
-            .map_err(|_| anyhow!("PICHI_BUILD_IMAGE is not valid UTF-8"));
+    eprintln!("Unable to find build image {reference} locally; pulling...");
+    crate::cmd::pull::run(
+        PullArgs {
+            reference: reference.to_string(),
+            pull: Some(PullPolicy::Missing),
+            quiet: false,
+        },
+        config,
+    )
+    .await
+    .with_context(|| format!("auto-pull build image {reference}"))
+}
+
+/// True when `resolve_manifest` would find `reference` without a pull.
+async fn build_image_cached(
+    reference: &str,
+    db: &FilesystemTagDb,
+    blob_store: &FilesystemBlobStore,
+) -> Result<bool> {
+    let canonical = canonicalize_reference(reference);
+    let target: Reference = canonical
+        .parse()
+        .with_context(|| format!("invalid build-image reference: {reference}"))?;
+    if let ReferenceKind::Digest(d) = &target.kind
+        && blob_store.blob_exists(d).await
+    {
+        return Ok(true);
     }
-    Ok(DEFAULT_BUILD_IMAGE.to_string())
+    Ok(db.resolve_tag(&target.to_string()).await?.is_some())
 }
 
 /// Strip an optional `sha256:` prefix for lock-pin comparisons.
@@ -518,8 +556,9 @@ fn path_under_subdir(repo: &Path, subdir: Option<&str>, rel: &str) -> PathBuf {
     base.join(rel)
 }
 
-/// Load Conglobate Follow-up A `lock.yaml` when present. Returns `Ok(None)` if
-/// the file is missing (legacy `pichi.build/` projects).
+/// Load the build lock (`pichi.lock` by default; `-l`/`--lock` overrides)
+/// when present. Returns `Ok(None)` if the file is missing (legacy
+/// `pichi.build/` projects).
 fn load_build_lock(
     repo: &Path,
     subdir: Option<&str>,
@@ -896,14 +935,43 @@ mod tests {
         assert_eq!(argv[i + 1], "/cache/blobs/sha256/dtbdead");
     }
 
+    #[test]
+    fn build_image_flag_or_digest_pinned_default() {
+        assert_eq!(resolve_build_image(Some("reg/bi:1")), "reg/bi:1");
+        assert_eq!(resolve_build_image(None), DEFAULT_BUILD_IMAGE);
+    }
+
+    #[test]
+    fn default_recipe_and_lock_names() {
+        assert_eq!(DEFAULT_RECIPE, "pichi.yaml");
+        assert_eq!(DEFAULT_LOCK, "pichi.lock");
+    }
+
     #[tokio::test]
-    async fn build_image_flag_beats_env_and_falls_back_to_default() {
-        assert_eq!(resolve_build_image(Some("reg/bi:1")).unwrap(), "reg/bi:1");
-        // Neither flag nor env -> the default official build image. (Env is
-        // process-global; assert the default only when it is unset.)
-        if std::env::var_os("PICHI_BUILD_IMAGE").is_none() {
-            assert_eq!(resolve_build_image(None).unwrap(), DEFAULT_BUILD_IMAGE);
-        }
+    async fn build_image_cached_follows_tag_or_digest_blob() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let graphroot = tmp.path().join("storage");
+        std::fs::create_dir_all(&graphroot).unwrap();
+        let db = FilesystemTagDb::open(&graphroot).unwrap();
+        let blob_store = FilesystemBlobStore::new(&graphroot);
+
+        let tag_ref = "ghcr.io/example/appliance:1";
+        assert!(!build_image_cached(tag_ref, &db, &blob_store).await.unwrap());
+
+        let digest: Digest =
+            "sha256:abababababababababababababababababababababababababababababababab"
+                .parse()
+                .unwrap();
+        db.set_tag(tag_ref, &digest).await.unwrap();
+        assert!(build_image_cached(tag_ref, &db, &blob_store).await.unwrap());
+
+        // Digest pin whose index blob is absent is cached once the canonical
+        // `name@digest` tag exists (D-02 drops the index on pull).
+        let pin = "ghcr.io/pichi-vm/conglobate:0.2.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        assert!(!build_image_cached(pin, &db, &blob_store).await.unwrap());
+        let canon = canonicalize_reference(pin);
+        db.set_tag(canon.as_ref(), &digest).await.unwrap();
+        assert!(build_image_cached(pin, &db, &blob_store).await.unwrap());
     }
 
     #[test]
@@ -1201,8 +1269,8 @@ mod tests {
 
         let input = BuildInput {
             git_ref: "main".into(),
-            recipe: "recipe.yaml".into(),
-            lock: "lock.yaml".into(),
+            recipe: DEFAULT_RECIPE.into(),
+            lock: DEFAULT_LOCK.into(),
             subdir: Some("tests/distro/context".into()),
             location: None,
         };
@@ -1262,11 +1330,11 @@ mod tests {
         let ctx = tmp.path().join("tests/distro/context");
         std::fs::create_dir_all(&ctx).unwrap();
         std::fs::write(
-            ctx.join("lock.yaml"),
+            ctx.join("pichi.lock"),
             "version: 1\nimages:\n  qualification.local/fedora:43:\n    index: sha256:deadbeef\n",
         )
         .unwrap();
-        let parsed = load_build_lock(tmp.path(), Some("tests/distro/context"), "lock.yaml")
+        let parsed = load_build_lock(tmp.path(), Some("tests/distro/context"), "pichi.lock")
             .unwrap()
             .expect("lock present");
         assert_eq!(parsed.version, 1);
