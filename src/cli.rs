@@ -61,7 +61,7 @@ pub struct InspectArgs {
     pub reference: String,
     /// Output format: `json` (default, pretty-printed) or a minijinja (Jinja2)
     /// template. Dotted annotation keys use subscripts, e.g.
-    /// `{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}`.
+    /// `{{ manifest.annotations["dev.pichi.carapace.verity.algo"] }}`.
     #[arg(long)]
     pub format: Option<String>,
 }

@@ -20,10 +20,6 @@ fn chain_annotations() -> BTreeMap<String, String> {
         ("dev.pichi.carapace.verity.hash-block-size", "4096"),
         ("dev.pichi.carapace.verity.version", "1"),
         ("dev.pichi.carapace.verity.hash-type", "1"),
-        (
-            "dev.pichi.carapace.verity.hash",
-            "abababababababababababababababababababababababababababababababab",
-        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -93,8 +89,8 @@ async fn inspect_bare_manifest_returns_full_schema() {
     assert_eq!(v["manifest"]["layers"].as_array().map(Vec::len), Some(2));
     // Default JSON keeps canonical (flat) OCI annotation keys.
     assert_eq!(
-        v["manifest"]["annotations"]["dev.pichi.carapace.verity.hash"].as_str(),
-        Some("abababababababababababababababababababababababababababababababab")
+        v["manifest"]["annotations"]["dev.pichi.carapace.verity.algo"].as_str(),
+        Some("sha256")
     );
     assert!(v.get("_pichi").is_none(), "no computed sidecar");
 }
@@ -137,7 +133,7 @@ async fn inspect_format_reaches_dotted_annotation() {
             "inspect",
             "myapp:base",
             "--format",
-            r#"{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}"#,
+            r#"{{ manifest.annotations["dev.pichi.carapace.verity.algo"] }}"#,
         ])
         .assert()
         .success()
@@ -145,10 +141,7 @@ async fn inspect_format_reaches_dotted_annotation() {
         .stdout
         .clone();
     let s = String::from_utf8(out).unwrap();
-    assert_eq!(
-        s.trim(),
-        "abababababababababababababababababababababababababababababababab"
-    );
+    assert_eq!(s.trim(), "sha256");
 }
 
 #[tokio::test]

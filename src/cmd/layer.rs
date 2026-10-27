@@ -284,6 +284,7 @@ mod tests {
     struct Fixture {
         data: Vec<u8>,
         wire: Vec<u8>,
+        root: [u8; 32],
         manifest: Manifest,
     }
 
@@ -328,12 +329,12 @@ mod tests {
                     "dev.pichi.carapace.verity.hash-block-size": "4096",
                     "dev.pichi.carapace.verity.version": "1",
                     "dev.pichi.carapace.verity.hash-type": "1",
-                    "dev.pichi.carapace.verity.hash": hex::encode(root),
                 },
             });
             Self {
                 data,
                 wire,
+                root,
                 manifest: serde_json::from_value(manifest).unwrap(),
             }
         }
@@ -355,7 +356,7 @@ mod tests {
                 let fixture = Fixture::new(compressed, declared);
                 let scratch = tempfile::tempdir().unwrap();
                 let result = fixture.prepare(scratch.path()).unwrap();
-                assert_eq!(result.root, fixture.manifest.carapace_verity_hash());
+                assert_eq!(result.root, Some(fixture.root));
                 assert_eq!(
                     std::fs::read(result.source.as_ref().unwrap().path()).unwrap(),
                     fixture.wire

@@ -36,9 +36,9 @@ pub(crate) struct ImportArgs {
     pub created_rfc3339: String,
     /// Extra OCI/provenance annotations to stamp on the manifest, already
     /// parsed from `KEY=VALUE`. Merged verbatim; the structural
-    /// `dev.pichi.carapace.verity.*` keys always take precedence, and a
-    /// caller-supplied `org.opencontainers.image.created` wins over the
-    /// timestamp above.
+    /// `dev.pichi.carapace.verity.*` keys always take precedence, a
+    /// caller-supplied tip hash is dropped, and a caller-supplied
+    /// `org.opencontainers.image.created` wins over the timestamp above.
     pub annotations: std::collections::BTreeMap<String, String>,
 }
 
@@ -148,7 +148,6 @@ impl StagedImport {
             &cow_digest,
             size,
             &salt,
-            &root,
             &args.created_rfc3339,
             &args.annotations,
         )?;
@@ -325,7 +324,7 @@ mod tests {
             let bytes = std::fs::read(staged.cow.path()).unwrap();
             assert_eq!(Digest::from_bytes_sha256(&bytes), staged.cow_digest);
             let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
-            assert_eq!(hex::encode(manifest.carapace_verity_hash().unwrap()), root);
+            assert!(manifest.carapace_verity_hash().is_none());
             let pichi_artifact::Layer::Scute(scute) = &manifest.layers[0] else {
                 panic!("expected scute")
             };
@@ -338,6 +337,7 @@ mod tests {
             }
             .compute(&bytes)
             .unwrap();
+            assert_eq!(hex::encode(formatted.root_hash), root);
             assert_eq!(std::fs::read(staged.verity.path()).unwrap(), formatted.blob);
             drop(staged);
             assert_eq!(std::fs::read_dir(scratch).unwrap().count(), 0);
@@ -356,8 +356,18 @@ mod tests {
             "sha256:e912b9b25375cf235229c113b88eb7fcc038073c703696c4904f1712fa193823"
         );
         let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
+        assert!(manifest.carapace_verity_hash().is_none());
+        let bytes = std::fs::read(staged.cow.path()).unwrap();
+        let formatted = VerityParams {
+            data_block_size: 4096,
+            hash_block_size: 4096,
+            salt: vec![0; 32],
+            uuid: [0; 16],
+        }
+        .compute(&bytes)
+        .unwrap();
         assert_eq!(
-            hex::encode(manifest.carapace_verity_hash().unwrap()),
+            hex::encode(formatted.root_hash),
             "4c7a21cbde4adb55ded7748c0d36471fe6f30942890580ac3d2a498719e7838e"
         );
     }

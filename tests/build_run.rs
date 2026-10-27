@@ -9,8 +9,7 @@
 //! source scutes pass through) → seal a corium PMI whose cmdline carries
 //! `corium=<the carapace's top root>` → package the built carapace's
 //! scutes + that PMI into one application artifact → `pichi run` it. corium
-//! reads the root off the cmdline, assembles the carapace, mounts it, and
-//! prints its root listing. x86_64 + KVM only.
+//! reads the root off the cmdline, assembles the carapace, and mounts it. x86_64 + KVM only.
 
 #![cfg(all(feature = "vm-tests", target_os = "linux", target_arch = "x86_64"))]
 
@@ -22,7 +21,6 @@ use common::{
     CORIUM_BIN, DILLO_BIN, assemble_initrd_with, assert_pichi_ok, kvm_available, make_ext4, pichi,
     pull_build_image, seal,
 };
-use corium::CORIUM_ROOT_OK;
 use pichi_artifact::{Digest, Layer, Manifest, PmiDescriptor, Reference};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
@@ -33,13 +31,15 @@ fn storage(xdg: &Path) -> PathBuf {
     xdg.join("pichi/storage")
 }
 
-/// Read `carapace: sha256:<hex>` for `base:1` from a build project's refs.lock.
+/// `refs.lock` pins the OCI manifest digest only. Re-enable must take
+/// `corium=` from the built carapace's scute graph, not from this file.
 fn carapace_root(refs_lock: &Path) -> String {
     let body = std::fs::read_to_string(refs_lock).unwrap();
-    body.lines()
-        .find_map(|l| l.trim().strip_prefix("carapace: sha256:"))
-        .expect("refs.lock has a carapace root")
-        .to_string()
+    assert!(
+        !body.contains("carapace:"),
+        "refs.lock must not write a carapace tip:\n{body}"
+    );
+    unimplemented!("corium= comes from the scute graph, not refs.lock");
 }
 
 /// Package the built carapace `cara_tag`'s scutes + the corium PMI into one
@@ -174,10 +174,9 @@ async fn pichi_build_then_run_mounts_root_carapace() {
         status.success(),
         "pichi run exited non-zero ({status}):\n{combined}"
     );
-    assert!(
-        combined.contains(CORIUM_ROOT_OK),
-        "corium did not mount the root carapace:\n{combined}"
-    );
+    // Tip corium logs phase completion (corium.log=info) rather than
+    // CORIUM_ROOT_OK; this ignored test still needs a re-enable pass for the
+    // new halt/log contract. Assert the marker file once that lands.
     assert!(
         combined.contains(MARKER),
         "mounted root carapace did not show the marker file {MARKER:?}:\n{combined}"

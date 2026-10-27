@@ -44,7 +44,8 @@ pub trait ManifestExt {
         layer: &Layer,
         blob_store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>>;
-    /// The carapace trust anchor `rootₙ₋₁`: the top scute's dm-verity root.
+    /// Unique graph-derived tip: the top scute dm-verity root.
+    /// Host trust is the OCI digest. This root is not read from an annotation.
     async fn carapace_top_root(&self, blob_store: &dyn BlobStore) -> Result<[u8; 32]>;
 }
 
@@ -231,6 +232,8 @@ impl ScuteRoots {
         }
     }
 
+    /// When scutes are present, require exactly one graph-derived tip.
+    /// `dev.pichi.carapace.verity.hash` is ignored if a manifest still carries it.
     pub(super) fn verify(&self, manifest: &Manifest) -> Result<()> {
         if !manifest
             .layers
@@ -239,17 +242,7 @@ impl ScuteRoots {
         {
             return Ok(());
         }
-        let declared = manifest
-            .carapace_verity_hash()
-            .ok_or_else(|| anyhow!("manifest is missing the carapace verity root annotation"))?;
-        let computed = self.top()?;
-        if computed != declared {
-            bail!(
-                "carapace verity root mismatch: manifest declares {} but scute cows recompute to {}",
-                hex::encode(declared),
-                hex::encode(computed)
-            );
-        }
+        self.top()?;
         Ok(())
     }
 }

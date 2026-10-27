@@ -18,9 +18,8 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use conglobate::{BuildOutput, CarapaceRecipe, PmiRecipe};
 use pichi_artifact::{
-    CHAIN_ANNOTATION_VERITY_HASH, ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1,
-    Manifest, PmiDescriptor, Reference, ReferenceKind, Requirements, ScuteAnnotations,
-    ScuteDescriptor,
+    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
+    Reference, ReferenceKind, Requirements, ScuteAnnotations, ScuteDescriptor,
 };
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
 use pichi_storage::sidecar::write_sidecar_atomic;
@@ -372,7 +371,7 @@ async fn package_artifact(
         }));
     }
 
-    let mut manifest = Manifest {
+    let manifest = Manifest {
         schema_version: 2,
         media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
@@ -380,15 +379,12 @@ async fn package_artifact(
         layers,
         annotations: chain_annotations(created_rfc3339),
     };
-    // Stamp the carapace trust anchor (rootₙ₋₁): recompute the top root from the
-    // now-cached scute cows (BUILD.md §7.1). All cow blobs are present above.
-    let root = manifest
+    // Do not stamp `dev.pichi.carapace.verity.hash`. The launch tip comes
+    // from the scute graph. Fail closed unless that top is unique.
+    let _tip = manifest
         .carapace_top_root(blob_store)
         .await
-        .context("computing carapace verity root for packaged manifest")?;
-    manifest
-        .annotations
-        .insert(CHAIN_ANNOTATION_VERITY_HASH.to_string(), hex::encode(root));
+        .context("packaged carapace chain has no unique tip")?;
     manifest
         .validate()
         .context("packaged manifest failed self-validation")?;
@@ -1127,12 +1123,17 @@ mod tests {
             .filter(|l| matches!(l, Layer::Scute(_)))
             .count();
         assert_eq!(scute_layers, 3, "2 source scutes + 1 delta");
-        // The stamped root is the top of the chain — the delta scute's root.
-        assert_eq!(
-            m.carapace_verity_hash(),
-            Some(root_delta),
-            "packaged manifest must declare the delta (top) scute's verity root"
+        // The packaged manifest carries no tip hash. The unique top is the
+        // delta scute root from the scute graph.
+        assert!(
+            m.carapace_verity_hash().is_none(),
+            "packaged manifest must not stamp the tip hash"
         );
+        let tip = m
+            .carapace_top_root(&blob_store)
+            .await
+            .expect("unique tip from scute graph");
+        assert_eq!(tip, root_delta, "graph tip must be the delta scute root");
     }
 
     /// Host-side transitional smoke without a Conglobate appliance: virtiofs
