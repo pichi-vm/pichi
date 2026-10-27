@@ -78,7 +78,7 @@ async fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
 }
 
 #[tokio::test]
-#[ignore = "pichi build deferred; re-enable with build work"]
+#[ignore = "legacy pichi.build layout; re-enable after Conglobate Follow-up A / OCI-import"]
 #[cfg(target_arch = "x86_64")]
 async fn pichi_build_then_run_mounts_root_carapace() {
     if !kvm_available() {
@@ -91,7 +91,9 @@ async fn pichi_build_then_run_mounts_root_carapace() {
     let g = &xdg;
 
     // --- Build image (conglobate): the real official image from GHCR. ---
-    pull_build_image(g);
+    if !pull_build_image(g) {
+        return;
+    }
 
     // --- Source carapace: a marked ext4. ---
     let src = tmp.path().join("source.ext4");
