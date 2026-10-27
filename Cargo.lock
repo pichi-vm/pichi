@@ -143,7 +143,7 @@ dependencies = [
 [[package]]
 name = "arma"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma#113aeb2f6d5fc11aa67b4160290aca8b18d9c3b8"
+source = "git+https://github.com/pichi-vm/arma#202c24619843c3fd01599b3860da582e1e2256aa"
 dependencies = [
  "anyhow",
  "ciborium",
@@ -152,7 +152,8 @@ dependencies = [
  "flate2",
  "goblin",
  "pmi",
- "ruzstd",
+ "regex",
+ "ruzstd 0.9.1",
  "tatu",
  "thiserror 2.0.18",
  "vm-fdt",
@@ -719,7 +720,7 @@ dependencies = [
 [[package]]
 name = "devtree"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devtree#7a7e3a26485eeda5420c92fcd23d43a4717721a0"
+source = "git+https://github.com/pichi-vm/devtree#e90bafce9ee9e4f7f570f07c5c242b6398c64980"
 
 [[package]]
 name = "difflib"
@@ -740,7 +741,7 @@ dependencies = [
 [[package]]
 name = "dillo"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "anyhow",
  "argh",
@@ -765,6 +766,7 @@ dependencies = [
  "dillo-virtio-vsock",
  "env_logger",
  "log",
+ "mmarinus",
  "object",
  "pmi",
  "serde",
@@ -775,7 +777,7 @@ dependencies = [
 [[package]]
 name = "dillo-config"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "anyhow",
  "argh",
@@ -790,7 +792,7 @@ dependencies = [
 [[package]]
 name = "dillo-devtree"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "devtree",
  "thiserror 2.0.18",
@@ -799,7 +801,7 @@ dependencies = [
 [[package]]
 name = "dillo-machine"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-mmio",
  "pmi",
@@ -808,7 +810,7 @@ dependencies = [
 [[package]]
 name = "dillo-machine-hvf"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "applevisor",
  "applevisor-sys",
@@ -825,7 +827,7 @@ dependencies = [
 [[package]]
 name = "dillo-machine-kvm"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "anyhow",
  "dillo-devtree",
@@ -845,7 +847,7 @@ dependencies = [
 [[package]]
 name = "dillo-machine-whp"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-devtree",
  "dillo-machine",
@@ -860,7 +862,7 @@ dependencies = [
 [[package]]
 name = "dillo-mmio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "log",
  "thiserror 2.0.18",
@@ -870,7 +872,7 @@ dependencies = [
 [[package]]
 name = "dillo-mmio-uart"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-mmio",
  "vm-superio",
@@ -879,7 +881,7 @@ dependencies = [
 [[package]]
 name = "dillo-mmio-virtio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -890,7 +892,7 @@ dependencies = [
 [[package]]
 name = "dillo-pci"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-mmio",
  "log",
@@ -899,7 +901,7 @@ dependencies = [
 [[package]]
 name = "dillo-pci-virtio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-mmio",
  "dillo-pci",
@@ -911,9 +913,10 @@ dependencies = [
 [[package]]
 name = "dillo-virtio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-mmio",
+ "log",
  "thiserror 2.0.18",
  "vm-memory 0.17.2",
 ]
@@ -921,7 +924,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-blk"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -933,19 +936,21 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-console"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
  "log",
+ "nix",
  "thiserror 2.0.18",
  "vm-memory 0.17.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "dillo-virtio-fs"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -957,7 +962,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-gpt"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "anyhow",
  "dillo-virtio-blk",
@@ -970,7 +975,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-net"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "block2",
  "dillo-mmio",
@@ -985,7 +990,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-vsock"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo#165958f749fa40d92f56cfe73f43d861457488b3"
+source = "git+https://github.com/pichi-vm/dillo#e6370ea55b28d7a74d1b1521b876c90ccafb8ee5"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -1006,7 +1011,7 @@ dependencies = [
 [[package]]
 name = "dtb2acpi"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma#113aeb2f6d5fc11aa67b4160290aca8b18d9c3b8"
+source = "git+https://github.com/pichi-vm/arma#202c24619843c3fd01599b3860da582e1e2256aa"
 dependencies = [
  "devtree",
  "zerocopy",
@@ -1015,7 +1020,7 @@ dependencies = [
 [[package]]
 name = "dtb2e820"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma#113aeb2f6d5fc11aa67b4160290aca8b18d9c3b8"
+source = "git+https://github.com/pichi-vm/arma#202c24619843c3fd01599b3860da582e1e2256aa"
 dependencies = [
  "devtree",
 ]
@@ -1062,7 +1067,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1884,6 +1889,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmarinus"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b8098e6e7a3823fa237ef9569010d3af3894a1ae54c92f0c220b9e6357f9473"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "nix"
 version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2028,6 +2042,7 @@ dependencies = [
  "bytes",
  "carapace 0.1.0 (git+https://github.com/pichi-vm/carapace?rev=99caf7941ac8930a5761f6f843b6d8e53dd89587)",
  "chrono",
+ "ciborium",
  "clap",
  "conglobate",
  "corium",
@@ -2041,10 +2056,11 @@ dependencies = [
  "humansize",
  "log",
  "minijinja",
+ "nix",
  "pichi-artifact",
  "pichi-registry",
  "pichi-storage",
- "ruzstd",
+ "ruzstd 0.8.3",
  "serde",
  "serde-keyvalue",
  "serde_json",
@@ -2056,6 +2072,7 @@ dependencies = [
  "toml",
  "uuid",
  "wait-timeout",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2082,7 +2099,7 @@ dependencies = [
  "oci-client",
  "pichi-artifact",
  "reqwest",
- "ruzstd",
+ "ruzstd 0.8.3",
  "serde",
  "serde_json",
  "tempfile",
@@ -2121,7 +2138,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "pmi"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/pmi#8157b2deea25ec63d42b1af11d07002374dcc07a"
+source = "git+https://github.com/pichi-vm/pmi#5a5b02a799476df95abcf95ad40fe88298464257"
 dependencies = [
  "serde",
 ]
@@ -2453,7 +2470,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2512,7 +2529,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2544,6 +2561,15 @@ name = "ruzstd"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
+name = "ruzstd"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 dependencies = [
  "twox-hash",
 ]
@@ -2892,7 +2918,7 @@ dependencies = [
 [[package]]
 name = "tatu"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma#113aeb2f6d5fc11aa67b4160290aca8b18d9c3b8"
+source = "git+https://github.com/pichi-vm/arma#202c24619843c3fd01599b3860da582e1e2256aa"
 dependencies = [
  "arrayvec",
  "devtree",
@@ -2907,10 +2933,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3488,7 +3514,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

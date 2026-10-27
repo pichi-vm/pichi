@@ -42,9 +42,10 @@ Run `pichi <command> --help` for details.
 ## Build
 
 `pichi build` is a specialization of `pichi run`: same launch path, plus
-virtiofs wires and a one-shot build CBOR on named console `dev.pichi.build`.
-The host is a thin launcher; Conglobate's pichi image performs the build and
-writes an OCI layout to the output mount. Full contract: [BUILD.md](BUILD.md).
+virtiofs wires and a bidirectional build-port CBOR exchange on named console
+`dev.pichi.build` (guest requests build-input; host replies). The host is a
+thin launcher; Conglobate's pichi image performs the build and writes an OCI
+layout to the output mount. Full contract: [BUILD.md](BUILD.md).
 
 ## License
 

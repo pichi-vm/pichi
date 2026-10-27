@@ -286,10 +286,25 @@ pub struct BuildArgs {
     /// Tag for the produced artifact (e.g. `myapp:v1`).
     #[arg(short = 't', long)]
     pub tag: Option<String>,
-    /// Build-image reference (a PMI-only appliance). Falls back to the
+    /// Build-image reference (Conglobate's pichi image). Falls back to the
     /// `PICHI_BUILD_IMAGE` environment variable.
     #[arg(long = "build-image")]
     pub build_image: Option<String>,
+    /// Git ref / commit the guest resolves in the `repo` virtiofs mount.
+    #[arg(long = "ref")]
+    pub git_ref: Option<String>,
+    /// Recipe path relative to `--subdir` (BUILD.md §2.4).
+    #[arg(long)]
+    pub recipe: Option<String>,
+    /// Lock path relative to `--subdir` (BUILD.md §2.4).
+    #[arg(long)]
+    pub lock: Option<String>,
+    /// Context subdirectory inside the repo mount (default guest-side: `.`).
+    #[arg(long)]
+    pub subdir: Option<String>,
+    /// Optional locator / provenance hint forwarded in the build-input CBOR.
+    #[arg(long)]
+    pub location: Option<String>,
     /// Guest memory in MiB for the build VM (forwarded to dillo).
     #[arg(long)]
     pub memory: Option<u32>,
