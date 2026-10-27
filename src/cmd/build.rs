@@ -488,6 +488,8 @@ async fn boot_serve_and_wait(
 
     let mut cmd = tokio::process::Command::new(dillo);
     cmd.args(args);
+    // Tear down dillo if the host drops the child (exchange/error paths).
+    cmd.kill_on_drop(true);
 
     #[cfg(unix)]
     {

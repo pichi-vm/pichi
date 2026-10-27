@@ -43,7 +43,6 @@ serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 ciborium.workspace = true
-nix = { workspace = true }
 minijinja.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "macros", "fs", "process", "sync"] }
 tokio-util = { workspace = true, features = ["io", "io-util"] }
@@ -68,6 +67,9 @@ corium = { git = "https://github.com/pichi-vm/corium", artifact = "bin", lib = t
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 conglobate = { git = "https://github.com/pichi-vm/conglobate", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 corium = { git = "https://github.com/pichi-vm/corium", artifact = "bin", lib = true, target = "aarch64-unknown-linux-musl", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation"] }
