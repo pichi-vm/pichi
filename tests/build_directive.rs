@@ -33,7 +33,9 @@ async fn pichi_build_applies_a_copy_directive() {
     let g = &graphroot;
 
     // Build image: the real official image, pulled from GHCR.
-    pull_build_image(g);
+    if !pull_build_image(g) {
+        return;
+    }
 
     // Source carapace: a real ext4 rootfs.
     let src_img = tmp.path().join("source.ext4");

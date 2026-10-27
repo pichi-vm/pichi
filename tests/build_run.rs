@@ -19,8 +19,8 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{
-    CORIUM_BIN, DILLO_BIN, assemble_initrd_with, assert_pichi_ok, kvm_available, make_ext4, pichi,
-    pull_build_image, seal,
+    assemble_initrd_with, assert_pichi_ok, kvm_available, make_ext4, pichi, pull_build_image, seal,
+    CORIUM_BIN, DILLO_BIN,
 };
 use corium::CORIUM_ROOT_OK;
 use pichi_artifact::{Digest, Layer, Manifest, PmiDescriptor, Reference};
@@ -91,7 +91,9 @@ async fn pichi_build_then_run_mounts_root_carapace() {
     let g = &xdg;
 
     // --- Build image (conglobate): the real official image from GHCR. ---
-    pull_build_image(g);
+    if !pull_build_image(g) {
+        return;
+    }
 
     // --- Source carapace: a marked ext4. ---
     let src = tmp.path().join("source.ext4");

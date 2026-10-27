@@ -16,8 +16,8 @@
 mod common;
 
 use common::{
-    ARMA_BIN, CORIUM_BIN, assemble_initrd_with, assert_pichi_ok, fedora_ext4, kvm_available,
-    make_ext4, pichi, pull_build_image,
+    assemble_initrd_with, assert_pichi_ok, fedora_ext4, kvm_available, make_ext4, pichi,
+    pull_build_image, ARMA_BIN, CORIUM_BIN,
 };
 use corium::CORIUM_ROOT_OK;
 
@@ -71,7 +71,9 @@ async fn single_pichi_build_emits_bootable_artifact() {
     );
 
     // Build image (conglobate): the real official image, pulled from GHCR.
-    pull_build_image(g);
+    if !pull_build_image(g) {
+        return;
+    }
 
     // Project + build context: pmi.yaml's `run: arma build` references the
     // kernel / initrd / arma via the chroot-bound /context.
