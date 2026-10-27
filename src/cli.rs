@@ -278,27 +278,38 @@ pub struct LoadArgs {
     pub tag: Option<String>,
 }
 
-/// Args for `pichi build [-t <tag>] [--build-image <ref>] <dir>` (BUILD.md §3).
+/// Default recipe path relative to `--subdir` (BUILD.md §2.4).
+pub const DEFAULT_RECIPE: &str = "pichi.yaml";
+
+/// Default lock path relative to `--subdir` (BUILD.md §2.4).
+pub const DEFAULT_LOCK: &str = "pichi.lock";
+
+/// Args for `pichi build [-t <tag>] [-b <ref>] <dir>` (BUILD.md §3).
+///
+/// Recipe and lock default to [`DEFAULT_RECIPE`] and [`DEFAULT_LOCK`],
+/// relative to `--subdir`.
 #[derive(Debug, ClapArgs)]
 pub struct BuildArgs {
-    /// Project directory containing `pichi.build/`.
+    /// Project directory mounted as the `repo` virtiofs share.
     pub dir: std::path::PathBuf,
     /// Tag for the produced artifact (e.g. `myapp:v1`).
     #[arg(short = 't', long)]
     pub tag: Option<String>,
-    /// Build-image reference (Conglobate's pichi image). Falls back to the
-    /// `PICHI_BUILD_IMAGE` environment variable.
-    #[arg(long = "build-image")]
+    /// Build appliance image.
+    ///
+    /// When omitted, pichi uses the digest-pinned default appliance. If the
+    /// resolved image is not cached, pichi pulls it and continues.
+    #[arg(short = 'b', long = "build-image")]
     pub build_image: Option<String>,
     /// Git ref / commit the guest resolves in the `repo` virtiofs mount.
     #[arg(long = "ref")]
     pub git_ref: Option<String>,
-    /// Recipe path relative to `--subdir` (BUILD.md §2.4).
-    #[arg(long)]
-    pub recipe: Option<String>,
-    /// Lock path relative to `--subdir` (BUILD.md §2.4).
-    #[arg(long)]
-    pub lock: Option<String>,
+    /// Recipe path relative to `--subdir` (default `pichi.yaml`).
+    #[arg(short = 'f', long = "file", value_name = "PATH", default_value = DEFAULT_RECIPE)]
+    pub recipe: String,
+    /// Lock path relative to `--subdir` (default `pichi.lock`).
+    #[arg(short = 'l', long = "lock", value_name = "PATH", default_value = DEFAULT_LOCK)]
+    pub lock: String,
     /// Context subdirectory inside the repo mount (default guest-side: `.`).
     #[arg(long)]
     pub subdir: Option<String>,

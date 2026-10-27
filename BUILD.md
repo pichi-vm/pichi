@@ -96,10 +96,15 @@ Build-input fields (success response body, in addition to `v` / `ok`):
 | Field      | Required | Notes |
 | ---------- | -------- | ----- |
 | `ref`      | yes      | git ref / commit identity the guest resolves in `repo` |
-| `recipe`   | yes      | path relative to `subdir` |
-| `lock`     | yes      | path relative to `subdir` |
+| `recipe`   | yes      | path relative to `subdir`; default `pichi.yaml` |
+| `lock`     | yes      | path relative to `subdir`; default `pichi.lock` |
 | `subdir`   | no       | default `"."` |
 | `location` | no       | optional locator / provenance hint |
+
+Operator defaults are `pichi.yaml` and `pichi.lock`. `-f`/`--file` and
+`-l`/`--lock` override those paths. The CBOR fields are the resolved
+relative paths (for example `pichi.yaml` and `pichi.lock` when the
+operator passes neither flag).
 
 No commit field and no mount-tag fields in CBOR. Mount wiring is entirely
 the virtiofs convention in §2.3. This supersedes the earlier host one-shot
@@ -141,7 +146,7 @@ and import.
 
 ```
 operator
-  │  pichi build … (ref, recipe, lock, …)
+  │  pichi build <dir> --ref <ref> -t <tag>
   ▼
 pichi (thin launcher)
   │  empty output dir
@@ -166,6 +171,12 @@ partial output as an artifact.
 Resource sizing (`--memory` / `--cpus` and similar) follows the same
 patterns as `pichi run` against the appliance image's launch contract.
 
+The appliance is `-b`/`--build-image` when the operator passes it,
+otherwise the digest-pinned default (`DEFAULT_BUILD_IMAGE` in
+`src/cmd/build.rs`). If that ref is not in the local cache, the host
+pulls it with the same path as `pichi pull` (`--pull=missing`) and then
+continues the build. The first build fetches the appliance.
+
 ### Transitional host packaging (follow-up)
 
 The locked contract (§2.2 step 6, §2.5, §2.7) requires the host to take a
@@ -176,13 +187,13 @@ vGPTs still wired for that path. Rewriting host packaging to pure
 OCI-directory import (matching the locked contract) is an explicit follow-up
 and does **not** block landing the v0 build-port protocol cut.
 
-### Transitional `lock.yaml` host glue (Conglobate Follow-up A)
+### Transitional `pichi.lock` host glue (Conglobate Follow-up A)
 
-Until Conglobate's Follow-up A lands `lock.yaml` on `main`, the host
-reads a Conglobate-shaped lock (when present under `--subdir`/`--lock`)
-solely for **source-carapace reference keys + index digest pins** used in
-the transitional vGPT / `package_artifact` pass-through. The host does
-**not** parse Conglobate recipes (still guest-owned; §2.2). Shape:
+The host reads the lock named by `-l`/`--lock` (default `pichi.lock`
+under `--subdir`) solely for **source-carapace reference keys + index
+digest pins** used in the transitional vGPT / `package_artifact`
+pass-through. Recipe parse of `pichi.yaml` stays on the guest (§2.2).
+Shape:
 
 ```yaml
 version: 1
@@ -221,8 +232,8 @@ v: 1
 ok: true
 # required build-input fields
 ref: <git-ref-or-full-commit-id>
-recipe: <path-relative-to-subdir>
-lock: <path-relative-to-subdir>
+recipe: pichi.yaml   # default; -f/--file overrides, still relative to subdir
+lock: pichi.lock     # default; -l/--lock overrides, still relative to subdir
 # optional
 subdir: "."          # default when omitted
 location: <string>   # optional provenance / locator hint
@@ -236,10 +247,12 @@ ok: false
 error: <string>
 ```
 
-`recipe` and `lock` are always relative to `subdir`. The guest resolves
-`ref` against the `repo` virtiofs git object store. This document locks
-the field set and the v0 request/response delivery; Conglobate owns guest
-consumption of the success payload.
+`recipe` and `lock` are relative to `subdir`. Defaults are `pichi.yaml`
+and `pichi.lock`. `-f`/`--file` and `-l`/`--lock` supply different
+relative paths; the host sends those resolved strings. The guest
+resolves `ref` against the `repo` virtiofs git object store. This
+document locks the field set and the v0 request/response delivery;
+Conglobate owns guest consumption of the success payload.
 
 ---
 
@@ -260,8 +273,23 @@ the image. The output mount's OCI layout is the product.
 
 ## 6. CLI surface (build)
 
-`pichi build` remains the operator entry point. Flags and defaults evolve
-with the thin-launcher implementation; the semantic contract is §2.
+`pichi build <dir> --ref <ref> -t <tag>` is the operator entry point.
+The semantic contract is §2.
+
+| Input | Default | Override |
+| ----- | ------- | -------- |
+| recipe | `pichi.yaml` relative to `--subdir` | `-f` / `--file` |
+| lock | `pichi.lock` relative to `--subdir` | `-l` / `--lock` |
+| appliance | digest-pinned `DEFAULT_BUILD_IMAGE` | `-b` / `--build-image` |
+| context | `.` | `--subdir` |
+
+`--subdir` defaults to `.` on the guest when the field is omitted.
+`--location`, `--memory`, and `--cpus` stay optional. The happy path
+uses `pichi.yaml` and `pichi.lock`.
+
+`-b`/`--build-image` help text is "Build appliance image." When the
+resolved appliance is missing from the cache, `pichi build` pulls it
+and continues. The first build fetches that appliance.
 
 Related commands unchanged in role:
 

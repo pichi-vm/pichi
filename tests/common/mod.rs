@@ -33,8 +33,8 @@ pub const PICHI_BIN: &str = env!("CARGO_BIN_EXE_pichi");
 
 /// Run the `pichi` binary against an isolated cache (`graphroot` via
 /// `XDG_DATA_HOME`) with `PICHI_DILLO` pointed at the built dillo. `envs`
-/// adds extra environment (e.g. `PICHI_BUILD_IMAGE`). Returns the captured
-/// output; use [`assert_pichi_ok`] to fail loudly with stdout+stderr.
+/// adds extra environment. Returns the captured output; use
+/// [`assert_pichi_ok`] to fail loudly with stdout+stderr.
 pub fn pichi(graphroot: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(PICHI_BIN);
     cmd.env("XDG_DATA_HOME", graphroot)
