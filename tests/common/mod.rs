@@ -64,7 +64,7 @@ pub fn pull_build_image(graphroot: &Path) -> bool {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     eprintln!(
-        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate:0.2.0@sha256:d42ba62f362c871d5c504c998bf322d1548113c599e8653f7a1955f9a4351fff.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate:0.2.0@sha256:48bda98cf9b59cebd58d3eaa36dfc2e3153126db64c6f8596badc7cc0cb0312d.\nstdout:\n{stdout}\nstderr:\n{stderr}",
         out.status,
     );
     false
@@ -301,9 +301,9 @@ pub fn read_combined(out: &Path, err: &Path) -> String {
 /// Locked Conglobate smoke reference (must match recipe `from:` and lock key).
 pub const SMOKE_SOURCE_REF: &str = "qualification.local/fedora:43";
 
-/// Conglobate Follow-up A tip carrying `tests/distro/context/lock.yaml`
-/// (PR https://github.com/pichi-vm/conglobate/pull/8). Prefer `main` once merged.
-pub const SMOKE_CONGLOBATE_REF: &str = "9fa7f204fa8b76488e9df940a5713e76815a5080";
+/// Conglobate main after the output-staging fix, matching the appliance revision.
+/// Includes the locked context recipe used by the real build smoke.
+pub const SMOKE_CONGLOBATE_REF: &str = "54a2072ad5966ca97b0db10893b6d7659d4b20a5";
 
 /// Exact index digest pinned in Conglobate's `lock.yaml` for [`SMOKE_SOURCE_REF`].
 pub const SMOKE_LOCK_INDEX: &str =
@@ -421,8 +421,8 @@ pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) {
     );
 }
 
-/// Checkout Conglobate at [`SMOKE_CONGLOBATE_REF`] (Follow-up A tip with
-/// `lock.yaml`) into `tmp/smoke-repo`. Prefers a sibling
+/// Checkout Conglobate at [`SMOKE_CONGLOBATE_REF`] into `tmp/smoke-repo`.
+/// Prefers a sibling
 /// `../conglobate` checkout that already has the commit; otherwise clones
 /// from GitHub. Returns `(repo_root, git_ref)`.
 pub fn prepare_smoke_repo(tmp: &Path) -> (PathBuf, String) {

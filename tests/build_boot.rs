@@ -6,8 +6,8 @@
 //! published build image (`ghcr.io/pichi-vm/conglobate:0.2.0@sha256:…`).
 //!
 //! Host duties under test:
-//! - seed the exact Conglobate Follow-up A index blob
-//!   (`sha256:4e335e14…` / PR #8 @ `9fa7f204`) under
+//! - seed the exact Conglobate context index blob
+//!   (`sha256:4e335e14…`) under
 //!   `qualification.local/fedora:43`, with a tiny imported carapace behind
 //!   the placeholder inner-manifest digest;
 //! - thin-launcher wires: virtiofs repo/cache/output + `dev.pichi.build`;
@@ -49,7 +49,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     // Seed lock-pinned index + carapace behind placeholder (not real Fedora).
     seed_smoke_source_carapace(g, tmp.path()).await;
 
-    // Conglobate Follow-up A tip (lock.yaml lands in PR #8 @ 9fa7f204).
+    // Use the same Conglobate main revision as the pinned appliance.
     let (repo, git_ref) = prepare_smoke_repo(tmp.path());
 
     // Timed spawn: BUILD.md requires guest exit 0 after the build.
@@ -88,8 +88,9 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "official Conglobate smoke: guest did not power off within {}s after launch (expected after Conglobate #11+#12+#13+#14 SuccessAction=poweroff + cache path-read + /dev runtime-target + loop-detach). Pin is ghcr.io/pichi-vm/conglobate:0.2.0@sha256:d42ba62f362c871d5c504c998bf322d1548113c599e8653f7a1955f9a4351fff. Appliance logs go to the journal only (not hvc0). Output mount stays empty when Pipeline fails.",
-                OFFICIAL_SMOKE_TIMEOUT.as_secs()
+                "official Conglobate smoke: guest did not power off within {}s after launch. Build image: {}. Appliance logs go to the journal and hvc0 console.",
+                OFFICIAL_SMOKE_TIMEOUT.as_secs(),
+                pichi::cmd::build::DEFAULT_BUILD_IMAGE
             );
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
