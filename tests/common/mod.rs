@@ -64,7 +64,7 @@ pub fn pull_build_image(graphroot: &Path) -> bool {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     eprintln!(
-        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate:0.2.0@sha256:5e70175b1610ac791d67ee1ef18520ce6b9a2156c91464a4b4a56b68dbb86710.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate:0.2.0@sha256:d42ba62f362c871d5c504c998bf322d1548113c599e8653f7a1955f9a4351fff.\nstdout:\n{stdout}\nstderr:\n{stderr}",
         out.status,
     );
     false
