@@ -347,7 +347,7 @@ pub fn tag_digest(graphroot: &Path, reference: &str) -> String {
 /// Steps: `pichi import raw` → copy that manifest under
 /// [`SMOKE_PLACEHOLDER_MANIFEST`] → write [`SMOKE_INDEX_BYTES`] under
 /// [`SMOKE_LOCK_INDEX`] → retag. Not real Fedora GHCR.
-pub fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) {
+pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) {
     assert_eq!(
         SMOKE_INDEX_BYTES.len(),
         343,
@@ -372,14 +372,15 @@ pub fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) {
     );
     let real_manifest = tag_digest(graphroot, "smoke-seed:tmp");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
+    // Await on the ambient #[tokio::test] runtime. Do not nest
+    // Builder::new_current_thread().block_on — that panics with
+    // "Cannot start a runtime from within a runtime" once the official
+    // DEFAULT_BUILD_IMAGE pin is pullable and this path is no longer
+    // skipped.
     // common::pichi sets XDG_DATA_HOME=graphroot → CacheLayout graphroot is
     // `$XDG_DATA_HOME/pichi/storage` (rootless).
     let storage = graphroot.join("pichi").join("storage");
-    rt.block_on(async {
+    {
         use pichi_artifact::{Digest, Reference};
         use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
@@ -410,7 +411,7 @@ pub fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) {
         db.set_tag(&tag_ref.to_string(), &index_digest)
             .await
             .expect("tag smoke source at lock index");
-    });
+    }
 
     // Pin check: inspect reports the index digest (tag → index).
     let got = tag_digest(graphroot, SMOKE_SOURCE_REF);
