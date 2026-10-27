@@ -11,7 +11,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -21,6 +21,7 @@ use pichi_artifact::{
     Manifest, PmiDescriptor, Reference, ReferenceKind, Requirements, ScuteAnnotations,
     ScuteDescriptor,
 };
+use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
 use pichi_storage::sidecar::write_sidecar_atomic;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
@@ -40,16 +41,54 @@ const REPO_TAG: &str = "repo";
 const CACHE_TAG: &str = "cache";
 const OUTPUT_TAG: &str = "output";
 
-pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
-    let build_dir = args.dir.join("pichi.build");
-    if !build_dir.is_dir() {
-        bail!(
-            "no pichi.build/ directory under {} (run from a pichi project)",
-            args.dir.display()
-        );
-    }
+/// Platform selector for local OCI index walks (same token as `pichi pull`).
+const TARGET_OS: &str = "pichi";
 
+fn target_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => other,
+    }
+}
+
+/// Conglobate Follow-up A `lock.yaml` (images → index digest). Host reads
+/// only the image reference keys + pins for transitional source-carapace
+/// pass-through; recipe parse stays on the guest (BUILD.md §2.2).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuildLockFile {
+    version: u32,
+    images: BTreeMap<String, BuildLockImage>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuildLockImage {
+    /// OCI index (or single-manifest) digest (`sha256:…`).
+    index: String,
+}
+
+pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let build_image_ref = resolve_build_image(args.build_image.as_deref())?;
+
+    // Thin-launcher build-input (BUILD.md §2.4): required for every build.
+    let git_ref = args
+        .git_ref
+        .clone()
+        .ok_or_else(|| anyhow!("pichi build requires --ref (BUILD.md §2.4)"))?;
+    let recipe = args
+        .recipe
+        .clone()
+        .ok_or_else(|| anyhow!("pichi build requires --recipe (BUILD.md §2.4)"))?;
+    let lock = args
+        .lock
+        .clone()
+        .ok_or_else(|| anyhow!("pichi build requires --lock (BUILD.md §2.4)"))?;
+    let subdir = args.subdir.clone();
+
+    let build_dir = args.dir.join("pichi.build");
+    let legacy_project = build_dir.is_dir();
 
     let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
@@ -68,26 +107,55 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .context("invalid build-image PMI digest")?;
     let pmi_path = blob_store.blob_path(&pmi_digest);
 
-    // The carapace recipe's `from:` is the carapace we derive: its scutes
-    // pass through unchanged into the output, and conglobate's per-directive
-    // delta scutes chain onto its top root.
-    let carapace_source = carapace_recipe_source(&build_dir)?;
+    // Transitional source-carapace pass-through (BUILD.md §3): resolve the
+    // locked images from the RO cache and wire each as a vGPT. Prefer
+    // Conglobate `lock.yaml` under `--subdir`; fall back to legacy
+    // `pichi.build/` recipe `from:` keys when that layout is present.
+    let build_lock = load_build_lock(&args.dir, subdir.as_deref(), &lock)?;
+    let (source_refs, carapace_source) = if let Some(parsed) = build_lock.as_ref() {
+        let refs: Vec<String> = parsed.images.keys().cloned().collect();
+        // Single-image smoke / typical carapace derive: pass through the
+        // first locked image's scutes. Multi-image PMI+carapace can refine
+        // this once Conglobate's lock lands with richer metadata.
+        let cara = refs.first().cloned();
+        (refs, cara)
+    } else if legacy_project {
+        let cara = carapace_recipe_source(&build_dir)?;
+        (collect_source_refs(&build_dir)?, cara)
+    } else {
+        bail!(
+            "no build lock at {} and no pichi.build/ under {} — provide Conglobate lock.yaml (Follow-up A) or a legacy pichi.build project",
+            path_under_subdir(&args.dir, subdir.as_deref(), &lock).display(),
+            args.dir.display()
+        );
+    };
 
-    // Each source carapace (carapace.yaml / pmi.yaml `from:`) becomes its
-    // own virtualized-GPT device.
     let mut gpt_specs = Vec::new();
     let mut source_scutes: Vec<ScuteDescriptor> = Vec::new();
-    for reference in collect_source_refs(&build_dir)? {
-        let (_, manifest) = resolve_manifest(&reference, &db, &blob_store)
+    for reference in &source_refs {
+        let (digest, manifest) = resolve_manifest(reference, &db, &blob_store)
             .await
             .with_context(|| format!("resolving source carapace {reference}"))?;
+        if let Some(parsed) = build_lock.as_ref()
+            && let Some(pin) = parsed.images.get(reference)
+        {
+            let pinned = normalize_digest(pin.index.trim());
+            let got_owned = digest.to_string();
+            let got = normalize_digest(&got_owned);
+            if pinned != got {
+                bail!(
+                    "cached {reference} digest sha256:{got} does not match lock pin {}",
+                    pin.index
+                );
+            }
+        }
         let scutes = manifest
             .scute_layers()
             .with_context(|| format!("reading scutes of source carapace {reference}"))?;
         if scutes.is_empty() {
             bail!("source carapace {reference} has no scute layers");
         }
-        if Some(&reference) == carapace_source.as_ref() {
+        if Some(reference) == carapace_source.as_ref() {
             source_scutes = scutes.iter().map(|s| (*s).clone()).collect();
         }
         gpt_specs.push(
@@ -122,19 +190,10 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     )?;
 
     let build_input = BuildInput {
-        git_ref: args
-            .git_ref
-            .clone()
-            .ok_or_else(|| anyhow!("pichi build requires --ref (BUILD.md §2.4)"))?,
-        recipe: args
-            .recipe
-            .clone()
-            .ok_or_else(|| anyhow!("pichi build requires --recipe (BUILD.md §2.4)"))?,
-        lock: args
-            .lock
-            .clone()
-            .ok_or_else(|| anyhow!("pichi build requires --lock (BUILD.md §2.4)"))?,
-        subdir: args.subdir.clone(),
+        git_ref,
+        recipe,
+        lock,
+        subdir,
         location: args.location.clone(),
     };
     let response = build_input
@@ -382,9 +441,11 @@ pub(crate) fn build_dillo_args(
 /// pichi wires. `NetSpec` defaults `backend` to user; we state it explicitly.
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
-/// The official build image, published multi-arch by the conglobate repo's CI.
-/// Used by default when neither `--build-image` nor `PICHI_BUILD_IMAGE` is set.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate:latest";
+/// Durable Conglobate appliance pin (Follow-up A). Conglobate also publishes
+/// `:latest`; prefer this version tag (or a digest via `PICHI_BUILD_IMAGE` /
+/// `--build-image`) for smoke and defaults — do not pin smoke on `:latest`
+/// alone.
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate:0.2.0";
 
 /// Resolve the build-image reference: `--build-image`, then
 /// `PICHI_BUILD_IMAGE`, then the [`DEFAULT_BUILD_IMAGE`].
@@ -398,6 +459,48 @@ fn resolve_build_image(flag: Option<&str>) -> Result<String> {
             .map_err(|_| anyhow!("PICHI_BUILD_IMAGE is not valid UTF-8"));
     }
     Ok(DEFAULT_BUILD_IMAGE.to_string())
+}
+
+/// Strip an optional `sha256:` prefix for lock-pin comparisons.
+fn normalize_digest(s: &str) -> &str {
+    s.strip_prefix("sha256:").unwrap_or(s)
+}
+
+/// Resolve `rel` under optional `--subdir` inside the repo mount.
+fn path_under_subdir(repo: &Path, subdir: Option<&str>, rel: &str) -> PathBuf {
+    let base = match subdir {
+        Some(s) if !s.is_empty() && s != "." => repo.join(s),
+        _ => repo.to_path_buf(),
+    };
+    base.join(rel)
+}
+
+/// Load Conglobate Follow-up A `lock.yaml` when present. Returns `Ok(None)` if
+/// the file is missing (legacy `pichi.build/` projects).
+fn load_build_lock(
+    repo: &Path,
+    subdir: Option<&str>,
+    lock_rel: &str,
+) -> Result<Option<BuildLockFile>> {
+    let path = path_under_subdir(repo, subdir, lock_rel);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading build lock {}", path.display()))?;
+    let parsed: BuildLockFile = serde_yaml::from_str(&text)
+        .with_context(|| format!("parsing build lock {}", path.display()))?;
+    if parsed.version != 1 {
+        bail!(
+            "build lock {}: unsupported version {} (expected 1)",
+            path.display(),
+            parsed.version
+        );
+    }
+    if parsed.images.is_empty() {
+        bail!("build lock {}: images map is empty", path.display());
+    }
+    Ok(Some(parsed))
 }
 
 /// The carapace recipe's `from:` reference, if a `carapace.yaml` is present —
@@ -442,7 +545,13 @@ fn collect_source_refs(build_dir: &Path) -> Result<Vec<String>> {
     Ok(refs.into_iter().collect())
 }
 
-/// Resolve a cached reference to its manifest digest + parsed manifest.
+/// Resolve a cached reference to its parsed pichi manifest.
+///
+/// Returns `(pin_digest, manifest)` where `pin_digest` is the digest the tag
+/// (or digest-ref) resolved to — the OCI index digest when the cache entry is
+/// an image index (Conglobate Follow-up A lock pins), else the bare manifest
+/// digest. Index entries are walked with the same `pichi`/`GOARCH` selector
+/// as `pichi pull` (D-02 / D-20).
 async fn resolve_manifest(
     reference: &str,
     db: &FilesystemTagDb,
@@ -464,8 +573,28 @@ async fn resolve_manifest(
         .get_blob(&digest)
         .await
         .with_context(|| format!("reading manifest blob {digest}"))?;
-    let manifest = Manifest::from_reader_validated(bytes.as_slice())
-        .with_context(|| format!("validating manifest {digest}"))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse mediaType of {digest}"))?;
+    let media_type = v.get("mediaType").and_then(|x| x.as_str()).unwrap_or("");
+    let manifest_bytes = if media_type == OCI_IMAGE_INDEX_MEDIA_TYPE {
+        let picked_str = pick_pichi_entry_from_index(&bytes, TARGET_OS, target_arch())
+            .with_context(|| format!("picking pichi entry from index {digest}"))?;
+        let picked: Digest = picked_str
+            .parse()
+            .with_context(|| format!("parse picked digest {picked_str}"))?;
+        blob_store
+            .get_blob(&picked)
+            .await
+            .with_context(|| {
+                format!(
+                    "reading index entry {picked} for {reference} (seed the carapace behind the lock pin)"
+                )
+            })?
+    } else {
+        bytes
+    };
+    let manifest = Manifest::from_reader_validated(manifest_bytes.as_slice())
+        .with_context(|| format!("validating manifest for {reference}"))?;
     Ok((digest, manifest))
 }
 
@@ -863,6 +992,145 @@ mod tests {
             m.carapace_verity_hash(),
             Some(root_delta),
             "packaged manifest must declare the delta (top) scute's verity root"
+        );
+    }
+
+    /// Host-side transitional smoke without a Conglobate appliance: virtiofs
+    /// repo/cache/output tags, hold-until-open build-port exchange, flat
+    /// BuildOutput on the output sink, then `package_artifact`.
+    #[tokio::test]
+    async fn transitional_smoke_port_output_package() {
+        use crate::cmd::{test_support::ScuteFixture as _, verity};
+        use std::io::{Read, Write};
+        use std::thread;
+        use std::time::Duration;
+
+        let console = console_arg(5, 6);
+        let argv = build_dillo_args(
+            Path::new("/cache/blobs/sha256/deadbeef"),
+            &[],
+            Path::new("/proj"),
+            Path::new("/var/cache/pichi"),
+            Path::new("/run/out"),
+            Some(&console),
+            None,
+            None,
+        );
+        let fs_values: Vec<&String> = argv
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "--fs")
+            .map(|(i, _)| &argv[i + 1])
+            .collect();
+        assert_eq!(fs_values.len(), 3);
+        assert!(fs_values[0].contains("tag=repo") && fs_values[0].contains("readonly"));
+        assert!(fs_values[1].contains("tag=cache") && fs_values[1].contains("readonly"));
+        assert!(
+            fs_values[2].contains("tag=output") && !fs_values[2].contains("readonly"),
+            "output sink must be writable: {}",
+            fs_values[2]
+        );
+        assert!(
+            argv.iter().any(|a| a.contains(build_port::BUILD_PORT_NAME)),
+            "missing named console {}",
+            build_port::BUILD_PORT_NAME
+        );
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let output_dir = tmp.path().join("output");
+        std::fs::create_dir_all(&output_dir).unwrap();
+
+        let mut raw = vec![0u8; 4096 * 3];
+        raw[100] = 7;
+        let cow_bytes = raw.scute();
+        let salt = vec![0u8; 32];
+        let vout = verity::VerityParams {
+            data_block_size: 4096,
+            hash_block_size: 4096,
+            salt: salt.clone(),
+            uuid: [0u8; 16],
+        }
+        .compute(&cow_bytes)
+        .unwrap();
+        let build_yaml = format!(
+            "scutes:\n- cow: 0000.cow\n  verity: 0000.verity\n  salt: {}\n",
+            hex::encode(&salt)
+        );
+
+        let input = BuildInput {
+            git_ref: "main".into(),
+            recipe: "recipe.yaml".into(),
+            lock: "lock.yaml".into(),
+            subdir: Some("tests/distro/context".into()),
+            location: None,
+        };
+        let response = input.encode_success().unwrap();
+
+        let pipes = create_build_port_pipes().unwrap();
+        let mut device_tx = pipes.device_tx;
+        let mut device_rx = pipes.device_rx;
+        let host_rx = pipes.host_rx;
+        let host_tx = pipes.host_tx;
+
+        let guest = thread::spawn(move || {
+            // Hold-until-open: guest request arrives after host is waiting.
+            thread::sleep(Duration::from_millis(50));
+            let mut req = Vec::new();
+            ciborium::into_writer(&build_port::GuestRequest::expected(), &mut req).unwrap();
+            device_tx.write_all(&req).unwrap();
+            device_tx.flush().unwrap();
+            let mut reply = Vec::new();
+            device_rx.read_to_end(&mut reply).unwrap();
+            assert!(!reply.is_empty(), "host wrote no build-input response");
+
+            std::fs::write(output_dir.join("0000.cow"), &cow_bytes).unwrap();
+            std::fs::write(output_dir.join("0000.verity"), &vout.blob).unwrap();
+            std::fs::write(output_dir.join("build.yaml"), &build_yaml).unwrap();
+            (reply, output_dir)
+        });
+
+        serve_build_port(host_rx, host_tx, &response).unwrap();
+        let (reply, output_dir) = guest.join().unwrap();
+        assert_eq!(reply, response, "guest must receive prepared build-input");
+
+        let graphroot = tmp.path().join("storage");
+        std::fs::create_dir_all(&graphroot).unwrap();
+        let blob_store = FilesystemBlobStore::new(&graphroot);
+        let db = FilesystemTagDb::open(&graphroot).unwrap();
+        let digest = package_artifact(
+            &output_dir,
+            &[],
+            &blob_store,
+            &db,
+            "smoke:transitional",
+            "2026-10-27T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        let key = "smoke:transitional"
+            .parse::<Reference>()
+            .unwrap()
+            .to_string();
+        assert_eq!(db.resolve_tag(&key).await.unwrap(), Some(digest));
+    }
+
+    #[test]
+    fn load_build_lock_reads_conglobate_shape() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = tmp.path().join("tests/distro/context");
+        std::fs::create_dir_all(&ctx).unwrap();
+        std::fs::write(
+            ctx.join("lock.yaml"),
+            "version: 1\nimages:\n  qualification.local/fedora:43:\n    index: sha256:deadbeef\n",
+        )
+        .unwrap();
+        let parsed = load_build_lock(tmp.path(), Some("tests/distro/context"), "lock.yaml")
+            .unwrap()
+            .expect("lock present");
+        assert_eq!(parsed.version, 1);
+        assert_eq!(
+            parsed.images["qualification.local/fedora:43"].index,
+            "sha256:deadbeef"
         );
     }
 }

@@ -19,7 +19,7 @@ mod common;
 use common::{assert_pichi_ok, kvm_available, pichi, pull_build_image};
 
 #[tokio::test]
-#[ignore = "pichi build deferred; re-enable with build work"]
+#[ignore = "legacy pichi.build layout; re-enable after Conglobate Follow-up A / OCI-import"]
 #[cfg(target_arch = "x86_64")]
 async fn pichi_build_flattens_source_into_a_carapace() {
     if !kvm_available() {

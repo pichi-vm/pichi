@@ -49,14 +49,18 @@ pub fn pichi(graphroot: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::pro
 /// Pull the official build image (`pichi build`'s default `--build-image`)
 /// into the test cache so the subsequent build resolves it. The image is
 /// public on GHCR, so the pull is anonymous.
+///
+/// On failure, the panic message names `DEFAULT_BUILD_IMAGE` explicitly so a
+/// missing `:0.2.0` publish is obvious (do not silently fall back).
 pub fn pull_build_image(graphroot: &Path) {
-    assert_pichi_ok(
-        "pull build image",
-        &pichi(
-            graphroot,
-            &[],
-            &["pull", pichi::cmd::build::DEFAULT_BUILD_IMAGE],
-        ),
+    let image = pichi::cmd::build::DEFAULT_BUILD_IMAGE;
+    let out = pichi(graphroot, &[], &["pull", image]);
+    assert!(
+        out.status.success(),
+        "pull build image {image} failed ({}). Is ghcr.io/pichi-vm/conglobate:0.2.0 published?\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
     );
 }
 
@@ -286,4 +290,204 @@ pub fn read_combined(out: &Path, err: &Path) -> String {
     let mut s = std::fs::read_to_string(out).unwrap_or_default();
     s.push_str(&std::fs::read_to_string(err).unwrap_or_default());
     s
+}
+
+/// Locked Conglobate smoke reference (must match recipe `from:` and lock key).
+pub const SMOKE_SOURCE_REF: &str = "qualification.local/fedora:43";
+
+/// Conglobate Follow-up A tip carrying `tests/distro/context/lock.yaml`
+/// (PR https://github.com/pichi-vm/conglobate/pull/8). Prefer `main` once merged.
+pub const SMOKE_CONGLOBATE_REF: &str = "9fa7f204fa8b76488e9df940a5713e76815a5080";
+
+/// Exact index digest pinned in Conglobate's `lock.yaml` for [`SMOKE_SOURCE_REF`].
+pub const SMOKE_LOCK_INDEX: &str =
+    "sha256:4e335e141a3f950ed68c68f23c112930c51af5ec9658d1263353eb229a6429d1";
+
+/// Placeholder inner-manifest digest from the fixture index (32×`0x11`).
+/// Harness stores the real carapace manifest bytes under this digest (blob
+/// store trusts the caller digest; content need not hash to it).
+pub const SMOKE_PLACEHOLDER_MANIFEST: &str =
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
+/// Exact OCI index bytes (343, no trailing newline) whose SHA-256 is
+/// [`SMOKE_LOCK_INDEX`]. Encoding matches Conglobate `tests/distro/prepare.py`
+/// (`sort_keys=True`, separators `,` / `:`).
+pub const SMOKE_INDEX_BYTES: &[u8] = br#"{"manifests":[{"artifactType":"application/vnd.pichi.artifact.v1+json","digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","mediaType":"application/vnd.oci.image.manifest.v1+json","platform":{"architecture":"amd64","os":"pichi"},"size":2}],"mediaType":"application/vnd.oci.image.index.v1+json","schemaVersion":2}"#;
+
+/// Conglobate smoke context under the repo mount.
+pub const SMOKE_SUBDIR: &str = "tests/distro/context";
+pub const SMOKE_RECIPE: &str = "recipe.yaml";
+pub const SMOKE_LOCK: &str = "lock.yaml";
+
+/// Resolve the full `sha256:…` digest for a local tag via `pichi inspect`.
+pub fn tag_digest(graphroot: &Path, reference: &str) -> String {
+    let out = pichi(
+        graphroot,
+        &[],
+        &["inspect", "--format", "{{ digest }}", reference],
+    );
+    assert_pichi_ok(&format!("inspect {reference}"), &out);
+    let dig = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(
+        dig.starts_with("sha256:"),
+        "expected sha256: digest for {reference}, got {dig:?}"
+    );
+    dig
+}
+
+/// Seed [`SMOKE_SOURCE_REF`] so its tag resolves to [`SMOKE_LOCK_INDEX`] and
+/// the carapace behind the placeholder index entry is a tiny imported ext4.
+///
+/// Steps: `pichi import raw` → copy that manifest under
+/// [`SMOKE_PLACEHOLDER_MANIFEST`] → write [`SMOKE_INDEX_BYTES`] under
+/// [`SMOKE_LOCK_INDEX`] → retag. Not real Fedora GHCR.
+pub fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) {
+    assert_eq!(
+        SMOKE_INDEX_BYTES.len(),
+        343,
+        "fixture index byte length drifted"
+    );
+    let src = tmp.join("qualification-fedora43.ext4");
+    make_ext4(&src, &[("os-release", "ID=fedora\nVERSION_ID=43\n")]);
+    // Import under a throwaway tag; we retag to the lock pin below.
+    assert_pichi_ok(
+        "import smoke source carapace",
+        &pichi(
+            graphroot,
+            &[],
+            &[
+                "import",
+                "raw",
+                src.to_str().unwrap(),
+                "-t",
+                "smoke-seed:tmp",
+            ],
+        ),
+    );
+    let real_manifest = tag_digest(graphroot, "smoke-seed:tmp");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    // common::pichi sets XDG_DATA_HOME=graphroot → CacheLayout graphroot is
+    // `$XDG_DATA_HOME/pichi/storage` (rootless).
+    let storage = graphroot.join("pichi").join("storage");
+    rt.block_on(async {
+        use pichi_artifact::{Digest, Reference};
+        use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+
+        let blob_store = FilesystemBlobStore::new(&storage);
+        let db = FilesystemTagDb::open(&storage).expect("open tag db");
+
+        let real_digest: Digest = real_manifest.parse().expect("parse real manifest digest");
+        let manifest_bytes = blob_store
+            .get_blob(&real_digest)
+            .await
+            .expect("read imported manifest");
+
+        let placeholder: Digest = SMOKE_PLACEHOLDER_MANIFEST
+            .parse()
+            .expect("parse placeholder digest");
+        blob_store
+            .put_blob(&placeholder, &manifest_bytes)
+            .await
+            .expect("put carapace behind placeholder digest");
+
+        let index_digest: Digest = SMOKE_LOCK_INDEX.parse().expect("parse lock index digest");
+        blob_store
+            .put_blob(&index_digest, SMOKE_INDEX_BYTES)
+            .await
+            .expect("put fixture index blob");
+
+        let tag_ref: Reference = SMOKE_SOURCE_REF.parse().expect("parse smoke ref");
+        db.set_tag(&tag_ref.to_string(), &index_digest)
+            .await
+            .expect("tag smoke source at lock index");
+    });
+
+    // Pin check: inspect reports the index digest (tag → index).
+    let got = tag_digest(graphroot, SMOKE_SOURCE_REF);
+    assert_eq!(
+        got, SMOKE_LOCK_INDEX,
+        "smoke source tag must resolve to Conglobate lock pin"
+    );
+}
+
+/// Checkout Conglobate at [`SMOKE_CONGLOBATE_REF`] (Follow-up A tip with
+/// `lock.yaml`) into `tmp/smoke-repo`. Prefers a sibling
+/// `../conglobate` checkout that already has the commit; otherwise clones
+/// from GitHub. Returns `(repo_root, git_ref)`.
+pub fn prepare_smoke_repo(tmp: &Path) -> (PathBuf, String) {
+    let repo = tmp.join("smoke-repo");
+    let sibling = Path::new(env!("CARGO_MANIFEST_DIR")).join("../conglobate");
+    let has_commit = Command::new("git")
+        .args([
+            "cat-file",
+            "-e",
+            &format!("{SMOKE_CONGLOBATE_REF}^{{commit}}"),
+        ])
+        .current_dir(&sibling)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if has_commit {
+        let st = Command::new("git")
+            .args([
+                "clone",
+                "-q",
+                "--no-checkout",
+                sibling.to_str().unwrap(),
+                repo.to_str().unwrap(),
+            ])
+            .status()
+            .expect("git clone --local sibling conglobate");
+        assert!(st.success(), "git clone sibling failed");
+    } else {
+        let st = Command::new("git")
+            .args([
+                "clone",
+                "-q",
+                "--no-checkout",
+                "https://github.com/pichi-vm/conglobate.git",
+                repo.to_str().unwrap(),
+            ])
+            .status()
+            .expect("git clone conglobate");
+        assert!(
+            st.success(),
+            "git clone github.com/pichi-vm/conglobate failed"
+        );
+        let st = Command::new("git")
+            .args([
+                "fetch",
+                "-q",
+                "--depth",
+                "1",
+                "origin",
+                SMOKE_CONGLOBATE_REF,
+            ])
+            .current_dir(&repo)
+            .status()
+            .expect("git fetch tip");
+        assert!(st.success(), "git fetch {SMOKE_CONGLOBATE_REF} failed");
+    }
+    let st = Command::new("git")
+        .args(["checkout", "-q", SMOKE_CONGLOBATE_REF])
+        .current_dir(&repo)
+        .status()
+        .expect("git checkout tip");
+    assert!(st.success(), "git checkout {SMOKE_CONGLOBATE_REF} failed");
+
+    let lock_path = repo.join(SMOKE_SUBDIR).join(SMOKE_LOCK);
+    assert!(
+        lock_path.is_file(),
+        "Conglobate tip missing {SMOKE_SUBDIR}/{SMOKE_LOCK}"
+    );
+    let lock_text = std::fs::read_to_string(&lock_path).unwrap();
+    assert!(
+        lock_text.contains(SMOKE_LOCK_INDEX),
+        "Conglobate lock.yaml does not pin {SMOKE_LOCK_INDEX}"
+    );
+    (repo, SMOKE_CONGLOBATE_REF.to_string())
 }

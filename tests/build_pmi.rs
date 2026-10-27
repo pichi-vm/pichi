@@ -24,7 +24,7 @@ use corium::CORIUM_ROOT_OK;
 const MARKER: &str = "corium-root-marker";
 
 #[tokio::test]
-#[ignore = "pichi build deferred; re-enable with build work"]
+#[ignore = "legacy pichi.build layout; re-enable after Conglobate Follow-up A / OCI-import"]
 #[cfg(target_arch = "x86_64")]
 async fn single_pichi_build_emits_bootable_artifact() {
     if !kvm_available() {

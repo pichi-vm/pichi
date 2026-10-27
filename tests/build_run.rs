@@ -78,7 +78,7 @@ async fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
 }
 
 #[tokio::test]
-#[ignore = "pichi build deferred; re-enable with build work"]
+#[ignore = "legacy pichi.build layout; re-enable after Conglobate Follow-up A / OCI-import"]
 #[cfg(target_arch = "x86_64")]
 async fn pichi_build_then_run_mounts_root_carapace() {
     if !kvm_available() {

@@ -1,11 +1,17 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! End-to-end smoke test: `pichi build` pulls the official build image from
-//! GHCR and boots it (conglobate as `/init`) to a clean power-off, emitting
-//! the `CONGLOBATE-READY` console marker. The build is a trivial `from:`-only
-//! carapace (the source passes straight through), so this exercises the real
-//! published image booting and shutting down cleanly.
+//! End-to-end smoke: `pichi build` against Conglobate's locked context inputs
+//! (`tests/distro/context` + `qualification.local/fedora:43`) with the real
+//! published build image (`ghcr.io/pichi-vm/conglobate:0.2.0`).
+//!
+//! Host duties under test:
+//! - seed the exact Conglobate Follow-up A index blob
+//!   (`sha256:4e335e14…` / PR #8 @ `9fa7f204`) under
+//!   `qualification.local/fedora:43`, with a tiny imported carapace behind
+//!   the placeholder inner-manifest digest;
+//! - thin-launcher wires: virtiofs repo/cache/output + `dev.pichi.build`;
+//! - dual-write flat `BuildOutput` → transitional `package_artifact`.
 //!
 //! Gated on the `vm-tests` feature; skips if `/dev/kvm` is unavailable.
 //! x86_64 + KVM only.
@@ -14,13 +20,15 @@
 
 mod common;
 
-use common::{assert_pichi_ok, kvm_available, make_ext4, pichi, pull_build_image};
+use common::{
+    SMOKE_LOCK, SMOKE_LOCK_INDEX, SMOKE_RECIPE, SMOKE_SOURCE_REF, SMOKE_SUBDIR, assert_pichi_ok,
+    kvm_available, pichi, prepare_smoke_repo, pull_build_image, seed_smoke_source_carapace,
+};
 
 // conglobate's console readiness marker (the guest emits it; matched here).
 const CONGLOBATE_READY: &str = "CONGLOBATE-READY";
 
 #[tokio::test]
-#[ignore = "pichi build deferred; re-enable with build work"]
 async fn pichi_build_boots_official_image_to_poweroff() {
     if !kvm_available() {
         eprintln!("skip: no usable /dev/kvm");
@@ -31,39 +39,32 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     std::fs::create_dir_all(&graphroot).unwrap();
     let g = &graphroot;
 
-    // The official build image, pulled from GHCR (the default --build-image).
+    // Official build image (DEFAULT_BUILD_IMAGE = :0.2.0). Clear failure if
+    // GHCR has not published that tag yet.
     pull_build_image(g);
 
-    // A trivial source carapace + a from:-only project: no derive directives,
-    // so the source passes through unchanged — but the build VM still boots
-    // conglobate end to end and powers off.
-    let src = tmp.path().join("source.ext4");
-    make_ext4(&src, &[("hello", "base rootfs content\n")]);
-    assert_pichi_ok(
-        "import source",
-        &pichi(
-            g,
-            &[],
-            &["import", "raw", src.to_str().unwrap(), "-t", "base:1"],
-        ),
-    );
+    // Seed lock-pinned index + carapace behind placeholder (not real Fedora).
+    seed_smoke_source_carapace(g, tmp.path());
 
-    let proj = tmp.path().join("proj");
-    std::fs::create_dir_all(proj.join("pichi.build")).unwrap();
-    std::fs::write(proj.join("pichi.build/carapace.yaml"), "from: base:1\n").unwrap();
-    assert_pichi_ok(
-        "update",
-        &pichi(g, &[], &["update", proj.to_str().unwrap()]),
-    );
+    // Conglobate Follow-up A tip (lock.yaml lands in PR #8 @ 9fa7f204).
+    let (repo, git_ref) = prepare_smoke_repo(tmp.path());
 
     let build = pichi(
         g,
         &[],
         &[
             "build",
-            proj.to_str().unwrap(),
+            repo.to_str().unwrap(),
             "-t",
-            "out:1",
+            "smoke:out",
+            "--ref",
+            &git_ref,
+            "--subdir",
+            SMOKE_SUBDIR,
+            "--recipe",
+            SMOKE_RECIPE,
+            "--lock",
+            SMOKE_LOCK,
             "--memory",
             "2048",
             "--cpus",
@@ -77,5 +78,18 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     assert!(
         console.contains(CONGLOBATE_READY),
         "build image did not reach conglobate (no {CONGLOBATE_READY:?}):\n{console}"
+    );
+
+    // Packaged tag must resolve (flat BuildOutput → package_artifact).
+    let inspect = pichi(
+        g,
+        &[],
+        &["inspect", "--format", "{{ digest }}", "smoke:out"],
+    );
+    assert_pichi_ok("inspect smoke:out", &inspect);
+    let out_digest = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
+    assert!(
+        out_digest.starts_with("sha256:"),
+        "packaged smoke:out missing digest; source was {SMOKE_SOURCE_REF}@{SMOKE_LOCK_INDEX}"
     );
 }
