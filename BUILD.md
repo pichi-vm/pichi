@@ -102,7 +102,8 @@ Build-input fields (success response body, in addition to `v` / `ok`):
 | `location` | no       | optional locator / provenance hint |
 
 Operator defaults are `pichi.yaml` and `pichi.lock`. `-f`/`--file` and
-`-l`/`--lock` override those paths. The CBOR fields are the resolved
+`-l`/`--lock` override those paths; both must be relative (absolute
+paths are rejected). The CBOR fields are the resolved
 relative paths (for example `pichi.yaml` and `pichi.lock` when the
 operator passes neither flag).
 
@@ -249,7 +250,7 @@ error: <string>
 
 `recipe` and `lock` are relative to `subdir`. Defaults are `pichi.yaml`
 and `pichi.lock`. `-f`/`--file` and `-l`/`--lock` supply different
-relative paths; the host sends those resolved strings. The guest
+relative paths (absolute paths are rejected); the host sends those resolved strings. The guest
 resolves `ref` against the `repo` virtiofs git object store. This
 document locks the field set and the v0 request/response delivery;
 Conglobate owns guest consumption of the success payload.

@@ -304,11 +304,11 @@ pub struct BuildArgs {
     /// Git ref / commit the guest resolves in the `repo` virtiofs mount.
     #[arg(long = "ref")]
     pub git_ref: Option<String>,
-    /// Recipe path relative to `--subdir` (default `pichi.yaml`).
-    #[arg(short = 'f', long = "file", value_name = "PATH", default_value = DEFAULT_RECIPE)]
+    /// Recipe path relative to `--subdir` (default `pichi.yaml`); absolute paths are rejected.
+    #[arg(short = 'f', long = "file", value_name = "PATH", default_value = DEFAULT_RECIPE, value_parser = parse_recipe_path)]
     pub recipe: String,
-    /// Lock path relative to `--subdir` (default `pichi.lock`).
-    #[arg(short = 'l', long = "lock", value_name = "PATH", default_value = DEFAULT_LOCK)]
+    /// Lock path relative to `--subdir` (default `pichi.lock`); absolute paths are rejected.
+    #[arg(short = 'l', long = "lock", value_name = "PATH", default_value = DEFAULT_LOCK, value_parser = parse_lock_path)]
     pub lock: String,
     /// Context subdirectory inside the repo mount (default guest-side: `.`).
     #[arg(long)]
@@ -367,4 +367,24 @@ impl TryFrom<ImportRawArgs> for crate::cmd::import::raw::ImportArgs {
             annotations,
         })
     }
+}
+
+/// Reject rooted paths: `-f`/`--file` must stay relative to `--subdir`.
+fn parse_recipe_path(s: &str) -> Result<String, String> {
+    parse_relative_path("recipe", s)
+}
+
+/// Reject rooted paths: `-l`/`--lock` must stay relative to `--subdir`.
+fn parse_lock_path(s: &str) -> Result<String, String> {
+    parse_relative_path("lock", s)
+}
+
+fn parse_relative_path(what: &str, s: &str) -> Result<String, String> {
+    let path = std::path::Path::new(s);
+    // `is_absolute` is false for a leading `/` on Windows (`/etc/...` has a
+    // root and no disk prefix). Either form escapes `--subdir`.
+    if path.has_root() || path.is_absolute() {
+        return Err(format!("{what} path must be relative: {s}"));
+    }
+    Ok(s.to_string())
 }
