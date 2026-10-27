@@ -470,8 +470,8 @@ pub(crate) fn build_dillo_args(
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
 /// Durable Conglobate appliance pin (Follow-up A / locked tag@digest).
-/// Index digest identifies Conglobate #15 (output-staging fix, main 54a2072a).
-/// The Apollo smoke verifies guest output, poweroff, and host packaging.
+/// Index digest identifies Conglobate #15 (output-staging fix, main 5ec4e66c).
+/// Official-image smoke verifies guest output, poweroff, and host packaging.
 pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate:0.2.0@sha256:48bda98cf9b59cebd58d3eaa36dfc2e3153126db64c6f8596badc7cc0cb0312d";
 
 /// Resolve the build-image reference: `--build-image`, then
