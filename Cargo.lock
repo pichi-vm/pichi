@@ -143,7 +143,7 @@ dependencies = [
 [[package]]
 name = "arma"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma#113aeb2f6d5fc11aa67b4160290aca8b18d9c3b8"
+source = "git+https://github.com/pichi-vm/arma#202c24619843c3fd01599b3860da582e1e2256aa"
 dependencies = [
  "anyhow",
  "ciborium",
@@ -152,7 +152,8 @@ dependencies = [
  "flate2",
  "goblin",
  "pmi",
- "ruzstd",
+ "regex",
+ "ruzstd 0.9.1",
  "tatu",
  "thiserror 2.0.18",
  "vm-fdt",
@@ -1010,7 +1011,7 @@ dependencies = [
 [[package]]
 name = "dtb2acpi"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma#113aeb2f6d5fc11aa67b4160290aca8b18d9c3b8"
+source = "git+https://github.com/pichi-vm/arma#202c24619843c3fd01599b3860da582e1e2256aa"
 dependencies = [
  "devtree",
  "zerocopy",
@@ -1019,7 +1020,7 @@ dependencies = [
 [[package]]
 name = "dtb2e820"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma#113aeb2f6d5fc11aa67b4160290aca8b18d9c3b8"
+source = "git+https://github.com/pichi-vm/arma#202c24619843c3fd01599b3860da582e1e2256aa"
 dependencies = [
  "devtree",
 ]
@@ -2059,7 +2060,7 @@ dependencies = [
  "pichi-artifact",
  "pichi-registry",
  "pichi-storage",
- "ruzstd",
+ "ruzstd 0.8.3",
  "serde",
  "serde-keyvalue",
  "serde_json",
@@ -2098,7 +2099,7 @@ dependencies = [
  "oci-client",
  "pichi-artifact",
  "reqwest",
- "ruzstd",
+ "ruzstd 0.8.3",
  "serde",
  "serde_json",
  "tempfile",
@@ -2565,6 +2566,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruzstd"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2908,7 +2918,7 @@ dependencies = [
 [[package]]
 name = "tatu"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma#113aeb2f6d5fc11aa67b4160290aca8b18d9c3b8"
+source = "git+https://github.com/pichi-vm/arma#202c24619843c3fd01599b3860da582e1e2256aa"
 dependencies = [
  "arrayvec",
  "devtree",
