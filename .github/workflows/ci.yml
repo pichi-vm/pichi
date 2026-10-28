@@ -21,6 +21,46 @@ jobs:
     permissions:
       contents: read
 
+  # Independent of the OS matrix: packaging flakes must not burn the
+  # platform runners. Copr runs this Makefile as root with dnf; here
+  # we install rpm tools via apt and the pinned nightly (this repo has
+  # no rust-toolchain file, so rustup show would not select it), and
+  # pass DNF=true so the recipe skips dnf on Ubuntu.
+  copr-srpm:
+    name: copr srpm
+    runs-on: ubuntu-24.04
+    env:
+      NIGHTLY: nightly-2026-07-06
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Install rpmbuild tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm xz-utils gzip
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          rustup default "$NIGHTLY"
+
+      - name: Build SRPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          outdir=$(mktemp -d)
+          make -f .copr/Makefile srpm \
+            spec="$PWD/packaging/pichi.spec" \
+            outdir="$outdir" \
+            DNF=true
+          shopt -s nullglob
+          srpms=("$outdir"/*.src.rpm)
+          test "${#srpms[@]}" -eq 1
+          echo "built ${srpms[0]}"
+          test ! -e vendor
+
   ci:
     name: platforms
     needs: [checks]
