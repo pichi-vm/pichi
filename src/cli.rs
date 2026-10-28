@@ -302,17 +302,17 @@ pub struct BuildArgs {
     #[arg(short = 'b', long = "build-image")]
     pub build_image: Option<String>,
     /// Git ref / commit the guest resolves in the `repo` virtiofs mount.
-    #[arg(long = "ref")]
-    pub git_ref: Option<String>,
-    /// Recipe path relative to `--subdir` (default `pichi.yaml`); absolute paths are rejected.
+    #[arg(long = "ref", required = true)]
+    pub git_ref: String,
+    /// Recipe path relative to `--subdir`; absolute paths are rejected.
     #[arg(short = 'f', long = "file", value_name = "PATH", default_value = DEFAULT_RECIPE, value_parser = parse_recipe_path)]
     pub recipe: String,
-    /// Lock path relative to `--subdir` (default `pichi.lock`); absolute paths are rejected.
+    /// Lock path relative to `--subdir`; absolute paths are rejected.
     #[arg(short = 'l', long = "lock", value_name = "PATH", default_value = DEFAULT_LOCK, value_parser = parse_lock_path)]
     pub lock: String,
-    /// Context subdirectory inside the repo mount (default guest-side: `.`).
-    #[arg(long)]
-    pub subdir: Option<String>,
+    /// Subdirectory of <dir> holding the recipe and lock.
+    #[arg(long, default_value = ".")]
+    pub subdir: String,
     /// Optional locator / provenance hint forwarded in the build-input CBOR.
     #[arg(long)]
     pub location: Option<String>,

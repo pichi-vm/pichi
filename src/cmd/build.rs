@@ -76,13 +76,14 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     // Thin-launcher build-input (BUILD.md §2.4): `ref` is required; recipe
     // and lock default to `pichi.yaml` / `pichi.lock` (`-f`/`--file`,
     // `-l`/`--lock` override). CBOR carries the resolved relative paths.
-    let git_ref = args
-        .git_ref
-        .clone()
-        .ok_or_else(|| anyhow!("pichi build requires --ref (BUILD.md §2.4)"))?;
+    let git_ref = args.git_ref.clone();
     let recipe = args.recipe.clone();
     let lock = args.lock.clone();
-    let subdir = args.subdir.clone();
+    let subdir = if args.subdir.is_empty() {
+        ".".to_string()
+    } else {
+        args.subdir.clone()
+    };
 
     let build_dir = args.dir.join("pichi.build");
     let legacy_project = build_dir.is_dir();
@@ -120,7 +121,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     // locked images from the RO cache and wire each as a vGPT. Prefer
     // `pichi.lock` (or `-l`/`--lock`) under `--subdir`; fall back to legacy
     // `pichi.build/` recipe `from:` keys when that layout is present.
-    let build_lock = load_build_lock(&args.dir, subdir.as_deref(), &lock)?;
+    let build_lock = load_build_lock(&args.dir, &subdir, &lock)?;
     let (source_refs, carapace_source) = if let Some(parsed) = build_lock.as_ref() {
         let refs: Vec<String> = parsed.images.keys().cloned().collect();
         // Single-image smoke / typical carapace derive: pass through the
@@ -134,7 +135,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     } else {
         bail!(
             "no build lock at {} and no pichi.build/ under {} — expected {} (-l/--lock) and {} (-f/--file), or a legacy pichi.build project",
-            path_under_subdir(&args.dir, subdir.as_deref(), &lock).display(),
+            path_under_subdir(&args.dir, &subdir, &lock).display(),
             args.dir.display(),
             DEFAULT_LOCK,
             DEFAULT_RECIPE,
@@ -213,7 +214,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         git_ref,
         recipe,
         lock,
-        subdir,
+        subdir: Some(subdir),
         location: args.location.clone(),
     };
     let response = build_input
@@ -547,23 +548,15 @@ pub(crate) fn canonicalize_reference(s: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(format!("{}{}", &name[..abs], digest))
 }
 
-/// Resolve `rel` under optional `--subdir` inside the repo mount.
-fn path_under_subdir(repo: &Path, subdir: Option<&str>, rel: &str) -> PathBuf {
-    let base = match subdir {
-        Some(s) if !s.is_empty() && s != "." => repo.join(s),
-        _ => repo.to_path_buf(),
-    };
-    base.join(rel)
+/// Resolve `rel` under `--subdir` inside the repo mount.
+fn path_under_subdir(repo: &Path, subdir: &str, rel: &str) -> PathBuf {
+    repo.join(subdir).join(rel)
 }
 
 /// Load the build lock (`pichi.lock` by default; `-l`/`--lock` overrides)
 /// when present. Returns `Ok(None)` if the file is missing (legacy
 /// `pichi.build/` projects).
-fn load_build_lock(
-    repo: &Path,
-    subdir: Option<&str>,
-    lock_rel: &str,
-) -> Result<Option<BuildLockFile>> {
+fn load_build_lock(repo: &Path, subdir: &str, lock_rel: &str) -> Result<Option<BuildLockFile>> {
     let path = path_under_subdir(repo, subdir, lock_rel);
     if !path.is_file() {
         return Ok(None);
@@ -1334,7 +1327,7 @@ mod tests {
             "version: 1\nimages:\n  qualification.local/fedora:43:\n    index: sha256:deadbeef\n",
         )
         .unwrap();
-        let parsed = load_build_lock(tmp.path(), Some("tests/distro/context"), "pichi.lock")
+        let parsed = load_build_lock(tmp.path(), "tests/distro/context", "pichi.lock")
             .unwrap()
             .expect("lock present");
         assert_eq!(parsed.version, 1);
