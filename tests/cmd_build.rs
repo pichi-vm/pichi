@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! CLI surface for `pichi build`: fixed default filenames, optional
-//! `-f`/`--file` and `-l`/`--lock`, and auto-pull of a missing appliance.
+//! `-p`/`--plan` and `-l`/`--lock`, and auto-pull of a missing appliance.
 
 #![allow(clippy::unwrap_used)]
 
@@ -11,7 +11,7 @@ use clap::{Args, FromArgMatches};
 use pichi::cli::BuildArgs;
 
 #[test]
-fn build_help_documents_defaults_and_drops_recipe_flag() {
+fn build_help_documents_plan_context_and_defaults() {
     let assert = Command::cargo_bin("pichi")
         .unwrap()
         .args(["build", "--help"])
@@ -19,8 +19,8 @@ fn build_help_documents_defaults_and_drops_recipe_flag() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
-        stdout.contains("-f, --file") && stdout.contains("[default: pichi.yaml]"),
-        "recipe default missing:\n{stdout}"
+        stdout.contains("-p, --plan") && stdout.contains("[default: pichi.yaml]"),
+        "plan default missing:\n{stdout}"
     );
     assert!(
         stdout.contains("-l, --lock") && stdout.contains("[default: pichi.lock]"),
@@ -31,9 +31,9 @@ fn build_help_documents_defaults_and_drops_recipe_flag() {
         "defaults should only appear in clap annotations:\n{stdout}"
     );
     assert!(
-        stdout.contains("Subdirectory of <dir> holding the recipe and lock")
+        stdout.contains("Context directory of <dir> holding the plan and lock")
             && stdout.contains("[default: .]"),
-        "subdirectory help or default missing:\n{stdout}"
+        "context help or default missing:\n{stdout}"
     );
     let usage = stdout
         .lines()
@@ -52,12 +52,14 @@ fn build_help_documents_defaults_and_drops_recipe_flag() {
         "help should say a missing appliance is pulled:\n{stdout}"
     );
     assert!(
-        !stdout.contains("--recipe") && !stdout.contains("PICHI_BUILD_IMAGE"),
+        !["-f, --file", "--recipe", "--subdir", "PICHI_BUILD_IMAGE"]
+            .iter()
+            .any(|flag| stdout.contains(flag)),
         "removed knob still documented:\n{stdout}"
     );
     for flag in [
         "--ref",
-        "--subdir",
+        "--context",
         "--tag",
         "--location",
         "--memory",
@@ -68,18 +70,15 @@ fn build_help_documents_defaults_and_drops_recipe_flag() {
 }
 
 #[test]
-fn build_subdir_defaults_to_current_directory() {
-    for (extra, expected) in [
-        (vec![], "."),
-        (vec!["--subdir", "recipes/app"], "recipes/app"),
-    ] {
+fn build_context_defaults_to_current_directory() {
+    for (extra, expected) in [(vec![], "."), (vec!["--context", "plans/app"], "plans/app")] {
         let mut argv = vec!["build", ".", "--ref", "main"];
         argv.extend(extra);
         let matches = BuildArgs::augment_args(clap::Command::new("build"))
             .try_get_matches_from(argv)
             .unwrap();
         let args = BuildArgs::from_arg_matches(&matches).unwrap();
-        assert_eq!(args.subdir, expected);
+        assert_eq!(args.context, expected);
     }
 }
 
@@ -138,11 +137,11 @@ fn build_with(extra: &[&str]) -> assert_cmd::assert::Assert {
 }
 
 #[test]
-fn build_rejects_absolute_recipe_path() {
-    let assert = build_with(&["-f", "/etc/pichi.yaml"]).failure();
+fn build_rejects_absolute_plan_path() {
+    let assert = build_with(&["-p", "/etc/pichi.yaml"]).failure();
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
     assert!(
-        stderr.contains("recipe path must be relative: /etc/pichi.yaml"),
+        stderr.contains("plan path must be relative: /etc/pichi.yaml"),
         "unexpected stderr:\n{stderr}"
     );
 }
@@ -158,16 +157,39 @@ fn build_rejects_absolute_lock_path() {
 }
 
 #[test]
-fn build_accepts_relative_overrides() {
-    // Relative overrides pass argument parsing (failure, if any, comes later
-    // from the missing appliance/lock, never from path validation).
-    let assert = build_with(&["-f", "sub/other.yaml", "-l", "../other.lock"]);
-    let out = assert.get_output();
-    let stderr = String::from_utf8(out.stderr.clone()).unwrap();
-    assert!(
-        !stderr.contains("must be relative") && out.status.code() != Some(2),
-        "relative override rejected:\n{stderr}"
-    );
+fn build_plan_and_lock_defaults_and_overrides() {
+    for (extra, plan, lock) in [
+        (vec![], "pichi.yaml", "pichi.lock"),
+        (
+            vec!["-p", "sub/other.yaml", "-l", "../other.lock"],
+            "sub/other.yaml",
+            "../other.lock",
+        ),
+        (
+            vec!["--plan", "sub/other.yaml", "--lock", "../other.lock"],
+            "sub/other.yaml",
+            "../other.lock",
+        ),
+    ] {
+        let mut argv = vec!["build", ".", "--ref", "main"];
+        argv.extend(extra);
+        let matches = BuildArgs::augment_args(clap::Command::new("build"))
+            .try_get_matches_from(argv)
+            .unwrap();
+        let args = BuildArgs::from_arg_matches(&matches).unwrap();
+        assert_eq!(args.plan, plan);
+        assert_eq!(args.lock, lock);
+    }
+}
+
+#[test]
+fn build_rejects_legacy_flags() {
+    for flag in ["-f", "--file", "--recipe", "--subdir", "--subdirectory"] {
+        let err = BuildArgs::augment_args(clap::Command::new("build"))
+            .try_get_matches_from(["build", ".", "--ref", "main", flag, "path"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
 }
 
 /// Drive and UNC paths are absolute on Windows. `/etc/...` above is the
@@ -177,9 +199,9 @@ fn build_accepts_relative_overrides() {
 fn build_rejects_windows_absolute_paths() {
     for (flag, path, needle) in [
         (
-            "-f",
+            "-p",
             r"C:\pichi.yaml",
-            r"recipe path must be relative: C:\pichi.yaml",
+            r"plan path must be relative: C:\pichi.yaml",
         ),
         (
             "--lock",

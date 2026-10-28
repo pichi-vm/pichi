@@ -4,7 +4,7 @@
 
 Status: **locked** — build-VM redesign (thin launcher). This document is
 the source of truth for `pichi build`'s host↔guest appliance contract.
-Conglobate owns recipes, locks, OCI packaging, and inventory; see
+Conglobate owns plans, locks, OCI packaging, and build identity annotations; see
 [conglobate `DESIGN.md`](https://github.com/pichi-vm/conglobate/blob/main/DESIGN.md).
 
 > History: supersedes the earlier host-heavy BUILD.md (Conglobate-as-`/init`,
@@ -21,11 +21,12 @@ Conglobate owns recipes, locks, OCI packaging, and inventory; see
 
 Both share the same launch path: resolve a pichi image, prepare a dillo
 device set, and boot. Build adds only the wires the guest needs to produce
-an artifact — virtiofs mounts and a named-console CBOR exchange — then waits
-for a finished OCI layout in the output mount when the guest exits 0.
+an artifact — virtiofs (shared host folders) mounts and a named-console
+CBOR (compact binary format) exchange — then waits
+for a finished OCI layout (the standard folder format for container images) in the output mount when the guest exits 0.
 
 Building is launching. The host does not check out Conglobate sources, does
-not parse Conglobate recipes, and does not run Conglobate as `/init`.
+not parse Conglobate plans, and does not run Conglobate as `/init`.
 
 ---
 
@@ -58,7 +59,7 @@ Host steps, in order:
 Explicitly **not** on the host:
 
 - no host checkout of Conglobate;
-- no host recipe parse;
+- no host plan parse;
 - no Conglobate-as-`/init`.
 
 ### 2.3 Virtiofs tags (by convention)
@@ -96,12 +97,12 @@ Build-input fields (success response body, in addition to `v` / `ok`):
 | Field      | Required | Notes |
 | ---------- | -------- | ----- |
 | `ref`      | yes      | git ref / commit identity the guest resolves in `repo` |
-| `recipe`   | yes      | path relative to `subdir`; default `pichi.yaml` |
-| `lock`     | yes      | path relative to `subdir`; default `pichi.lock` |
-| `subdir`   | no       | default `"."` |
+| `plan`     | yes      | path relative to `context`; default `pichi.yaml` |
+| `lock`     | yes      | path relative to `context`; default `pichi.lock` |
+| `context`  | no       | default `"."` |
 | `location` | no       | optional locator / provenance hint |
 
-Operator defaults are `pichi.yaml` and `pichi.lock`. `-f`/`--file` and
+Operator defaults are `pichi.yaml` and `pichi.lock`. `-p`/`--plan` and
 `-l`/`--lock` override those paths; both must be relative (absolute
 paths are rejected). The CBOR fields are the resolved
 relative paths (for example `pichi.yaml` and `pichi.lock` when the
@@ -114,15 +115,37 @@ CBOR push (bytes written before the guest opened the port).
 ### 2.5 Types and outputs
 
 - Pichi depends on the **Conglobate library for types only** (portable
-  recipe / request shapes as needed by the CLI).
-- **OCI layout and inventory are Conglobate outputs.** They are not
+  plan / request shapes as needed by the CLI).
+- **The annotated OCI layout is the Conglobate output.** It is not
   defined by, or reassembled through, `pichi-artifact` as the build
   product contract. Host import may still use ecosystem artifact types
   after the guest has published a complete OCI directory.
 
+Build identity lives on the **image manifest**, rather than only on an
+index, index descriptor, or configuration blob. Conglobate's annotation
+contract is:
+
+| Annotation | Value |
+| ---------- | ----- |
+| `dev.pichi.build.commit` | Required: full resolved Git commit, `sha1:<hex>` or `sha256:<hex>` |
+| `dev.pichi.build.context` | Required: path in that commit; `.` selects the root |
+| `dev.pichi.build.plan` | Required: plan path relative to the context |
+| `dev.pichi.build.lock` | Required: lock path relative to the context |
+| `dev.pichi.build.location` | Optional: repository provenance / locator hint |
+
+The guest resolves the requested `ref` to the annotated commit. Location
+is a locator, not an authenticated identity; omit it when absent and do
+not include embedded credentials. The commit and selected paths bind the
+plan and lock bytes; there are no separate tree or object-format keys or
+plan/lock content-digest annotations.
+
+Conglobate emits only the OCI layout (`oci-layout`, `index.json`, and
+`blobs/`). The host rejects `build.yaml`, `inventory.cbor`, and loose disk
+files beside it. Build identity is carried by the manifest annotations.
+
 ### 2.6 Conglobate ships a pichi image
 
-The Conglobate **build appliance** is a normal pichi image shipped from
+The Conglobate **build appliance** (its build machine image) is a normal pichi image shipped from
 the Conglobate repository (bootstrap). Fedora and carapace similarly each
 ship a pichi image for their roles. `pichi build` launches that image the
 same way `pichi run` launches any other bootable artifact.
@@ -137,7 +160,7 @@ Do **not** document or reintroduce:
 - host packages OCI from scutes / manifests / virtiofs leftovers after the
   guest exits.
 
-Guest work, measurement, recipe execution, and OCI+inventory emission live
+Guest work, measurement, plan execution, and annotated OCI emission live
 in Conglobate (and its appliance wrapper). Pichi's job is the thin launch
 and import.
 
@@ -160,7 +183,7 @@ dillo  ──boots──►  Conglobate pichi image
                       │  writes {"v":1,"op":"build-input"}
                       │     ◄── host success/failure CBOR
                       │  builds from /run/pichi/{repo,cache}
-                      │  writes OCI (+ inventory) to /run/pichi/output
+                      │  writes annotated OCI to /run/pichi/output
                       ▼  exit 0
 pichi imports OCI from output dir → local tag
 ```
@@ -173,7 +196,7 @@ Resource sizing (`--memory` / `--cpus` and similar) follows the same
 patterns as `pichi run` against the appliance image's launch contract.
 
 The appliance is `-b`/`--build-image` when the operator passes it,
-otherwise the digest-pinned default (`DEFAULT_BUILD_IMAGE` in
+otherwise the digest-pinned default (digest means the image content fingerprint) (`DEFAULT_BUILD_IMAGE` in
 `src/cmd/build.rs`). If that ref is not in the local cache, the host
 pulls it with the same path as `pichi pull` (`--pull=missing`) and then
 continues the build. The first build fetches the appliance.
@@ -195,11 +218,9 @@ Unix hard links fail closed. All file access is confined to the opened output
 directory. No output tag changes until the complete layout passes validation.
 
 Limits: 4,096 files; 4 KiB for `oci-layout`; 1 MiB each for index, manifest,
-config, and the ignored transitional YAML; 16 MiB for optional opaque
-`inventory.cbor`; 16 GiB per blob; 64 GiB total input and total expanded scute
+and config; 16 GiB per blob; 64 GiB total input and total expanded scute
 bytes. Compressed scutes retain the streaming decoder's 16 GiB per-scute and
-128 MiB window limits. Inventory remains Conglobate-owned; import does not
-interpret it or claim to verify its attestations.
+128 MiB window limits.
 
 For **every scute**, including cache hits, the host rebuilds dm-verity from
 the cow bytes and the full manifest salt. Reconstruction uses SHA-256,
@@ -211,25 +232,14 @@ is never used as a trust anchor. Only rebuilt sidecars enter the cache.
 **Guest verity choice (#26):** guest verity is optional and never
 authoritative. If supplied as `blobs/sha256/<cow-digest>.verity`, it must
 match the rebuilt file byte for byte (header and tree); any mismatch fails
-the import. This also applies to Conglobate's temporary flat verity copies.
-
-### Conglobate dual-write compatibility
-
-Conglobate may continue to emit its flat files beside the complete OCI tree
-until its own follow-up removes dual-write. `build.yaml` is only a bounded
-regular file: the host never opens or parses it. Flat `NNNN.cow` /
-`NNNN.verity` pairs must start at `0000` without gaps, each cow must match a
-unique raw scute in the OCI manifest, and each verity must match that scute's
-host rebuild. Optional `boot.pmi` must match an OCI PMI layer. Filenames and
-salts never come from YAML. A packing list without a complete OCI layout
-fails; there is no fallback. Pure OCI layouts need no flat files.
+the import.
 
 ### Transitional `pichi.lock` host glue (Conglobate Follow-up A)
 
 The host reads the lock named by `-l`/`--lock` (default `pichi.lock`
-under `--subdir`) solely for **source-carapace reference keys + index
+under `--context`) solely for **source-carapace reference keys + index
 digest pins** used to wire source-carapace vGPTs as guest build inputs.
-They do not select or prepend layers during output import. Recipe parse of
+They do not select or prepend layers during output import. Plan parse of
 `pichi.yaml` stays on the guest (§2.2). Shape:
 
 ```yaml
@@ -239,15 +249,15 @@ images:
     index: sha256:<digest>
 ```
 
-Smoke context (Conglobate `main` @ `7d10da8f`): seed the exact
-index blob for `qualification.local/fedora:43` →
+Smoke context (Conglobate `f88a7215`): seed the exact index blob for
+`qualification.local/fedora:43` →
 `sha256:4e335e141a3f950ed68c68f23c112930c51af5ec9658d1263353eb229a6429d1`
 (343 index bytes; placeholder inner manifest `sha256:` + 32×`0x11`) and
-supply a tiny imported carapace behind that descriptor. Default build
-image remains `ghcr.io/pichi-vm/conglobate:0.2.0@sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829` (Conglobate #22 virtiofs final-name write fix, revision `7d10da8f`). The real appliance
-smoke checks `build.yaml` consumption, clean poweroff, and import of an inspectable OCI output tag.
-The source vGPT wiring remains an input compatibility measure; the guest
-OCI manifest alone determines the output layers.
+supply a tiny imported carapace behind that descriptor. The default image is
+`ghcr.io/pichi-vm/conglobate@sha256:b9e26efd9d81ecb5b1a950e3f4891e9a04fbc7d9d222444621bccc95fad3babd`.
+The smoke checks clean poweroff and import of an inspectable OCI output tag.
+Import rejects any retired output files. Source vGPT wiring remains an
+input compatibility measure; the guest manifest determines output layers.
 
 
 ---
@@ -271,10 +281,10 @@ v: 1
 ok: true
 # required build-input fields
 ref: <git-ref-or-full-commit-id>
-recipe: pichi.yaml   # default; -f/--file overrides, still relative to subdir
-lock: pichi.lock     # default; -l/--lock overrides, still relative to subdir
+plan: pichi.yaml     # default; -p/--plan overrides, still relative to context
+lock: pichi.lock     # default; -l/--lock overrides, still relative to context
 # optional
-subdir: "."          # default when omitted
+context: "."        # default when omitted
 location: <string>   # optional provenance / locator hint
 ```
 
@@ -286,8 +296,8 @@ ok: false
 error: <string>
 ```
 
-`recipe` and `lock` are relative to `subdir`. Defaults are `pichi.yaml`
-and `pichi.lock`. `-f`/`--file` and `-l`/`--lock` supply different
+`plan` and `lock` are relative to `context`. Defaults are `pichi.yaml`
+and `pichi.lock`. `-p`/`--plan` and `-l`/`--lock` supply different
 relative paths (absolute paths are rejected); the host sends those resolved strings. The guest
 resolves `ref` against the `repo` virtiofs git object store. This
 document locks the field set and the v0 request/response delivery;
@@ -301,8 +311,8 @@ Conglobate owns guest consumption of the success payload.
 | --------- | ---- |
 | **pichi** (`pichi build`) | Thin launcher: dirs, build-port CBOR, dillo launch, import OCI on success |
 | **dillo** | VMM + virtiofs + named console wiring |
-| **Conglobate image** | Guest appliance: init/wrapper, invoke Conglobate, export OCI+inventory, shut down |
-| **Conglobate binary / lib** | Recipes, locks, build execution, OCI layout, `inventory.cbor` (see its DESIGN.md) |
+| **Conglobate image** | Guest appliance: init/wrapper, invoke Conglobate, export annotated OCI, shut down |
+| **Conglobate binary / lib** | Plans, locks, build execution, OCI layout, image-manifest build annotations (see its DESIGN.md) |
 | **fedora / carapace images** | Each ships its own pichi image for bootstrap / base roles |
 
 Pichi does not interpret Conglobate private intermediates to reconstruct
@@ -317,12 +327,12 @@ The semantic contract is §2.
 
 | Input | Default | Override |
 | ----- | ------- | -------- |
-| recipe | `pichi.yaml` relative to `--subdir` | `-f` / `--file` |
-| lock | `pichi.lock` relative to `--subdir` | `-l` / `--lock` |
+| plan | `pichi.yaml` relative to `--context` | `-p` / `--plan` |
+| lock | `pichi.lock` relative to `--context` | `-l` / `--lock` |
 | appliance | digest-pinned `DEFAULT_BUILD_IMAGE` | `-b` / `--build-image` |
-| context | `.` | `--subdir` |
+| context | `.` | `--context` |
 
-`--subdir` defaults to `.` on the guest when the field is omitted.
+`--context` defaults to `.` on the guest when the field is omitted.
 `--location`, `--memory`, and `--cpus` stay optional. The happy path
 uses `pichi.yaml` and `pichi.lock`.
 
@@ -338,19 +348,20 @@ Related commands unchanged in role:
 | `pichi import` / `pull` / `push` / `images` / … | Image management around the cache build consumes and the tag build produces |
 | `pichi update` | Lock maintenance (caller-side); not mid-build resolution |
 
-Recipe and lock formats are Conglobate's, not redefined here.
+Plan and lock formats are Conglobate's, not redefined here.
 
 ---
 
 ## 7. Trust boundary (host vs guest)
 
 - Host supplies git objects, RO cache bytes, and the build-port response.
-- Guest verifies inputs it consumes, runs the build, and emits OCI +
-  inventory into the output mount.
-- Product integrity is guest-defined (inventory / attestation in the
-  Conglobate appliance design). Re-reading mutable host paths as
-  authoritative after an untrusted copy would break that binding — the
-  successful layout the guest published is what the host imports.
+- Guest verifies inputs it consumes, runs the build, and emits an annotated
+  OCI layout into the output mount.
+- Product integrity is guest-defined (image-manifest binding annotations
+  and future attestation in the Conglobate appliance design). Re-reading
+  mutable host paths as authoritative after an untrusted copy would break
+  that binding — the successful layout the guest published is what the
+  host imports.
 - Confidential-computing attestation of the appliance remains an
   appliance concern; the thin launcher must not claim it by itself.
 
@@ -361,7 +372,7 @@ Recipe and lock formats are Conglobate's, not redefined here.
 | Doc | Role |
 | --- | ---- |
 | **This file (`BUILD.md`)** | Locked `pichi build` appliance contract (SoT) |
-| [conglobate `DESIGN.md`](https://github.com/pichi-vm/conglobate/blob/main/DESIGN.md) | Builder, recipes, locks, OCI+inventory, sandbox |
+| [conglobate `DESIGN.md`](https://github.com/pichi-vm/conglobate/blob/main/DESIGN.md) | Builder, plans, locks, annotated OCI, sandbox |
 | [README.md](README.md) | Operator overview of the pichi CLI |
 | [AGENTS.md](AGENTS.md) | Agent / contributor architecture pointers |
 | dillo named-console design | Port naming + `pipe:N` inheritance; `dev.pichi.build` is a consumer convention |
@@ -370,7 +381,7 @@ Recipe and lock formats are Conglobate's, not redefined here.
 
 ## 9. Non-goals (for this contract)
 
-- Host-side recipe intelligence or Conglobate checkout
+- Host-side plan intelligence or Conglobate checkout
 - Host vGPT loops over source carapaces as the build product API
 - Mid-build registry pulls inside `pichi build` (cache is prepared first)
 - Reintroducing Conglobate-as-`/init` or `$DIR`→erofs host packaging

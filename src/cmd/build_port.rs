@@ -51,9 +51,9 @@ impl GuestRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BuildInput {
     pub git_ref: String,
-    pub recipe: String,
+    pub plan: String,
     pub lock: String,
-    pub subdir: Option<String>,
+    pub context: Option<String>,
     pub location: Option<String>,
 }
 
@@ -74,17 +74,17 @@ impl BuildInput {
             ciborium::Value::Text(self.git_ref.clone()),
         ));
         map.push((
-            ciborium::Value::Text("recipe".into()),
-            ciborium::Value::Text(self.recipe.clone()),
+            ciborium::Value::Text("plan".into()),
+            ciborium::Value::Text(self.plan.clone()),
         ));
         map.push((
             ciborium::Value::Text("lock".into()),
             ciborium::Value::Text(self.lock.clone()),
         ));
-        if let Some(subdir) = &self.subdir {
+        if let Some(context) = &self.context {
             map.push((
-                ciborium::Value::Text("subdir".into()),
-                ciborium::Value::Text(subdir.clone()),
+                ciborium::Value::Text("context".into()),
+                ciborium::Value::Text(context.clone()),
             ));
         }
         if let Some(location) = &self.location {
@@ -311,9 +311,9 @@ mod tests {
     fn success_response_round_trips_required_fields() {
         let input = BuildInput {
             git_ref: "abc".into(),
-            recipe: "pichi.yaml".into(),
+            plan: "pichi.yaml".into(),
             lock: "pichi.lock".into(),
-            subdir: None,
+            context: None,
             location: None,
         };
         let bytes = input.encode_success().unwrap();
@@ -328,12 +328,13 @@ mod tests {
             };
             got.insert(key, v);
         }
+        assert_eq!(got.len(), 5);
         assert_eq!(got["v"], ciborium::Value::Integer(1.into()));
         assert_eq!(got["ok"], ciborium::Value::Bool(true));
         assert_eq!(got["ref"], ciborium::Value::Text("abc".into()));
-        assert_eq!(got["recipe"], ciborium::Value::Text("pichi.yaml".into()));
+        assert_eq!(got["plan"], ciborium::Value::Text("pichi.yaml".into()));
         assert_eq!(got["lock"], ciborium::Value::Text("pichi.lock".into()));
-        assert!(!got.contains_key("subdir"));
+        assert!(!got.contains_key("context"));
         assert!(!got.contains_key("location"));
         assert!(!got.contains_key("commit"));
     }
@@ -342,9 +343,9 @@ mod tests {
     fn success_includes_optional_fields_when_set() {
         let input = BuildInput {
             git_ref: "main".into(),
-            recipe: "r.yaml".into(),
+            plan: "r.yaml".into(),
             lock: "l.lock".into(),
-            subdir: Some("crates/x".into()),
+            context: Some("crates/x".into()),
             location: Some("https://example.test/x".into()),
         };
         let bytes = input.encode_success().unwrap();
@@ -359,7 +360,10 @@ mod tests {
             };
             got.insert(key, v);
         }
-        assert_eq!(got["subdir"], ciborium::Value::Text("crates/x".into()));
+        assert_eq!(got.len(), 7);
+        assert_eq!(got["plan"], ciborium::Value::Text("r.yaml".into()));
+        assert_eq!(got["lock"], ciborium::Value::Text("l.lock".into()));
+        assert_eq!(got["context"], ciborium::Value::Text("crates/x".into()));
         assert_eq!(
             got["location"],
             ciborium::Value::Text("https://example.test/x".into())

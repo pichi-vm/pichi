@@ -47,10 +47,10 @@ exchange on named console `dev.pichi.build` (guest requests build-input; host
 replies). The host is a thin launcher; Conglobate's pichi image performs the
 build and writes an OCI layout to the output mount.
 
-Recipe and lock paths are relative to `--subdir` (default `.`). The defaults
-are `pichi.yaml` and `pichi.lock`. `-f`/`--file` and `-l`/`--lock` override
+Plan and lock paths are relative to `--context` (default `.`). The defaults
+are `pichi.yaml` and `pichi.lock`. `-p`/`--plan` and `-l`/`--lock` override
 them. The build-port response carries those resolved relative paths as
-`recipe` and `lock`.
+`plan` and `lock`, alongside the selected `context`.
 
 `-b`/`--build-image` selects the build appliance image. When it is omitted,
 pichi uses the digest-pinned default. If that image is not already cached,

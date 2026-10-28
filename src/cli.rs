@@ -278,16 +278,16 @@ pub struct LoadArgs {
     pub tag: Option<String>,
 }
 
-/// Default recipe path relative to `--subdir` (BUILD.md §2.4).
-pub const DEFAULT_RECIPE: &str = "pichi.yaml";
+/// Default plan path relative to `--context` (BUILD.md §2.4).
+pub const DEFAULT_PLAN: &str = "pichi.yaml";
 
-/// Default lock path relative to `--subdir` (BUILD.md §2.4).
+/// Default lock path relative to `--context` (BUILD.md §2.4).
 pub const DEFAULT_LOCK: &str = "pichi.lock";
 
 /// Args for `pichi build [-t <tag>] [-b <ref>] <dir>` (BUILD.md §3).
 ///
-/// Recipe and lock default to [`DEFAULT_RECIPE`] and [`DEFAULT_LOCK`],
-/// relative to `--subdir`.
+/// Plan and lock default to [`DEFAULT_PLAN`] and [`DEFAULT_LOCK`],
+/// relative to `--context`.
 #[derive(Debug, ClapArgs)]
 pub struct BuildArgs {
     /// Project directory mounted as the `repo` virtiofs share.
@@ -304,15 +304,15 @@ pub struct BuildArgs {
     /// Git ref / commit the guest resolves in the `repo` virtiofs mount.
     #[arg(long = "ref", required = true)]
     pub git_ref: String,
-    /// Recipe path relative to `--subdir`; absolute paths are rejected.
-    #[arg(short = 'f', long = "file", value_name = "PATH", default_value = DEFAULT_RECIPE, value_parser = parse_recipe_path)]
-    pub recipe: String,
-    /// Lock path relative to `--subdir`; absolute paths are rejected.
+    /// Plan path relative to `--context`; absolute paths are rejected.
+    #[arg(short = 'p', long = "plan", value_name = "PATH", default_value = DEFAULT_PLAN, value_parser = parse_plan_path)]
+    pub plan: String,
+    /// Lock path relative to `--context`; absolute paths are rejected.
     #[arg(short = 'l', long = "lock", value_name = "PATH", default_value = DEFAULT_LOCK, value_parser = parse_lock_path)]
     pub lock: String,
-    /// Subdirectory of <dir> holding the recipe and lock.
+    /// Context directory of <dir> holding the plan and lock.
     #[arg(long, default_value = ".")]
-    pub subdir: String,
+    pub context: String,
     /// Optional locator / provenance hint forwarded in the build-input CBOR.
     #[arg(long)]
     pub location: Option<String>,
@@ -369,12 +369,12 @@ impl TryFrom<ImportRawArgs> for crate::cmd::import::raw::ImportArgs {
     }
 }
 
-/// Reject rooted paths: `-f`/`--file` must stay relative to `--subdir`.
-fn parse_recipe_path(s: &str) -> Result<String, String> {
-    parse_relative_path("recipe", s)
+/// Reject rooted paths: `-p`/`--plan` must stay relative to `--context`.
+fn parse_plan_path(s: &str) -> Result<String, String> {
+    parse_relative_path("plan", s)
 }
 
-/// Reject rooted paths: `-l`/`--lock` must stay relative to `--subdir`.
+/// Reject rooted paths: `-l`/`--lock` must stay relative to `--context`.
 fn parse_lock_path(s: &str) -> Result<String, String> {
     parse_relative_path("lock", s)
 }
@@ -382,7 +382,7 @@ fn parse_lock_path(s: &str) -> Result<String, String> {
 fn parse_relative_path(what: &str, s: &str) -> Result<String, String> {
     let path = std::path::Path::new(s);
     // `is_absolute` is false for a leading `/` on Windows (`/etc/...` has a
-    // root and no disk prefix). Either form escapes `--subdir`.
+    // root and no disk prefix). Either form escapes `--context`.
     if path.has_root() || path.is_absolute() {
         return Err(format!("{what} path must be relative: {s}"));
     }
