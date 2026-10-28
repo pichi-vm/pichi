@@ -51,23 +51,14 @@ impl PreparedLayer {
         prepared.commit(store, &digest).await
     }
 
+    /// Import must rebuild even when a cache sidecar already exists.
     pub(super) async fn prepare_cached(
         manifest: &Manifest,
         layer: &Layer,
         store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>> {
-        let is_zstd = match layer {
-            Layer::Scute(_) => false,
-            Layer::ScuteZstd(_) => true,
-            _ => return Ok(None),
-        };
         let digest: Digest = layer.digest_str().parse()?;
         let path = store.blob_path(&digest);
-        if tokio::fs::try_exists(path.verity_path()).await?
-            && (!is_zstd || tokio::fs::try_exists(path.deflated_path()).await?)
-        {
-            return manifest.cached_scute_root(layer, store).await;
-        }
         let scratch = store.scratch_dir().await?;
         let manifest = manifest.clone();
         let layer = layer.clone();
@@ -383,7 +374,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_preparation_formats_repairs_and_reuses_sidecars() {
+    async fn cached_preparation_rebuilds_and_repairs_sidecars() {
         for compressed in [false, true] {
             for blocks in [None, Some(2)] {
                 let fixture = Fixture::new(compressed, blocks);

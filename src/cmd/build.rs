@@ -16,14 +16,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use conglobate::{BuildOutput, CarapaceRecipe, PmiRecipe};
-use pichi_artifact::{
-    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-    Reference, ReferenceKind, Requirements, ScuteAnnotations, ScuteDescriptor,
-};
+use conglobate::{CarapaceRecipe, PmiRecipe};
+use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
-use pichi_storage::sidecar::write_sidecar_atomic;
-use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::{BuildArgs, DEFAULT_LOCK, DEFAULT_RECIPE, PullArgs, PullPolicy};
 #[cfg(unix)]
@@ -122,16 +118,10 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     // `pichi.lock` (or `-l`/`--lock`) under `--subdir`; fall back to legacy
     // `pichi.build/` recipe `from:` keys when that layout is present.
     let build_lock = load_build_lock(&args.dir, &subdir, &lock)?;
-    let (source_refs, carapace_source) = if let Some(parsed) = build_lock.as_ref() {
-        let refs: Vec<String> = parsed.images.keys().cloned().collect();
-        // Single-image smoke / typical carapace derive: pass through the
-        // first locked image's scutes. Multi-image PMI+carapace can refine
-        // this once Conglobate's lock lands with richer metadata.
-        let cara = refs.first().cloned();
-        (refs, cara)
+    let source_refs = if let Some(parsed) = build_lock.as_ref() {
+        parsed.images.keys().cloned().collect()
     } else if legacy_project {
-        let cara = carapace_recipe_source(&build_dir)?;
-        (collect_source_refs(&build_dir)?, cara)
+        collect_source_refs(&build_dir)?
     } else {
         bail!(
             "no build lock at {} and no pichi.build/ under {} — expected {} (-l/--lock) and {} (-f/--file), or a legacy pichi.build project",
@@ -152,7 +142,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
                 .with_context(|| format!("building vGPT for build image {build_image_ref}"))?,
         );
     }
-    let mut source_scutes: Vec<ScuteDescriptor> = Vec::new();
     for reference in &source_refs {
         let (digest, manifest) = resolve_manifest(reference, &db, &blob_store)
             .await
@@ -175,9 +164,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
             .with_context(|| format!("reading scutes of source carapace {reference}"))?;
         if scutes.is_empty() {
             bail!("source carapace {reference} has no scute layers");
-        }
-        if Some(reference) == carapace_source.as_ref() {
-            source_scutes = scutes.iter().map(|s| (*s).clone()).collect();
         }
         gpt_specs.push(
             build_gpt_spec(&manifest, &scutes, &blob_store)
@@ -244,165 +230,14 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let dillo = find_dillo();
     boot_serve_and_wait(&dillo, &argv, pipes, response).await?;
 
-    // The VM powered off; package what it wrote to the output sink.
-    let created = chrono::Utc::now().to_rfc3339();
-    let digest = package_artifact(
-        output_dir.path(),
-        &source_scutes,
-        &blob_store,
-        &db,
-        tag,
-        &created,
-    )
-    .await
-    .context("packaging build output")?;
-    println!("pichi build: packaged {tag} -> {digest}");
+    // Successful guest exit is required before opening its OCI output.
+    let imported = crate::cmd::load::OciLayout::read(output_dir.path(), &blob_store).await?;
+    let digest = imported
+        .import_build(&blob_store, &db, tag)
+        .await
+        .context("importing build output")?;
+    println!("pichi build: imported {tag} -> {digest}");
     Ok(())
-}
-
-/// Top-level chain annotation keys + locked values (carapace D-06), shared
-/// with `pichi import`'s manifest builder.
-fn chain_annotations(created_rfc3339: &str) -> BTreeMap<String, String> {
-    let mut a = BTreeMap::new();
-    a.insert(
-        "dev.pichi.carapace.verity.algo".to_string(),
-        "sha256".to_string(),
-    );
-    a.insert(
-        "dev.pichi.carapace.verity.data-block-size".to_string(),
-        "4096".to_string(),
-    );
-    a.insert(
-        "dev.pichi.carapace.verity.hash-block-size".to_string(),
-        "4096".to_string(),
-    );
-    a.insert(
-        "dev.pichi.carapace.verity.version".to_string(),
-        crate::cmd::verity::VERITY_FORMAT_VERSION.to_string(),
-    );
-    a.insert(
-        "dev.pichi.carapace.verity.hash-type".to_string(),
-        crate::cmd::verity::VERITY_HASH_TYPE_NORMAL.to_string(),
-    );
-    a.insert(
-        "org.opencontainers.image.created".to_string(),
-        created_rfc3339.to_string(),
-    );
-    a
-}
-
-/// Transitional host packaging (see BUILD.md §3 "Transitional host packaging"):
-/// read the build VM's output sink (`build.yaml` + scute/PMI blobs), insert
-/// the blobs into the cache, build + validate the OCI artifact manifest, and
-/// tag it. Returns the manifest digest. Follow-up: replace with pure
-/// OCI-directory import per locked §2.2/§2.5/§2.7.
-///
-/// The output carapace is `source_scutes` (the carapace recipe's `from:`,
-/// passed through unchanged — their blobs already live in the cache) followed
-/// by the delta scutes conglobate emitted (the build's [`BuildOutput`]
-/// contract), each salt-chained onto the source's top root.
-async fn package_artifact(
-    output_dir: &Path,
-    source_scutes: &[ScuteDescriptor],
-    blob_store: &FilesystemBlobStore,
-    db: &FilesystemTagDb,
-    tag: &str,
-    created_rfc3339: &str,
-) -> Result<Digest> {
-    let manifest_yaml = std::fs::read_to_string(output_dir.join("build.yaml"))
-        .context("reading output/build.yaml (build produced no output manifest)")?;
-    let out = BuildOutput::parse(&manifest_yaml).context("parsing output/build.yaml")?;
-    if source_scutes.is_empty() && out.scutes.is_empty() {
-        bail!("build produced no scutes");
-    }
-
-    let scratch = blob_store
-        .scratch_dir()
-        .await
-        .context("preparing scratch dir")?;
-    let mut layers: Vec<Layer> = Vec::with_capacity(source_scutes.len() + out.scutes.len() + 1);
-
-    // Source scutes pass through verbatim — their cow blobs + verity sidecars
-    // are already cached (they were imported / pulled), so we only re-reference
-    // their descriptors.
-    for s in source_scutes {
-        layers.push(Layer::Scute(s.clone()));
-    }
-
-    for s in &out.scutes {
-        let cow_bytes = std::fs::read(output_dir.join(&s.cow))
-            .with_context(|| format!("reading scute cow {}", s.cow))?;
-        let verity_bytes = std::fs::read(output_dir.join(&s.verity))
-            .with_context(|| format!("reading scute verity {}", s.verity))?;
-        hex::decode(&s.salt).with_context(|| format!("scute salt is not hex: {}", s.salt))?;
-
-        let cow_digest = Digest::from_bytes_sha256(&cow_bytes);
-        blob_store
-            .put_blob(&cow_digest, &cow_bytes)
-            .await
-            .with_context(|| format!("put cow blob {cow_digest}"))?;
-        write_sidecar_atomic(
-            &scratch,
-            &blob_store.blob_path(&cow_digest).verity_path(),
-            &verity_bytes,
-        )
-        .await
-        .with_context(|| format!("write verity sidecar for {cow_digest}"))?;
-
-        layers.push(Layer::Scute(ScuteDescriptor {
-            digest: cow_digest.to_string(),
-            size: cow_bytes.len() as u64,
-            annotations: ScuteAnnotations {
-                data_blocks: Some((cow_bytes.len() as u64).div_ceil(4096)),
-                salt: s.salt.clone(),
-            },
-        }));
-    }
-
-    if let Some(pmi_name) = &out.pmi {
-        let pmi_bytes = std::fs::read(output_dir.join(pmi_name))
-            .with_context(|| format!("reading pmi {pmi_name}"))?;
-        let pmi_digest = Digest::from_bytes_sha256(&pmi_bytes);
-        blob_store
-            .put_blob(&pmi_digest, &pmi_bytes)
-            .await
-            .with_context(|| format!("put pmi blob {pmi_digest}"))?;
-        layers.push(Layer::Pmi(PmiDescriptor {
-            digest: pmi_digest.to_string(),
-            size: pmi_bytes.len() as u64,
-        }));
-    }
-
-    let manifest = Manifest {
-        schema_version: 2,
-        media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-        config: ConfigDescriptor::canonical(),
-        layers,
-        annotations: chain_annotations(created_rfc3339),
-    };
-    // Do not stamp `dev.pichi.carapace.verity.hash`. The launch tip comes
-    // from the scute graph. Fail closed unless that top is unique.
-    let _tip = manifest
-        .carapace_top_root(blob_store)
-        .await
-        .context("packaged carapace chain has no unique tip")?;
-    manifest
-        .validate()
-        .context("packaged manifest failed self-validation")?;
-    let bytes = manifest.to_bytes().context("manifest to_bytes")?;
-    let digest = Digest::from_bytes_sha256(&bytes);
-    blob_store
-        .put_blob(&digest, &bytes)
-        .await
-        .with_context(|| format!("put manifest blob {digest}"))?;
-
-    let tag_ref: Reference = tag.parse().with_context(|| format!("invalid tag: {tag}"))?;
-    db.set_tag(&tag_ref.to_string(), &digest)
-        .await
-        .with_context(|| format!("set tag {tag}"))?;
-
-    Ok(digest)
 }
 
 /// Assemble the `dillo` argument vector for the build VM (program name
@@ -450,9 +285,8 @@ pub(crate) fn build_dillo_args(
         argv.push("--console".to_string());
         argv.push(console.to_string());
     }
-    // Transitional: source-carapace vGPTs (retired as the product API; kept
-    // while packaging still consumes them). Follow-up: drop with OCI-import
-    // rewrite — see BUILD.md §3 "Transitional host packaging".
+    // Source-carapace vGPTs remain guest build inputs. The output OCI
+    // manifest owns inherited layers; host import never prepends them.
     for spec in gpt_specs {
         argv.push("--gpt".to_string());
         argv.push(spec.clone());
@@ -576,20 +410,6 @@ fn load_build_lock(repo: &Path, subdir: &str, lock_rel: &str) -> Result<Option<B
         bail!("build lock {}: images map is empty", path.display());
     }
     Ok(Some(parsed))
-}
-
-/// The carapace recipe's `from:` reference, if a `carapace.yaml` is present —
-/// the carapace whose scutes pass through into the output artifact.
-fn carapace_recipe_source(build_dir: &Path) -> Result<Option<String>> {
-    let carapace_yaml = build_dir.join("carapace.yaml");
-    if !carapace_yaml.is_file() {
-        return Ok(None);
-    }
-    let text = std::fs::read_to_string(&carapace_yaml)
-        .with_context(|| format!("reading {}", carapace_yaml.display()))?;
-    let recipe = CarapaceRecipe::parse(&text)
-        .with_context(|| format!("parsing {}", carapace_yaml.display()))?;
-    Ok(Some(recipe.from))
 }
 
 /// Read `carapace.yaml` (`from:`) and `pmi.yaml` (`from:`, if present),
@@ -1022,187 +842,10 @@ mod tests {
         );
     }
 
+    /// Host-side smoke: mounts, build-port exchange, then guest OCI import.
     #[tokio::test]
-    async fn package_artifact_builds_and_tags_a_carapace() {
-        use crate::cmd::{test_support::ScuteFixture as _, verity};
-
-        let tmp = tempfile::TempDir::new().unwrap();
-        let out = tmp.path().join("out");
-        std::fs::create_dir_all(&out).unwrap();
-
-        // One base scute: cow + verity blob + 32-byte zero salt.
-        let mut raw = vec![0u8; 4096 * 3];
-        raw[100] = 7;
-        let cow_bytes = raw.scute();
-        std::fs::write(out.join("0000.cow"), &cow_bytes).unwrap();
-        let salt = vec![0u8; 32];
-        let params = verity::VerityParams {
-            data_block_size: 4096,
-            hash_block_size: 4096,
-            salt: salt.clone(),
-            uuid: [0u8; 16],
-        };
-        let vout = params.compute(&cow_bytes).unwrap();
-        std::fs::write(out.join("0000.verity"), &vout.blob).unwrap();
-        std::fs::write(
-            out.join("build.yaml"),
-            format!(
-                "scutes:\n- cow: 0000.cow\n  verity: 0000.verity\n  salt: {}\n",
-                hex::encode(&salt)
-            ),
-        )
-        .unwrap();
-
-        let graphroot = tmp.path().join("storage");
-        std::fs::create_dir_all(&graphroot).unwrap();
-        let blob_store = FilesystemBlobStore::new(&graphroot);
-        let db = FilesystemTagDb::open(&graphroot).unwrap();
-
-        let digest = package_artifact(
-            &out,
-            &[],
-            &blob_store,
-            &db,
-            "myapp:v1",
-            "2026-06-22T00:00:00Z",
-        )
-        .await
-        .unwrap();
-
-        let key = "myapp:v1".parse::<Reference>().unwrap().to_string();
-        assert_eq!(db.resolve_tag(&key).await.unwrap(), Some(digest.clone()));
-        let mbytes = blob_store.get_blob(&digest).await.unwrap();
-        let m = Manifest::from_reader_validated(mbytes.as_slice()).unwrap();
-        assert_eq!(m.layers.len(), 1, "one scute layer");
-    }
-
-    #[tokio::test]
-    async fn package_artifact_prepends_source_scutes() {
-        use crate::cmd::{test_support::ScuteFixture as _, verity};
-
-        let tmp = tempfile::TempDir::new().unwrap();
-        let out = tmp.path().join("out");
-        std::fs::create_dir_all(&out).unwrap();
-
-        let graphroot = tmp.path().join("storage");
-        std::fs::create_dir_all(&graphroot).unwrap();
-        let blob_store = FilesystemBlobStore::new(&graphroot);
-        let db = FilesystemTagDb::open(&graphroot).unwrap();
-
-        // Stamping the carapace root recomputes the whole chain, so the scutes
-        // must form a real salt chain: each non-base scute's salt equals the
-        // previous scute's verity root. Build a genuine 2-source + 1-delta chain.
-        let verity_root = |cow_bytes: &[u8], salt: &[u8]| -> [u8; 32] {
-            verity::VerityParams {
-                data_block_size: 4096,
-                hash_block_size: 4096,
-                salt: salt.to_vec(),
-                uuid: [0u8; 16],
-            }
-            .compute(cow_bytes)
-            .unwrap()
-            .root_hash
-        };
-        let make_cow = |seed: u8| {
-            let mut v = vec![0u8; 4096 * 2];
-            v[10] = seed;
-            v.scute()
-        };
-
-        // Two pass-through source scutes; their cow blobs are cached (as in a
-        // real build) so the root recompute can read them.
-        let cow0 = make_cow(1);
-        let salt0 = vec![0u8; 32]; // base scute
-        let root0 = verity_root(&cow0, &salt0);
-        let d0 = Digest::from_bytes_sha256(&cow0);
-        blob_store.put_blob(&d0, &cow0).await.unwrap();
-
-        let cow1 = make_cow(2);
-        let salt1 = root0.to_vec(); // chains onto scute 0
-        let root1 = verity_root(&cow1, &salt1);
-        let d1 = Digest::from_bytes_sha256(&cow1);
-        blob_store.put_blob(&d1, &cow1).await.unwrap();
-
-        let source_scutes = vec![
-            ScuteDescriptor {
-                digest: d0.to_string(),
-                size: cow0.len() as u64,
-                annotations: ScuteAnnotations {
-                    data_blocks: None,
-                    salt: hex::encode(&salt0),
-                },
-            },
-            ScuteDescriptor {
-                digest: d1.to_string(),
-                size: cow1.len() as u64,
-                annotations: ScuteAnnotations {
-                    data_blocks: None,
-                    salt: hex::encode(&salt1),
-                },
-            },
-        ];
-
-        // One delta scute conglobate emitted, chaining onto source scute 1.
-        let cow_delta = make_cow(9);
-        let salt_delta = root1.to_vec();
-        let root_delta = verity_root(&cow_delta, &salt_delta);
-        std::fs::write(out.join("0000.cow"), &cow_delta).unwrap();
-        let vout = verity::VerityParams {
-            data_block_size: 4096,
-            hash_block_size: 4096,
-            salt: salt_delta.clone(),
-            uuid: [0u8; 16],
-        }
-        .compute(&cow_delta)
-        .unwrap();
-        std::fs::write(out.join("0000.verity"), &vout.blob).unwrap();
-        std::fs::write(
-            out.join("build.yaml"),
-            format!(
-                "scutes:\n- cow: 0000.cow\n  verity: 0000.verity\n  salt: {}\n",
-                hex::encode(&salt_delta)
-            ),
-        )
-        .unwrap();
-
-        let digest = package_artifact(
-            &out,
-            &source_scutes,
-            &blob_store,
-            &db,
-            "app:v1",
-            "2026-06-22T00:00:00Z",
-        )
-        .await
-        .unwrap();
-
-        let mbytes = blob_store.get_blob(&digest).await.unwrap();
-        let m = Manifest::from_reader_validated(mbytes.as_slice()).unwrap();
-        let scute_layers = m
-            .layers
-            .iter()
-            .filter(|l| matches!(l, Layer::Scute(_)))
-            .count();
-        assert_eq!(scute_layers, 3, "2 source scutes + 1 delta");
-        // The packaged manifest carries no tip hash. The unique top is the
-        // delta scute root from the scute graph.
-        assert!(
-            m.carapace_verity_hash().is_none(),
-            "packaged manifest must not stamp the tip hash"
-        );
-        let tip = m
-            .carapace_top_root(&blob_store)
-            .await
-            .expect("unique tip from scute graph");
-        assert_eq!(tip, root_delta, "graph tip must be the delta scute root");
-    }
-
-    /// Host-side transitional smoke without a Conglobate appliance: virtiofs
-    /// repo/cache/output tags, hold-until-open build-port exchange, flat
-    /// BuildOutput on the output sink, then `package_artifact`.
-    #[tokio::test]
-    async fn transitional_smoke_port_output_package() {
-        use crate::cmd::{test_support::ScuteFixture as _, verity};
+    async fn smoke_port_output_import() {
+        use crate::cmd::load::tests::LayoutFixture;
         use std::io::{Read, Write};
         use std::thread;
         use std::time::Duration;
@@ -1243,22 +886,7 @@ mod tests {
         let output_dir = tmp.path().join("output");
         std::fs::create_dir_all(&output_dir).unwrap();
 
-        let mut raw = vec![0u8; 4096 * 3];
-        raw[100] = 7;
-        let cow_bytes = raw.scute();
-        let salt = vec![0u8; 32];
-        let vout = verity::VerityParams {
-            data_block_size: 4096,
-            hash_block_size: 4096,
-            salt: salt.clone(),
-            uuid: [0u8; 16],
-        }
-        .compute(&cow_bytes)
-        .unwrap();
-        let build_yaml = format!(
-            "scutes:\n- cow: 0000.cow\n  verity: 0000.verity\n  salt: {}\n",
-            hex::encode(&salt)
-        );
+        let fixture = LayoutFixture::new();
 
         let input = BuildInput {
             git_ref: "main".into(),
@@ -1286,9 +914,7 @@ mod tests {
             device_rx.read_to_end(&mut reply).unwrap();
             assert!(!reply.is_empty(), "host wrote no build-input response");
 
-            std::fs::write(output_dir.join("0000.cow"), &cow_bytes).unwrap();
-            std::fs::write(output_dir.join("0000.verity"), &vout.blob).unwrap();
-            std::fs::write(output_dir.join("build.yaml"), &build_yaml).unwrap();
+            fixture.write(&output_dir);
             (reply, output_dir)
         });
 
@@ -1300,20 +926,13 @@ mod tests {
         std::fs::create_dir_all(&graphroot).unwrap();
         let blob_store = FilesystemBlobStore::new(&graphroot);
         let db = FilesystemTagDb::open(&graphroot).unwrap();
-        let digest = package_artifact(
-            &output_dir,
-            &[],
-            &blob_store,
-            &db,
-            "smoke:transitional",
-            "2026-10-27T00:00:00Z",
-        )
-        .await
-        .unwrap();
-        let key = "smoke:transitional"
-            .parse::<Reference>()
+        let digest = crate::cmd::load::OciLayout::read(&output_dir, &blob_store)
+            .await
             .unwrap()
-            .to_string();
+            .import_build(&blob_store, &db, "smoke:oci")
+            .await
+            .unwrap();
+        let key = "smoke:oci".parse::<Reference>().unwrap().to_string();
         assert_eq!(db.resolve_tag(&key).await.unwrap(), Some(digest));
     }
 

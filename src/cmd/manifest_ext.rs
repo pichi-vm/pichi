@@ -8,7 +8,7 @@
 //! rule these run/build-specific queries live here as an extension trait rather
 //! than as free functions scattered across the command modules.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
@@ -230,6 +230,44 @@ impl ScuteRoots {
             [] => bail!("carapace chain has no top scute"),
             _ => bail!("carapace chain is not linear ({} top scutes)", tops.len()),
         }
+    }
+
+    /// OCI imports must carry a complete chain, including the zero-prefix
+    /// base. Walking consumes every scute, rejecting missing parents and cycles.
+    pub(super) fn verify_complete(&self, manifest: &Manifest) -> Result<()> {
+        self.verify(manifest)?;
+        let mut parents = HashMap::new();
+        for (layer, root) in manifest
+            .layers
+            .iter()
+            .filter(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)))
+            .zip(&self.roots)
+        {
+            let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = layer else {
+                unreachable!()
+            };
+            let salt = hex::decode(&scute.annotations.salt)?;
+            let parent: [u8; 32] = salt
+                .get(..32)
+                .context("scute salt is shorter than its parent root")?
+                .try_into()?;
+            if parents.insert(*root, parent).is_some() {
+                bail!("duplicate scute root");
+            }
+        }
+        if parents.is_empty() {
+            return Ok(());
+        }
+        let mut root = self.top()?;
+        while root != [0; 32] {
+            root = parents
+                .remove(&root)
+                .context("carapace chain has a missing parent or cycle")?;
+        }
+        if !parents.is_empty() {
+            bail!("carapace chain contains unreachable scutes");
+        }
+        Ok(())
     }
 
     /// When scutes are present, require exactly one graph-derived tip.

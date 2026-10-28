@@ -1,114 +1,1123 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `pichi load <dir>` — import an OCI image layout directory (produced by
-//! `pichi save`) into the local cache, mirroring `podman load`. Blobs are
-//! copied in and each `index.json` entry's tag is registered.
-//!
-//! To assemble a multi-arch image, `load` each per-arch layout (under distinct
-//! local tags), then combine them with `pichi manifest`.
+//! Import complete OCI layouts into the cache. Build and load share this
+//! boundary: snapshot and verify guest bytes, rebuild verity, then publish tags.
 
-use anyhow::{Context, Result, anyhow};
-use serde_json::Value;
-use std::fs;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::File;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result, bail, ensure};
+use cap_std::fs::Dir;
 use pichi_artifact::{Digest, Manifest, Reference};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 
 use crate::cli::LoadArgs;
 use crate::cmd::layer::PreparedLayer;
 use crate::cmd::manifest_ext::ScuteRoots;
 use crate::config::Config;
 
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
+const METADATA_CAP: u64 = 1024 * 1024;
+const BLOB_CAP: u64 = 16 * 1024 * 1024 * 1024;
+const TOTAL_CAP: u64 = 64 * 1024 * 1024 * 1024;
+const FILE_CAP: usize = 4096;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LayoutMarker {
+    image_layout_version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LayoutIndex {
+    schema_version: u32,
+    media_type: String,
+    manifests: Vec<LayoutEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LayoutEntry {
+    media_type: String,
+    artifact_type: Option<String>,
+    digest: String,
+    size: u64,
+    #[serde(default)]
+    annotations: BTreeMap<String, String>,
+}
+
+struct ImportedManifest {
+    digest: Digest,
+    manifest: Manifest,
+    tag: Option<String>,
+}
+
+/// Owns a private snapshot. No guest path or cache sidecar is authoritative.
+/// The VM must have exited before build calls `read`.
+pub(super) struct OciLayout {
+    staging: tempfile::TempDir,
+    store: FilesystemBlobStore,
+    manifests: Vec<ImportedManifest>,
+    blobs: HashMap<Digest, u64>,
+    guest_verity: Vec<(Digest, PathBuf)>,
+}
+
+impl OciLayout {
+    pub(super) async fn read(dir: &Path, destination: &FilesystemBlobStore) -> Result<Self> {
+        let staging = tempfile::tempdir_in(destination.scratch_dir().await?)?;
+        let dir = dir.to_owned();
+        let layout = tokio::task::spawn_blocking(move || Self::snapshot(&dir, staging))
+            .await
+            .context("OCI snapshot task panicked")?
+            .context("reading complete OCI output layout")?;
+        // The snapshot contains only OCI blobs. No pre-existing sidecars can
+        // short-circuit rebuilding: every scute is rebuilt from cow + salt.
+        let mut scutes = HashMap::new();
+        let mut expanded_size = 0u64;
+        for imported in &layout.manifests {
+            let mut roots = ScuteRoots::default();
+            for layer in &imported.manifest.layers {
+                if let Some(root) =
+                    PreparedLayer::prepare_cached(&imported.manifest, layer, &layout.store).await?
+                {
+                    let digest: Digest = layer.digest_str().parse()?;
+                    if let Some(previous) = scutes.insert(digest, root) {
+                        ensure!(
+                            previous == root,
+                            "conflicting verity parameters for the same COW"
+                        );
+                    }
+                    let path = layout.store.blob_path(&layer.digest_str().parse()?);
+                    let size = if matches!(layer, pichi_artifact::Layer::ScuteZstd(_)) {
+                        std::fs::metadata(path.deflated_path())?.len()
+                    } else {
+                        layer.size()
+                    };
+                    expanded_size = expanded_size
+                        .checked_add(size)
+                        .context("expanded OCI size overflow")?;
+                    ensure!(
+                        expanded_size <= TOTAL_CAP,
+                        "expanded OCI scutes exceed size cap"
+                    );
+                    roots.add(layer, root)?;
+                }
+            }
+            roots
+                .verify_complete(&imported.manifest)
+                .context("invalid carapace tip")?;
+        }
+        layout.check_guest_verity()?;
+        Ok(layout)
+    }
+
+    fn snapshot(dir: &Path, staging: tempfile::TempDir) -> Result<Self> {
+        ensure!(
+            std::fs::symlink_metadata(dir)?.file_type().is_dir(),
+            "OCI output must be a directory, not a symlink"
+        );
+        let root = Dir::open_ambient_dir(dir, cap_std::ambient_authority())?;
+        let mut files = BTreeMap::new();
+        Self::scan(&root, Path::new(""), &mut files, &mut 0)?;
+        let marker: LayoutMarker =
+            serde_json::from_slice(&Self::small(&root, Path::new("oci-layout"), 4096)?)?;
+        ensure!(
+            marker.image_layout_version == "1.0.0",
+            "unsupported OCI layout version"
+        );
+        let index: LayoutIndex =
+            serde_json::from_slice(&Self::small(&root, Path::new("index.json"), METADATA_CAP)?)?;
+        ensure!(
+            index.schema_version == 2 && index.media_type == INDEX_TYPE,
+            "invalid OCI index schema or media type"
+        );
+        ensure!(!index.manifests.is_empty(), "OCI index has no manifests");
+        let store = FilesystemBlobStore::new(staging.path());
+        std::fs::create_dir_all(staging.path().join("blobs/sha256"))?;
+        let mut layout = Self {
+            staging,
+            store,
+            manifests: Vec::new(),
+            blobs: HashMap::new(),
+            guest_verity: Vec::new(),
+        };
+        let mut expected: HashSet<PathBuf> =
+            ["oci-layout", "index.json", "inventory.cbor", "build.yaml"]
+                .into_iter()
+                .map(PathBuf::from)
+                .collect();
+        let mut seen = HashSet::new();
+        for entry in index.manifests {
+            ensure!(
+                entry.media_type == MANIFEST_TYPE,
+                "unsupported index entry media type"
+            );
+            ensure!(
+                entry
+                    .artifact_type
+                    .as_deref()
+                    .is_none_or(|t| t == pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1),
+                "invalid index artifact type"
+            );
+            ensure!(entry.size <= METADATA_CAP, "manifest exceeds metadata cap");
+            let digest = layout.copy_blob(&root, &entry.digest, entry.size, &mut expected)?;
+            ensure!(seen.insert(digest.clone()), "duplicate OCI manifest");
+            let bytes = std::fs::read(layout.store.blob_path(&digest))?;
+            let manifest = Manifest::from_reader_validated(bytes.as_slice())
+                .context("invalid OCI manifest")?;
+            ensure!(
+                manifest.schema_version == 2 && manifest.media_type == MANIFEST_TYPE,
+                "invalid manifest schema or media type"
+            );
+            ensure!(!manifest.layers.is_empty(), "OCI artifact has no layers");
+            let config = &manifest.config;
+            ensure!(config.size <= METADATA_CAP, "config exceeds metadata cap");
+            if !config.is_empty() || files.contains_key(&Self::blob_name(&config.digest)?) {
+                ensure!(
+                    config.is_empty() || config.data.is_none(),
+                    "inline pichi config is unsupported"
+                );
+                let digest = layout.copy_blob(&root, &config.digest, config.size, &mut expected)?;
+                if !config.is_empty() {
+                    pichi_artifact::Config::from_json(&std::fs::read(
+                        layout.store.blob_path(&digest),
+                    )?)
+                    .context("invalid launch config")?;
+                }
+            }
+            if manifest.layers.iter().any(|l| {
+                matches!(
+                    l,
+                    pichi_artifact::Layer::Scute(_) | pichi_artifact::Layer::ScuteZstd(_)
+                )
+            }) {
+                for key in [
+                    "dev.pichi.carapace.verity.data-block-size",
+                    "dev.pichi.carapace.verity.hash-block-size",
+                ] {
+                    ensure!(
+                        manifest.annotations.get(key).map(String::as_str) == Some("4096"),
+                        "carapace block sizes must be 4096"
+                    );
+                }
+            }
+            let mut layers = HashSet::new();
+            for layer in &manifest.layers {
+                ensure!(layers.insert(layer.digest_str()), "duplicate OCI layer");
+                layout.copy_blob(&root, layer.digest_str(), layer.size(), &mut expected)?;
+                if matches!(
+                    layer,
+                    pichi_artifact::Layer::Scute(_) | pichi_artifact::Layer::ScuteZstd(_)
+                ) {
+                    ensure!(
+                        manifest
+                            .annotations
+                            .get("dev.pichi.carapace.verity.hash-type")
+                            .map(String::as_str)
+                            == Some("1"),
+                        "carapace hash type must be 1"
+                    );
+                    // Optional guest sidecars have only digest-derived names.
+                    // They are compared with the fresh tree, never imported.
+                    let sidecar = Self::blob_name(layer.digest_str())?.with_extension("verity");
+                    if let Some(size) = files.get(&sidecar) {
+                        layout.copy_guest_verity(
+                            &root,
+                            &sidecar,
+                            *size,
+                            layer.digest_str().parse()?,
+                        )?;
+                        expected.insert(sidecar);
+                    }
+                }
+            }
+            layout.manifests.push(ImportedManifest {
+                digest,
+                manifest,
+                tag: entry.annotations.get(REF_NAME_ANNOTATION).cloned(),
+            });
+        }
+        layout.check_dual_write(&root, &files, &mut expected)?;
+        for path in files.keys() {
+            ensure!(
+                expected.contains(path),
+                "unexpected OCI file: {}",
+                path.display()
+            );
+        }
+        Ok(layout)
+    }
+
+    /// Only known directories and regular bounded files; never recurse through
+    /// symlinks. Dir keeps all subsequent opens confined to the output root.
+    fn scan(
+        root: &Dir,
+        path: &Path,
+        files: &mut BTreeMap<PathBuf, u64>,
+        total: &mut u64,
+    ) -> Result<()> {
+        for entry in root.read_dir(if path.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            path
+        })? {
+            let entry = entry?;
+            let name = path.join(entry.file_name());
+            let metadata = root.symlink_metadata(&name)?;
+            if metadata.is_dir() {
+                ensure!(
+                    name == Path::new("blobs") || name == Path::new("blobs/sha256"),
+                    "unexpected OCI directory: {}",
+                    name.display()
+                );
+                Self::scan(root, &name, files, total)?;
+                continue;
+            }
+            ensure!(
+                metadata.is_file(),
+                "OCI file must be regular (no symlinks or special files): {}",
+                name.display()
+            );
+            #[cfg(unix)]
+            {
+                use cap_std::fs::MetadataExt as _;
+                ensure!(metadata.nlink() == 1, "OCI hard links are not allowed");
+            }
+            let cap = match name.to_str() {
+                Some("oci-layout") => 4096,
+                Some("index.json" | "build.yaml") => METADATA_CAP,
+                Some("boot.pmi") => BLOB_CAP,
+                Some(name) if Self::flat_scute_name(name) => BLOB_CAP,
+                Some("inventory.cbor") => 16 * METADATA_CAP,
+                _ if name.parent() == Some(Path::new("blobs/sha256")) => BLOB_CAP,
+                _ => bail!("unexpected OCI file: {}", name.display()),
+            };
+            ensure!(
+                metadata.len() <= cap,
+                "OCI file exceeds size cap: {}",
+                name.display()
+            );
+            *total = total
+                .checked_add(metadata.len())
+                .context("OCI size overflow")?;
+            ensure!(
+                *total <= TOTAL_CAP && files.len() < FILE_CAP,
+                "OCI layout exceeds size or file count cap"
+            );
+            files.insert(name, metadata.len());
+        }
+        Ok(())
+    }
+
+    fn small(root: &Dir, path: &Path, cap: u64) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        root.open(path)?.take(cap + 1).read_to_end(&mut bytes)?;
+        ensure!(bytes.len() as u64 <= cap, "OCI metadata exceeds cap");
+        Ok(bytes)
+    }
+
+    fn blob_name(value: &str) -> Result<PathBuf> {
+        let digest: Digest = value.parse().context("invalid OCI digest")?;
+        ensure!(
+            value == digest.to_string(),
+            "OCI digest must use lowercase sha256 hex"
+        );
+        Ok(Path::new("blobs/sha256").join(digest.hex()))
+    }
+
+    fn copy_blob(
+        &mut self,
+        root: &Dir,
+        value: &str,
+        size: u64,
+        expected: &mut HashSet<PathBuf>,
+    ) -> Result<Digest> {
+        ensure!(size <= BLOB_CAP, "OCI blob exceeds size cap");
+        let path = Self::blob_name(value)?;
+        let digest: Digest = value.parse()?;
+        expected.insert(path.clone());
+        if let Some(previous) = self.blobs.get(&digest) {
+            ensure!(*previous == size, "conflicting OCI descriptor sizes");
+            return Ok(digest);
+        }
+        let output = File::create(self.store.blob_path(&digest))?;
+        ensure!(
+            Self::copy_content(root, &path, size, output)? == digest,
+            "OCI blob digest mismatch: {digest}"
+        );
+        self.blobs.insert(digest.clone(), size);
+        Ok(digest)
+    }
+
+    fn copy_content(
+        root: &Dir,
+        path: &Path,
+        size: u64,
+        mut output: impl std::io::Write,
+    ) -> Result<Digest> {
+        let mut input = root
+            .open(path)
+            .with_context(|| format!("read OCI file {}", path.display()))?;
+        ensure!(
+            input.metadata()?.is_file() && input.metadata()?.len() == size,
+            "OCI file size mismatch: {}",
+            path.display()
+        );
+        let mut hash = Sha256::new();
+        let mut count = 0;
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let length = input.read(&mut buffer)?;
+            if length == 0 {
+                break;
+            }
+            count += length as u64;
+            ensure!(count <= size, "OCI file exceeds declared size");
+            hash.update(&buffer[..length]);
+            output.write_all(&buffer[..length])?;
+        }
+        ensure!(count == size, "truncated OCI file");
+        Ok(Digest::Sha256(hash.finalize().into()))
+    }
+
+    fn flat_scute_name(name: &str) -> bool {
+        name.split_once('.').is_some_and(|(number, ext)| {
+            number.len() == 4
+                && number.bytes().all(|b| b.is_ascii_digit())
+                && matches!(ext, "cow" | "verity")
+        })
+    }
+
+    /// Conglobate's dual-write files are redundant copies, never a packing
+    /// list. Match their bytes to the OCI manifest without opening build.yaml.
+    fn check_dual_write(
+        &mut self,
+        root: &Dir,
+        files: &BTreeMap<PathBuf, u64>,
+        expected: &mut HashSet<PathBuf>,
+    ) -> Result<()> {
+        let scutes: HashSet<Digest> = self
+            .manifests
+            .iter()
+            .flat_map(|m| &m.manifest.layers)
+            .filter(|l| matches!(l, pichi_artifact::Layer::Scute(_)))
+            .map(|l| l.digest_str().parse())
+            .collect::<Result<_, _>>()?;
+        let mut seen = HashSet::new();
+        for number in 0..scutes.len() {
+            let cow = PathBuf::from(format!("{number:04}.cow"));
+            let verity = cow.with_extension("verity");
+            let Some(size) = files.get(&cow) else {
+                break;
+            };
+            let digest = Self::copy_content(root, &cow, *size, std::io::sink())?;
+            ensure!(
+                scutes.contains(&digest) && seen.insert(digest.clone()),
+                "flat COW does not match a unique OCI scute"
+            );
+            let size = *files.get(&verity).context("flat COW has no verity file")?;
+            self.copy_guest_verity(root, &verity, size, digest)?;
+            expected.insert(cow);
+            expected.insert(verity);
+        }
+        if let Some(size) = files.get(Path::new("boot.pmi")) {
+            let digest = Self::copy_content(root, Path::new("boot.pmi"), *size, std::io::sink())?;
+            ensure!(
+                self.manifests
+                    .iter()
+                    .flat_map(|m| &m.manifest.layers)
+                    .any(|l| matches!(l, pichi_artifact::Layer::Pmi(_))
+                        && l.digest_str() == digest.to_string()),
+                "flat PMI does not match OCI layer"
+            );
+            expected.insert(PathBuf::from("boot.pmi"));
+        }
+        Ok(())
+    }
+
+    fn copy_guest_verity(
+        &mut self,
+        root: &Dir,
+        name: &Path,
+        size: u64,
+        digest: Digest,
+    ) -> Result<()> {
+        ensure!(size <= BLOB_CAP / 16, "guest verity exceeds cap");
+        let target = self
+            .staging
+            .path()
+            .join(format!("guest-verity-{}", self.guest_verity.len()));
+        Self::copy_content(root, name, size, File::create(&target)?)?;
+        self.guest_verity.push((digest, target));
+        Ok(())
+    }
+
+    fn check_guest_verity(&self) -> Result<()> {
+        for (digest, path) in &self.guest_verity {
+            let mut guest = File::open(path)?;
+            let mut rebuilt = File::open(self.store.blob_path(digest).verity_path())?;
+            ensure!(
+                guest.metadata()?.len() == rebuilt.metadata()?.len(),
+                "guest verity size mismatch"
+            );
+            let mut a = [0; 64 * 1024];
+            let mut b = [0; 64 * 1024];
+            loop {
+                let count = guest.read(&mut a)?;
+                if count == 0 {
+                    break;
+                }
+                rebuilt.read_exact(&mut b[..count])?;
+                ensure!(
+                    a[..count] == b[..count],
+                    "guest verity does not match cow + salt"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn import_build(
+        self,
+        store: &FilesystemBlobStore,
+        db: &FilesystemTagDb,
+        tag: &str,
+    ) -> Result<Digest> {
+        ensure!(
+            self.manifests.len() == 1,
+            "build OCI index must contain exactly one manifest"
+        );
+        let digest = self.manifests[0].digest.clone();
+        let tag = tag
+            .parse::<Reference>()
+            .with_context(|| format!("invalid tag {tag}"))?
+            .to_string();
+        self.commit(store).await?;
+        db.set_tag(&tag, &digest).await?;
+        Ok(digest)
+    }
+
+    async fn commit(&self, store: &FilesystemBlobStore) -> Result<()> {
+        // Only fully validated private bytes reach the cache. Rename sidecars
+        // even on cache hits, so old sidecars cannot bypass the fresh rebuild.
+        for digest in self.blobs.keys() {
+            let source = self.store.blob_path(digest);
+            let target = store.blob_path(digest);
+            tokio::fs::create_dir_all(target.parent().context("blob has no parent")?).await?;
+            for (src, dst) in [
+                (source.verity_path(), target.verity_path()),
+                (source.deflated_path(), target.deflated_path()),
+            ] {
+                if src.exists() {
+                    tokio::fs::rename(src, dst).await?;
+                }
+            }
+            store.put_blob_from_path(&source, digest).await?;
+        }
+        Ok(())
+    }
+}
 
 pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
-    let dir = &args.input;
     let layout = config.resolve_layout()?;
-    let blob_store = FilesystemBlobStore::new(&layout.graphroot);
-    let tag_db = FilesystemTagDb::open(&layout.graphroot)
-        .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
-
-    // Copy every blob in the layout into the cache (dedup on digest).
-    let blobs_dir = dir.join("blobs").join("sha256");
-    for entry in
-        fs::read_dir(&blobs_dir).with_context(|| format!("read {}", blobs_dir.display()))?
-    {
-        let entry = entry?;
-        let hex = entry.file_name().to_string_lossy().into_owned();
-        let digest: Digest = format!("sha256:{hex}")
-            .parse()
-            .with_context(|| format!("layout blob name is not a sha256 digest: {hex}"))?;
-        if !blob_store.blob_exists(&digest).await {
-            blob_store
-                .put_blob_from_path(&entry.path(), &digest)
-                .await
-                .with_context(|| format!("import blob {digest}"))?;
+    let store = FilesystemBlobStore::new(&layout.graphroot);
+    let db = FilesystemTagDb::open(&layout.graphroot)?;
+    let imported = OciLayout::read(&args.input, &store).await?;
+    let mut tags = BTreeMap::new();
+    for entry in &imported.manifests {
+        if let Some(tag) = args.tag.as_ref().or(entry.tag.as_ref()) {
+            let tag = tag
+                .parse::<Reference>()
+                .with_context(|| format!("invalid tag {tag}"))?
+                .to_string();
+            ensure!(
+                tags.insert(tag, entry.digest.clone()).is_none(),
+                "duplicate OCI tag"
+            );
         }
     }
-
-    // Register the tag(s) from index.json (or the --tag override).
-    let index: Value = serde_json::from_slice(
-        &tokio::fs::read(dir.join("index.json"))
-            .await
-            .with_context(|| format!("read {}", dir.display()))?,
-    )
-    .context("parse index.json")?;
-    let manifests = index
-        .get("manifests")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("layout index.json has no `manifests` array"))?;
-    if manifests.is_empty() {
-        return Err(anyhow!("layout index.json has no manifests"));
+    imported.commit(&store).await?;
+    for entry in &imported.manifests {
+        if args.tag.is_none() && entry.tag.is_none() {
+            println!("loaded {} (untagged)", entry.digest);
+        }
     }
-    for m in manifests {
-        let digest: Digest = m
-            .get("digest")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("index entry missing digest"))?
-            .parse()?;
-
-        // Materialise the prepared cache form (`.deflated` for `+zstd`,
-        // `.verity` for every scute). Verity is never distributed (D-04); it
-        // is recomputed from the cow + salt on the consumer side, exactly as
-        // `pichi pull` does — otherwise `pichi run` has no hash device.
-        let raw = blob_store
-            .get_blob(&digest)
-            .await
-            .with_context(|| format!("read loaded manifest {digest}"))?;
-        let manifest = Manifest::from_reader_validated(&raw[..])
-            .with_context(|| format!("parse loaded manifest {digest}"))?;
-        let mut roots = ScuteRoots::default();
-        for layer in &manifest.layers {
-            if let Some(root) = PreparedLayer::prepare_cached(&manifest, layer, &blob_store).await?
-            {
-                roots.add(layer, root)?;
-            }
-        }
-        roots
-            .verify(&manifest)
-            .with_context(|| format!("verifying carapace root for loaded manifest {digest}"))?;
-
-        let tag = args.tag.clone().or_else(|| {
-            m.get("annotations")
-                .and_then(|a| a.get(REF_NAME_ANNOTATION))
-                .and_then(Value::as_str)
-                .map(String::from)
-        });
-        match tag {
-            Some(t) => {
-                // Canonicalise the ref the same way `pichi tag` does
-                // (D-01 / LOCAL-05), so later `resolve_tag` lookups — e.g.
-                // from `pichi manifest create` — find it.
-                let key = t
-                    .parse::<Reference>()
-                    .with_context(|| format!("invalid tag {t}"))?
-                    .to_string();
-                tag_db.set_tag(&key, &digest).await?;
-                println!("loaded {key}");
-            }
-            None => println!("loaded {digest} (untagged)"),
-        }
+    for (tag, digest) in tags {
+        db.set_tag(&tag, &digest).await?;
+        println!("loaded {tag}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use super::*;
+    use crate::cmd::manifest_ext::ManifestExt as _;
+    use crate::cmd::test_support::ScuteFixture as _;
+    use crate::cmd::verity::VerityParams;
+    use serde_json::{Value, json};
+
+    pub(crate) struct LayoutFixture {
+        manifest: Value,
+        blobs: Vec<Vec<u8>>,
+        trees: Vec<Vec<u8>>,
+        tip: [u8; 32],
+    }
+
+    impl LayoutFixture {
+        pub(crate) fn new() -> Self {
+            let mut fixture = Self {
+                manifest: json!({
+                    "schemaVersion": 2,
+                    "mediaType": MANIFEST_TYPE,
+                    "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                    "config": pichi_artifact::ConfigDescriptor::canonical(),
+                    "layers": [],
+                    "annotations": {
+                        "dev.pichi.carapace.verity.algo": "sha256",
+                        "dev.pichi.carapace.verity.data-block-size": "4096",
+                        "dev.pichi.carapace.verity.hash-block-size": "4096",
+                        "dev.pichi.carapace.verity.version": "1",
+                        "dev.pichi.carapace.verity.hash-type": "1",
+                    },
+                }),
+                blobs: Vec::new(),
+                trees: Vec::new(),
+                tip: [0; 32],
+            };
+            fixture.add_scute(false);
+            fixture
+        }
+
+        fn add_scute(&mut self, compressed: bool) {
+            let cow = vec![self.blobs.len() as u8 + 1; 8192].scute();
+            let output = VerityParams {
+                data_block_size: 4096,
+                hash_block_size: 4096,
+                salt: self.tip.to_vec(),
+                uuid: [0; 16],
+            }
+            .compute(&cow)
+            .unwrap();
+            let wire = if compressed {
+                ruzstd::encoding::compress_to_vec(
+                    cow.as_slice(),
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                )
+            } else {
+                cow.clone()
+            };
+            self.manifest["layers"].as_array_mut().unwrap().push(json!({
+                "mediaType": if compressed { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
+                "digest": Digest::from_bytes_sha256(&wire).to_string(),
+                "size": wire.len(),
+                "annotations": {
+                    "dev.pichi.scute.verity.salt": hex::encode(self.tip),
+                    "dev.pichi.scute.verity.data-blocks": (cow.len() as u64).div_ceil(4096).to_string(),
+                },
+            }));
+            self.blobs.push(wire);
+            self.trees.push(output.blob);
+            self.tip = output.root_hash;
+        }
+
+        pub(crate) fn write(&self, dir: &Path) -> Digest {
+            std::fs::create_dir_all(dir.join("blobs/sha256")).unwrap();
+            for blob in &self.blobs {
+                std::fs::write(
+                    dir.join("blobs/sha256")
+                        .join(Digest::from_bytes_sha256(blob).hex()),
+                    blob,
+                )
+                .unwrap();
+            }
+            let bytes = serde_json::to_vec(&self.manifest).unwrap();
+            let digest = Digest::from_bytes_sha256(&bytes);
+            std::fs::write(dir.join("blobs/sha256").join(digest.hex()), &bytes).unwrap();
+            std::fs::write(dir.join("oci-layout"), br#"{"imageLayoutVersion":"1.0.0"}"#).unwrap();
+            std::fs::write(
+                dir.join("index.json"),
+                serde_json::to_vec(&json!({
+                    "schemaVersion": 2, "mediaType": INDEX_TYPE,
+                    "manifests": [{
+                        "mediaType": MANIFEST_TYPE,
+                        "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                        "digest": digest.to_string(), "size": bytes.len(),
+                        "annotations": { REF_NAME_ANNOTATION: "guest:ignored" },
+                    }],
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            digest
+        }
+
+        fn sidecars(&self, dir: &Path) {
+            for (blob, tree) in self.blobs.iter().zip(&self.trees) {
+                let path = dir
+                    .join("blobs/sha256")
+                    .join(Digest::from_bytes_sha256(blob).hex());
+                std::fs::write(path.verity_path(), tree).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn imports_guest_manifest_verbatim_and_rebuilds_on_cache_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("output");
+        let store = FilesystemBlobStore::new(dir.path().join("cache"));
+        let db = FilesystemTagDb::open(dir.path().join("cache")).unwrap();
+        let mut fixture = LayoutFixture::new();
+        fixture.add_scute(false);
+        fixture.add_scute(true);
+        // Descriptor order has no bearing on the salt graph.
+        fixture.manifest["layers"].as_array_mut().unwrap().reverse();
+        let digest = fixture.write(&output);
+        fixture.sidecars(&output);
+        std::fs::write(output.join("inventory.cbor"), [0xa0]).unwrap();
+        for _ in 0..2 {
+            let imported = OciLayout::read(&output, &store).await.unwrap();
+            assert_eq!(
+                imported
+                    .import_build(&store, &db, "built:v1")
+                    .await
+                    .unwrap(),
+                digest
+            );
+            let key = "built:v1".parse::<Reference>().unwrap().to_string();
+            assert_eq!(db.resolve_tag(&key).await.unwrap(), Some(digest.clone()));
+            assert!(
+                db.resolve_tag(&"guest:ignored".parse::<Reference>().unwrap().to_string())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let bytes = store.get_blob(&digest).await.unwrap();
+            assert_eq!(bytes, serde_json::to_vec(&fixture.manifest).unwrap());
+            let manifest = Manifest::from_reader_validated(&bytes[..]).unwrap();
+            assert_eq!(
+                manifest.carapace_top_root(&store).await.unwrap(),
+                fixture.tip
+            );
+            assert!(manifest.carapace_verity_hash().is_none());
+            for (blob, tree) in fixture.blobs.iter().zip(&fixture.trees) {
+                let path = store
+                    .blob_path(&Digest::from_bytes_sha256(blob))
+                    .verity_path();
+                assert_eq!(std::fs::read(&path).unwrap(), *tree);
+                std::fs::write(path, b"stale cache tree").unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_dual_write_without_reading_yaml_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("output");
+        let store = FilesystemBlobStore::new(dir.path().join("cache"));
+        let db = FilesystemTagDb::open(dir.path().join("cache")).unwrap();
+        let mut fixture = LayoutFixture::new();
+        fixture.add_scute(false);
+        let pmi = b"fixture PMI".to_vec();
+        fixture.manifest["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "mediaType": pichi_artifact::MEDIA_TYPE_PICHI_PMI_V1,
+                "digest": Digest::from_bytes_sha256(&pmi).to_string(), "size": pmi.len(),
+            }));
+        fixture.blobs.push(pmi.clone());
+        let config = pichi_artifact::Config::default().to_json().unwrap();
+        fixture.manifest["config"] =
+            serde_json::to_value(pichi_artifact::ConfigDescriptor::for_config(
+                Digest::from_bytes_sha256(&config).to_string(),
+                config.len() as u64,
+            ))
+            .unwrap();
+        fixture.blobs.push(config);
+        let digest = fixture.write(&output);
+        // Only the new delta has flat copies. The inherited base must come
+        // from the guest's complete OCI layout, even on an empty host cache.
+        std::fs::write(output.join("0000.cow"), &fixture.blobs[1]).unwrap();
+        std::fs::write(output.join("0000.verity"), &fixture.trees[1]).unwrap();
+        std::fs::write(output.join("boot.pmi"), &pmi).unwrap();
+        std::fs::write(
+            output.join("build.yaml"),
+            b"pmi: /outside/secret\nscutes: [../../outside]\n\xff",
+        )
+        .unwrap();
+        let layout = OciLayout::read(&output, &store).await.unwrap();
+        assert_eq!(
+            layout.import_build(&store, &db, "dual:v1").await.unwrap(),
+            digest
+        );
+        let manifest =
+            Manifest::from_reader_validated(store.get_blob(&digest).await.unwrap().as_slice())
+                .unwrap();
+        assert_eq!(manifest.layers.len(), 3);
+        assert_eq!(
+            manifest.carapace_top_root(&store).await.unwrap(),
+            fixture.tip
+        );
+        for blob in &fixture.blobs {
+            let digest = Digest::from_bytes_sha256(blob);
+            assert_eq!(store.get_blob(&digest).await.unwrap(), *blob);
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_bad_or_incomplete_layout_before_publishing() {
+        for case in [
+            "missing marker",
+            "bad marker",
+            "bad index",
+            "empty index",
+            "index schema",
+            "index type",
+            "entry type",
+            "entry artifact",
+            "entry digest",
+            "entry size",
+            "missing manifest",
+            "manifest schema",
+            "manifest type",
+            "artifact type",
+            "empty layers",
+            "layer type",
+            "layer digest",
+            "layer size",
+            "missing cow",
+            "tampered cow",
+            "config type",
+            "missing config",
+            "bad config",
+            "inline config",
+            "salt",
+            "disconnected salt",
+            "fork",
+            "duplicate layer",
+            "duplicate manifest",
+            "bad blocks",
+            "bad geometry",
+            "unexpected file",
+            "unreferenced blob",
+            "flat verity",
+            "tampered flat cow",
+            "tampered flat verity",
+            "unmatched flat PMI",
+            "short salt",
+            "missing base",
+            "salt mismatch",
+            "hash type",
+            "oversized hash block",
+            "guest verity",
+            "truncated verity",
+            "oversized metadata",
+            "oversized blob",
+            "oversized inventory",
+            "oversized total",
+            "too many files",
+            "unexpected directory",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let output = dir.path().join("output");
+            let store = FilesystemBlobStore::new(dir.path().join("cache"));
+            let db = FilesystemTagDb::open(dir.path().join("cache")).unwrap();
+            let key = "built:v1".parse::<Reference>().unwrap().to_string();
+            let old = Digest::from_bytes_sha256(b"existing tag");
+            db.set_tag(&key, &old).await.unwrap();
+            let mut fixture = LayoutFixture::new();
+            match case {
+                "manifest schema" => fixture.manifest["schemaVersion"] = 1.into(),
+                "manifest type" => fixture.manifest["mediaType"] = INDEX_TYPE.into(),
+                "artifact type" => fixture.manifest["artifactType"] = "text/plain".into(),
+                "empty layers" => {
+                    fixture.manifest["layers"] = json!([]);
+                    fixture.blobs.clear();
+                }
+                "layer type" => fixture.manifest["layers"][0]["mediaType"] = "text/plain".into(),
+                "layer digest" => {
+                    fixture.manifest["layers"][0]["digest"] = "sha256:../../escape".into()
+                }
+                "layer size" => fixture.manifest["layers"][0]["size"] = 1.into(),
+                "config type" => fixture.manifest["config"]["mediaType"] = "text/plain".into(),
+                "missing config" | "bad config" | "inline config" => {
+                    fixture.manifest["config"] = json!({
+                        "mediaType": pichi_artifact::MEDIA_TYPE_PICHI_CONFIG_V1,
+                        "digest": Digest::from_bytes_sha256(b"bad config").to_string(),
+                        "size": 10,
+                    });
+                    if case != "missing config" {
+                        fixture.blobs.push(b"bad config".to_vec());
+                    }
+                    if case == "inline config" {
+                        fixture.manifest["config"]["data"] = "e30=".into();
+                    }
+                }
+                "short salt" => {
+                    fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
+                        "00".into()
+                }
+                "missing base" => {
+                    fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
+                        hex::encode([42; 32]).into()
+                }
+                "salt mismatch" => {
+                    fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
+                        hex::encode([0; 64]).into()
+                }
+                "hash type" => {
+                    fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash-type"] =
+                        "0".into()
+                }
+                "oversized hash block" => {
+                    fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash-block-size"] =
+                        "2147483648".into()
+                }
+                "salt" => {
+                    fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
+                        "zz".into()
+                }
+                "disconnected salt" => {
+                    fixture.add_scute(false);
+                    fixture.manifest["layers"][1]["annotations"]["dev.pichi.scute.verity.salt"] =
+                        hex::encode([42; 32]).into();
+                }
+                "fork" => {
+                    fixture.tip = [0; 32];
+                    fixture.add_scute(false);
+                }
+                "duplicate layer" => {
+                    let layer = fixture.manifest["layers"][0].clone();
+                    fixture.manifest["layers"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(layer);
+                }
+                "bad blocks" => {
+                    fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.data-blocks"] =
+                        "0".into()
+                }
+                "bad geometry" => {
+                    fixture.manifest["annotations"]["dev.pichi.carapace.verity.data-block-size"] =
+                        "3".into()
+                }
+                _ => {}
+            }
+            let digest = fixture.write(&output);
+            let cow = output.join("blobs/sha256").join(
+                Digest::from_bytes_sha256(fixture.blobs.first().map_or(&b""[..], Vec::as_slice))
+                    .hex(),
+            );
+            let mut index: Value =
+                serde_json::from_slice(&std::fs::read(output.join("index.json")).unwrap()).unwrap();
+            match case {
+                "missing marker" => std::fs::remove_file(output.join("oci-layout")).unwrap(),
+                "bad marker" => {
+                    std::fs::write(output.join("oci-layout"), br#"{"imageLayoutVersion":"9"}"#)
+                        .unwrap()
+                }
+                "empty index" => index["manifests"] = json!([]),
+                "index schema" => index["schemaVersion"] = 1.into(),
+                "index type" => index["mediaType"] = "text/plain".into(),
+                "entry type" => index["manifests"][0]["mediaType"] = INDEX_TYPE.into(),
+                "entry artifact" => index["manifests"][0]["artifactType"] = "text/plain".into(),
+                "entry digest" => index["manifests"][0]["digest"] = "sha256:../../escape".into(),
+                "entry size" => index["manifests"][0]["size"] = 1.into(),
+                "missing manifest" => {
+                    std::fs::remove_file(output.join("blobs/sha256").join(digest.hex())).unwrap()
+                }
+                "missing cow" => std::fs::remove_file(&cow).unwrap(),
+                "tampered cow" => {
+                    let mut bytes = fixture.blobs[0].clone();
+                    bytes[100] ^= 1;
+                    std::fs::write(&cow, bytes).unwrap();
+                }
+                "unexpected file" => std::fs::write(output.join("secret"), b"secret").unwrap(),
+                "unreferenced blob" => std::fs::write(
+                    output
+                        .join("blobs/sha256")
+                        .join(Digest::from_bytes_sha256(b"extra").hex()),
+                    b"extra",
+                )
+                .unwrap(),
+
+                "flat verity" => {
+                    std::fs::write(output.join("0000.verity"), &fixture.trees[0]).unwrap()
+                }
+                "tampered flat cow" | "tampered flat verity" => {
+                    let mut cow_bytes = fixture.blobs[0].clone();
+                    let mut tree = fixture.trees[0].clone();
+                    if case == "tampered flat cow" {
+                        cow_bytes[100] ^= 1;
+                    } else {
+                        *tree.last_mut().unwrap() ^= 1;
+                    }
+                    std::fs::write(output.join("0000.cow"), cow_bytes).unwrap();
+                    std::fs::write(output.join("0000.verity"), tree).unwrap();
+                    // A valid digest-named tree must not hide a bad flat tree.
+                    fixture.sidecars(&output);
+                }
+                "unmatched flat PMI" => {
+                    std::fs::write(output.join("boot.pmi"), b"unmatched").unwrap()
+                }
+                "salt mismatch" => fixture.sidecars(&output),
+                "guest verity" | "truncated verity" => {
+                    fixture.sidecars(&output);
+                    let mut bytes = fixture.trees[0].clone();
+                    if case == "guest verity" {
+                        *bytes.last_mut().unwrap() ^= 1;
+                    } else {
+                        bytes.pop();
+                    }
+                    std::fs::write(cow.verity_path(), bytes).unwrap();
+                }
+                "oversized blob" => File::create(&cow).unwrap().set_len(BLOB_CAP + 1).unwrap(),
+                "oversized inventory" => File::create(output.join("inventory.cbor"))
+                    .unwrap()
+                    .set_len(16 * METADATA_CAP + 1)
+                    .unwrap(),
+                "oversized total" => {
+                    for n in 0..5 {
+                        File::create(output.join("blobs/sha256").join(format!("{n:064x}")))
+                            .unwrap()
+                            .set_len(BLOB_CAP)
+                            .unwrap();
+                    }
+                }
+                "too many files" => {
+                    for number in 0..FILE_CAP {
+                        File::create(output.join("blobs/sha256").join(format!("{number:064x}")))
+                            .unwrap();
+                    }
+                }
+                "unexpected directory" => std::fs::create_dir(output.join("elsewhere")).unwrap(),
+                "duplicate manifest" => {
+                    let entry = index["manifests"][0].clone();
+                    index["manifests"].as_array_mut().unwrap().push(entry);
+                }
+                _ => {}
+            }
+            std::fs::write(
+                output.join("index.json"),
+                serde_json::to_vec(&index).unwrap(),
+            )
+            .unwrap();
+            if case == "bad index" {
+                std::fs::write(output.join("index.json"), b"{").unwrap();
+            }
+            if case == "oversized metadata" {
+                File::create(output.join("index.json"))
+                    .unwrap()
+                    .set_len(METADATA_CAP + 1)
+                    .unwrap();
+            }
+            let result = match OciLayout::read(&output, &store).await {
+                Ok(layout) => layout.import_build(&store, &db, "built:v1").await,
+                Err(error) => Err(error),
+            };
+            assert!(result.is_err(), "accepted {case}");
+            assert_eq!(
+                db.resolve_tag(&key).await.unwrap(),
+                Some(old),
+                "changed tag for {case}"
+            );
+            assert!(
+                !store.blob_path(&digest).exists(),
+                "published invalid {case}"
+            );
+            assert_eq!(
+                std::fs::read_dir(store.scratch_dir().await.unwrap())
+                    .unwrap()
+                    .count(),
+                0,
+                "leaked snapshot for {case}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn build_rejects_several_distinct_manifests_without_publishing() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("output");
+        let store = FilesystemBlobStore::new(dir.path().join("cache"));
+        let db = FilesystemTagDb::open(dir.path().join("cache")).unwrap();
+        let fixture = LayoutFixture::new();
+        let digest = fixture.write(&output);
+        let mut second = fixture.manifest.clone();
+        second["annotations"]["org.opencontainers.image.created"] = "2026-10-28T00:00:00Z".into();
+        let bytes = serde_json::to_vec(&second).unwrap();
+        let other = Digest::from_bytes_sha256(&bytes);
+        std::fs::write(output.join("blobs/sha256").join(other.hex()), &bytes).unwrap();
+        let index_path = output.join("index.json");
+        let mut index: Value =
+            serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+        index["manifests"].as_array_mut().unwrap().push(json!({
+            "mediaType": MANIFEST_TYPE, "digest": other.to_string(), "size": bytes.len(),
+        }));
+        std::fs::write(index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+        let layout = OciLayout::read(&output, &store).await.unwrap();
+        assert!(layout.import_build(&store, &db, "built:v1").await.is_err());
+        assert!(!store.blob_exists(&digest).await);
+        assert!(!store.blob_exists(&other).await);
+        assert!(
+            db.resolve_tag(&"built:v1".parse::<Reference>().unwrap().to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlinks_hardlinks_and_special_files() {
+        use std::os::unix::fs::symlink;
+        for case in [
+            "root", "blobs", "sha256", "cow", "index", "marker", "yaml", "hardlink", "fifo",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let output = dir.path().join("output");
+            let store = FilesystemBlobStore::new(dir.path().join("cache"));
+            let fixture = LayoutFixture::new();
+            fixture.write(&output);
+            let cow = output.join("blobs/sha256").join(
+                Digest::from_bytes_sha256(fixture.blobs.first().map_or(&b""[..], Vec::as_slice))
+                    .hex(),
+            );
+            let path = match case {
+                "root" => output.clone(),
+                "blobs" => output.join("blobs"),
+                "sha256" => output.join("blobs/sha256"),
+                "index" => output.join("index.json"),
+                "marker" => output.join("oci-layout"),
+                "yaml" => output.join("build.yaml"),
+                _ => cow,
+            };
+            let external = dir.path().join("external");
+            if case == "yaml" {
+                std::fs::write(&external, b"pmi: /etc/passwd").unwrap();
+            } else {
+                std::fs::rename(&path, &external).unwrap();
+            }
+            match case {
+                "hardlink" => std::fs::hard_link(&external, &path).unwrap(),
+                "fifo" => nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRUSR).unwrap(),
+                _ => symlink(&external, &path).unwrap(),
+            }
+            assert!(
+                OciLayout::read(&output, &store).await.is_err(),
+                "accepted {case}"
+            );
+            assert!(external.exists());
+        }
+    }
 }

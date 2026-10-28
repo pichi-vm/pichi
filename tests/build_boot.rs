@@ -11,10 +11,15 @@
 //!   `qualification.local/fedora:43`, with a tiny imported carapace behind
 //!   the placeholder inner-manifest digest;
 //! - thin-launcher wires: virtiofs repo/cache/output + `dev.pichi.build`;
-//! - dual-write flat `BuildOutput` → transitional `package_artifact`.
+//! - complete guest OCI import, verity rebuild, and checked dual-write copies.
 //!
 //! Gated on the `vm-tests` feature; skips if `/dev/kvm` is unavailable.
 //! x86_64 + KVM only.
+//!
+//! TODO: republish the pinned appliance with the current pichi-artifact schema.
+//! Its older guest requires dev.pichi.carapace.verity.hash on source manifests
+//! and rejects today's source fixture before emitting its OCI output. Keep
+//! this smoke active; do not restore that retired annotation in host imports.
 
 #![cfg(all(feature = "vm-tests", target_os = "linux", target_arch = "x86_64"))]
 
@@ -104,7 +109,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     };
     assert_pichi_ok("build", &build);
 
-    // Packaged tag must resolve (flat BuildOutput → package_artifact).
+    // The guest OCI manifest must import under the requested local tag.
     // Success criterion is guest exit 0 + inspectable tag — not a console
     // marker (Conglobate never emitted CONGLOBATE-READY).
     let inspect = pichi(
@@ -116,6 +121,6 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     let out_digest = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
     assert!(
         out_digest.starts_with("sha256:"),
-        "packaged smoke:out missing digest; source was {SMOKE_SOURCE_REF}@{SMOKE_LOCK_INDEX}"
+        "imported smoke:out missing digest; source was {SMOKE_SOURCE_REF}@{SMOKE_LOCK_INDEX}"
     );
 }

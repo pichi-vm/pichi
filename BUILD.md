@@ -178,23 +178,59 @@ otherwise the digest-pinned default (`DEFAULT_BUILD_IMAGE` in
 pulls it with the same path as `pichi pull` (`--pull=missing`) and then
 continues the build. The first build fetches the appliance.
 
-### Transitional host packaging (follow-up)
+### OCI import and verity verification
 
-The locked contract (§2.2 step 6, §2.5, §2.7) requires the host to take a
-guest-published OCI layout from the output mount and import it. Today's
-`pichi build` host path still packages from transitional leftovers:
-`build.yaml` plus scute/PMI blobs via `package_artifact`, with source-carapace
-vGPTs still wired for that path. Rewriting host packaging to pure
-OCI-directory import (matching the locked contract) is an explicit follow-up
-and does **not** block landing the v0 build-port protocol cut.
+After guest exit 0, `pichi build` imports the complete OCI layout at the
+output mount root using the same reader as `pichi load`. A build must have
+exactly one image manifest in `index.json`. The host preserves its original
+bytes and digest, including inherited layers, and applies only the requested
+local tag. It never reconstructs a manifest or prepends cached source scutes.
+
+Import first copies verified bytes to a private directory. It requires the
+`oci-layout` version 1.0.0 marker, schema-2 OCI index and image manifest media
+types, pichi artifact/config/layer types, and every referenced blob with its
+exact SHA-256 digest and size. Nested indexes, duplicate layers/manifests,
+unreferenced blobs, unknown files/directories, symlinks, special files, and
+Unix hard links fail closed. All file access is confined to the opened output
+directory. No output tag changes until the complete layout passes validation.
+
+Limits: 4,096 files; 4 KiB for `oci-layout`; 1 MiB each for index, manifest,
+config, and the ignored transitional YAML; 16 MiB for optional opaque
+`inventory.cbor`; 16 GiB per blob; 64 GiB total input and total expanded scute
+bytes. Compressed scutes retain the streaming decoder's 16 GiB per-scute and
+128 MiB window limits. Inventory remains Conglobate-owned; import does not
+interpret it or claim to verify its attestations.
+
+For **every scute**, including cache hits, the host rebuilds dm-verity from
+the cow bytes and the full manifest salt. Reconstruction uses SHA-256,
+format 1/hash type 1, 4,096-byte data/hash blocks, and a zero UUID. The host
+requires a complete salt chain from the zero-prefix base to exactly one tip;
+manifest layer order does not determine that chain. A tip-hash annotation
+is never used as a trust anchor. Only rebuilt sidecars enter the cache.
+
+**Guest verity choice (#26):** guest verity is optional and never
+authoritative. If supplied as `blobs/sha256/<cow-digest>.verity`, it must
+match the rebuilt file byte for byte (header and tree); any mismatch fails
+the import. This also applies to Conglobate's temporary flat verity copies.
+
+### Conglobate dual-write compatibility
+
+Conglobate may continue to emit its flat files beside the complete OCI tree
+until its own follow-up removes dual-write. `build.yaml` is only a bounded
+regular file: the host never opens or parses it. Flat `NNNN.cow` /
+`NNNN.verity` pairs must start at `0000` without gaps, each cow must match a
+unique raw scute in the OCI manifest, and each verity must match that scute's
+host rebuild. Optional `boot.pmi` must match an OCI PMI layer. Filenames and
+salts never come from YAML. A packing list without a complete OCI layout
+fails; there is no fallback. Pure OCI layouts need no flat files.
 
 ### Transitional `pichi.lock` host glue (Conglobate Follow-up A)
 
 The host reads the lock named by `-l`/`--lock` (default `pichi.lock`
 under `--subdir`) solely for **source-carapace reference keys + index
-digest pins** used in the transitional vGPT / `package_artifact`
-pass-through. Recipe parse of `pichi.yaml` stays on the guest (§2.2).
-Shape:
+digest pins** used to wire source-carapace vGPTs as guest build inputs.
+They do not select or prepend layers during output import. Recipe parse of
+`pichi.yaml` stays on the guest (§2.2). Shape:
 
 ```yaml
 version: 1
@@ -209,8 +245,10 @@ index blob for `qualification.local/fedora:43` →
 (343 index bytes; placeholder inner manifest `sha256:` + 32×`0x11`) and
 supply a tiny imported carapace behind that descriptor. Default build
 image remains `ghcr.io/pichi-vm/conglobate:0.2.0@sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829` (Conglobate #22 virtiofs final-name write fix, revision `7d10da8f`). The real appliance
-smoke checks `build.yaml` consumption, clean poweroff, and an inspectable
-packaged output tag.
+smoke checks `build.yaml` consumption, clean poweroff, and import of an inspectable OCI output tag.
+The source vGPT wiring remains an input compatibility measure; the guest
+OCI manifest alone determines the output layers.
+
 
 ---
 
