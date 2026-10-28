@@ -7,6 +7,8 @@
 #![allow(clippy::unwrap_used)]
 
 use assert_cmd::Command;
+use clap::{Args, FromArgMatches};
+use pichi::cli::BuildArgs;
 
 #[test]
 fn build_help_documents_defaults_and_drops_recipe_flag() {
@@ -17,12 +19,29 @@ fn build_help_documents_defaults_and_drops_recipe_flag() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
-        stdout.contains("-f, --file") && stdout.contains("pichi.yaml"),
+        stdout.contains("-f, --file") && stdout.contains("[default: pichi.yaml]"),
         "recipe default missing:\n{stdout}"
     );
     assert!(
-        stdout.contains("-l, --lock") && stdout.contains("pichi.lock"),
+        stdout.contains("-l, --lock") && stdout.contains("[default: pichi.lock]"),
         "lock default missing:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("(default `pichi.yaml`)") && !stdout.contains("(default `pichi.lock`)"),
+        "defaults should only appear in clap annotations:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Subdirectory of <dir> holding the recipe and lock")
+            && stdout.contains("[default: .]"),
+        "subdirectory help or default missing:\n{stdout}"
+    );
+    let usage = stdout
+        .lines()
+        .find(|line| line.starts_with("Usage:"))
+        .unwrap();
+    assert!(
+        usage.contains("--ref <GIT_REF>") && !usage.contains("[--ref"),
+        "usage must require --ref:\n{stdout}"
     );
     assert!(
         stdout.contains("-b, --build-image") && stdout.contains("Build appliance image"),
@@ -46,6 +65,40 @@ fn build_help_documents_defaults_and_drops_recipe_flag() {
     ] {
         assert!(stdout.contains(flag), "missing {flag}:\n{stdout}");
     }
+}
+
+#[test]
+fn build_subdir_defaults_to_current_directory() {
+    for (extra, expected) in [
+        (vec![], "."),
+        (vec!["--subdir", "recipes/app"], "recipes/app"),
+    ] {
+        let mut argv = vec!["build", ".", "--ref", "main"];
+        argv.extend(extra);
+        let matches = BuildArgs::augment_args(clap::Command::new("build"))
+            .try_get_matches_from(argv)
+            .unwrap();
+        let args = BuildArgs::from_arg_matches(&matches).unwrap();
+        assert_eq!(args.subdir, expected);
+    }
+}
+
+#[test]
+fn build_requires_ref_during_argument_parsing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let assert = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args(["build", tmp.path().to_str().unwrap()])
+        .assert()
+        .code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("required arguments were not provided")
+            && stderr.contains("--ref <GIT_REF>")
+            && !stderr.contains("BUILD.md"),
+        "missing --ref should produce a clap error:\n{stderr}"
+    );
 }
 
 #[test]
