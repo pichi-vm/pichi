@@ -25,8 +25,15 @@ const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 const METADATA_CAP: u64 = 1024 * 1024;
+#[cfg(not(test))]
 const BLOB_CAP: u64 = 16 * 1024 * 1024 * 1024;
+#[cfg(not(test))]
 const TOTAL_CAP: u64 = 64 * 1024 * 1024 * 1024;
+// Keep oversized fixtures small even on filesystems without sparse files.
+#[cfg(test)]
+const BLOB_CAP: u64 = 1024 * 1024;
+#[cfg(test)]
+const TOTAL_CAP: u64 = 4 * BLOB_CAP;
 const FILE_CAP: usize = 4096;
 
 #[derive(Deserialize)]
@@ -1026,6 +1033,13 @@ pub(super) mod tests {
                 Err(error) => Err(error),
             };
             assert!(result.is_err(), "accepted {case}");
+            if case == "oversized total" {
+                assert!(
+                    format!("{:#}", result.unwrap_err())
+                        .contains("OCI layout exceeds size or file count cap"),
+                    "missed total size cap"
+                );
+            }
             assert_eq!(
                 db.resolve_tag(&key).await.unwrap(),
                 Some(old),
