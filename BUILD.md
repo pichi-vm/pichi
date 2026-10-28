@@ -191,12 +191,12 @@ images:
     index: sha256:<digest>
 ```
 
-Smoke context (Conglobate `main` @ `54a2072a`): seed the exact
+Smoke context (Conglobate `main` @ `7d10da8f`): seed the exact
 index blob for `qualification.local/fedora:43` →
 `sha256:4e335e141a3f950ed68c68f23c112930c51af5ec9658d1263353eb229a6429d1`
 (343 index bytes; placeholder inner manifest `sha256:` + 32×`0x11`) and
 supply a tiny imported carapace behind that descriptor. Default build
-image remains `ghcr.io/pichi-vm/conglobate:0.2.0@sha256:48bda98cf9b59cebd58d3eaa36dfc2e3153126db64c6f8596badc7cc0cb0312d` (Conglobate #15 output-staging fix, revision `54a2072a`). The real appliance
+image remains `ghcr.io/pichi-vm/conglobate:0.2.0@sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829` (Conglobate #22 virtiofs final-name write fix, revision `7d10da8f`). The real appliance
 smoke checks `build.yaml` consumption, clean poweroff, and an inspectable
 packaged output tag.
 
