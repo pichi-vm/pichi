@@ -64,7 +64,7 @@ pub fn pull_build_image(graphroot: &Path) -> bool {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     eprintln!(
-        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate:0.2.0@sha256:48bda98cf9b59cebd58d3eaa36dfc2e3153126db64c6f8596badc7cc0cb0312d.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate:0.2.0@sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829.\nstdout:\n{stdout}\nstderr:\n{stderr}",
         out.status,
     );
     false
@@ -301,9 +301,9 @@ pub fn read_combined(out: &Path, err: &Path) -> String {
 /// Locked Conglobate smoke reference (must match recipe `from:` and lock key).
 pub const SMOKE_SOURCE_REF: &str = "qualification.local/fedora:43";
 
-/// Conglobate main after the output-staging fix, matching the appliance revision.
+/// Conglobate main after the virtiofs final-name write fix, matching the appliance.
 /// Includes the locked context recipe used by the real build smoke.
-pub const SMOKE_CONGLOBATE_REF: &str = "54a2072ad5966ca97b0db10893b6d7659d4b20a5";
+pub const SMOKE_CONGLOBATE_REF: &str = "7d10da8f078bc9285292eeca2e2f34e357b0615c";
 
 /// Exact index digest pinned in Conglobate's `lock.yaml` for [`SMOKE_SOURCE_REF`].
 pub const SMOKE_LOCK_INDEX: &str =
