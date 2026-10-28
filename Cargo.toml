@@ -33,6 +33,7 @@ conglobate.workspace = true
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true
 bytes.workspace = true
+cap-std = "4.0.3"
 env_logger.workspace = true
 futures-util.workspace = true
 hex.workspace = true
