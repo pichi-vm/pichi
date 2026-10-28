@@ -50,6 +50,24 @@ jobs:
           # musl triple matching this host's arch.
           rustup target add x86_64-unknown-none aarch64-unknown-none "${{ matrix.guest_musl }}"
 
+      # The Nix-based ARM64 runner does not include xz in its service PATH.
+      - name: Install Zig extraction tool (Linux arm64)
+        if: matrix.os == 'linux-arm64'
+        shell: bash
+        run: |
+          if ! command -v xz >/dev/null; then
+            xz_path=$(nix --extra-experimental-features 'nix-command flakes' build \
+              github:NixOS/nixpkgs/08d3a97586f6b6343b3b5e799980773629432610#xz.bin \
+              --no-link --print-out-paths)
+            echo "$xz_path/bin" >> "$GITHUB_PATH"
+          fi
+
+      # Conglobate's guest engine builds zstd C code for musl on every host.
+      - name: Install guest C toolchain
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
       # The boot step (`--features vm-tests`) consumes arma/dillo/conglobate/corium
       # as git artifact deps, whose transitive tatu/snuffler artifact deps target
       # non-default triples. The cargo bug that panicked on this
@@ -140,5 +158,12 @@ jobs:
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
+          CC_x86_64_unknown_linux_musl: "zig cc"
+          CC_aarch64_unknown_linux_musl: "zig cc"
+          # cc-rs supplies Rust triples; Zig needs its target spelling last.
+          CFLAGS_x86_64_unknown_linux_musl: "--target=x86_64-linux-musl"
+          CFLAGS_aarch64_unknown_linux_musl: "--target=aarch64-linux-musl"
+          AR_x86_64_unknown_linux_musl: "zig ar"
+          AR_aarch64_unknown_linux_musl: "zig ar"
         run: |
           cargo test -p pichi --features vm-tests -- --test-threads=1 --nocapture

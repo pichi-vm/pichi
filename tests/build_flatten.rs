@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Increment 8b, end to end through the real host CLI: `pichi build` of a
-//! `from:`-only recipe boots the conglobate build image, which attaches the
-//! source carapace, flattens it into one base scute, and emits `build.yaml`;
-//! the host then packages a tagged carapace artifact.
+//! `from:`-only plan boots the conglobate build image, which attaches the
+//! source carapace, flattens it into one base scute, and emits an OCI layout;
+//! the host then imports a tagged carapace artifact.
 //!
 //! This exercises the whole host path (`pichi import` → `pichi update` →
 //! `pichi build` → package) plus conglobate's source-attach + flatten. The
@@ -53,7 +53,7 @@ async fn pichi_build_flattens_source_into_a_carapace() {
         ),
     );
 
-    // The project: a from:-only carapace recipe (no derive directives → the
+    // The project: a from:-only carapace plan (no derive directives → the
     // output is the flattened base scute).
     let proj = tmp.path().join("proj");
     std::fs::create_dir_all(proj.join("pichi.build")).unwrap();
@@ -84,8 +84,8 @@ async fn pichi_build_flattens_source_into_a_carapace() {
     assert_pichi_ok("build", &build);
 
     // build success ⇒ conglobate attached the source, flattened it, and
-    // emitted a non-empty build.yaml the host packaged (package_artifact
-    // bails on zero scutes). Confirm the artifact is now tagged + inspectable.
+    // emitted a complete OCI layout. Confirm the imported artifact is tagged
+    // and inspectable.
     let inspect = pichi(g, &[], &["inspect", "out:1"]);
     assert_pichi_ok("inspect out:1", &inspect);
     let info = String::from_utf8_lossy(&inspect.stdout);

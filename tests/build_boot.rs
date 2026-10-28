@@ -3,7 +3,7 @@
 
 //! End-to-end smoke: `pichi build` against Conglobate's locked context inputs
 //! (`tests/distro/context` + `qualification.local/fedora:43`) with the real
-//! published build image (`ghcr.io/pichi-vm/conglobate:0.2.0@sha256:…`).
+//! published build image (`ghcr.io/pichi-vm/conglobate@sha256:…`).
 //!
 //! Host duties under test:
 //! - seed the exact Conglobate context index blob
@@ -11,22 +11,17 @@
 //!   `qualification.local/fedora:43`, with a tiny imported carapace behind
 //!   the placeholder inner-manifest digest;
 //! - thin-launcher wires: virtiofs repo/cache/output + `dev.pichi.build`;
-//! - complete guest OCI import, verity rebuild, and checked dual-write copies.
+//! - complete guest OCI import and host verity rebuild.
 //!
 //! Gated on the `vm-tests` feature; skips if `/dev/kvm` is unavailable.
 //! x86_64 + KVM only.
 //!
-//! TODO: republish the pinned appliance with the current pichi-artifact schema.
-//! Its older guest requires dev.pichi.carapace.verity.hash on source manifests
-//! and rejects today's source fixture before emitting its OCI output. Keep
-//! this smoke active; do not restore that retired annotation in host imports.
-
 #![cfg(all(feature = "vm-tests", target_os = "linux", target_arch = "x86_64"))]
 
 mod common;
 
 use common::{
-    SMOKE_LOCK, SMOKE_LOCK_INDEX, SMOKE_RECIPE, SMOKE_SOURCE_REF, SMOKE_SUBDIR, assert_pichi_ok,
+    SMOKE_CONTEXT, SMOKE_LOCK, SMOKE_LOCK_INDEX, SMOKE_PLAN, SMOKE_SOURCE_REF, assert_pichi_ok,
     kvm_available, pichi, prepare_smoke_repo, pull_build_image, seed_smoke_source_carapace,
 };
 
@@ -44,9 +39,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     std::fs::create_dir_all(&graphroot).unwrap();
     let g = &graphroot;
 
-    // Official build image (DEFAULT_BUILD_IMAGE = :0.2.0@sha256:…). Skip
-    // (do not fail CI) until Conglobate publishes that pin; when present,
-    // pull succeeds and the real smoke runs.
+    // Pull the digest-pinned official build image.
     if !pull_build_image(g) {
         return;
     }
@@ -55,8 +48,8 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     seed_smoke_source_carapace(g, tmp.path()).await;
 
     // Use the same Conglobate main revision as the pinned appliance.
-    // That tree stores `recipe.yaml` / `lock.yaml`; the smoke passes
-    // those paths with `-f` / `-l`.
+    // That tree stores `plan.yaml` / `lock.yaml`; the smoke passes
+    // those paths with `-p` / `-l`.
     let (repo, git_ref) = prepare_smoke_repo(tmp.path());
 
     // Timed spawn: BUILD.md requires guest exit 0 after the build.
@@ -73,10 +66,10 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             "smoke:out",
             "--ref",
             &git_ref,
-            "--subdir",
-            SMOKE_SUBDIR,
-            "-f",
-            SMOKE_RECIPE,
+            "--context",
+            SMOKE_CONTEXT,
+            "-p",
+            SMOKE_PLAN,
             "-l",
             SMOKE_LOCK,
             "--memory",

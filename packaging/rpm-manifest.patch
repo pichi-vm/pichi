@@ -13,7 +13,7 @@
 
  [dependencies]
  anyhow.workspace = true
-@@ -51,8 +45,6 @@
+@@ -52,8 +46,6 @@
  ruzstd = "0.9.1"
  # Product binaries the boot tests orchestrate (host target). Optional so only
  # `vm-tests` resolves them; a plain `cargo test` pulls zero product artifacts.
@@ -22,16 +22,16 @@
 
  # Optional guest musl binaries for `vm-tests` only. Production `pichi build`
  # launches Conglobate's shipped pichi image (see BUILD.md); it does not treat
-@@ -63,35 +55,11 @@
+@@ -64,35 +56,11 @@
  # cross-built `bin` artifact (lib = false), so cargo unifies them. Conglobate's
- # floating carapace stays at 397ab3b so its attach path still builds.
+ # engine dependencies follow the pinned appliance source.
  # Gated on `vm-tests`.
 -[target.'cfg(target_arch = "x86_64")'.dependencies]
--conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "cf02fb80558383e2f2d08090ff5a6a5520e10f1a", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
+-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "f88a7215ee93f85fe340991730e6e7a8046f02fc", artifact = "bin:conglobate", lib = false, default-features = false, features = ["engine"], target = "x86_64-unknown-linux-musl", optional = true }
 -corium = { git = "https://github.com/pichi-vm/corium", rev = "b1d2d24a8db9cf845c79a3cabc7cdd5dd6f0a275", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 -
 -[target.'cfg(target_arch = "aarch64")'.dependencies]
--conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "cf02fb80558383e2f2d08090ff5a6a5520e10f1a", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
+-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "f88a7215ee93f85fe340991730e6e7a8046f02fc", artifact = "bin:conglobate", lib = false, default-features = false, features = ["engine"], target = "aarch64-unknown-linux-musl", optional = true }
 -corium = { git = "https://github.com/pichi-vm/corium", rev = "b1d2d24a8db9cf845c79a3cabc7cdd5dd6f0a275", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 -
  [target.'cfg(unix)'.dependencies]

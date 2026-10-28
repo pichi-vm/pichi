@@ -156,11 +156,10 @@ impl OciLayout {
             blobs: HashMap::new(),
             guest_verity: Vec::new(),
         };
-        let mut expected: HashSet<PathBuf> =
-            ["oci-layout", "index.json", "inventory.cbor", "build.yaml"]
-                .into_iter()
-                .map(PathBuf::from)
-                .collect();
+        let mut expected: HashSet<PathBuf> = ["oci-layout", "index.json"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
         let mut seen = HashSet::new();
         for entry in index.manifests {
             ensure!(
@@ -252,7 +251,6 @@ impl OciLayout {
                 tag: entry.annotations.get(REF_NAME_ANNOTATION).cloned(),
             });
         }
-        layout.check_dual_write(&root, &files, &mut expected)?;
         for path in files.keys() {
             ensure!(
                 expected.contains(path),
@@ -300,10 +298,7 @@ impl OciLayout {
             }
             let cap = match name.to_str() {
                 Some("oci-layout") => 4096,
-                Some("index.json" | "build.yaml") => METADATA_CAP,
-                Some("boot.pmi") => BLOB_CAP,
-                Some(name) if Self::flat_scute_name(name) => BLOB_CAP,
-                Some("inventory.cbor") => 16 * METADATA_CAP,
+                Some("index.json") => METADATA_CAP,
                 _ if name.parent() == Some(Path::new("blobs/sha256")) => BLOB_CAP,
                 _ => bail!("unexpected OCI file: {}", name.display()),
             };
@@ -393,61 +388,6 @@ impl OciLayout {
         }
         ensure!(count == size, "truncated OCI file");
         Ok(Digest::Sha256(hash.finalize().into()))
-    }
-
-    fn flat_scute_name(name: &str) -> bool {
-        name.split_once('.').is_some_and(|(number, ext)| {
-            number.len() == 4
-                && number.bytes().all(|b| b.is_ascii_digit())
-                && matches!(ext, "cow" | "verity")
-        })
-    }
-
-    /// Conglobate's dual-write files are redundant copies, never a packing
-    /// list. Match their bytes to the OCI manifest without opening build.yaml.
-    fn check_dual_write(
-        &mut self,
-        root: &Dir,
-        files: &BTreeMap<PathBuf, u64>,
-        expected: &mut HashSet<PathBuf>,
-    ) -> Result<()> {
-        let scutes: HashSet<Digest> = self
-            .manifests
-            .iter()
-            .flat_map(|m| &m.manifest.layers)
-            .filter(|l| matches!(l, pichi_artifact::Layer::Scute(_)))
-            .map(|l| l.digest_str().parse())
-            .collect::<Result<_, _>>()?;
-        let mut seen = HashSet::new();
-        for number in 0..scutes.len() {
-            let cow = PathBuf::from(format!("{number:04}.cow"));
-            let verity = cow.with_extension("verity");
-            let Some(size) = files.get(&cow) else {
-                break;
-            };
-            let digest = Self::copy_content(root, &cow, *size, std::io::sink())?;
-            ensure!(
-                scutes.contains(&digest) && seen.insert(digest.clone()),
-                "flat COW does not match a unique OCI scute"
-            );
-            let size = *files.get(&verity).context("flat COW has no verity file")?;
-            self.copy_guest_verity(root, &verity, size, digest)?;
-            expected.insert(cow);
-            expected.insert(verity);
-        }
-        if let Some(size) = files.get(Path::new("boot.pmi")) {
-            let digest = Self::copy_content(root, Path::new("boot.pmi"), *size, std::io::sink())?;
-            ensure!(
-                self.manifests
-                    .iter()
-                    .flat_map(|m| &m.manifest.layers)
-                    .any(|l| matches!(l, pichi_artifact::Layer::Pmi(_))
-                        && l.digest_str() == digest.to_string()),
-                "flat PMI does not match OCI layer"
-            );
-            expected.insert(PathBuf::from("boot.pmi"));
-        }
-        Ok(())
     }
 
     fn copy_guest_verity(
@@ -690,7 +630,6 @@ pub(super) mod tests {
         fixture.manifest["layers"].as_array_mut().unwrap().reverse();
         let digest = fixture.write(&output);
         fixture.sidecars(&output);
-        std::fs::write(output.join("inventory.cbor"), [0xa0]).unwrap();
         for _ in 0..2 {
             let imported = OciLayout::read(&output, &store).await.unwrap();
             assert_eq!(
@@ -727,57 +666,24 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn accepts_dual_write_without_reading_yaml_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("output");
-        let store = FilesystemBlobStore::new(dir.path().join("cache"));
-        let db = FilesystemTagDb::open(dir.path().join("cache")).unwrap();
-        let mut fixture = LayoutFixture::new();
-        fixture.add_scute(false);
-        let pmi = b"fixture PMI".to_vec();
-        fixture.manifest["layers"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({
-                "mediaType": pichi_artifact::MEDIA_TYPE_PICHI_PMI_V1,
-                "digest": Digest::from_bytes_sha256(&pmi).to_string(), "size": pmi.len(),
-            }));
-        fixture.blobs.push(pmi.clone());
-        let config = pichi_artifact::Config::default().to_json().unwrap();
-        fixture.manifest["config"] =
-            serde_json::to_value(pichi_artifact::ConfigDescriptor::for_config(
-                Digest::from_bytes_sha256(&config).to_string(),
-                config.len() as u64,
-            ))
-            .unwrap();
-        fixture.blobs.push(config);
-        let digest = fixture.write(&output);
-        // Only the new delta has flat copies. The inherited base must come
-        // from the guest's complete OCI layout, even on an empty host cache.
-        std::fs::write(output.join("0000.cow"), &fixture.blobs[1]).unwrap();
-        std::fs::write(output.join("0000.verity"), &fixture.trees[1]).unwrap();
-        std::fs::write(output.join("boot.pmi"), &pmi).unwrap();
-        std::fs::write(
-            output.join("build.yaml"),
-            b"pmi: /outside/secret\nscutes: [../../outside]\n\xff",
-        )
-        .unwrap();
-        let layout = OciLayout::read(&output, &store).await.unwrap();
-        assert_eq!(
-            layout.import_build(&store, &db, "dual:v1").await.unwrap(),
-            digest
-        );
-        let manifest =
-            Manifest::from_reader_validated(store.get_blob(&digest).await.unwrap().as_slice())
-                .unwrap();
-        assert_eq!(manifest.layers.len(), 3);
-        assert_eq!(
-            manifest.carapace_top_root(&store).await.unwrap(),
-            fixture.tip
-        );
-        for blob in &fixture.blobs {
-            let digest = Digest::from_bytes_sha256(blob);
-            assert_eq!(store.get_blob(&digest).await.unwrap(), *blob);
+    async fn rejects_retired_output_files() {
+        for name in [
+            "build.yaml",
+            "inventory.cbor",
+            "0000.cow",
+            "0000.verity",
+            "boot.pmi",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let output = dir.path().join("output");
+            let store = FilesystemBlobStore::new(dir.path().join("cache"));
+            LayoutFixture::new().write(&output);
+            std::fs::write(output.join(name), b"retired output").unwrap();
+            let error = OciLayout::read(&output, &store).await.err().unwrap();
+            assert!(
+                format!("{error:#}").contains("unexpected OCI file"),
+                "{name}: {error:#}"
+            );
         }
     }
 
@@ -817,10 +723,6 @@ pub(super) mod tests {
             "bad geometry",
             "unexpected file",
             "unreferenced blob",
-            "flat verity",
-            "tampered flat cow",
-            "tampered flat verity",
-            "unmatched flat PMI",
             "short salt",
             "missing base",
             "salt mismatch",
@@ -830,7 +732,6 @@ pub(super) mod tests {
             "truncated verity",
             "oversized metadata",
             "oversized blob",
-            "oversized inventory",
             "oversized total",
             "too many files",
             "unexpected directory",
@@ -958,25 +859,6 @@ pub(super) mod tests {
                 )
                 .unwrap(),
 
-                "flat verity" => {
-                    std::fs::write(output.join("0000.verity"), &fixture.trees[0]).unwrap()
-                }
-                "tampered flat cow" | "tampered flat verity" => {
-                    let mut cow_bytes = fixture.blobs[0].clone();
-                    let mut tree = fixture.trees[0].clone();
-                    if case == "tampered flat cow" {
-                        cow_bytes[100] ^= 1;
-                    } else {
-                        *tree.last_mut().unwrap() ^= 1;
-                    }
-                    std::fs::write(output.join("0000.cow"), cow_bytes).unwrap();
-                    std::fs::write(output.join("0000.verity"), tree).unwrap();
-                    // A valid digest-named tree must not hide a bad flat tree.
-                    fixture.sidecars(&output);
-                }
-                "unmatched flat PMI" => {
-                    std::fs::write(output.join("boot.pmi"), b"unmatched").unwrap()
-                }
                 "salt mismatch" => fixture.sidecars(&output),
                 "guest verity" | "truncated verity" => {
                     fixture.sidecars(&output);
@@ -989,10 +871,6 @@ pub(super) mod tests {
                     std::fs::write(cow.verity_path(), bytes).unwrap();
                 }
                 "oversized blob" => File::create(&cow).unwrap().set_len(BLOB_CAP + 1).unwrap(),
-                "oversized inventory" => File::create(output.join("inventory.cbor"))
-                    .unwrap()
-                    .set_len(16 * METADATA_CAP + 1)
-                    .unwrap(),
                 "oversized total" => {
                     for n in 0..5 {
                         File::create(output.join("blobs/sha256").join(format!("{n:064x}")))

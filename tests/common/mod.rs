@@ -64,7 +64,7 @@ pub fn pull_build_image(graphroot: &Path) -> bool {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     eprintln!(
-        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate:0.2.0@sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate@sha256:b9e26efd9d81ecb5b1a950e3f4891e9a04fbc7d9d222444621bccc95fad3babd.\nstdout:\n{stdout}\nstderr:\n{stderr}",
         out.status,
     );
     false
@@ -298,12 +298,12 @@ pub fn read_combined(out: &Path, err: &Path) -> String {
     s
 }
 
-/// Locked Conglobate smoke reference (must match recipe `from:` and lock key).
+/// Locked Conglobate smoke reference (must match plan `from:` and lock key).
 pub const SMOKE_SOURCE_REF: &str = "qualification.local/fedora:43";
 
-/// Conglobate main after the virtiofs final-name write fix, matching the appliance.
-/// Includes the locked context recipe used by the real build smoke.
-pub const SMOKE_CONGLOBATE_REF: &str = "7d10da8f078bc9285292eeca2e2f34e357b0615c";
+/// Conglobate revision matching the published OCI-only appliance.
+/// Includes the locked context plan used by the real build smoke.
+pub const SMOKE_CONGLOBATE_REF: &str = "f88a7215ee93f85fe340991730e6e7a8046f02fc";
 
 /// Exact index digest pinned in Conglobate's `lock.yaml` for [`SMOKE_SOURCE_REF`].
 pub const SMOKE_LOCK_INDEX: &str =
@@ -321,8 +321,8 @@ pub const SMOKE_PLACEHOLDER_MANIFEST: &str =
 pub const SMOKE_INDEX_BYTES: &[u8] = br#"{"manifests":[{"artifactType":"application/vnd.pichi.artifact.v1+json","digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","mediaType":"application/vnd.oci.image.manifest.v1+json","platform":{"architecture":"amd64","os":"pichi"},"size":2}],"mediaType":"application/vnd.oci.image.index.v1+json","schemaVersion":2}"#;
 
 /// Conglobate smoke context under the repo mount.
-pub const SMOKE_SUBDIR: &str = "tests/distro/context";
-pub const SMOKE_RECIPE: &str = "recipe.yaml";
+pub const SMOKE_CONTEXT: &str = "tests/distro/context";
+pub const SMOKE_PLAN: &str = "plan.yaml";
 pub const SMOKE_LOCK: &str = "lock.yaml";
 
 /// Resolve the full `sha256:…` digest for a local tag via `pichi inspect`.
@@ -421,12 +421,10 @@ pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) {
     );
 }
 
-/// Checkout Conglobate at [`SMOKE_CONGLOBATE_REF`] into `tmp/smoke-repo`.
-/// Prefers a sibling
-/// `../conglobate` checkout that already has the commit; otherwise clones
-/// from GitHub. Returns `(repo_root, git_ref)`.
+/// Commit the smoke context from the appliance source revision into a fresh
+/// repository. Read the sibling checkout without changing it; CI clones the
+/// source when that checkout is absent.
 pub fn prepare_smoke_repo(tmp: &Path) -> (PathBuf, String) {
-    let repo = tmp.join("smoke-repo");
     let sibling = Path::new(env!("CARGO_MANIFEST_DIR")).join("../conglobate");
     let has_commit = Command::new("git")
         .args([
@@ -436,65 +434,95 @@ pub fn prepare_smoke_repo(tmp: &Path) -> (PathBuf, String) {
         ])
         .current_dir(&sibling)
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if has_commit {
-        let st = Command::new("git")
-            .args([
-                "clone",
-                "-q",
-                "--no-checkout",
-                sibling.to_str().unwrap(),
-                repo.to_str().unwrap(),
-            ])
-            .status()
-            .expect("git clone --local sibling conglobate");
-        assert!(st.success(), "git clone sibling failed");
+        .is_ok_and(|status| status.success());
+    let source = if has_commit {
+        sibling
     } else {
-        let st = Command::new("git")
-            .args([
-                "clone",
-                "-q",
-                "--no-checkout",
-                "https://github.com/pichi-vm/conglobate.git",
-                repo.to_str().unwrap(),
-            ])
-            .status()
-            .expect("git clone conglobate");
+        let source = tmp.join("conglobate-source");
         assert!(
-            st.success(),
-            "git clone github.com/pichi-vm/conglobate failed"
+            Command::new("git")
+                .args([
+                    "clone",
+                    "-q",
+                    "--no-checkout",
+                    "https://github.com/pichi-vm/conglobate.git"
+                ])
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
         );
-        let st = Command::new("git")
+        assert!(
+            Command::new("git")
+                .args(["fetch", "-q", "origin", SMOKE_CONGLOBATE_REF])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        source
+    };
+    let repo = tmp.join("smoke-repo");
+    let context = repo.join(SMOKE_CONTEXT);
+    std::fs::create_dir_all(&context).unwrap();
+    for name in [SMOKE_PLAN, SMOKE_LOCK, "message.txt"] {
+        let output = Command::new("git")
             .args([
-                "fetch",
-                "-q",
-                "--depth",
-                "1",
-                "origin",
-                SMOKE_CONGLOBATE_REF,
+                "show",
+                &format!("{SMOKE_CONGLOBATE_REF}:{SMOKE_CONTEXT}/{name}"),
             ])
-            .current_dir(&repo)
-            .status()
-            .expect("git fetch tip");
-        assert!(st.success(), "git fetch {SMOKE_CONGLOBATE_REF} failed");
+            .current_dir(&source)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "read pinned {name}");
+        std::fs::write(context.join(name), output.stdout).unwrap();
     }
-    let st = Command::new("git")
-        .args(["checkout", "-q", SMOKE_CONGLOBATE_REF])
+    assert!(
+        std::fs::read_to_string(context.join(SMOKE_LOCK))
+            .unwrap()
+            .contains(SMOKE_LOCK_INDEX)
+    );
+    // The tiny seed has no shell. Retain the upstream COPY, omitting its
+    // Fedora-specific RUN assertions, and commit those exact fixture inputs.
+    let plan = std::fs::read_to_string(context.join(SMOKE_PLAN)).unwrap();
+    std::fs::write(
+        context.join(SMOKE_PLAN),
+        format!(
+            "{}image: rootfs\n",
+            plan.split("    - run:").next().unwrap()
+        ),
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "Commit smoke inputs",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
         .current_dir(&repo)
-        .status()
-        .expect("git checkout tip");
-    assert!(st.success(), "git checkout {SMOKE_CONGLOBATE_REF} failed");
-
-    let lock_path = repo.join(SMOKE_SUBDIR).join(SMOKE_LOCK);
-    assert!(
-        lock_path.is_file(),
-        "Conglobate tip missing {SMOKE_SUBDIR}/{SMOKE_LOCK}"
-    );
-    let lock_text = std::fs::read_to_string(&lock_path).unwrap();
-    assert!(
-        lock_text.contains(SMOKE_LOCK_INDEX),
-        "Conglobate lock.yaml does not pin {SMOKE_LOCK_INDEX}"
-    );
-    (repo, SMOKE_CONGLOBATE_REF.to_string())
+        .output()
+        .unwrap();
+    assert!(head.status.success());
+    (
+        repo,
+        String::from_utf8(head.stdout).unwrap().trim().to_owned(),
+    )
 }

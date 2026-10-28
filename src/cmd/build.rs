@@ -16,12 +16,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use conglobate::{CarapaceRecipe, PmiRecipe};
+use conglobate::{CarapacePlan, PmiPlan};
 use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
-use crate::cli::{BuildArgs, DEFAULT_LOCK, DEFAULT_RECIPE, PullArgs, PullPolicy};
+use crate::cli::{BuildArgs, DEFAULT_LOCK, DEFAULT_PLAN, PullArgs, PullPolicy};
 #[cfg(unix)]
 use crate::cmd::build_port::clear_device_cloexec;
 use crate::cmd::build_port::{
@@ -69,16 +69,16 @@ struct BuildLockImage {
 pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let build_image_ref = resolve_build_image(args.build_image.as_deref());
 
-    // Thin-launcher build-input (BUILD.md §2.4): `ref` is required; recipe
-    // and lock default to `pichi.yaml` / `pichi.lock` (`-f`/`--file`,
+    // Thin-launcher build-input (BUILD.md §2.4): `ref` is required; plan
+    // and lock default to `pichi.yaml` / `pichi.lock` (`-p`/`--plan`,
     // `-l`/`--lock` override). CBOR carries the resolved relative paths.
     let git_ref = args.git_ref.clone();
-    let recipe = args.recipe.clone();
+    let plan = args.plan.clone();
     let lock = args.lock.clone();
-    let subdir = if args.subdir.is_empty() {
+    let context = if args.context.is_empty() {
         ".".to_string()
     } else {
-        args.subdir.clone()
+        args.context.clone()
     };
 
     let build_dir = args.dir.join("pichi.build");
@@ -115,20 +115,20 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     // Transitional source-carapace pass-through (BUILD.md §3): resolve the
     // locked images from the RO cache and wire each as a vGPT. Prefer
-    // `pichi.lock` (or `-l`/`--lock`) under `--subdir`; fall back to legacy
-    // `pichi.build/` recipe `from:` keys when that layout is present.
-    let build_lock = load_build_lock(&args.dir, &subdir, &lock)?;
+    // `pichi.lock` (or `-l`/`--lock`) under `--context`; fall back to legacy
+    // `pichi.build/` plan `from:` keys when that layout is present.
+    let build_lock = load_build_lock(&args.dir, &context, &lock)?;
     let source_refs = if let Some(parsed) = build_lock.as_ref() {
         parsed.images.keys().cloned().collect()
     } else if legacy_project {
         collect_source_refs(&build_dir)?
     } else {
         bail!(
-            "no build lock at {} and no pichi.build/ under {} — expected {} (-l/--lock) and {} (-f/--file), or a legacy pichi.build project",
-            path_under_subdir(&args.dir, &subdir, &lock).display(),
+            "no build lock at {} and no pichi.build/ under {} — expected {} (-l/--lock) and {} (-p/--plan), or a legacy pichi.build project",
+            path_under_context(&args.dir, &context, &lock).display(),
             args.dir.display(),
             DEFAULT_LOCK,
-            DEFAULT_RECIPE,
+            DEFAULT_PLAN,
         );
     };
 
@@ -198,9 +198,9 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     let build_input = BuildInput {
         git_ref,
-        recipe,
+        plan,
         lock,
-        subdir: Some(subdir),
+        context: Some(context),
         location: args.location.clone(),
     };
     let response = build_input
@@ -301,10 +301,10 @@ pub(crate) fn build_dillo_args(
 /// pichi wires. `NetSpec` defaults `backend` to user; we state it explicitly.
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
-/// Durable Conglobate appliance pin (Follow-up A / locked tag@digest).
-/// Index digest identifies Conglobate #22 (virtiofs writes at final names, main 7d10da8f).
-/// Official-image smoke verifies guest output, poweroff, and host packaging.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate:0.2.0@sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829";
+/// Conglobate appliance pinned by content digest.
+/// Index digest identifies Conglobate f88a7215 (plan/context inputs, OCI-only output).
+/// Official-image smoke verifies guest output, poweroff, and host import.
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:b9e26efd9d81ecb5b1a950e3f4891e9a04fbc7d9d222444621bccc95fad3babd";
 
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
@@ -382,16 +382,16 @@ pub(crate) fn canonicalize_reference(s: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(format!("{}{}", &name[..abs], digest))
 }
 
-/// Resolve `rel` under `--subdir` inside the repo mount.
-fn path_under_subdir(repo: &Path, subdir: &str, rel: &str) -> PathBuf {
-    repo.join(subdir).join(rel)
+/// Resolve `rel` under `--context` inside the repo mount.
+fn path_under_context(repo: &Path, context: &str, rel: &str) -> PathBuf {
+    repo.join(context).join(rel)
 }
 
 /// Load the build lock (`pichi.lock` by default; `-l`/`--lock` overrides)
 /// when present. Returns `Ok(None)` if the file is missing (legacy
 /// `pichi.build/` projects).
-fn load_build_lock(repo: &Path, subdir: &str, lock_rel: &str) -> Result<Option<BuildLockFile>> {
-    let path = path_under_subdir(repo, subdir, lock_rel);
+fn load_build_lock(repo: &Path, context: &str, lock_rel: &str) -> Result<Option<BuildLockFile>> {
+    let path = path_under_context(repo, context, lock_rel);
     if !path.is_file() {
         return Ok(None);
     }
@@ -421,18 +421,18 @@ fn collect_source_refs(build_dir: &Path) -> Result<Vec<String>> {
     if carapace_yaml.is_file() {
         let text = std::fs::read_to_string(&carapace_yaml)
             .with_context(|| format!("reading {}", carapace_yaml.display()))?;
-        let recipe = CarapaceRecipe::parse(&text)
+        let plan = CarapacePlan::parse(&text)
             .with_context(|| format!("parsing {}", carapace_yaml.display()))?;
-        refs.insert(recipe.from);
+        refs.insert(plan.from);
     }
 
     let pmi_yaml = build_dir.join("pmi.yaml");
     if pmi_yaml.is_file() {
         let text = std::fs::read_to_string(&pmi_yaml)
             .with_context(|| format!("reading {}", pmi_yaml.display()))?;
-        let recipe =
-            PmiRecipe::parse(&text).with_context(|| format!("parsing {}", pmi_yaml.display()))?;
-        if let Some(from) = recipe.from {
+        let plan =
+            PmiPlan::parse(&text).with_context(|| format!("parsing {}", pmi_yaml.display()))?;
+        if let Some(from) = plan.from {
             refs.insert(from);
         }
     }
@@ -755,8 +755,8 @@ mod tests {
     }
 
     #[test]
-    fn default_recipe_and_lock_names() {
-        assert_eq!(DEFAULT_RECIPE, "pichi.yaml");
+    fn default_plan_and_lock_names() {
+        assert_eq!(DEFAULT_PLAN, "pichi.yaml");
         assert_eq!(DEFAULT_LOCK, "pichi.lock");
     }
 
@@ -789,11 +789,14 @@ mod tests {
 
     #[test]
     fn canonicalize_reference_strips_tag_before_digest() {
-        let pinned = DEFAULT_BUILD_IMAGE;
-        let canon = canonicalize_reference(pinned);
+        let pinned = format!(
+            "ghcr.io/pichi-vm/conglobate:0.2.0@{}",
+            DEFAULT_BUILD_IMAGE.split_once('@').unwrap().1
+        );
+        let canon = canonicalize_reference(&pinned);
         assert_eq!(
             canon.as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829"
+            "ghcr.io/pichi-vm/conglobate@sha256:b9e26efd9d81ecb5b1a950e3f4891e9a04fbc7d9d222444621bccc95fad3babd"
         );
         let parsed: Reference = canon.parse().unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
@@ -802,7 +805,7 @@ mod tests {
             ReferenceKind::Digest(d) => {
                 assert_eq!(
                     d.to_string(),
-                    "sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829"
+                    "sha256:b9e26efd9d81ecb5b1a950e3f4891e9a04fbc7d9d222444621bccc95fad3babd"
                 );
             }
             ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),
@@ -817,10 +820,10 @@ mod tests {
         );
         assert_eq!(
             canonicalize_reference(
-                "ghcr.io/pichi-vm/conglobate@sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829"
+                "ghcr.io/pichi-vm/conglobate@sha256:b9e26efd9d81ecb5b1a950e3f4891e9a04fbc7d9d222444621bccc95fad3babd"
             )
             .as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:b038aa445c20b195bef5c8b271eaad62d2c2a30342fa60e14e88d3febce6c829"
+            "ghcr.io/pichi-vm/conglobate@sha256:b9e26efd9d81ecb5b1a950e3f4891e9a04fbc7d9d222444621bccc95fad3babd"
         );
     }
 
@@ -890,9 +893,9 @@ mod tests {
 
         let input = BuildInput {
             git_ref: "main".into(),
-            recipe: DEFAULT_RECIPE.into(),
+            plan: DEFAULT_PLAN.into(),
             lock: DEFAULT_LOCK.into(),
-            subdir: Some("tests/distro/context".into()),
+            context: Some("tests/distro/context".into()),
             location: None,
         };
         let response = input.encode_success().unwrap();

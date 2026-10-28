@@ -62,14 +62,14 @@ dillo = { git = "https://github.com/pichi-vm/dillo", artifact = "bin", optional 
 # (`CORIUM_ROOT_OK` is gone). Conglobate's lib (types only) is the host
 # `conglobate` dep above — this entry shares that name to add only the
 # cross-built `bin` artifact (lib = false), so cargo unifies them. Conglobate's
-# floating carapace stays at 397ab3b so its attach path still builds.
+# engine dependencies follow the pinned appliance source.
 # Gated on `vm-tests`.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "cf02fb80558383e2f2d08090ff5a6a5520e10f1a", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "f88a7215ee93f85fe340991730e6e7a8046f02fc", artifact = "bin:conglobate", lib = false, default-features = false, features = ["engine"], target = "x86_64-unknown-linux-musl", optional = true }
 corium = { git = "https://github.com/pichi-vm/corium", rev = "b1d2d24a8db9cf845c79a3cabc7cdd5dd6f0a275", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "cf02fb80558383e2f2d08090ff5a6a5520e10f1a", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "f88a7215ee93f85fe340991730e6e7a8046f02fc", artifact = "bin:conglobate", lib = false, default-features = false, features = ["engine"], target = "aarch64-unknown-linux-musl", optional = true }
 corium = { git = "https://github.com/pichi-vm/corium", rev = "b1d2d24a8db9cf845c79a3cabc7cdd5dd6f0a275", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -153,8 +153,8 @@ dillo-config = { git = "https://github.com/pichi-vm/dillo" }
 pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
-# Pin cf02fb8: refs.lock records the OCI manifest digest and writes no carapace tip.
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "cf02fb80558383e2f2d08090ff5a6a5520e10f1a" }
+# Pin the library and boot binary to the published build appliance revision.
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "f88a7215ee93f85fe340991730e6e7a8046f02fc", default-features = false }
 # Error handling
 anyhow = "1"
 thiserror = "2"
