@@ -4,7 +4,8 @@
 
 Status: **locked** — build-VM redesign (thin launcher). This document is
 the source of truth for `pichi build`'s host↔guest appliance contract.
-Conglobate owns plans, locks, OCI packaging, and build identity annotations; see
+Conglobate owns plans, locks, Open Container Initiative (OCI) packaging,
+and build identity annotations; see
 [conglobate `DESIGN.md`](https://github.com/pichi-vm/conglobate/blob/main/DESIGN.md).
 
 > History: supersedes the earlier host-heavy BUILD.md (Conglobate-as-`/init`,
@@ -189,8 +190,18 @@ pichi imports OCI from output dir → local tag
 ```
 
 
-Failure: non-zero guest exit means no successful product. Do not treat
-partial output as an artifact.
+Failure: normal VM poweroff does not prove the build succeeded. The host
+requires a finished OCI (Open Container Initiative) layout with both
+`oci-layout` and `index.json`, then validates the complete layout with the
+normal fail-closed importer. Conglobate publishes
+`oci-layout` last. An unfinished `.conglobate-output-*` directory, blobs
+without the markers, or empty output fails the build. Each launch gets a
+fresh temporary output directory, checked to be empty before launch.
+
+The host limits VM execution, including the build-port exchange, to 30
+minutes. On timeout it kills and waits for the VM. Failures print the last
+40 console lines and repeat the last `conglobate:` reason in the full
+console log as the main error when present.
 
 Resource sizing (`--memory` / `--cpus` and similar) follows the same
 patterns as `pichi run` against the appliance image's launch contract.

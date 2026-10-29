@@ -6,7 +6,8 @@
 //! Specializes `pichi run`: same launch path, plus virtiofs wires and the
 //! bidirectional named-console build-port protocol on `dev.pichi.build`
 //! (guest requests build-input; host replies with CBOR). On guest exit 0 the
-//! host takes the OCI layout from the output mount.
+//! host requires finished output and validates the OCI (Open Container
+//! Initiative) layout for import.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
@@ -33,6 +34,12 @@ use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
 use crate::cmd::run::{build_gpt_spec, find_dillo, path_arg};
 use crate::config::Config;
+
+mod output;
+use output::{BuildOutput, ConsoleLog, OutputVerdict};
+
+/// Bound guest execution, including the build-port exchange.
+const BUILD_VM_TIMEOUT: Duration = Duration::from_mins(30);
 
 /// virtio-fs mount tags the host and Conglobate agree on (BUILD.md §2.3).
 const REPO_TAG: &str = "repo";
@@ -121,7 +128,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     // Thin-launcher mounts (BUILD.md §2.2–§2.3): empty RW output, RO cache,
     // RO repo (git object store / work tree the guest resolves `--ref` against).
-    let output_dir = tempfile::TempDir::new().context("creating build output dir")?;
+    let output = BuildOutput::new()?;
     let repo_dir = std::fs::canonicalize(&args.dir)
         .with_context(|| format!("canonicalizing repo dir {}", args.dir.display()))?;
     let cache_dir = std::fs::canonicalize(&layout.graphroot)
@@ -161,7 +168,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         &pmi_path,
         dtb_path.as_deref(),
         &gpt_specs,
-        [&repo_dir, &cache_dir, output_dir.path()],
+        [&repo_dir, &cache_dir, output.as_ref()],
         Some(&console),
         memory,
         cpus,
@@ -173,14 +180,33 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .ok_or_else(|| anyhow!("pichi build requires -t <tag> to name the result"))?;
 
     let dillo = find_dillo();
-    boot_serve_and_wait(&dillo, &argv, pipes, response).await?;
-
-    // Successful guest exit is required before opening its OCI output.
-    let imported = crate::cmd::load::OciLayout::read(output_dir.path(), &blob_store).await?;
-    let digest = imported
-        .import_build(&blob_store, &db, tag)
-        .await
-        .context("importing build output")?;
+    let mut console_log = ConsoleLog::new()?;
+    output.check_empty()?;
+    let result = async {
+        let vm_result = boot_serve_and_wait(
+            &dillo,
+            &argv,
+            pipes,
+            response,
+            &console_log,
+            BUILD_VM_TIMEOUT,
+        )
+        .await;
+        let verdict = output.verdict().context("checking build output")?;
+        vm_result.with_context(|| format!("build VM failed; {verdict}"))?;
+        if verdict != OutputVerdict::Complete {
+            bail!("{verdict}");
+        }
+        // Marker presence alone is not success: use the normal fail-closed
+        // importer before publishing anything under the requested tag.
+        let imported = crate::cmd::load::OciLayout::read(output.as_ref(), &blob_store).await?;
+        imported
+            .import_build(&blob_store, &db, tag)
+            .await
+            .context("importing build output")
+    }
+    .await;
+    let digest = result.map_err(|error| console_log.failure(error))?;
     println!("pichi build: imported {tag} -> {digest}");
     Ok(())
 }
@@ -362,6 +388,8 @@ async fn boot_serve_and_wait(
     args: &[String],
     pipes: build_port::BuildPortPipes,
     response: Vec<u8>,
+    console_log: &ConsoleLog,
+    time_limit: Duration,
 ) -> Result<()> {
     log::info!("boot build VM: {} {}", dillo.display(), args.join(" "));
 
@@ -376,6 +404,7 @@ async fn boot_serve_and_wait(
 
     let mut cmd = tokio::process::Command::new(dillo);
     cmd.args(args);
+    console_log.capture(&mut cmd)?;
     // Tear down dillo if the host drops the child (exchange/error paths).
     cmd.kill_on_drop(true);
 
@@ -413,60 +442,68 @@ async fn boot_serve_and_wait(
     let mut serve =
         tokio::task::spawn_blocking(move || serve_build_port(host_rx, host_tx, &response));
 
-    let status = tokio::select! {
-        serve_result = &mut serve => {
-            match serve_result.context("build-port task join")? {
-                Ok(()) => child.wait().await.context("waiting for build VM")?,
-                Err(err) => {
-                    // dillo often exits first (e.g. missing detached --dtb). The
-                    // failure-response write then hits Broken pipe — secondary.
-                    // Prefer the guest/dillo exit so CI surfaces the real cause.
-                    match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
-                        Ok(Ok(st)) => {
-                            bail!(
-                                "build-port exchange failed after guest/dillo exit ({st}): {err}"
-                            );
-                        }
-                        Ok(Err(wait_err)) => {
-                            return Err(err).context(format!(
-                                "build-port exchange failed (also waiting for build VM: {wait_err})"
-                            ));
-                        }
-                        Err(_elapsed) => {
-                            let _ = child.start_kill();
-                            return Err(err).context(
-                                "build-port exchange failed (dillo still running; killed)",
-                            );
+    let result = tokio::time::timeout(time_limit, async {
+        let status = tokio::select! {
+            serve_result = &mut serve => {
+                match serve_result.context("build-port task join")? {
+                    Ok(()) => child.wait().await.context("waiting for build VM")?,
+                    Err(err) => {
+                        // dillo often exits first (e.g. missing detached --dtb). The
+                        // failure-response write then hits Broken pipe — secondary.
+                        // Prefer the guest/dillo exit so CI surfaces the real cause.
+                        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                            Ok(Ok(st)) => {
+                                bail!(
+                                    "build-port exchange failed after guest/dillo exit ({st}): {err}"
+                                );
+                            }
+                            Ok(Err(wait_err)) => {
+                                return Err(err).context(format!(
+                                    "build-port exchange failed (also waiting for build VM: {wait_err})"
+                                ));
+                            }
+                            Err(_elapsed) => {
+                                let _ = child.start_kill();
+                                return Err(err).context(
+                                    "build-port exchange failed (dillo still running; killed)",
+                                );
+                            }
                         }
                     }
                 }
             }
-        }
-        status = child.wait() => {
-            let status = status.context("waiting for build VM")?;
-            serve.abort();
-            match serve.await {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    bail!(
-                        "guest exited before completing build-port exchange ({status}): {err}"
-                    );
+            status = child.wait() => {
+                let status = status.context("waiting for build VM")?;
+                serve.abort();
+                match (&mut serve).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        bail!(
+                            "guest exited before completing build-port exchange ({status}): {err}"
+                        );
+                    }
+                    Err(join) if join.is_cancelled() => {
+                        bail!("guest exited before build-input request ({status})");
+                    }
+                    Err(join) => {
+                        return Err(join).context("build-port task join");
+                    }
                 }
-                Err(join) if join.is_cancelled() => {
-                    bail!("guest exited before build-input request ({status})");
-                }
-                Err(join) => {
-                    return Err(join).context("build-port task join");
-                }
+                status
             }
-            status
-        }
-    };
+        };
 
-    if !status.success() {
-        bail!("build VM exited with {status}");
+        if !status.success() {
+            bail!("build VM exited with {status}");
+        }
+        Ok(())
+    }).await;
+    if !matches!(result, Ok(Ok(()))) {
+        // Reap the child before reading the console log or output directory.
+        let _ = child.kill().await;
+        serve.abort();
     }
-    Ok(())
+    result.with_context(|| format!("build VM timed out after {} seconds", time_limit.as_secs()))?
 }
 
 #[cfg(test)]
@@ -475,6 +512,43 @@ mod tests {
     use conglobate::artifact::ReferenceKind;
     use dillo_config::FsSpec;
     use pichi_storage::TagDb as _;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hung_build_is_killed_with_console_tail() {
+        for exchange in [false, true] {
+            let pipes = create_build_port_pipes().unwrap();
+            let mut log = ConsoleLog::new().unwrap();
+            let request = if exchange {
+                format!(
+                    "printf '\\xa2\\x61v\\x01\\x62op\\x6bbuild-input' >&{}; cat <&{} >/dev/null; ",
+                    pipes.device_tx_fd, pipes.device_rx_fd
+                )
+            } else {
+                String::new()
+            };
+            let script = format!("{request}echo 'conglobate: hung build'; exec sleep 60");
+            let started = std::time::Instant::now();
+            let error = boot_serve_and_wait(
+                // Nix-based runners provide bash through PATH.
+                Path::new("bash"),
+                &["-c".into(), script],
+                pipes,
+                vec![0xa0],
+                &log,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(
+                error.to_string().contains("timed out after 1 seconds"),
+                "exchange={exchange}: {:#}",
+                log.failure(error)
+            );
+            assert_eq!(log.failure(error).to_string(), "conglobate: hung build");
+        }
+    }
 
     fn parse_fs(value: &str) -> FsSpec {
         serde_keyvalue::from_key_values(value).expect("--fs value parses as dillo FsSpec")
