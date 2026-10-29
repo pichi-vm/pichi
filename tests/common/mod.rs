@@ -25,6 +25,8 @@ use std::time::Duration;
 
 use wait_timeout::ChildExt;
 
+pub mod submodules;
+
 pub const ARMA_BIN: &str = env!("CARGO_BIN_FILE_ARMA_arma");
 pub const DILLO_BIN: &str = env!("CARGO_BIN_FILE_DILLO_dillo");
 pub const CONGLOBATE_BIN: &str = env!("CARGO_BIN_FILE_CONGLOBATE_conglobate");
