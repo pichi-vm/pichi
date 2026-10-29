@@ -4,31 +4,23 @@
 set -euo pipefail
 export LC_ALL=C
 
-root=$(cd "$(dirname "$0")/.." && pwd)
-mkdir -p "${1:?Usage: debian/prepare-source OUTPUT_DIRECTORY}"
-outdir=$(cd "$1" && pwd)
-case "$outdir/" in
-    "$root/"*) echo 'Output directory must be outside the source tree.' >&2; exit 2 ;;
-esac
-version=$(dpkg-parsechangelog -l "$root/debian/changelog" -S Version)
-version=${version%-*}
-workdir=$(mktemp -d "$outdir/.pichi-source.XXXXXX")
+cd "$(dirname "$0")/.."
+if [[ -n $(git status --porcelain) ]]; then
+    echo 'Commit or remove local changes before refreshing sources.' >&2
+    exit 1
+fi
+ref=${1:-origin/main}
+workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
-tree="$workdir/pichi-$version"
-mkdir -p "$tree"
-tar -C "$root" --exclude-vcs --exclude='./target' --exclude='./vendor' \
-    --exclude='./vendor-conglobate' --exclude='./.pc' --exclude='./.codex' -cf - . |
-    tar -C "$tree" -xf -
-cd "$tree"
-cp Cargo.toml "$workdir/Cargo.toml"
-cp packaging/host-manifest.patch debian/patches/
-while read -r patch; do
-    patch -p1 < "debian/patches/$patch"
-done < debian/patches/series
+
+git show "$ref:Cargo.toml" > Cargo.toml
+git show "$ref:Cargo.lock" > Cargo.lock
+patch --no-backup-if-mismatch -p1 < packaging/host-manifest.patch
 packaging/trim-cargo-lock
 cp Cargo.toml "$workdir/host-Cargo.toml"
 cp Cargo.lock "$workdir/host-Cargo.lock"
 cargo fetch --locked
+rm -rf vendor vendor-conglobate
 
 sed '/^carapace.workspace = true$/d' "$workdir/host-Cargo.toml" > Cargo.toml
 cargo metadata --offline --format-version 1 > /dev/null
@@ -46,13 +38,12 @@ awk '/^\[/ { key = $0; if (!(key in tables)) keys[++count] = key; tables[key] = 
      END { for (i = 1; i <= count; i++) printf "%s", tables[keys[i]] }' \
     "$workdir/conglobate.toml" "$workdir/pichi.toml" > .cargo/vendor.toml
 
-# Keep the trimmed lock in the orig tarball; quilt supplies its manifest.
-cp "$workdir/Cargo.toml" Cargo.toml
+cp "$workdir/host-Cargo.toml" Cargo.toml
 cp "$workdir/host-Cargo.lock" Cargo.lock
-tar --sort=name --owner=0 --group=0 --numeric-owner \
-    --mtime="$(dpkg-parsechangelog -l debian/changelog -S Date)" \
-    --exclude='pichi-*/debian' -C "$workdir" \
-    -cJf "$outdir/pichi_$version.orig.tar.xz" "pichi-$version"
-cd "$outdir"
-dpkg-source --before-build "$tree"
-dpkg-source -b "$tree"
+# Include files matched by upstream crates' own ignore rules, too.
+git add Cargo.toml Cargo.lock .cargo/vendor.toml
+git add -f vendor vendor-conglobate
+if ! git diff --cached --quiet; then
+    git commit -m 'build: refresh vendored sources' \
+        -m 'Refresh the copied dependency sources so builds need no network.'
+fi

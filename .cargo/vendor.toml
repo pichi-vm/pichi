@@ -1,0 +1,31 @@
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/pichi-vm/carapace"]
+git = "https://github.com/pichi-vm/carapace"
+replace-with = "vendored-conglobate"
+
+[source."git+https://github.com/pichi-vm/conglobate?rev=cf02fb80558383e2f2d08090ff5a6a5520e10f1a"]
+git = "https://github.com/pichi-vm/conglobate"
+rev = "cf02fb80558383e2f2d08090ff5a6a5520e10f1a"
+replace-with = "vendored-conglobate"
+
+[source."git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd"]
+git = "https://github.com/pichi-vm/devmap"
+rev = "2679426fa1d4508fc5c3bbdf643efbdbe64a3edd"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/pichi-vm/pichi-artifact?rev=e26a5cb552ef066a1216acc0da62ca2f9c178145"]
+git = "https://github.com/pichi-vm/pichi-artifact"
+rev = "e26a5cb552ef066a1216acc0da62ca2f9c178145"
+replace-with = "vendored-sources"
+
+[source.vendored-conglobate]
+directory = "vendor-conglobate"
+[source."git+https://github.com/pichi-vm/carapace?rev=99caf7941ac8930a5761f6f843b6d8e53dd89587"]
+git = "https://github.com/pichi-vm/carapace"
+rev = "99caf7941ac8930a5761f6f843b6d8e53dd89587"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

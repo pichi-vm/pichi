@@ -1,0 +1,2 @@
+# Keep vendored files covered by Cargo checksums; exclude only Git metadata.
+tar-ignore = (^|/)\.git($|/)

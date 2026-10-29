@@ -1,0 +1,30 @@
+# cargo-deny configuration for conglobate.
+#
+# The license allowlist is tailored to conglobate's actual dependency tree
+# (verify with `cargo metadata`). Adding a dependency whose license is not
+# listed here fails CI by design — a deliberate prompt to review the new
+# license before accepting it.
+
+[licenses]
+allow = [
+    "Apache-2.0",   # this crate + many deps
+    "MIT",          # many deps (dual MIT/Apache)
+    "Unicode-3.0",  # required by the `unicode-ident` family (AND expression)
+]
+confidence-threshold = 0.8
+
+[advisories]
+version = 2
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Allow path/git deps without a version (the carapace git dep, etc.).
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+[sources.allow-org]
+github = ["pichi-vm"]   # carapace git dep

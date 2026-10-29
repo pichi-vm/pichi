@@ -1,0 +1,21 @@
+# requirements.yaml — the official pichi build image's launch contract
+# (BUILD.md §7). Authored by hand to bootstrap the platform; the
+# config.yaml -> requirements.yaml filter is not implemented yet.
+#
+# The build VM runs conglobate as /init: it drives dm-snapshot builds over a
+# loop-backed tmpfs COW, runs mkfs.erofs, and seals PMIs with arma — all in
+# RAM. These bands size that work; `pichi build --memory/--cpus` may raise
+# them (but not below `required`).
+cpus:
+  required: 1
+  recommended: 4
+memory:
+  required: 2GiB
+  recommended: 4GiB
+# A network interface so build stages that opt in (`network: true`, e.g.
+# `dnf install kernel`) can reach the network. pichi wires one user-mode NIC;
+# conglobate brings it up per stage and tears it down otherwise. Outbound only
+# — no ingress.
+interfaces:
+  default:
+    description: outbound build network

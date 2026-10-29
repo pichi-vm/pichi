@@ -1,0 +1,8 @@
+# License-header policy, enforced by hawkeye. Source files carry a short SPDX
+# header; full license text is in the conventional root LICENSE. No LICENSES/ dir.
+inlineHeader = """
+SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+SPDX-License-Identifier: Apache-2.0
+"""
+includes = ["**/*.rs", "**/*.sh"]
+excludes = ["target/**"]

@@ -13,12 +13,6 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-# Gates the KVM/boot integration tests (build_*.rs). The default `cargo test`
-# does not pull in the boot deps (arma/dillo/conglobate/corium artifacts); CI
-# runs them explicitly: `cargo test -p pichi --features vm-tests`. The product
-# artifacts are optional [dependencies] so non-vm builds never resolve them
-# (the registry/workspace jobs would otherwise drag in cross-target binaries).
-vm-tests = ["dep:arma", "dep:dillo", "dep:conglobate", "dep:corium"]
 
 [dependencies]
 anyhow.workspace = true
@@ -52,8 +46,6 @@ uuid.workspace = true
 ruzstd = "0.9.1"
 # Product binaries the boot tests orchestrate (host target). Optional so only
 # `vm-tests` resolves them; a plain `cargo test` pulls zero product artifacts.
-arma = { git = "https://github.com/pichi-vm/arma", artifact = "bin", optional = true }
-dillo = { git = "https://github.com/pichi-vm/dillo", artifact = "bin", optional = true }
 
 # Optional guest musl binaries for `vm-tests` only. Production `pichi build`
 # launches Conglobate's shipped pichi image (see BUILD.md); it does not treat
@@ -64,35 +56,11 @@ dillo = { git = "https://github.com/pichi-vm/dillo", artifact = "bin", optional 
 # cross-built `bin` artifact (lib = false), so cargo unifies them. Conglobate's
 # floating carapace stays at 397ab3b so its attach path still builds.
 # Gated on `vm-tests`.
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "cf02fb80558383e2f2d08090ff5a6a5520e10f1a", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
-corium = { git = "https://github.com/pichi-vm/corium", rev = "b1d2d24a8db9cf845c79a3cabc7cdd5dd6f0a275", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
-
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "cf02fb80558383e2f2d08090ff5a6a5520e10f1a", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
-corium = { git = "https://github.com/pichi-vm/corium", rev = "b1d2d24a8db9cf845c79a3cabc7cdd5dd6f0a275", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
-
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation"] }
-
-[dev-dependencies]
-assert_cmd.workspace = true
-tempfile.workspace = true
-pichi-artifact.workspace = true
-pichi-storage.workspace = true
-# Test-only: round-trip the `--gpt` kv string `cmd::run` emits back through
-# dillo's device schema to guarantee the format parses as intended. Not a
-# runtime dependency — pichi and dillo are coupled only via dillo's CLI.
-dillo-config.workspace = true
-serde-keyvalue.workspace = true
-# KVM/boot integration tests (build_*.rs, gated on `vm-tests`). These drive the
-# real product binaries through their CLIs; the artifact deps build them.
-wait-timeout = "0.2"
-hex = "0.4"
-burrow = { workspace = true }
 
 [workspace]
 resolver = "2"

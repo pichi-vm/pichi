@@ -1,0 +1,20 @@
+[package]
+name = "iocuddle"
+version = "0.4.0"
+authors = ["Nathaniel McCallum <npmccallum@redhat.com>"]
+license = "Apache-2.0"
+edition = "2021"
+rust-version = "1.63"
+
+homepage = "https://github.com/enarx/iocuddle"
+repository = "https://github.com/enarx/iocuddle"
+description = "Library for building runtime-safe linux `ioctl()` interfaces"
+readme = "README.md"
+
+keywords = ["linux", "ioctl"]
+categories = ["os", "api-bindings"]
+
+exclude = [".github/*"]
+
+[dependencies]
+zerocopy = { version = "0.8", features = ["derive"] }

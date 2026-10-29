@@ -15,3 +15,18 @@ Cargo.toml.bak*
 *.raw
 *.img
 **/tests/fixtures/
+
+# Keep all copied dependency sources, including test fixtures and images.
+!/vendor/
+!/vendor/**
+!/vendor-conglobate/
+!/vendor-conglobate/**
+
+# Debian build products.
+/debian/cargo-home/
+/debian/pichi/
+/debian/.debhelper/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper.log

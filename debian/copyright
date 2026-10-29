@@ -6,7 +6,7 @@ Pichi and its Debian packaging are licensed under the Apache License,
 Version 2.0. The full license is available on Debian systems at
 /usr/share/common-licenses/Apache-2.0.
 
-The source package includes vendored Rust dependencies under vendor/ and
-vendor-conglobate/. Their Cargo.toml files identify their authors and
+This branch and its source package include vendored Rust dependencies
+under vendor/ and vendor-conglobate/. Their Cargo.toml files identify their authors and
 licenses; their accompanying license, copyright, and notice files are
 installed under /usr/share/doc/pichi/dependency-licenses/.

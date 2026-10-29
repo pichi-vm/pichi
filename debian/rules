@@ -1,5 +1,6 @@
 #!/usr/bin/make -f
 
+export CARGO_HOME = $(CURDIR)/debian/cargo-home
 export CARGO_NET_OFFLINE = true
 export CARGO_TARGET_DIR = $(CURDIR)/target
 
@@ -23,4 +24,8 @@ override_dh_installdocs:
 		-exec cp --parents -t debian/pichi/usr/share/doc/pichi/dependency-licenses {} +
 
 override_dh_auto_clean:
-	rm -rf target
+	rm -rf target debian/cargo-home
+
+# Cargo checksums include vendored Cargo.toml.orig files.
+override_dh_clean:
+	dh_clean -Xvendor/ -Xvendor-conglobate/
