@@ -64,6 +64,10 @@ pub struct InspectArgs {
     /// `{{ manifest.annotations["dev.pichi.carapace.verity.algo"] }}`.
     #[arg(long)]
     pub format: Option<String>,
+    /// Print only the computed top carapace root as one line of lowercase hex.
+    /// Fails if the cached artifact has no carapace. Reads the layer data.
+    #[arg(long, conflicts_with = "format")]
+    pub print_root: bool,
 }
 
 /// Args for `pichi rmi <ref>...` (LOCAL-03).
@@ -106,17 +110,20 @@ pub struct ImportRawArgs {
     /// CONTEXT D-06 — no GPT parse, no CRC, no partition-table inspection).
     pub raw_image: std::path::PathBuf,
     /// Tag to assign (e.g. `myapp:base`). Optional: omit to cache the carapace
-    /// without a tag (ephemeral — the root hash is still printed). Validated
-    /// via `pichi_artifact::Reference::from_str` before any I/O.
+    /// without a tag (ephemeral — the manifest digest is printed by default).
+    /// Validated via `pichi_artifact::Reference::from_str` before any I/O.
     #[arg(short = 't', long)]
     pub tag: Option<String>,
     /// Hex-encoded author suffix appended after the 32-byte zero salt
     /// prefix (D-01). Default (no flag): salt = 32 zero bytes only.
     #[arg(long)]
     pub salt: Option<String>,
-    /// Suppress progress reporting. The carapace root hash is still printed to
-    /// stdout (docker `-q` style) — it is the value a detached PMI bakes into
-    /// its measured cmdline (`corium=`) before `pichi import pmi`.
+    /// Print the computed top carapace root instead of the manifest digest
+    /// on stdout: one line of lowercase hex for the PMI cmdline (`corium=`).
+    #[arg(long)]
+    pub print_root: bool,
+    /// Suppress progress reporting on stderr. Stdout still contains the
+    /// manifest digest, or the carapace root with --print-root.
     #[arg(long, default_value_t = false)]
     pub quiet: bool,
     /// Extra manifest annotations, `KEY=VALUE` (repeatable) — e.g.
@@ -363,6 +370,7 @@ impl TryFrom<ImportRawArgs> for crate::cmd::import::raw::ImportArgs {
             tag: a.tag,
             salt_suffix,
             quiet: a.quiet,
+            print_root: a.print_root,
             created_rfc3339: String::new(), // overwritten by cmd::import::run_raw
             annotations,
         })

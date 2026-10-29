@@ -16,8 +16,9 @@
 //!
 //! The chicken-and-egg (a bootable PMI must bake the carapace's dm-verity root
 //! into its measured cmdline, but that root only exists after import) is why
-//! these are two steps: `import raw` prints the root, the producer builds the
-//! PMI/DTB against it, then `import pmi --carapace` binds them on.
+//! these are two steps: `import raw --print-root` prints the root, the producer
+//! builds the PMI/DTB against it, then `import pmi --carapace` binds them on.
+//! Without `--print-root`, raw import prints the manifest digest instead.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 

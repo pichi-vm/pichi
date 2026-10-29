@@ -11,11 +11,12 @@
 //! `{{ manifest.annotations["dev.pichi.carapace.verity.algo"] }}`. When the
 //! resolved digest's blob is an OCI Image Index (D-20), drills into the
 //! pichi-artifactType entry; if absent from the cache, lists the index
-//! entries and points at `pichi pull`.
+//! entries and points at `pichi pull`. `--print-root` instead computes the
+//! top carapace root from the cached layer data and prints only its hex value.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use minijinja::Environment;
 use serde::Serialize;
 use serde_json::Value;
@@ -24,6 +25,7 @@ use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference, 
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::InspectArgs;
+use crate::cmd::manifest_ext::ManifestExt as _;
 use crate::config::Config;
 
 const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
@@ -57,7 +59,7 @@ struct IndexEntryInfo {
 }
 
 /// `pichi inspect <ref>` entry point — print the cached manifest as
-/// pretty-printed JSON augmented with a `_pichi` sidecar (LOCAL-02).
+/// pretty-printed JSON plus its digest, or print the computed carapace root.
 pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
@@ -93,13 +95,26 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
         .unwrap_or("");
 
     if media_type == OCI_IMAGE_INDEX_MEDIA_TYPE {
-        return inspect_index(args, &digest, &value);
+        if args.print_root {
+            bail!(
+                "reference is an image index; pull and inspect a specific manifest to get its carapace root"
+            );
+        }
+        return args.inspect_index(&digest, &value);
     }
 
     // Bare manifest path. Validate defensively, then emit the manifest verbatim
     // plus its resolved digest.
-    Manifest::from_reader_validated(bytes.as_slice())
+    let manifest = Manifest::from_reader_validated(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
+    if args.print_root {
+        let root = manifest
+            .carapace_top_root(&blob_store)
+            .await
+            .context("cannot compute carapace root (requires cached carapace layers)")?;
+        println!("{}", hex::encode(root));
+        return Ok(());
+    }
     let output = InspectOutput {
         digest: digest.to_string(),
         manifest: value,
@@ -107,55 +122,55 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     args.emit(&output)
 }
 
-fn inspect_index(args: InspectArgs, digest: &Digest, value: &Value) -> Result<()> {
-    let mut entries = Vec::new();
-    let manifests = value
-        .get("manifests")
-        .and_then(|m| m.as_array())
-        .ok_or_else(|| anyhow!("OCI image index missing `manifests` array"))?;
-    let mut pichi_count = 0usize;
-    for m in manifests {
-        let artifact_type = m
-            .get("artifactType")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let is_pichi = artifact_type.as_deref() == Some(MEDIA_TYPE_PICHI_ARTIFACT_V1);
-        if is_pichi {
-            pichi_count += 1;
-        }
-        entries.push(IndexEntryInfo {
-            digest: m
-                .get("digest")
-                .and_then(|d| d.as_str())
-                .unwrap_or("?")
-                .to_string(),
-            artifact_type,
-            media_type: m
-                .get("mediaType")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?")
-                .to_string(),
-            platform: m.get("platform").cloned().unwrap_or(Value::Null),
-            is_pichi,
-        });
-    }
-    let note = if pichi_count == 0 {
-        "No pichi-artifactType entry found in this index. To pull a multi-arch tag's pichi entry: pichi pull <ref>".to_string()
-    } else {
-        format!(
-            "Index contains {pichi_count} pichi entry/entries. To inspect one, pichi pull its specific manifest digest first."
-        )
-    };
-    let output = IndexInspectOutput {
-        digest: digest.to_string(),
-        media_type: OCI_IMAGE_INDEX_MEDIA_TYPE.to_string(),
-        entries,
-        note,
-    };
-    args.emit(&output)
-}
-
 impl InspectArgs {
+    fn inspect_index(&self, digest: &Digest, value: &Value) -> Result<()> {
+        let mut entries = Vec::new();
+        let manifests = value
+            .get("manifests")
+            .and_then(|m| m.as_array())
+            .ok_or_else(|| anyhow!("OCI image index missing `manifests` array"))?;
+        let mut pichi_count = 0usize;
+        for m in manifests {
+            let artifact_type = m
+                .get("artifactType")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let is_pichi = artifact_type.as_deref() == Some(MEDIA_TYPE_PICHI_ARTIFACT_V1);
+            if is_pichi {
+                pichi_count += 1;
+            }
+            entries.push(IndexEntryInfo {
+                digest: m
+                    .get("digest")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                artifact_type,
+                media_type: m
+                    .get("mediaType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                platform: m.get("platform").cloned().unwrap_or(Value::Null),
+                is_pichi,
+            });
+        }
+        let note = if pichi_count == 0 {
+            "No pichi-artifactType entry found in this index. To pull a multi-arch tag's pichi entry: pichi pull <ref>".to_string()
+        } else {
+            format!(
+                "Index contains {pichi_count} pichi entry/entries. To inspect one, pichi pull its specific manifest digest first."
+            )
+        };
+        let output = IndexInspectOutput {
+            digest: digest.to_string(),
+            media_type: OCI_IMAGE_INDEX_MEDIA_TYPE.to_string(),
+            entries,
+            note,
+        };
+        self.emit(&output)
+    }
+
     /// Emit `value` per the `--format` selection (default: pretty JSON).
     ///
     /// Templates are rendered with minijinja (Jinja2). Dotted OCI annotation
@@ -168,7 +183,8 @@ impl InspectArgs {
             None => println!("{}", serde_json::to_string_pretty(value)?),
             Some(t) if t == "json" => println!("{}", serde_json::to_string_pretty(value)?),
             Some(template_in) => {
-                let template = normalize_template_syntax(template_in);
+                // Accept docker-style `{{.Field}}` as Jinja `{{ Field }}`.
+                let template = template_in.replace("{{.", "{{ ");
                 let env = Environment::new();
                 let tmpl = env
                     .template_from_str(&template)
@@ -182,11 +198,4 @@ impl InspectArgs {
         }
         Ok(())
     }
-}
-
-/// Accept docker-style `{{.Field}}` by normalising the leading dot to Jinja's
-/// `{{ Field }}`. Annotation subscripts (`["key"]`) are native minijinja and
-/// pass through untouched.
-fn normalize_template_syntax(user: &str) -> String {
-    user.replace("{{.", "{{ ")
 }

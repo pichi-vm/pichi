@@ -39,6 +39,31 @@ is still a valid image — a base others derive from.
 
 Run `pichi <command> --help` for details.
 
+## Publishing a carapace
+
+Import a raw root filesystem and capture its computed top root hash:
+
+```sh
+hash="$(pichi import raw root.raw -t myapp:base --quiet --print-root)"
+```
+
+The output is exactly 64 lowercase hexadecimal characters followed by a
+newline. This is the top dm-verity root: dm-verity checks disk blocks against
+a tree of hashes. Put `corium=$hash` on the boot command line when building
+the PMI, then bind it to the same carapace:
+
+```sh
+pichi import pmi boot.pmi --dtb base.dtb --carapace myapp:base -t myapp:1
+```
+
+For an already imported, pulled, or loaded carapace, compute it from the
+cached layer data with `pichi inspect myapp:base --print-root`. This fails
+for artifacts without a carapace, including PMI-only images. The root is
+never saved as an annotation or separate metadata file.
+
+Without `--print-root`, `import raw` prints the manifest digest, including
+with `--quiet` or without a tag. Progress messages go to stderr.
+
 ## Build
 
 `pichi build <dir> --ref <ref> -t <tag>` is a specialization of `pichi run`:

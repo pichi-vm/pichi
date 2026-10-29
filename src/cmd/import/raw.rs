@@ -25,13 +25,15 @@ pub(crate) struct ImportArgs {
     /// Path to the raw image file to import.
     pub raw_image: PathBuf,
     /// Tag to assign (e.g. `myapp:base`). `None` caches the carapace without
-    /// tagging it. The manifest digest is printed in either case.
+    /// tagging it. The manifest digest is printed unless `print_root` is set.
     pub tag: Option<String>,
     /// Optional author-supplied salt suffix bytes (already hex-decoded).
     /// `None` = use just the 32-byte zero prefix (D-01 default).
     pub salt_suffix: Option<Vec<u8>>,
     /// If true, suppress progress reporting.
     pub quiet: bool,
+    /// Print the computed root instead of the manifest digest.
+    pub print_root: bool,
     /// Creation timestamp supplied by the command or test fixture.
     pub created_rfc3339: String,
     /// Extra OCI/provenance annotations to stamp on the manifest, already
@@ -47,6 +49,7 @@ impl ImportArgs {
         let store = FilesystemBlobStore::new(graphroot);
         let scratch = store.scratch_dir().await?;
         let quiet = self.quiet;
+        let print_root = self.print_root;
         let staged = tokio::task::spawn_blocking(move || StagedImport::new(self, &scratch))
             .await
             .context("import staging task panicked")??;
@@ -72,7 +75,11 @@ impl ImportArgs {
                 staged.tag.as_deref().unwrap_or("<none>")
             );
         }
-        println!("{}", staged.manifest_digest);
+        if print_root {
+            println!("{}", hex::encode(staged.root));
+        } else {
+            println!("{}", staged.manifest_digest);
+        }
         Ok(())
     }
 }
@@ -81,6 +88,7 @@ struct StagedImport {
     cow: NamedTempFile,
     cow_digest: Digest,
     verity: NamedTempFile,
+    root: [u8; 32],
     manifest_bytes: Vec<u8>,
     manifest_digest: Digest,
     tag: Option<String>,
@@ -157,6 +165,7 @@ impl StagedImport {
             cow,
             cow_digest,
             verity,
+            root,
             manifest_bytes,
             manifest_digest,
             tag,
@@ -200,6 +209,7 @@ mod tests {
             tag: Some(tag.to_string()),
             salt_suffix: None,
             quiet: true,
+            print_root: false,
             created_rfc3339: "2026-05-07T12:00:00Z".to_string(),
             annotations: std::collections::BTreeMap::new(),
         };
