@@ -10,7 +10,7 @@
 # Source0 is this tree tarball. Source1 is a vendor tarball
 # produced here. vendor/ is not committed. RUSTC_BOOTSTRAP=1
 # lets cargo vendor accept [unstable] bindeps. Before vendoring,
-# a copy of the tree gets rpm-manifest.patch, then
+# a copy of the tree gets host-manifest.patch, then
 # packaging/trim-cargo-lock prunes unused vm-tests dependencies and
 # rejects any new or changed package pin. Cargo cannot merge
 # the two pinned carapace sources at the same version, so vendor
@@ -39,7 +39,7 @@ srpm:
 		--exclude vendor-conglobate \
 		. | tar -C "$$workdir/src" -xf -; \
 	cd "$$workdir/src"; \
-	if [[ -f packaging/rpm-manifest.patch ]]; then patch -p1 -i packaging/rpm-manifest.patch; fi; \
+	if [[ -f packaging/host-manifest.patch ]]; then patch -p1 -i packaging/host-manifest.patch; fi; \
 	mkdir -p .cargo; \
 	export RUSTC_BOOTSTRAP=1; \
 	packaging/trim-cargo-lock; \

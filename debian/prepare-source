@@ -21,6 +21,7 @@ tar -C "$root" --exclude-vcs --exclude='./target' --exclude='./vendor' \
     tar -C "$tree" -xf -
 cd "$tree"
 cp Cargo.toml "$workdir/Cargo.toml"
+cp packaging/host-manifest.patch debian/patches/
 while read -r patch; do
     patch -p1 < "debian/patches/$patch"
 done < debian/patches/series

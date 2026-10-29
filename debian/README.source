@@ -8,9 +8,11 @@ To prepare an unsigned source package from this checkout:
 
 Source preparation needs Cargo, Rust, dpkg-dev, patch, GNU tar, and xz.
 It may access the network to fetch the dependencies pinned in Cargo.lock.
-It works in a temporary copy, applies the host-only manifest patch, and
-runs packaging/trim-cargo-lock to remove unused Cargo.lock entries. The script
-rejects any new or changed dependency pin. Preparation then vendors the
+It works in a temporary copy, copies packaging/host-manifest.patch into
+debian/patches/, and applies that host-only manifest patch. The repository
+keeps only the shared patch and the Debian series that names its copy.
+Preparation runs packaging/trim-cargo-lock to remove unused Cargo.lock
+entries and reject any new or changed dependency pin. Preparation then vendors the
 dependency graph (copies its sources for offline builds). The output
 directory must be outside the source tree and have space for that temporary
 copy and both vendor directories; use a disk-backed directory rather than a
