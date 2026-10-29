@@ -39,7 +39,7 @@ jobs:
             guest_musl: aarch64-unknown-linux-musl
     runs-on: ${{ fromJSON(matrix.runs_on) }}
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.1
 
       - name: Install toolchain
         shell: bash

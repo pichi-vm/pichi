@@ -20,14 +20,14 @@ jobs:
     name: license headers
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.1
       - uses: korandoru/hawkeye@v6
 
   commit-messages:
     name: commit messages
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
       - run: pipx run gitlint --commits "origin/${{ github.base_ref || 'main' }}..HEAD"
@@ -36,7 +36,7 @@ jobs:
     name: cargo fmt
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.1
 
       - name: Install toolchain
         shell: bash
