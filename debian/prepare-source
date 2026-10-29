@@ -1,0 +1,57 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+set -euo pipefail
+export LC_ALL=C
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+mkdir -p "${1:?Usage: debian/prepare-source OUTPUT_DIRECTORY}"
+outdir=$(cd "$1" && pwd)
+case "$outdir/" in
+    "$root/"*) echo 'Output directory must be outside the source tree.' >&2; exit 2 ;;
+esac
+version=$(dpkg-parsechangelog -l "$root/debian/changelog" -S Version)
+version=${version%-*}
+workdir=$(mktemp -d "$outdir/.pichi-source.XXXXXX")
+trap 'rm -rf "$workdir"' EXIT
+tree="$workdir/pichi-$version"
+mkdir -p "$tree"
+tar -C "$root" --exclude-vcs --exclude='./target' --exclude='./vendor' \
+    --exclude='./vendor-conglobate' --exclude='./.pc' --exclude='./.codex' -cf - . |
+    tar -C "$tree" -xf -
+cd "$tree"
+cp Cargo.toml "$workdir/Cargo.toml"
+while read -r patch; do
+    patch -p1 < "debian/patches/$patch"
+done < debian/patches/series
+packaging/trim-cargo-lock
+cp Cargo.toml "$workdir/host-Cargo.toml"
+cp Cargo.lock "$workdir/host-Cargo.lock"
+cargo fetch --locked
+
+sed '/^carapace.workspace = true$/d' "$workdir/host-Cargo.toml" > Cargo.toml
+cargo metadata --offline --format-version 1 > /dev/null
+cargo vendor --locked --versioned-dirs vendor-conglobate > "$workdir/conglobate.toml"
+sed -i 's/vendored-sources/vendored-conglobate/g' "$workdir/conglobate.toml"
+
+cp "$workdir/host-Cargo.lock" Cargo.lock
+sed '/^conglobate.workspace = true$/d' "$workdir/host-Cargo.toml" > Cargo.toml
+cargo metadata --offline --format-version 1 > /dev/null
+cargo vendor --locked --versioned-dirs vendor > "$workdir/pichi.toml"
+tar -C vendor-conglobate --exclude='./carapace-0.1.0' -cf - . |
+    tar -C vendor -xf - --skip-old-files
+awk '/^\[/ { key = $0; if (!(key in tables)) keys[++count] = key; tables[key] = "" }
+     { tables[key] = tables[key] $0 ORS }
+     END { for (i = 1; i <= count; i++) printf "%s", tables[keys[i]] }' \
+    "$workdir/conglobate.toml" "$workdir/pichi.toml" > .cargo/vendor.toml
+
+# Keep the trimmed lock in the orig tarball; quilt supplies its manifest.
+cp "$workdir/Cargo.toml" Cargo.toml
+cp "$workdir/host-Cargo.lock" Cargo.lock
+tar --sort=name --owner=0 --group=0 --numeric-owner \
+    --mtime="$(dpkg-parsechangelog -l debian/changelog -S Date)" \
+    --exclude='pichi-*/debian' -C "$workdir" \
+    -cJf "$outdir/pichi_$version.orig.tar.xz" "pichi-$version"
+cd "$outdir"
+dpkg-source --before-build "$tree"
+dpkg-source -b "$tree"

@@ -1,0 +1,15 @@
+Source: pichi
+Section: utils
+Priority: optional
+Maintainer: Nathaniel McCallum <nathaniel@mccallum.life>
+Build-Depends: debhelper-compat (= 13), cargo (>= 1.89), rustc (>= 1.89), cmake, g++
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Homepage: https://github.com/pichi-vm/pichi
+
+Package: pichi
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}, dillo-vm
+Description: manage and launch pichi VM images
+ Pichi manages virtual machine images as OCI artifacts and launches them
+ using dillo. Guest images are obtained separately.
