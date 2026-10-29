@@ -10,12 +10,12 @@
 # Source0 is this tree tarball. Source1 is a vendor tarball
 # produced here. vendor/ is not committed. RUSTC_BOOTSTRAP=1
 # lets cargo vendor accept [unstable] bindeps. Before vendoring,
-# a copy of the tree gets the rpm-manifest and rpm-lock patches
-# so the host CLI build does not pull the vm-tests artifact
-# dependencies. Cargo cannot merge the two pinned carapace
-# sources at the same version, so vendor the host CLI and
-# Conglobate graphs separately, then combine their source
-# replacements. cargo vendor writes
+# a copy of the tree gets rpm-manifest.patch, then Cargo prunes
+# the unused vm-tests dependencies while keeping existing pins.
+# Reject any new package pin before fetching. Cargo cannot merge
+# the two pinned carapace sources at the same version, so vendor
+# the host CLI and Conglobate graphs separately, then combine
+# their source replacements. cargo vendor writes
 # packaging/cargo-vendor-config.toml into that copy; the spec
 # appends it at build time.
 SHELL := /bin/bash
@@ -40,9 +40,20 @@ srpm:
 		. | tar -C "$$workdir/src" -xf -; \
 	cd "$$workdir/src"; \
 	if [[ -f packaging/rpm-manifest.patch ]]; then patch -p1 -i packaging/rpm-manifest.patch; fi; \
-	if [[ -f packaging/rpm-lock.patch ]]; then patch -p1 -i packaging/rpm-lock.patch; fi; \
 	mkdir -p .cargo; \
 	export RUSTC_BOOTSTRAP=1; \
+	cp Cargo.lock "$$workdir/original.lock"; \
+	cargo update --workspace; \
+	awk -v RS='' -F '\n' '/^\[\[package\]\]/ { \
+		pin = ""; \
+		for (i = 1; i <= NF; i++) \
+			if ($$i ~ /^(name|version|source|checksum) = /) pin = pin $$i ORS; \
+		if (FILENAME == ARGV[1]) pins[pin] = 1; \
+		else if (!(pin in pins)) { \
+			print "RPM lock introduced a new package pin:\n" pin > "/dev/stderr"; \
+			exit 1; \
+		} \
+	}' "$$workdir/original.lock" Cargo.lock; \
 	cargo fetch --locked; \
 	cp Cargo.toml "$$workdir/Cargo.toml"; \
 	cp Cargo.lock "$$workdir/Cargo.lock"; \
