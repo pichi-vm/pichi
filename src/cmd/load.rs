@@ -17,6 +17,7 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
 use crate::cli::LoadArgs;
+use crate::cmd::cache::METADATA_CAP;
 use crate::cmd::layer::PreparedLayer;
 use crate::cmd::manifest_ext::{ManifestExt as _, ScuteRoots};
 use crate::config::Config;
@@ -24,7 +25,6 @@ use crate::config::Config;
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
-const METADATA_CAP: u64 = 1024 * 1024;
 const FILE_CAP: usize = 4096;
 
 #[derive(Deserialize)]

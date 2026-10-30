@@ -9,6 +9,7 @@
 
 pub mod build;
 mod build_port;
+mod cache;
 pub mod images;
 pub mod import;
 pub mod inspect;

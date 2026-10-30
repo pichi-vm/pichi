@@ -32,12 +32,13 @@ use std::collections::HashSet;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use pichi_artifact::{Digest, Manifest, Reference};
+use pichi_artifact::{Digest, Reference};
 use pichi_storage::{
-    BlobSidecarExt, BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry,
+    BlobSidecarExt, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry,
 };
 
 use crate::cli::RmiArgs;
+use crate::cmd::cache::ImageStore as _;
 use crate::config::Config;
 
 /// `pichi rmi <ref>...` entry point — remove tags + refcount-aware blob
@@ -90,39 +91,11 @@ async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
             );
         }
 
-        // Refcount: build the set of digests still referenced by ANY tag
-        // EXCEPT the one we're about to delete.
-        let mut still_referenced: HashSet<Digest> = HashSet::new();
-        for entry in &all_tags {
-            if entry.tag == target_key {
-                continue; // skip the tag we're removing
-            }
-            still_referenced.insert(entry.digest.clone());
-            if let Ok(bytes) = blob_store.get_blob(&entry.digest).await {
-                if let Ok(m) = serde_json::from_reader::<_, Manifest>(bytes.as_slice()) {
-                    for layer in &m.layers {
-                        // digest_str is "sha256:<hex>" — round-trip via parse.
-                        if let Ok(d) = layer.digest_str().parse::<Digest>() {
-                            still_referenced.insert(d);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Build to_delete = target manifest's digest + its layer digests,
-        // minus still_referenced.
-        let mut candidates: HashSet<Digest> = HashSet::new();
-        candidates.insert(target_digest.clone());
-        if let Ok(bytes) = blob_store.get_blob(&target_digest).await {
-            if let Ok(m) = serde_json::from_reader::<_, Manifest>(bytes.as_slice()) {
-                for layer in &m.layers {
-                    if let Ok(d) = layer.digest_str().parse::<Digest>() {
-                        candidates.insert(d);
-                    }
-                }
-            }
-        }
+        let still_referenced = blob_store.reachable(
+            all_tags.iter().filter(|entry| entry.tag != target_key)
+                .map(|entry| entry.digest.clone()),
+        ).await?;
+        let candidates = blob_store.reachable([target_digest.clone()]).await?;
 
         let to_delete: HashSet<Digest> =
             candidates.difference(&still_referenced).cloned().collect();

@@ -28,16 +28,11 @@
 //! the directory, those siblings have already been unlinked. This
 //! ordering is load-bearing.
 //!
-//! ## Live-set policy (D-prune-L1, mirrors `cmd::rmi`)
+//! ## Live-set policy
 //!
-//! Live set = the union, over every tag in `FilesystemTagDb::list_tags`,
-//! of `{tag.digest} ∪ {layer.digest_str().parse() for layer in
-//! serde_json::from_reader::<_, Manifest>(blob_store.get_blob(tag.digest)).layers}`.
-//! Identical structure to `cmd::rmi::rmi_one`'s `still_referenced`
-//! accumulator (`src/cmd/rmi.rs:88-105`); copy of the loop minus the
-//! per-target filter (prune walks ALL tags). Manifests that fail to
-//! parse (corrupted) DO NOT contribute to the live set — same lenient
-//! policy `cmd::rmi` uses.
+//! Traverse each tagged index or manifest, retaining every cached descendant,
+//! configuration and layer. Missing platform manifests are allowed; corrupt
+//! metadata stops collection before deletion. Image removal uses the same walk.
 //!
 //! ## Concurrency contract
 //!
@@ -53,15 +48,14 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use std::collections::HashSet;
-
 use anyhow::{Context, Result};
 use humansize::{BINARY, format_size};
 
-use pichi_artifact::{Digest, Manifest};
-use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_artifact::Digest;
+use pichi_storage::{BlobSidecarExt, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::PruneArgs;
+use crate::cmd::cache::ImageStore as _;
 use crate::config::Config;
 
 /// `pichi system prune` entry point — garbage-collect orphan blobs +
@@ -80,24 +74,9 @@ pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
 
             let all_tags = db.list_tags().await?;
 
-            // D-prune-L1: live set = every tag's manifest digest + that
-            // manifest's layer digests. Verbatim from src/cmd/rmi.rs:88-105
-            // MINUS the `if entry.tag == target_key { continue; }` filter
-            // (prune walks ALL tags as the live set source).
-            let mut still_referenced: HashSet<Digest> = HashSet::new();
-            for entry in &all_tags {
-                still_referenced.insert(entry.digest.clone());
-                if let Ok(bytes) = blob_store.get_blob(&entry.digest).await {
-                    if let Ok(m) = serde_json::from_reader::<_, Manifest>(bytes.as_slice()) {
-                        for layer in &m.layers {
-                            // digest_str is "sha256:<hex>" — round-trip via parse.
-                            if let Ok(d) = layer.digest_str().parse::<Digest>() {
-                                still_referenced.insert(d);
-                            }
-                        }
-                    }
-                }
-            }
+            let still_referenced = blob_store
+                .reachable(all_tags.iter().map(|entry| entry.digest.clone()))
+                .await?;
 
             let blob_dir = layout.graphroot.join("blobs").join("sha256");
             let mut records: Vec<(Digest, u64)> = Vec::new();
@@ -264,6 +243,7 @@ fn is_blob_filename(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pichi_storage::BlobStore as _;
 
     use std::collections::BTreeMap;
 
