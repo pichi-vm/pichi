@@ -219,8 +219,10 @@ directory. No output tag changes until the complete layout passes validation.
 
 Limits: 4,096 files; 4 KiB for `oci-layout`; 1 MiB each for index, manifest,
 and config; 16 GiB per blob; 64 GiB total input and total expanded scute
-bytes. Compressed scutes retain the streaming decoder's 16 GiB per-scute and
-128 MiB window limits.
+bytes. Compressed scutes retain the streaming decoder's 128 MiB window limit.
+Decoded output is bounded by available scratch capacity, with a declared
+block extent checked before expansion. Concurrent allocations and hash-tree
+writes can still exhaust that filesystem; write failures abort publication.
 
 For **every scute**, including cache hits, the host rebuilds dm-verity from
 the cow bytes and the full manifest salt. Reconstruction uses SHA-256,
