@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
 
-use pichi_artifact::{
+use conglobate::artifact::{
     ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
     ScuteDescriptor,
 };
@@ -86,14 +86,14 @@ impl BaseManifest for Manifest {
             digest: cow_digest.to_string(),
             size: cow_size,
             annotations: ScuteAnnotations {
-                data_blocks: Some(cow_size.div_ceil(4096)),
+                data_blocks: cow_size.div_ceil(4096).try_into().context("empty COW")?,
                 salt: hex::encode(full_salt),
             },
         })];
 
         let manifest = Manifest {
             schema_version: 2,
-            media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
+            media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
             config: ConfigDescriptor::canonical(),
             layers,
@@ -151,7 +151,7 @@ mod tests {
             Some("2026-05-07T12:00:00Z")
         );
         assert!(
-            m.carapace_verity_hash().is_none(),
+            !m.annotations.contains_key("dev.pichi.carapace.verity.hash"),
             "tip hash annotation must not be stamped"
         );
     }
@@ -174,7 +174,7 @@ mod tests {
         let Layer::Scute(scute) = &m.layers[0] else {
             panic!("expected scute layer");
         };
-        assert_eq!(scute.annotations.data_blocks, Some(4));
+        assert_eq!(scute.annotations.data_blocks.get(), 4);
         assert_eq!(
             scute.annotations.salt,
             "0".repeat(64),
@@ -298,7 +298,7 @@ mod tests {
             "sha256"
         );
         assert!(
-            m.carapace_verity_hash().is_none(),
+            !m.annotations.contains_key("dev.pichi.carapace.verity.hash"),
             "a caller-supplied tip hash is dropped"
         );
     }

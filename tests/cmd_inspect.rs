@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
-use pichi_artifact::{
+use conglobate::artifact::{
     ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
     ScuteAnnotations, ScuteDescriptor,
 };
@@ -47,7 +47,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
                     .into(),
                 size: 4096,
                 annotations: ScuteAnnotations {
-                    data_blocks: None,
+                    data_blocks: 1u64.try_into().unwrap(),
                     salt: "dead".into(),
                 },
             }),
@@ -60,7 +60,8 @@ async fn inspect_bare_manifest_returns_full_schema() {
         annotations: chain_annotations(),
     };
     let bytes = serde_json::to_vec(&m).unwrap();
-    let digest = m.digest().unwrap();
+    let digest =
+        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();
@@ -111,14 +112,15 @@ async fn inspect_format_reaches_dotted_annotation() {
                 .into(),
             size: 4096,
             annotations: ScuteAnnotations {
-                data_blocks: None,
+                data_blocks: 1u64.try_into().unwrap(),
                 salt: "dead".into(),
             },
         })],
         annotations: chain_annotations(),
     };
     let bytes = serde_json::to_vec(&m).unwrap();
-    let digest = m.digest().unwrap();
+    let digest =
+        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();
@@ -170,7 +172,7 @@ async fn inspect_image_index_lists_entries() {
     });
     let bytes = serde_json::to_vec(&index).unwrap();
     let digest =
-        pichi_artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();

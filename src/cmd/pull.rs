@@ -9,13 +9,11 @@
 
 use anyhow::{Context, Result, anyhow, ensure};
 #[cfg(test)]
-use pichi_artifact::Manifest;
-use pichi_artifact::{Digest, Reference};
+use conglobate::artifact::Manifest;
+use conglobate::artifact::{Digest, Reference};
 
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 
-#[cfg(test)]
-use super::cache::TARGET_ARCH;
 use super::cache::{ImageMetadata, ImageStore as _};
 use super::layer::PreparedLayer;
 use pichi_registry::Registry;
@@ -32,7 +30,7 @@ const PULL_CONCURRENCY: usize = 3;
 pub async fn run(args: PullArgs, config: &Config) -> Result<()> {
     // Defense-in-depth: parse + canonicalise BEFORE any I/O (BL-02 / T-43-02).
     // Also strip informational `:tag` from Conglobate `tag@digest` pins so
-    // `pichi-artifact::Reference` keeps a clean repo (see canonicalize_reference).
+    // `conglobate::artifact::Reference` keeps a clean repo (see canonicalize_reference).
     let canonical = crate::cmd::build::canonicalize_reference(&args.reference);
     let target_ref: Reference = canonical
         .parse()
@@ -92,7 +90,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         .await
         .map_err(|e| anyhow!("pull_manifest_by_tag {target}: {e}"))?;
 
-    if let pichi_artifact::ReferenceKind::Digest(expected) = &target.kind {
+    if let conglobate::artifact::ReferenceKind::Digest(expected) = &target.kind {
         ensure!(
             &digest_str == expected,
             "registry returned a different image digest"
@@ -216,9 +214,11 @@ pub(crate) async fn pull_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::platform::PlatformExt as _;
     use bytes::Bytes;
-    use pichi_artifact::Layer;
-    use pichi_artifact::{
+    use conglobate::artifact::Layer;
+    use conglobate::artifact::Platform;
+    use conglobate::artifact::{
         ConfigDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
     };
     use pichi_registry::MockRegistry;
@@ -264,7 +264,7 @@ mod tests {
                 digest: scute_digest.to_string(),
                 size: scute_size,
                 annotations: ScuteAnnotations {
-                    data_blocks: None,
+                    data_blocks: scute_size.div_ceil(4096).try_into().unwrap(),
                     // 32 zero bytes (SALT_ZERO_PREFIX) so the verity feed has
                     // a valid salt to use on the pull side.
                     salt: hex::encode([0u8; 32]),
@@ -558,7 +558,7 @@ mod tests {
                 "digest": picked_manifest_digest.to_string(),
                 "size": picked_manifest_bytes.len(),
                 "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
-                "platform": {"os": "pichi", "architecture": TARGET_ARCH}
+                "platform": {"os": "pichi", "architecture": Platform::host_architecture()}
             }, {
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "digest": format!("sha256:{}", "ab".repeat(32)),
@@ -647,7 +647,7 @@ mod tests {
     // Phase 46 Plan 02 Task 1 — sidecar derivation tests (CACHE-01, CACHE-02)
     // ====================================================================
 
-    use pichi_artifact::PmiDescriptor;
+    use conglobate::artifact::PmiDescriptor;
     use pichi_storage::BlobSidecarExt;
 
     /// Plan 02 helper: build a 1-Scute or 1-ScuteZstd manifest with a
@@ -655,6 +655,7 @@ mod tests {
     fn make_scute_manifest(
         scute_digest: &Digest,
         scute_size: u64,
+        data_size: u64,
         is_zstd: bool,
     ) -> (Bytes, Digest) {
         let mut annotations = BTreeMap::new();
@@ -673,7 +674,7 @@ mod tests {
             digest: scute_digest.to_string(),
             size: scute_size,
             annotations: ScuteAnnotations {
-                data_blocks: None,
+                data_blocks: data_size.div_ceil(4096).try_into().unwrap(),
                 salt: hex::encode([0u8; 32]),
             },
         };
@@ -701,6 +702,7 @@ mod tests {
     fn make_scute_plus_pmi_manifest(
         scute_digest: &Digest,
         scute_size: u64,
+        data_size: u64,
         is_zstd_scute: bool,
         pmi_digest: &Digest,
         pmi_size: u64,
@@ -721,7 +723,7 @@ mod tests {
             digest: scute_digest.to_string(),
             size: scute_size,
             annotations: ScuteAnnotations {
-                data_blocks: None,
+                data_blocks: data_size.div_ceil(4096).try_into().unwrap(),
                 salt: hex::encode([0u8; 32]),
             },
         };
@@ -788,6 +790,7 @@ mod tests {
         let (manifest_bytes, _manifest_digest) = make_scute_manifest(
             &layer_digest,
             compressed.len() as u64,
+            decompressed.len() as u64,
             /* is_zstd= */ true,
         );
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
@@ -845,6 +848,7 @@ mod tests {
         let (manifest_bytes, _manifest_digest) = make_scute_manifest(
             &layer_digest,
             layer_data.len() as u64,
+            layer_data.len() as u64,
             /* is_zstd= */ false,
         );
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
@@ -899,6 +903,7 @@ mod tests {
 
         let (manifest_bytes, _manifest_digest) = make_scute_plus_pmi_manifest(
             &scute_digest,
+            scute_data.len() as u64,
             scute_data.len() as u64,
             /* is_zstd_scute= */ false,
             &pmi_digest,
@@ -959,8 +964,12 @@ mod tests {
         let layer_data: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(4096 * 3).collect();
         let layer_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&layer_data).into());
-        let (manifest_bytes, _manifest_digest) =
-            make_scute_manifest(&layer_digest, layer_data.len() as u64, false);
+        let (manifest_bytes, _manifest_digest) = make_scute_manifest(
+            &layer_digest,
+            layer_data.len() as u64,
+            layer_data.len() as u64,
+            false,
+        );
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
             "ghcr.io",
@@ -984,12 +993,12 @@ mod tests {
         );
     }
     /// Pull ignores `dev.pichi.carapace.verity.hash`. Tagging succeeds for
-    /// every declared×cached zstd combination whether that annotation is
-    /// absent or set to a stale value. Host trust is the OCI digest. The
-    /// tip comes from the scute graph.
+    /// cached and uncached zstd inputs only with a valid block count, whether
+    /// the tip annotation is absent or stale. Missing and zero counts fail
+    /// before publication. The tip still comes from the scute graph.
     #[tokio::test(flavor = "current_thread")]
     async fn pull_ignores_tip_hash_annotation() {
-        for declared in [false, true] {
+        for declared in [None, Some(0u64), Some(2)] {
             for cached in [false, true] {
                 for stale_tip in [false, true] {
                     let (_tmp, g) = graphroot();
@@ -1004,7 +1013,8 @@ mod tests {
                     );
                     let digest =
                         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
-                    let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, true);
+                    let (bytes, _) =
+                        make_scute_manifest(&digest, wire.len() as u64, data.len() as u64, true);
                     let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
                     if stale_tip {
                         manifest.annotations.insert(
@@ -1012,11 +1022,17 @@ mod tests {
                             hex::encode([0u8; 32]),
                         );
                     }
-                    if declared {
-                        let Layer::ScuteZstd(scute) = &mut manifest.layers[0] else {
-                            unreachable!()
-                        };
-                        scute.annotations.data_blocks = Some((data.len() as u64).div_ceil(4096));
+                    let mut manifest = serde_json::to_value(manifest).unwrap();
+                    let annotations = manifest["layers"][0]["annotations"]
+                        .as_object_mut()
+                        .unwrap();
+                    if let Some(blocks) = declared {
+                        annotations.insert(
+                            "dev.pichi.scute.verity.data-blocks".into(),
+                            blocks.to_string().into(),
+                        );
+                    } else {
+                        annotations.remove("dev.pichi.scute.verity.data-blocks");
                     }
                     let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
                     registry.insert_manifest("ghcr.io", "example/foo", "bar", bytes);
@@ -1037,13 +1053,16 @@ mod tests {
                         &db,
                     )
                     .await;
-                    assert!(
+                    let valid = declared == Some(2);
+                    assert_eq!(
                         result.is_ok(),
-                        "stale_tip={stale_tip}, declared={declared}, cached={cached}: {result:?}"
+                        valid,
+                        "stale_tip={stale_tip}, declared={declared:?}, cached={cached}: {result:?}"
                     );
-                    assert!(
+                    assert_eq!(
                         db.resolve_tag(&target.to_string()).await.unwrap().is_some(),
-                        "stale_tip={stale_tip}, declared={declared}, cached={cached}: tag missing"
+                        valid,
+                        "stale_tip={stale_tip}, declared={declared:?}, cached={cached}: unexpected tag state"
                     );
                 }
             }

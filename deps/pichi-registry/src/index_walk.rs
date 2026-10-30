@@ -29,13 +29,13 @@
 //! gate stays a clean "0 matches" signal.
 
 use anyhow::{Context, Result, anyhow};
-use pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
+use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
 use serde_json::Value;
 
 /// OCI Image Index media type (per OCI Image Spec 1.1). Re-exported so callers
 /// have a single canonical constant; the value is also accepted by
 /// `pull_manifest_raw`'s `accepted_media_types` array in `http.rs`.
-pub const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+pub use conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1 as OCI_IMAGE_INDEX_MEDIA_TYPE;
 
 /// Walk an OCI Image Index `manifests[]` array; return the digest string of
 /// the entry matching `(artifactType=MEDIA_TYPE_PICHI_ARTIFACT_V1,
@@ -116,7 +116,7 @@ pub fn pick_pichi_entry_from_index(
 #[cfg(test)]
 mod tests {
     use super::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
-    use pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
+    use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
 
     fn idx(entries: &str) -> Vec<u8> {
         format!(

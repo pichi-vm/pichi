@@ -22,7 +22,7 @@ use common::{
     CORIUM_BIN, DILLO_BIN, assemble_initrd_with, assert_pichi_ok, kvm_available, make_ext4, pichi,
     pull_build_image, seal,
 };
-use pichi_artifact::{Digest, Layer, Manifest, PmiDescriptor, Reference};
+use conglobate::artifact::{Digest, Layer, Manifest, PmiDescriptor, Reference};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 const MARKER: &str = "corium-root-marker";

@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
-use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference, ReferenceKind};
+use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference, ReferenceKind};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
@@ -37,7 +37,7 @@ use crate::cli::{ManifestAnnotateArgs, ManifestCreateArgs, ManifestPushArgs};
 use crate::config::Config;
 
 /// OCI image manifest media type (the per-arch entries' `mediaType`).
-const OCI_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as OCI_MANIFEST_MEDIA_TYPE;
 
 /// Internal, non-OCI annotation recording which `create`/`annotate` source ref
 /// an entry came from. Stripped before the index is pushed.

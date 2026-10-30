@@ -8,7 +8,7 @@
 //! `recommended` (else `required`) tier is used.
 
 use anyhow::{Context, Result, bail};
-use pichi_artifact::{Config, Digest, Manifest, Requirements};
+use conglobate::artifact::{Config, Digest, Manifest, Requirements};
 use pichi_storage::BlobStore;
 
 /// Load the artifact's launch contract from its config blob. Returns `Ok(None)`

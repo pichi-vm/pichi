@@ -10,7 +10,7 @@
 //                          (the one that runs the internal platform-resolver) —
 //                          the literal name is intentionally not written here
 //                          so the CI negative-grep gate stays clean.
-// Pitfall 6: pichi_artifact::Reference vs oci_client::Reference are different
+// Pitfall 6: conglobate::artifact::Reference vs oci_client::Reference are different
 //            types — convert at the boundary via to_oci_ref helper.
 // Pitfall 10: Default Client uses HTTPS; insecure registries need explicit
 //            ClientProtocol::HttpsExcept(vec!["host:port"]) per-registry.
@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bytes::Bytes;
+use conglobate::artifact::{Digest, Reference as PichiRef};
 use futures_util::stream::{Stream, StreamExt as _};
 use oci_client::{
     Client, Reference as OciRef, RegistryOperation,
@@ -39,7 +40,6 @@ use oci_client::{
     manifest::OciDescriptor,
     secrets::RegistryAuth,
 };
-use pichi_artifact::{Digest, Reference as PichiRef};
 use tokio::io::AsyncWrite;
 
 use crate::auth::{AuthEnv, AuthHint};
@@ -52,8 +52,8 @@ use crate::{Registry, RegistryError, Result};
 /// "single-manifest" and "multi-arch index" happens at the call site
 /// (Plan 04 `cmd::pull`) by inspecting the returned bytes' `mediaType` field.
 const ACCEPTED_MANIFEST_TYPES: &[&str] = &[
-    "application/vnd.oci.image.manifest.v1+json",
-    "application/vnd.oci.image.index.v1+json",
+    conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1,
+    conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1,
     "application/vnd.docker.distribution.manifest.v2+json",
     "application/vnd.docker.distribution.manifest.list.v2+json",
 ];
@@ -605,7 +605,7 @@ mod tests {
     async fn blob_stream_keeps_eof_and_reports_digest_errors() {
         use super::{HttpRegistry, RegistryEntry};
         use crate::{Registry as _, auth::AuthEnv};
-        use pichi_artifact::Digest;
+        use conglobate::artifact::Digest;
         use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
         use tokio::net::TcpListener;
         use tokio_util::io::StreamReader;

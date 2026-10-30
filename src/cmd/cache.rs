@@ -3,8 +3,11 @@
 
 //! Authenticated image metadata, platform selection and cache reachability.
 
+use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context, Result, anyhow, ensure};
-use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind};
+use conglobate::artifact::{
+    Digest, Index, IndexDescriptor, Manifest, Platform, Reference, ReferenceKind,
+};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
 use pichi_storage::{BlobStore, TagDb};
 use serde_json::Value;
@@ -15,15 +18,8 @@ use tokio::io::AsyncReadExt as _;
 use super::manifest_ext::ManifestExt as _;
 
 pub(super) const METADATA_CAP: u64 = 1024 * 1024;
-pub(super) const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+pub(super) use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as MANIFEST_TYPE;
 pub(super) const TARGET_OS: &str = "pichi";
-#[cfg(target_arch = "x86_64")]
-pub(super) const TARGET_ARCH: &str = "amd64";
-#[cfg(target_arch = "aarch64")]
-pub(super) const TARGET_ARCH: &str = "arm64";
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub(super) const TARGET_ARCH: &str = std::env::consts::ARCH;
-
 /// Captured bytes retain their original content identity through publication.
 pub(super) struct ImageMetadata {
     pub digest: Digest,
@@ -74,7 +70,8 @@ impl ImageMetadata {
     }
 
     pub(super) fn selected_entry(&self) -> Result<&Value> {
-        let selected = pick_pichi_entry_from_index(&self.bytes, TARGET_OS, TARGET_ARCH)?;
+        let selected =
+            pick_pichi_entry_from_index(&self.bytes, TARGET_OS, Platform::host_architecture())?;
         self.entries()?
             .iter()
             .find(|entry| entry["digest"] == selected)
@@ -101,9 +98,9 @@ impl ImageMetadata {
 
     pub(super) fn manifest(&self) -> Result<Manifest> {
         ensure!(
-            self.value["artifactType"] == pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            self.value["artifactType"] == conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
             "expected {}",
-            pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1
+            conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1
         );
         Manifest::decode_json(self.bytes.as_slice()).context("invalid image manifest")
     }
@@ -117,25 +114,28 @@ enum Visit {
 pub(super) trait ImageStore: BlobStore {
     /// Give a locally produced manifest a publishable platform index. An
     /// existing index retains its exact bytes, including all platform entries.
-    async fn local_index(&self, digest: &Digest, platform: Option<Value>) -> Result<Digest> {
+    async fn local_index(&self, digest: &Digest, platform: Option<Platform>) -> Result<Digest> {
         let metadata = self.metadata(digest).await?;
         if metadata.is_index() {
             return Ok(metadata.digest);
         }
         metadata.manifest()?;
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "schemaVersion": 2,
-            "mediaType": OCI_IMAGE_INDEX_MEDIA_TYPE,
-            "manifests": [{
-                "mediaType": MANIFEST_TYPE,
-                "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-                "digest": metadata.digest.to_string(),
-                "size": metadata.bytes.len(),
-                "platform": platform.unwrap_or_else(|| serde_json::json!({
-                    "os": TARGET_OS, "architecture": TARGET_ARCH
-                }))
-            }]
-        }))?;
+        let index = Index {
+            manifests: vec![IndexDescriptor {
+                media_type: MANIFEST_TYPE.into(),
+                artifact_type: Some(conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1.into()),
+                digest: metadata.digest.to_string(),
+                size: metadata.bytes.len() as u64,
+                platform: Some(platform.unwrap_or_else(|| Platform {
+                    os: TARGET_OS.into(),
+                    architecture: Platform::host_architecture().into(),
+                    variant: None,
+                })),
+                annotations: Default::default(),
+            }],
+            ..Index::default()
+        };
+        let bytes = serde_json::to_vec(&index)?;
         let digest = Digest::Sha256(Sha256::digest(&bytes).into());
         self.put_blob(&digest, &bytes).await?;
         Ok(digest)

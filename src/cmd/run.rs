@@ -28,7 +28,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use pichi_artifact::{Digest, Manifest, Reference, Requirements, ScuteDescriptor};
+use conglobate::artifact::{Digest, Manifest, Reference, Requirements, ScuteDescriptor};
 use pichi_storage::{BlobSidecarExt, FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
@@ -172,7 +172,10 @@ pub(crate) async fn build_gpt_spec(
         // Per-scute dm-verity root from the cached cow (PARTUUID / label prep).
         // Launch never reads `dev.pichi.carapace.verity.hash`.
         let root: [u8; 32] = manifest
-            .cached_scute_root(&pichi_artifact::Layer::Scute((*scute).clone()), blob_store)
+            .cached_scute_root(
+                &conglobate::artifact::Layer::Scute((*scute).clone()),
+                blob_store,
+            )
             .await?
             .context("scute has no verity root")?;
 
@@ -277,7 +280,7 @@ mod tests {
 
     const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
-    use pichi_artifact::{
+    use conglobate::artifact::{
         ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
         ScuteAnnotations, ScuteDescriptor,
     };
@@ -329,7 +332,7 @@ mod tests {
                 .into(),
             size: 4096,
             annotations: ScuteAnnotations {
-                data_blocks: None,
+                data_blocks: 1u64.try_into().unwrap(),
                 salt: "00".into(),
             },
         };
@@ -345,7 +348,7 @@ mod tests {
                 .into(),
             size: 4096,
             annotations: ScuteAnnotations {
-                data_blocks: None,
+                data_blocks: 1u64.try_into().unwrap(),
                 salt: "00".into(),
             },
         };
@@ -361,7 +364,7 @@ mod tests {
                 .into(),
             size: 4096,
             annotations: ScuteAnnotations {
-                data_blocks: None,
+                data_blocks: 1u64.try_into().unwrap(),
                 salt: "00".into(),
             },
         };
@@ -404,7 +407,7 @@ mod tests {
     }
 
     fn dtb_layer_fixture() -> Layer {
-        Layer::Dtb(pichi_artifact::DtbDescriptor {
+        Layer::Dtb(conglobate::artifact::DtbDescriptor {
             digest: "sha256:4444444444444444444444444444444444444444444444444444444444444444"
                 .into(),
             size: 8192,
@@ -458,7 +461,7 @@ mod tests {
                 digest: digest.to_string(),
                 size: data.len() as u64,
                 annotations: ScuteAnnotations {
-                    data_blocks: Some(3),
+                    data_blocks: 3u64.try_into().unwrap(),
                     salt: "abcd".into(),
                 },
             });
@@ -501,7 +504,7 @@ mod tests {
             digest: cow_digest.to_string(),
             size: cow_bytes.len() as u64,
             annotations: ScuteAnnotations {
-                data_blocks: None,
+                data_blocks: (cow_bytes.len() as u64).div_ceil(4096).try_into().unwrap(),
                 salt: "00".into(),
             },
         };

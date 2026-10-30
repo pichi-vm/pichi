@@ -204,7 +204,7 @@ impl CacheLayout {
     }
 
     /// Path of a single blob file: `<graphroot>/blobs/sha256/<hex>`.
-    pub fn blob_path(&self, digest: &pichi_artifact::Digest) -> PathBuf {
+    pub fn blob_path(&self, digest: &conglobate::artifact::Digest) -> PathBuf {
         self.blob_dir().join(digest.hex())
     }
 

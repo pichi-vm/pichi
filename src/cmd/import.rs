@@ -28,7 +28,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use pichi_artifact::{
+use conglobate::artifact::{
     Config, ConfigDescriptor, Digest, DtbDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest,
     PmiDescriptor, Reference,
 };
@@ -210,7 +210,7 @@ fn scuteless_manifest() -> Manifest {
     );
     Manifest {
         schema_version: 2,
-        media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
+        media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
         config: ConfigDescriptor::canonical(),
         layers: Vec::new(),
@@ -244,8 +244,6 @@ async fn read_launch_contract(path: &Path) -> Result<(Digest, Vec<u8>)> {
     let cfg: Config = serde_yaml::from_str(&text)
         .with_context(|| format!("parse --config: {}", path.display()))?;
     cfg.validate().context("invalid --config")?;
-    let mut cfg = cfg;
-    cfg.requirements.canonicalize();
     let bytes = serde_json::to_vec(&cfg).context("serialise config blob")?;
     Ok((
         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into()),

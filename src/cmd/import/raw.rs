@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use carapace::image::{Plan as _, Planned};
-use pichi_artifact::{Digest, Manifest, Reference};
+use conglobate::artifact::{Digest, Manifest, Reference};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use sha2::{Digest as _, Sha256};
 use tempfile::NamedTempFile;
@@ -326,11 +326,15 @@ mod tests {
                 staged.cow_digest
             );
             let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
-            assert!(manifest.carapace_verity_hash().is_none());
-            let pichi_artifact::Layer::Scute(scute) = &manifest.layers[0] else {
+            assert!(
+                !manifest
+                    .annotations
+                    .contains_key("dev.pichi.carapace.verity.hash")
+            );
+            let conglobate::artifact::Layer::Scute(scute) = &manifest.layers[0] else {
                 panic!("expected scute")
             };
-            assert_eq!(scute.annotations.data_blocks, Some(size / 4096));
+            assert_eq!(scute.annotations.data_blocks.get(), size / 4096);
             let formatted = VerityParams {
                 data_block_size: 4096,
                 hash_block_size: 4096,
@@ -358,7 +362,11 @@ mod tests {
             "sha256:e912b9b25375cf235229c113b88eb7fcc038073c703696c4904f1712fa193823"
         );
         let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
-        assert!(manifest.carapace_verity_hash().is_none());
+        assert!(
+            !manifest
+                .annotations
+                .contains_key("dev.pichi.carapace.verity.hash")
+        );
         let bytes = std::fs::read(staged.cow.path()).unwrap();
         let formatted = VerityParams {
             data_block_size: 4096,

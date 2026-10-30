@@ -3,12 +3,12 @@
 
 //! Streaming layer preparation shared by pull and load.
 
-use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use crate::cmd::verity::VerityFormat as _;
 use anyhow::{Context as _, Result, bail};
-use pichi_artifact::{Digest, Layer, Manifest, Reference};
+use conglobate::artifact::{Digest, Layer, Manifest, Reference};
 use pichi_registry::Registry;
 use pichi_storage::{BlobSidecarExt, BlobStore};
 use sha2::{Digest as _, Sha256};
@@ -109,7 +109,7 @@ impl PreparedLayer {
                 Some(root)
             }
             Layer::ScuteZstd(scute) => {
-                let mut data = NamedTempFile::new_in(scratch)?;
+                let data = NamedTempFile::new_in(scratch)?;
                 let mut output = NamedTempFile::new_in(scratch)?;
                 let decoder = match ruzstd::decoding::StreamingDecoder::new(&mut wire) {
                     Ok(decoder) => decoder,
@@ -137,29 +137,15 @@ impl PreparedLayer {
                     count: 0,
                     capacity,
                 };
-                let root = if scute.annotations.data_blocks.is_some() {
-                    let header = manifest.verity_header(scute, None)?;
-                    if header.parameters.data.count.get()
-                        > capacity / u64::from(header.parameters.data.size.bytes().get())
-                    {
-                        bail!("decompressed size exceeds available scratch capacity");
-                    }
-                    let root = header.format_padded(&mut decoded, output.as_file_mut())?;
-                    decoded.output.flush()?;
-                    drop(decoded);
-                    root
-                } else {
-                    // Legacy compressed manifests lack the geometry needed to
-                    // place tree levels. Decode once, then format the saved COW.
-                    io::copy(&mut decoded, &mut io::sink())?;
-                    decoded.output.flush()?;
-                    let size = decoded.count;
-                    drop(decoded);
-                    data.as_file_mut().rewind()?;
-                    manifest
-                        .verity_header(scute, Some(size))?
-                        .format_padded(BufReader::new(data.as_file()), output.as_file_mut())?
-                };
+                let header = manifest.verity_header(scute, None)?;
+                if header.parameters.data.count.get()
+                    > capacity / u64::from(header.parameters.data.size.bytes().get())
+                {
+                    bail!("decompressed size exceeds available scratch capacity");
+                }
+                let root = header.format_padded(&mut decoded, output.as_file_mut())?;
+                decoded.output.flush()?;
+                drop(decoded);
                 deflated = Some(data);
                 verity = Some(output);
                 Some(root)
@@ -284,7 +270,7 @@ mod tests {
     }
 
     impl Fixture {
-        fn new(compressed: bool, declared: Option<u64>) -> Self {
+        fn new(compressed: bool, declared: u64) -> Self {
             let data = vec![0x5a; 4097];
             let wire = if compressed {
                 ruzstd::encoding::compress_to_vec(
@@ -303,18 +289,17 @@ mod tests {
             .compute(&data)
             .unwrap()
             .root_hash;
-            let mut annotations =
-                serde_json::json!({ "dev.pichi.scute.verity.salt": hex::encode([0; 32]) });
-            if let Some(blocks) = declared {
-                annotations["dev.pichi.scute.verity.data-blocks"] = blocks.to_string().into();
-            }
+            let annotations = serde_json::json!({
+                "dev.pichi.scute.verity.salt": hex::encode([0; 32]),
+                "dev.pichi.scute.verity.data-blocks": declared.to_string(),
+            });
             let manifest = serde_json::json!({
                 "schemaVersion": 2,
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-                "config": pichi_artifact::ConfigDescriptor::canonical(),
+                "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                "config": conglobate::artifact::ConfigDescriptor::canonical(),
                 "layers": [{
-                    "mediaType": if compressed { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
+                    "mediaType": if compressed { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
                     "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
                     "size": wire.len(), "annotations": annotations,
                 }],
@@ -345,69 +330,65 @@ mod tests {
     }
 
     #[test]
-    fn streams_raw_and_zstd_with_legacy_fallback() {
+    fn streams_raw_and_zstd_with_declared_extents() {
         for compressed in [false, true] {
-            for declared in [None, Some(2)] {
-                let fixture = Fixture::new(compressed, declared);
-                let scratch = tempfile::tempdir().unwrap();
-                let result = fixture.prepare(scratch.path()).unwrap();
-                assert_eq!(result.root, Some(fixture.root));
-                assert_eq!(
-                    std::fs::read(result.source.as_ref().unwrap().path()).unwrap(),
-                    fixture.wire
-                );
-                if let Some(deflated) = result.deflated.as_ref() {
-                    // The partial final block's padding is only a formatter input.
-                    assert_eq!(std::fs::read(deflated.path()).unwrap(), fixture.data);
-                }
-                let params = VerityParams {
-                    data_block_size: 4096,
-                    hash_block_size: 4096,
-                    salt: vec![0; 32],
-                    uuid: [0; 16],
-                };
-                let verity_bytes = std::fs::read(result.verity.as_ref().unwrap().path()).unwrap();
-                let header =
-                    devmap_verity::Header::decode(verity_bytes[..512].try_into().unwrap()).unwrap();
-                assert_eq!(header.parameters.data.count.get(), 2);
-                assert_eq!(verity_bytes, params.compute(&fixture.data).unwrap().blob);
-                drop(result);
-                assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+            let fixture = Fixture::new(compressed, 2);
+            let scratch = tempfile::tempdir().unwrap();
+            let result = fixture.prepare(scratch.path()).unwrap();
+            assert_eq!(result.root, Some(fixture.root));
+            assert_eq!(
+                std::fs::read(result.source.as_ref().unwrap().path()).unwrap(),
+                fixture.wire
+            );
+            if let Some(deflated) = result.deflated.as_ref() {
+                // The partial final block's padding is only a formatter input.
+                assert_eq!(std::fs::read(deflated.path()).unwrap(), fixture.data);
             }
+            let params = VerityParams {
+                data_block_size: 4096,
+                hash_block_size: 4096,
+                salt: vec![0; 32],
+                uuid: [0; 16],
+            };
+            let verity_bytes = std::fs::read(result.verity.as_ref().unwrap().path()).unwrap();
+            let header =
+                devmap_verity::Header::decode(verity_bytes[..512].try_into().unwrap()).unwrap();
+            assert_eq!(header.parameters.data.count.get(), 2);
+            assert_eq!(verity_bytes, params.compute(&fixture.data).unwrap().blob);
+            drop(result);
+            assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
         }
     }
 
     #[tokio::test]
     async fn cached_preparation_rebuilds_and_repairs_sidecars() {
         for compressed in [false, true] {
-            for blocks in [None, Some(2)] {
-                let fixture = Fixture::new(compressed, blocks);
-                let dir = tempfile::tempdir().unwrap();
-                let store = pichi_storage::FilesystemBlobStore::new(dir.path());
-                let layer = &fixture.manifest.layers[0];
-                let digest = layer.digest_str().parse().unwrap();
-                store.put_blob(&digest, &fixture.wire).await.unwrap();
-                let path = store.blob_path(&digest);
-                let expected = fixture.prepare(dir.path()).unwrap();
-                for _ in 0..2 {
-                    let root = PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
-                        .await
-                        .unwrap();
-                    assert_eq!(root, expected.root);
-                    assert_eq!(
-                        std::fs::read(path.verity_path()).unwrap(),
-                        std::fs::read(expected.verity.as_ref().unwrap().path()).unwrap()
-                    );
-                    assert_eq!(std::fs::read(&path).unwrap(), fixture.wire);
-                }
-                if compressed {
-                    std::fs::remove_file(path.deflated_path()).unwrap();
-                    let root = PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
-                        .await
-                        .unwrap();
-                    assert_eq!(root, expected.root);
-                    assert_eq!(std::fs::read(path.deflated_path()).unwrap(), fixture.data);
-                }
+            let fixture = Fixture::new(compressed, 2);
+            let dir = tempfile::tempdir().unwrap();
+            let store = pichi_storage::FilesystemBlobStore::new(dir.path());
+            let layer = &fixture.manifest.layers[0];
+            let digest = layer.digest_str().parse().unwrap();
+            store.put_blob(&digest, &fixture.wire).await.unwrap();
+            let path = store.blob_path(&digest);
+            let expected = fixture.prepare(dir.path()).unwrap();
+            for _ in 0..2 {
+                let root = PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
+                    .await
+                    .unwrap();
+                assert_eq!(root, expected.root);
+                assert_eq!(
+                    std::fs::read(path.verity_path()).unwrap(),
+                    std::fs::read(expected.verity.as_ref().unwrap().path()).unwrap()
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), fixture.wire);
+            }
+            if compressed {
+                std::fs::remove_file(path.deflated_path()).unwrap();
+                let root = PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
+                    .await
+                    .unwrap();
+                assert_eq!(root, expected.root);
+                assert_eq!(std::fs::read(path.deflated_path()).unwrap(), fixture.data);
             }
         }
     }
@@ -416,15 +397,15 @@ mod tests {
     fn rejects_wrong_lengths_digests_and_trailing_frames_without_leaking_temps() {
         let scratch = tempfile::tempdir().unwrap();
         let over_capacity = fs4::available_space(scratch.path()).unwrap() / 4096 + 1;
-        for declared in [0, 1, 3, over_capacity, u64::MAX] {
-            let fixture = Fixture::new(true, Some(declared));
+        for declared in [1, 3, over_capacity, u64::MAX] {
+            let fixture = Fixture::new(true, declared);
             assert!(fixture.prepare(scratch.path()).is_err());
         }
         for compressed in [false, true] {
-            let mut fixture = Fixture::new(compressed, Some(2));
+            let mut fixture = Fixture::new(compressed, 2);
             fixture.wire.pop();
             assert!(fixture.prepare(scratch.path()).is_err());
-            let mut fixture = Fixture::new(compressed, Some(2));
+            let mut fixture = Fixture::new(compressed, 2);
             let (Layer::Scute(d) | Layer::ScuteZstd(d)) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
@@ -432,7 +413,7 @@ mod tests {
                 Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"wrong").into()).to_string();
             assert!(fixture.prepare(scratch.path()).is_err());
         }
-        let mut fixture = Fixture::new(true, Some(2));
+        let mut fixture = Fixture::new(true, 2);
         fixture.wire.extend_from_within(..);
         let Layer::ScuteZstd(d) = &mut fixture.manifest.layers[0] else {
             unreachable!()
@@ -477,10 +458,10 @@ mod tests {
         let manifest = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "config": pichi_artifact::ConfigDescriptor::canonical(),
+            "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            "config": conglobate::artifact::ConfigDescriptor::canonical(),
             "layers": [{
-                "mediaType": pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD,
+                "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD,
                 "digest": digest.to_string(),
                 "size": WIRE.len(),
                 "annotations": {
@@ -518,7 +499,7 @@ mod tests {
     fn observes_network_error_after_declared_extent() {
         let scratch = tempfile::tempdir().unwrap();
         for compressed in [false, true] {
-            let fixture = Fixture::new(compressed, Some(2));
+            let fixture = Fixture::new(compressed, 2);
             let error = PreparedLayer::read(
                 LateFailure(&fixture.wire),
                 &fixture.manifest,
