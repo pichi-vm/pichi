@@ -478,8 +478,8 @@ mod tests {
             PreparedLayer::prepare_cached(&manifest, layer, &store)
                 .await
                 .unwrap();
-            let path = store.blob_path(&layer.digest_str().parse().unwrap());
-            prepared.push(std::fs::read(path.verity_path()).unwrap());
+            let files = ScuteFiles::new(&manifest, layer, &store).unwrap();
+            prepared.push(std::fs::read(files.verity).unwrap());
         }
         let spec = build_gpt_spec(&manifest, &refs, &store).await.unwrap();
         let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(&spec).unwrap();
@@ -495,7 +495,10 @@ mod tests {
                 format!("c:{}", &hex::encode(root)[..34])
             );
             assert_eq!(gpt.partitions[index * 2].partuuid.to_bytes_le(), root[..16]);
-            assert_eq!(std::fs::read(path.verity_path()).unwrap(), prepared[index]);
+            assert_eq!(
+                std::fs::read(&gpt.partitions[index * 2 + 1].path).unwrap(),
+                prepared[index]
+            );
             assert_eq!(prepared[index], output.into_inner());
         }
     }
@@ -541,7 +544,9 @@ mod tests {
         assert_eq!(gpt.partitions[0].path, blob_store.blob_path(&cow_digest));
         assert_eq!(
             gpt.partitions[1].path,
-            blob_store.blob_path(&cow_digest).verity_path()
+            ScuteFiles::new(&m, &m.layers[1], &blob_store)
+                .unwrap()
+                .verity
         );
         // Paired cow/verity share the same 34-hex label body.
         assert_eq!(gpt.partitions[0].label[2..], gpt.partitions[1].label[2..]);
@@ -584,8 +589,9 @@ mod tests {
                 );
                 store.put_blob(&digest, &wire).await.unwrap();
                 let source = store.blob_path(&digest);
+                let files = ScuteFiles::new(&manifest, &manifest.layers[1], &store).unwrap();
                 let expected_data = if compressed || length != 8192 {
-                    source.deflated_path()
+                    source.deflated_path(8192)
                 } else {
                     source.clone()
                 };
@@ -604,7 +610,7 @@ mod tests {
                 // bounded preparation path before Dillo receives any files.
                 for missing in [
                     None,
-                    Some(source.verity_path()),
+                    Some(files.verity.clone()),
                     (expected_data != source).then(|| expected_data.clone()),
                 ] {
                     if let Some(path) = missing {
@@ -621,7 +627,7 @@ mod tests {
                     assert_eq!(spec, &build_spec);
                     assert_eq!(gpt.partitions.len(), 2);
                     assert_eq!(gpt.partitions[0].path, expected_data);
-                    assert_eq!(gpt.partitions[1].path, source.verity_path());
+                    assert_eq!(gpt.partitions[1].path, files.verity.clone());
                     assert_eq!(
                         gpt.partitions[0].partuuid.to_bytes_le(),
                         expected_root[..16]
@@ -632,7 +638,7 @@ mod tests {
                     );
                     assert_eq!(std::fs::read(&source).unwrap(), wire);
                     assert_eq!(std::fs::read(&expected_data).unwrap(), padded);
-                    assert!(std::fs::metadata(source.verity_path()).unwrap().len() > 0);
+                    assert!(std::fs::metadata(files.verity.clone()).unwrap().len() > 0);
                 }
                 for invalid in [4096, 4097, 8191, 8193] {
                     std::fs::write(&expected_data, vec![0; invalid]).unwrap();

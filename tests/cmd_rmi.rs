@@ -144,7 +144,7 @@ async fn rmi_shared_manifest_blocked_without_force() {
 //
 //     find blobs/sha256/ -type f  →  ZERO files after rmi (orphan case)
 //
-// We exercise both the import-produced sidecar shape (`<cow>.verity` only;
+// We exercise both the import-produced sidecar shape (`<cow>.prepared/<key>.verity` only;
 // no `.deflated` because import is identity-decompression per D-04) and
 // the multi-tag refcount preservation case.
 //
@@ -168,17 +168,21 @@ fn write_raw_fixture(path: &std::path::Path) {
 /// Helper: count files in `<graphroot>/blobs/sha256/`.
 fn count_blob_files(graphroot: &std::path::Path) -> usize {
     let blobs = graphroot.join("blobs").join("sha256");
-    std::fs::read_dir(&blobs)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(&blobs).map_or(0, |rd| {
+        rd.filter_map(Result::ok)
+            .map(|entry| {
+                if entry.file_type().unwrap().is_dir() {
+                    std::fs::read_dir(entry.path()).unwrap().count()
+                } else {
+                    1
+                }
+            })
+            .sum()
+    })
 }
 
 /// CACHE-04 / D-08: after rmi, blobs/sha256/ contains ZERO files for an
-/// artifact produced by `pichi import`. Pre-rmi shape: `<cow>` + `<cow>.verity`
+/// artifact produced by `pichi import`. Pre-rmi shape: `<cow>` + `<cow>.prepared/<key>.verity`
 /// + `<manifest>` (3 entries; import is identity-decompression so no `.deflated`
 /// per D-04). The `.verity` sidecar MUST be unlinked together with the cow
 /// inside the same `with_index_lock` window.
@@ -207,7 +211,15 @@ async fn rmi_after_import_leaves_no_orphans() {
     let deflated_present = std::fs::read_dir(&blobs)
         .unwrap()
         .filter_map(Result::ok)
-        .any(|e| e.file_name().to_string_lossy().ends_with(".deflated"));
+        .filter(|entry| entry.file_type().unwrap().is_dir())
+        .flat_map(|entry| std::fs::read_dir(entry.path()).unwrap())
+        .any(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "deflated")
+        });
     assert!(
         !deflated_present,
         "import is identity-decompression (D-04) — .deflated must NOT be written"

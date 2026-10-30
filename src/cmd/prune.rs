@@ -3,7 +3,7 @@
 
 //! `pichi system prune` (PRUNE-01..04). Walks the live tag set, computes
 //! refcount=0 source blobs in `<graphroot>/blobs/sha256/`, and unlinks
-//! them plus their `.deflated` / `.verity` sidecars inside ONE
+//! them plus their prepared files and legacy flat sidecars inside ONE
 //! `with_index_lock` window. A second readdir pass sweeps headless
 //! sidecars (closing Phase 46 D-09).
 //!
@@ -17,16 +17,9 @@
 //!
 //! ## Sidecar atomicity (D-prune-H1)
 //!
-//! Source orphans are unlinked together with their `<src>.deflated` and
-//! `<src>.verity` siblings via
-//! [`pichi_storage::sidecar::unlink_blob_with_sidecars`] (Phase 46 D-08
-//! primitive — ENOENT-tolerant per sibling). The headless-sidecar sweep
-//! runs AFTER the source-orphan loop within the same lock callback, so a
-//! source orphan's OWN siblings (which `unlink_blob_with_sidecars`
-//! removes alongside the source) are never visible to the sweep's
-//! `with_extension("")` `exists()` check — by the time the sweep iterates
-//! the directory, those siblings have already been unlinked. This
-//! ordering is load-bearing.
+//! Source orphans are removed with all their preparation variants and legacy
+//! flat sidecars. A second pass removes preparation left without a source.
+//! Headless stems are counted once even when both cache layouts coexist.
 //!
 //! ## Live-set policy
 //!
@@ -47,6 +40,8 @@
 //! testing the OS, not pichi.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
+
+use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 use humansize::{BINARY, format_size};
@@ -123,18 +118,11 @@ pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
                             format!("metadata for orphan source {}", blob_path.display())
                         })?
                         .len();
-                    let deflated_bytes = std::fs::metadata(blob_path.deflated_path())
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                    let verity_bytes = std::fs::metadata(blob_path.verity_path())
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-
+                    let sidecar_bytes = blob_path.sidecar_bytes()?;
                     records.push((digest.clone(), source_size));
                     total = total
                         .saturating_add(source_size)
-                        .saturating_add(deflated_bytes)
-                        .saturating_add(verity_bytes);
+                        .saturating_add(sidecar_bytes);
 
                     // D-prune-DR1: branch ONLY on the unlink call site;
                     // everything else above runs identically in both modes.
@@ -147,16 +135,11 @@ pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
                 }
             }
 
-            // D-prune-H1: headless-sidecar sweep. Re-iterate read_dir
-            // because the directory has changed (source-orphan loop
-            // removed the source orphans + their sibling sidecars). Per
-            // the ordering invariant in the rustdoc above, a source
-            // orphan's own `.deflated` / `.verity` siblings cannot be
-            // visible here — they were unlinked together with the source
-            // by `unlink_blob_with_sidecars`.
+            // Sweep headless prepared directories and legacy flat sidecars.
             if blob_dir.exists() {
                 let entries = std::fs::read_dir(&blob_dir)
                     .with_context(|| format!("read_dir {} (headless sweep)", blob_dir.display()))?;
+                let mut swept = HashSet::new();
                 for entry in entries {
                     let entry = entry.with_context(|| {
                         format!("read_dir entry in {} (headless sweep)", blob_dir.display())
@@ -166,32 +149,24 @@ pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
                         Some(e) => e,
                         None => continue,
                     };
-                    if ext != "deflated" && ext != "verity" {
+                    if !matches!(ext, "deflated" | "verity" | "prepared") {
                         continue;
                     }
 
-                    // Derive source stem: the inverse of
-                    // `pichi_storage::sidecar::{deflated,verity}_path` is
-                    // `Path::with_extension("")`.
                     let source_path = path.with_extension("");
-                    if source_path.exists() {
-                        continue; // not headless
+                    if !source_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(is_blob_filename)
+                        || source_path.exists()
+                        || !swept.insert(source_path.clone())
+                    {
+                        continue;
                     }
-
-                    let bytes = std::fs::metadata(&path)
-                        .with_context(|| {
-                            format!("metadata for headless sidecar {}", path.display())
-                        })?
-                        .len();
-                    total = total.saturating_add(bytes);
-
-                    // D-prune-DR1: branch only on the unlink. Note: we
-                    // use std::fs::remove_file here, NOT
-                    // unlink_blob_with_sidecars — we are removing a
-                    // single headless file, not a triple (D-prune-H1).
+                    total = total.saturating_add(source_path.sidecar_bytes()?);
                     if !args.dry_run {
-                        std::fs::remove_file(&path).with_context(|| {
-                            format!("remove headless {ext} sidecar {}", path.display())
+                        source_path.unlink_with_sidecars().await.with_context(|| {
+                            format!("remove headless sidecars {}", source_path.display())
                         })?;
                     }
                 }
@@ -320,18 +295,18 @@ mod tests {
 
         let src = blobs.join(FAKE_HEX);
         std::fs::write(&src, b"source-bytes").unwrap();
-        std::fs::write(src.deflated_path(), b"deflated-bytes").unwrap();
-        std::fs::write(src.verity_path(), b"verity-bytes").unwrap();
+        std::fs::write(src.with_extension("deflated"), b"deflated-bytes").unwrap();
+        std::fs::write(src.with_extension("verity"), b"verity-bytes").unwrap();
 
         run(PruneArgs { dry_run: false }, &config).await.unwrap();
 
         assert!(!src.exists(), "source orphan must be unlinked");
         assert!(
-            !src.deflated_path().exists(),
+            !src.with_extension("deflated").exists(),
             ".deflated sidecar must be unlinked together with source"
         );
         assert!(
-            !src.verity_path().exists(),
+            !src.with_extension("verity").exists(),
             ".verity sidecar must be unlinked together with source"
         );
     }
@@ -347,18 +322,18 @@ mod tests {
 
         let src = blobs.join(FAKE_HEX);
         std::fs::write(&src, b"source-bytes").unwrap();
-        std::fs::write(src.deflated_path(), b"deflated-bytes").unwrap();
-        std::fs::write(src.verity_path(), b"verity-bytes").unwrap();
+        std::fs::write(src.with_extension("deflated"), b"deflated-bytes").unwrap();
+        std::fs::write(src.with_extension("verity"), b"verity-bytes").unwrap();
 
         run(PruneArgs { dry_run: true }, &config).await.unwrap();
 
         assert!(src.exists(), "--dry-run: source must NOT be unlinked");
         assert!(
-            src.deflated_path().exists(),
+            src.with_extension("deflated").exists(),
             "--dry-run: .deflated must NOT be unlinked"
         );
         assert!(
-            src.verity_path().exists(),
+            src.with_extension("verity").exists(),
             "--dry-run: .verity must NOT be unlinked"
         );
     }
@@ -407,7 +382,7 @@ mod tests {
         // referenced-blob path (sidecars of live blobs are NOT touched
         // by prune; they are only swept when their source is missing).
         let scute_path = bs.blob_path(&scute_digest);
-        std::fs::write(scute_path.verity_path(), b"verity-bytes").unwrap();
+        std::fs::write(scute_path.with_extension("verity"), b"verity-bytes").unwrap();
 
         let db = FilesystemTagDb::open(g).unwrap();
         db.set_tag("docker.io/library/foo:1", &mdigest)
@@ -427,7 +402,7 @@ mod tests {
             "scute blob must survive"
         );
         assert!(
-            scute_path.verity_path().exists(),
+            scute_path.with_extension("verity").exists(),
             "live scute's .verity sidecar must survive"
         );
     }
@@ -447,7 +422,7 @@ mod tests {
         std::fs::create_dir_all(&blobs).unwrap();
 
         let stem = blobs.join(FAKE_HEX);
-        let headless = stem.verity_path();
+        let headless = stem.with_extension("verity");
         std::fs::write(&headless, b"orphan-verity").unwrap();
         // Source `<src>` deliberately NOT written — this is the legacy
         // pre-Phase-46 / D-09 case.
@@ -471,7 +446,7 @@ mod tests {
         std::fs::create_dir_all(&blobs).unwrap();
 
         let stem = blobs.join(FAKE_HEX);
-        let headless = stem.deflated_path();
+        let headless = stem.with_extension("deflated");
         std::fs::write(&headless, b"orphan-deflated").unwrap();
         assert!(!stem.exists(), "fixture: source must be missing");
 
@@ -495,7 +470,7 @@ mod tests {
         std::fs::create_dir_all(&blobs).unwrap();
 
         let stem = blobs.join(FAKE_HEX);
-        let headless = stem.verity_path();
+        let headless = stem.with_extension("verity");
         std::fs::write(&headless, b"orphan-verity").unwrap();
 
         run(PruneArgs { dry_run: true }, &config).await.unwrap();
@@ -524,7 +499,7 @@ mod tests {
 
         let src = blobs.join(FAKE_HEX);
         std::fs::write(&src, b"source-bytes").unwrap();
-        std::fs::write(src.verity_path(), b"verity-bytes").unwrap();
+        std::fs::write(src.with_extension("verity"), b"verity-bytes").unwrap();
 
         // Run completes without error AND both files are gone (the source
         // orphan loop unlinked them together via unlink_blob_with_sidecars
@@ -533,7 +508,7 @@ mod tests {
 
         assert!(!src.exists(), "source orphan must be unlinked");
         assert!(
-            !src.verity_path().exists(),
+            !src.with_extension("verity").exists(),
             ".verity sibling must be unlinked together with source"
         );
     }

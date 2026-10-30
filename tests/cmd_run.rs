@@ -173,6 +173,7 @@ async fn run_execs_dillo_with_manifest_derived_devices() {
 
 #[tokio::test]
 async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
+    use pichi::cmd::manifest_ext::ManifestExt as _;
     use pichi_storage::BlobSidecarExt as _;
 
     for compressed in [false, true] {
@@ -238,15 +239,20 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             let prepared = FilesystemBlobStore::new(&graphroot(&destination));
             assert_eq!(prepared.get_blob(&manifest_digest).await.unwrap(), bytes);
             let blob = prepared.blob_path(&digest);
+            let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &manifest.layers[0] else {
+                unreachable!()
+            };
+            let header = manifest.verity_header(scute, None).unwrap();
+            let verity_path = blob.verity_path(&sha256_digest(&header.encode()));
             let data_path = if compressed || length != 8192 {
-                blob.deflated_path()
+                blob.deflated_path(8192)
             } else {
                 blob.clone()
             };
             data.resize(8192, 0);
             assert_eq!(std::fs::read(&blob).unwrap(), wire);
             assert_eq!(std::fs::read(&data_path).unwrap(), data);
-            let verity = std::fs::read(blob.verity_path()).unwrap();
+            let verity = std::fs::read(verity_path.clone()).unwrap();
             assert!(!verity.is_empty());
             for _ in 0..2 {
                 Command::cargo_bin("pichi")
@@ -262,8 +268,8 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(spec).unwrap();
                 assert_eq!(gpt.partitions.len(), 2);
                 assert_eq!(gpt.partitions[0].path, data_path);
-                assert_eq!(gpt.partitions[1].path, blob.verity_path());
-                assert_eq!(std::fs::read(blob.verity_path()).unwrap(), verity);
+                assert_eq!(gpt.partitions[1].path, verity_path.clone());
+                assert_eq!(std::fs::read(verity_path.clone()).unwrap(), verity);
                 assert_eq!(prepared.get_blob(&manifest_digest).await.unwrap(), bytes);
                 assert_eq!(std::fs::read(&blob).unwrap(), wire);
             }

@@ -797,8 +797,11 @@ mod tests {
                     Bytes::from(wire.clone()),
                 );
                 let source = store.blob_path(&digest);
+                let files =
+                    crate::cmd::layer::ScuteFiles::new(&manifest, &manifest.layers[0], &store)
+                        .unwrap();
                 let expected_data = if compressed || length != 8192 {
-                    source.deflated_path()
+                    source.deflated_path(8192)
                 } else {
                     source.clone()
                 };
@@ -818,7 +821,7 @@ mod tests {
                     assert_eq!(store.get_blob(&manifest_digest).await.unwrap(), bytes);
                     assert_eq!(std::fs::read(&source).unwrap(), wire);
                     assert_eq!(std::fs::read(&expected_data).unwrap(), padded);
-                    let tree = std::fs::read(source.verity_path()).unwrap();
+                    let tree = std::fs::read(files.verity.clone()).unwrap();
                     assert!(!tree.is_empty());
                     let spec = crate::cmd::run::build_gpt_spec(
                         &manifest,
@@ -830,8 +833,8 @@ mod tests {
                     let gpt: dillo_config::GptSpec =
                         serde_keyvalue::from_key_values(&spec).unwrap();
                     assert_eq!(gpt.partitions[0].path, expected_data);
-                    assert_eq!(gpt.partitions[1].path, source.verity_path());
-                    assert_eq!(std::fs::read(source.verity_path()).unwrap(), tree);
+                    assert_eq!(gpt.partitions[1].path, files.verity.clone());
+                    assert_eq!(std::fs::read(files.verity.clone()).unwrap(), tree);
                 }
             }
         }
@@ -864,6 +867,10 @@ mod tests {
             decompressed.len() as u64,
             /* is_zstd= */ true,
         );
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        let files =
+            crate::cmd::layer::ScuteFiles::new(&manifest, manifest.scute_layers()[0], &blob_store)
+                .unwrap();
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
             "ghcr.io",
@@ -885,17 +892,17 @@ mod tests {
         );
         // Both sidecars present (D-04: zstd → has .deflated).
         assert!(
-            blob_path.deflated_path().exists(),
+            files.data.exists(),
             ".deflated sidecar missing: {}",
-            blob_path.deflated_path().display()
+            files.data.display()
         );
         assert!(
-            blob_path.verity_path().exists(),
+            files.verity.exists(),
             ".verity sidecar missing: {}",
-            blob_path.verity_path().display()
+            files.verity.display()
         );
         // .deflated bytes byte-equal the original decompressed payload.
-        let deflated_disk = std::fs::read(blob_path.deflated_path()).unwrap();
+        let deflated_disk = std::fs::read(&files.data).unwrap();
         assert_eq!(
             deflated_disk, decompressed,
             ".deflated must equal the decompressed payload byte-for-byte"
@@ -922,6 +929,10 @@ mod tests {
             layer_data.len() as u64,
             /* is_zstd= */ false,
         );
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        let files =
+            crate::cmd::layer::ScuteFiles::new(&manifest, manifest.scute_layers()[0], &blob_store)
+                .unwrap();
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
             "ghcr.io",
@@ -936,11 +947,11 @@ mod tests {
 
         let blob_path = blob_store.blob_path(&layer_digest);
         assert!(blob_path.exists(), "source blob missing");
-        assert!(blob_path.verity_path().exists(), ".verity sidecar missing");
+        assert!(files.verity.exists(), ".verity sidecar missing");
         assert!(
-            !blob_path.deflated_path().exists(),
+            !blob_path.deflated_path(8192).exists(),
             "raw scute must NOT have a .deflated sidecar (D-04): {}",
-            blob_path.deflated_path().display()
+            blob_path.deflated_path(8192).display()
         );
     }
 
@@ -980,6 +991,10 @@ mod tests {
             &pmi_digest,
             pmi_bytes.len() as u64,
         );
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        let files =
+            crate::cmd::layer::ScuteFiles::new(&manifest, manifest.scute_layers()[0], &blob_store)
+                .unwrap();
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
             "ghcr.io",
@@ -1002,19 +1017,15 @@ mod tests {
         let pmi_blob = blob_store.blob_path(&pmi_digest);
         assert!(pmi_blob.exists(), "PMI source blob missing");
         assert!(
-            !pmi_blob.deflated_path().exists(),
-            "PMI must NOT have .deflated"
-        );
-        assert!(
-            !pmi_blob.verity_path().exists(),
-            "PMI must NOT have .verity (Pitfall 6)"
+            !pmi_blob.prepared_dir().exists(),
+            "PMI must not have prepared files"
         );
 
         // Scute still has its .verity (raw → no .deflated).
         let scute_blob = blob_store.blob_path(&scute_digest);
-        assert!(scute_blob.verity_path().exists(), "scute .verity missing");
+        assert!(files.verity.exists(), "scute .verity missing");
         assert!(
-            !scute_blob.deflated_path().exists(),
+            !scute_blob.deflated_path(4096).exists(),
             "raw scute must NOT have .deflated"
         );
     }
@@ -1041,6 +1052,10 @@ mod tests {
             layer_data.len() as u64,
             false,
         );
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        let files =
+            crate::cmd::layer::ScuteFiles::new(&manifest, manifest.scute_layers()[0], &blob_store)
+                .unwrap();
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
             "ghcr.io",
@@ -1053,8 +1068,7 @@ mod tests {
             .await
             .expect("pull should succeed");
 
-        let blob_path = blob_store.blob_path(&layer_digest);
-        let on_disk_verity = std::fs::read(blob_path.verity_path()).unwrap();
+        let on_disk_verity = std::fs::read(&files.verity).unwrap();
 
         let params = pull_side_verity_params();
         let expected = params.compute(&layer_data).expect("verity::compute").blob;
@@ -1136,6 +1150,73 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn cached_blob_prepares_each_salt_without_refetching() {
+        for compressed in [false, true] {
+            let (_tmp, graphroot) = graphroot();
+            let db = open_db(&graphroot);
+            let store = FilesystemBlobStore::new(&graphroot);
+            let data = vec![0x5a; 8192];
+            let wire = if compressed {
+                ruzstd::encoding::compress_to_vec(
+                    data.as_slice(),
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                )
+            } else {
+                data.clone()
+            };
+            let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
+            let (bytes, _) =
+                make_scute_manifest(&digest, wire.len() as u64, data.len() as u64, compressed);
+            let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+            let mut trees = Vec::new();
+            for suffix in [0xaa, 0xbb] {
+                let mut params = pull_side_verity_params();
+                params.salt.push(suffix);
+                let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut manifest.layers[0]
+                else {
+                    unreachable!()
+                };
+                scute.annotations.salt = hex::encode(&params.salt);
+                let registry = MockRegistry::new();
+                registry.insert_manifest(
+                    "ghcr.io",
+                    "example/foo",
+                    "bar",
+                    Bytes::from(serde_json::to_vec(&manifest).unwrap()),
+                );
+                if trees.is_empty() {
+                    registry.insert_blob(
+                        "ghcr.io",
+                        "example/foo",
+                        digest.clone(),
+                        Bytes::from(wire.clone()),
+                    );
+                }
+                pull_inner_with_registry(
+                    "ghcr.io/example/foo:bar".parse().unwrap(),
+                    PullPolicy::Always,
+                    true,
+                    &registry,
+                    &store,
+                    &db,
+                )
+                .await
+                .unwrap();
+                let files =
+                    crate::cmd::layer::ScuteFiles::new(&manifest, &manifest.layers[0], &store)
+                        .unwrap();
+                trees.push((files.verity, params.compute(&data).unwrap().blob));
+            }
+            assert_ne!(trees[0].0, trees[1].0);
+            for (path, expected) in trees {
+                assert_eq!(std::fs::read(path).unwrap(), expected);
+            }
+            let files = store.blob_path(&digest).prepared_files().unwrap();
+            assert_eq!(files.len(), if compressed { 3 } else { 2 });
+        }
+    }
+
     /// Pull ignores `dev.pichi.carapace.verity.hash`. Tagging succeeds for
     /// cached and uncached zstd inputs only with a valid block count, whether
     /// the tip annotation is absent or stale. Missing and zero counts fail
@@ -1184,9 +1265,12 @@ mod tests {
                         store.put_blob(&digest, &wire).await.unwrap();
                         let mut padded = data;
                         padded.resize(8192, 0);
-                        tokio::fs::write(store.blob_path(&digest).deflated_path(), &padded)
-                            .await
-                            .unwrap();
+                        tokio::fs::write(
+                            store.blob_path(&digest).with_extension("deflated"),
+                            &padded,
+                        )
+                        .await
+                        .unwrap();
                     } else {
                         registry.insert_blob("ghcr.io", "example/foo", digest, Bytes::from(wire));
                     }

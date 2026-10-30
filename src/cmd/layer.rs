@@ -17,7 +17,7 @@ use tokio_util::io::{StreamReader, SyncIoBridge};
 
 use crate::cmd::manifest_ext::ManifestExt as _;
 
-/// Uncompressed data and its paired hash tree prepared in the local cache.
+/// The exact cache files selected by a manifest's reconstruction parameters.
 pub(super) struct ScuteFiles {
     pub data: PathBuf,
     pub verity: PathBuf,
@@ -30,25 +30,42 @@ impl ScuteFiles {
             Layer::ScuteZstd(scute) => (scute, true),
             _ => bail!("metadata layer has no scute files"),
         };
-        let source = store.blob_path(&scute.digest.parse()?);
         let header = manifest.verity_header(scute, (!compressed).then_some(scute.size))?;
-        let data = if compressed || scute.size != header.parameters.data_size()? {
-            source.deflated_path()
+        Self::from_header(
+            &store.blob_path(&scute.digest.parse()?),
+            compressed || scute.size != header.parameters.data_size()?,
+            &header,
+        )
+    }
+
+    pub(super) fn from_header(
+        source: &Path,
+        materialized: bool,
+        header: &devmap_verity::Header,
+    ) -> Result<Self> {
+        let key = Digest::Sha256(Sha256::digest(header.encode()).into());
+        let data = if materialized {
+            source.deflated_path(header.parameters.data_size()?)
         } else {
-            source.clone()
+            source.to_owned()
         };
         Ok(Self {
             data,
-            verity: source.verity_path(),
+            verity: source.verity_path(&key),
         })
     }
 }
 
 pub(super) struct PreparedLayer {
     source: Option<NamedTempFile>,
+    scute: Option<PreparedScute>,
+}
+
+struct PreparedScute {
+    header: devmap_verity::Header,
     deflated: Option<NamedTempFile>,
-    verity: Option<NamedTempFile>,
-    root: Option<[u8; 32]>,
+    verity: NamedTempFile,
+    root: [u8; 32],
 }
 
 impl PreparedLayer {
@@ -124,22 +141,23 @@ impl PreparedLayer {
             count: 0,
             expected: layer.size(),
         };
-        let mut deflated = None;
-        let mut verity = None;
-        let root = match layer {
+        let scute = match layer {
             Layer::Scute(scute) => {
                 let mut output = NamedTempFile::new_in(scratch)?;
                 let header = manifest.verity_header(scute, Some(scute.size))?;
-                let root = if header.parameters.data_size()? == scute.size {
-                    header.format_padded(&mut wire, output.as_file_mut())?
+                let (deflated, root) = if header.parameters.data_size()? == scute.size {
+                    (None, header.format_padded(&mut wire, output.as_file_mut())?)
                 } else {
                     let (data, root) =
                         Self::prepare_data(&mut wire, &header, output.as_file_mut(), scratch)?;
-                    deflated = Some(data);
-                    root
+                    (Some(data), root)
                 };
-                verity = Some(output);
-                Some(root)
+                Some(PreparedScute {
+                    header,
+                    root,
+                    verity: output,
+                    deflated,
+                })
             }
             Layer::ScuteZstd(scute) => {
                 let mut output = NamedTempFile::new_in(scratch)?;
@@ -162,9 +180,12 @@ impl PreparedLayer {
                 let header = manifest.verity_header(scute, None)?;
                 let (data, root) =
                     Self::prepare_data(decoder, &header, output.as_file_mut(), scratch)?;
-                deflated = Some(data);
-                verity = Some(output);
-                Some(root)
+                Some(PreparedScute {
+                    header,
+                    root,
+                    verity: output,
+                    deflated: Some(data),
+                })
             }
             Layer::Pmi(_) | Layer::Dtb(_) => {
                 io::copy(&mut wire, &mut io::sink())?;
@@ -172,14 +193,15 @@ impl PreparedLayer {
             }
         };
         wire.finish(&layer.digest_str().parse()?)?;
-        for file in deflated.iter().chain(verity.iter()) {
-            file.as_file().sync_all()?;
+        if let Some(scute) = &scute {
+            scute.verity.as_file().sync_all()?;
+            if let Some(data) = &scute.deflated {
+                data.as_file().sync_all()?;
+            }
         }
         Ok(Self {
             source: None,
-            deflated,
-            verity,
-            root,
+            scute,
         })
     }
 
@@ -214,17 +236,19 @@ impl PreparedLayer {
     async fn commit(self, store: &dyn BlobStore, digest: &Digest) -> Result<Option<[u8; 32]>> {
         let path = store.blob_path(digest);
         tokio::fs::create_dir_all(path.parent().context("blob path has no parent")?).await?;
-        // Publish sidecars first: the source blob is the cache-presence marker.
-        if let Some(file) = &self.deflated {
-            tokio::fs::rename(file.path(), path.deflated_path()).await?;
-        }
-        if let Some(file) = &self.verity {
-            tokio::fs::rename(file.path(), path.verity_path()).await?;
+        // Publish preparation first: the source blob marks cache presence.
+        if let Some(scute) = &self.scute {
+            let files = ScuteFiles::from_header(&path, scute.deflated.is_some(), &scute.header)?;
+            tokio::fs::create_dir_all(path.prepared_dir()).await?;
+            if let Some(data) = &scute.deflated {
+                tokio::fs::rename(data.path(), files.data).await?;
+            }
+            tokio::fs::rename(scute.verity.path(), files.verity).await?;
         }
         if let Some(source) = &self.source {
             store.put_blob_from_path(source.path(), digest).await?;
         }
-        Ok(self.root)
+        Ok(self.scute.map(|scute| scute.root))
     }
 }
 
@@ -383,12 +407,12 @@ mod tests {
             let fixture = Fixture::new(compressed, 2);
             let scratch = tempfile::tempdir().unwrap();
             let result = fixture.prepare(scratch.path()).unwrap();
-            assert_eq!(result.root, Some(fixture.root));
+            assert_eq!(result.scute.as_ref().unwrap().root, fixture.root);
             assert_eq!(
                 std::fs::read(result.source.as_ref().unwrap().path()).unwrap(),
                 fixture.wire
             );
-            let deflated = result.deflated.as_ref().unwrap();
+            let deflated = result.scute.as_ref().unwrap().deflated.as_ref().unwrap();
             let mut padded = fixture.data.clone();
             padded.resize(8192, 0);
             assert_eq!(std::fs::read(deflated.path()).unwrap(), padded);
@@ -398,7 +422,7 @@ mod tests {
                 salt: vec![0; 32],
                 uuid: [0; 16],
             };
-            let verity_bytes = std::fs::read(result.verity.as_ref().unwrap().path()).unwrap();
+            let verity_bytes = std::fs::read(result.scute.as_ref().unwrap().verity.path()).unwrap();
             let header =
                 devmap_verity::Header::decode(verity_bytes[..512].try_into().unwrap()).unwrap();
             assert_eq!(header.parameters.data.count.get(), 2);
@@ -414,8 +438,11 @@ mod tests {
             let fixture = Fixture::with_size(compressed, 2, 8192);
             let scratch = tempfile::tempdir().unwrap();
             let prepared = fixture.prepare(scratch.path()).unwrap();
-            assert_eq!(prepared.deflated.is_some(), compressed);
-            assert_eq!(prepared.root, Some(fixture.root));
+            assert_eq!(
+                prepared.scute.as_ref().unwrap().deflated.is_some(),
+                compressed
+            );
+            assert_eq!(prepared.scute.as_ref().unwrap().root, fixture.root);
             assert_eq!(
                 std::fs::read(prepared.source.as_ref().unwrap()).unwrap(),
                 fixture.wire
@@ -433,33 +460,91 @@ mod tests {
             let digest = layer.digest_str().parse().unwrap();
             store.put_blob(&digest, &fixture.wire).await.unwrap();
             let path = store.blob_path(&digest);
-            let expected = fixture.prepare(dir.path()).unwrap();
+            let expected = fixture.prepare(dir.path()).unwrap().scute.unwrap();
+            let files = ScuteFiles::new(&fixture.manifest, layer, &store).unwrap();
             for _ in 0..2 {
                 let root = PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
                     .await
                     .unwrap();
-                assert_eq!(root, expected.root);
+                assert_eq!(root, Some(expected.root));
                 assert_eq!(
-                    std::fs::read(path.verity_path()).unwrap(),
-                    std::fs::read(expected.verity.as_ref().unwrap().path()).unwrap()
+                    std::fs::read(&files.verity).unwrap(),
+                    std::fs::read(expected.verity.path()).unwrap()
                 );
                 assert_eq!(std::fs::read(&path).unwrap(), fixture.wire);
             }
-            let mut padded = fixture.data.clone();
-            padded.resize(8192, 0);
-            for stale in [None, Some(vec![0x33; 4097]), Some(vec![0x33; 8192])] {
-                if let Some(bytes) = stale {
-                    std::fs::write(path.deflated_path(), bytes).unwrap();
-                } else {
-                    std::fs::remove_file(path.deflated_path()).unwrap();
+            {
+                let mut padded = fixture.data.clone();
+                padded.resize(8192, 0);
+                for stale in [None, Some(vec![0x33; 4097]), Some(vec![0x33; 8192])] {
+                    if let Some(bytes) = stale {
+                        std::fs::write(&files.data, bytes).unwrap();
+                    } else {
+                        std::fs::remove_file(&files.data).unwrap();
+                    }
+                    let root = PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
+                        .await
+                        .unwrap();
+                    assert_eq!(root, Some(expected.root));
+                    assert_eq!(std::fs::read(&files.data).unwrap(), padded);
                 }
-                let root = PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
-                    .await
-                    .unwrap();
-                assert_eq!(root, expected.root);
-                assert_eq!(std::fs::read(path.deflated_path()).unwrap(), padded);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn preparation_variants_share_only_identical_data_extents() {
+        let mut fixture = Fixture::new(true, 2);
+        let dir = tempfile::tempdir().unwrap();
+        let store = pichi_storage::FilesystemBlobStore::new(dir.path());
+        let digest = fixture.manifest.layers[0].digest_str().parse().unwrap();
+        store.put_blob(&digest, &fixture.wire).await.unwrap();
+        let mut variants = Vec::new();
+        for (block_size, count, hash_size, hash_type, suffix) in [
+            (4096, 2, 4096, 1, "aa"),
+            (4096, 2, 4096, 1, "bb"),
+            (1024, 5, 4096, 1, "aa"),
+            (4096, 2, 1024, 1, "aa"),
+            (4096, 2, 4096, 0, "aa"),
+        ] {
+            for (key, value) in [
+                ("data-block-size", block_size),
+                ("hash-block-size", hash_size),
+                ("hash-type", hash_type),
+            ] {
+                fixture.manifest.annotations.insert(
+                    format!("dev.pichi.carapace.verity.{key}"),
+                    value.to_string(),
+                );
+            }
+            let Layer::ScuteZstd(scute) = &mut fixture.manifest.layers[0] else {
+                unreachable!()
+            };
+            scute.annotations.data_blocks = (count as u64).try_into().unwrap();
+            scute.annotations.salt = format!("{}{suffix}", "00".repeat(32));
+            PreparedLayer::prepare_cached(&fixture.manifest, &fixture.manifest.layers[0], &store)
+                .await
+                .unwrap();
+            let files =
+                ScuteFiles::new(&fixture.manifest, &fixture.manifest.layers[0], &store).unwrap();
+            variants.push((files, fixture.prepare(dir.path()).unwrap().scute.unwrap()));
+        }
+        assert_eq!(variants[0].0.data, variants[1].0.data);
+        assert_ne!(variants[0].0.data, variants[2].0.data);
+        let trees: std::collections::HashSet<_> =
+            variants.iter().map(|(files, _)| &files.verity).collect();
+        assert_eq!(trees.len(), 5);
+        for (files, expected) in variants {
+            assert_eq!(
+                std::fs::read(files.verity).unwrap(),
+                std::fs::read(expected.verity.path()).unwrap()
+            );
+            assert_eq!(
+                std::fs::read(files.data).unwrap(),
+                std::fs::read(expected.deflated.unwrap().path()).unwrap()
+            );
+        }
+        assert_eq!(store.blob_path(&digest).prepared_files().unwrap().len(), 7);
     }
 
     #[test]
