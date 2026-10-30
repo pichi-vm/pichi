@@ -38,6 +38,8 @@ jobs:
             runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
             guest_musl: aarch64-unknown-linux-musl
     runs-on: ${{ fromJSON(matrix.runs_on) }}
+    # A hung test must not hold the only Mac runner for hours.
+    timeout-minutes: ${{ matrix.os == 'macos-arm64' && 30 || 360 }}
     steps:
       - uses: actions/checkout@v7.0.1
 
