@@ -47,27 +47,23 @@ This package does not ship guest images.}
 # Source0 is already patch-applied in .copr/Makefile before cargo vendor.
 %autosetup -n %{crate}-%{version} -p1 -a1
 %cargo_prep -v vendor
-# cargo vendor (SRPM time) emits source replacements; append if present.
-if [ -f packaging/cargo-vendor-config.toml ]; then
-  printf '\n' >> .cargo/config.toml
-  cat packaging/cargo-vendor-config.toml >> .cargo/config.toml
-fi
 # Fedora cargo-rpm-macros already set [net] offline; EL
 # may not. Skip a second [net] table if offline is present.
 grep -q '^offline' .cargo/config.toml || printf '\n[net]\noffline = true\n' >> .cargo/config.toml
 
 %build
 export CARGO_NET_OFFLINE=true
-%cargo_build -- --locked
+# Merge the generated source map separately from RPM's build configuration.
+%cargo_build -- --locked --config packaging/cargo-vendor-config.toml
 
 %install
 export CARGO_NET_OFFLINE=true
-%cargo_install -- --locked
+%cargo_install -- --locked --config packaging/cargo-vendor-config.toml
 
 %if %{with check}
 %check
 export CARGO_NET_OFFLINE=true
-%cargo_test -- --locked
+%cargo_test -- --locked --config packaging/cargo-vendor-config.toml
 %endif
 
 %files

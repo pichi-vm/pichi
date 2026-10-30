@@ -16,7 +16,7 @@
 # library disables the engine, so this graph has only one source
 # for each package/version. cargo vendor writes
 # packaging/cargo-vendor-config.toml into that copy; the spec
-# appends it at build time.
+# loads it as a separate Cargo configuration at build time.
 SHELL := /bin/bash
 DNF ?= dnf
 
