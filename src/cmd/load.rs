@@ -52,19 +52,14 @@ struct LayoutEntry {
     annotations: BTreeMap<String, String>,
 }
 
-struct ImportedManifest {
-    digest: Digest,
-    manifest: Manifest,
-    tag: Option<String>,
-}
-
 /// Owns a private snapshot. No guest path or cache sidecar is authoritative.
 /// The VM must have exited before build calls `read`.
 pub(super) struct OciLayout {
     capacity: u64,
     staging: tempfile::TempDir,
     store: FilesystemBlobStore,
-    manifests: Vec<ImportedManifest>,
+    manifests: Vec<Manifest>,
+    roots: Vec<(Digest, Option<String>)>,
     blobs: HashMap<Digest, u64>,
     guest_verity: Vec<(Digest, PathBuf)>,
 }
@@ -91,11 +86,11 @@ impl OciLayout {
         // short-circuit rebuilding: every scute is rebuilt from cow + salt.
         let mut scutes = HashMap::new();
         let mut expanded_size = 0u64;
-        for imported in &layout.manifests {
+        for manifest in &layout.manifests {
             let mut roots = ScuteRoots::default();
-            for layer in &imported.manifest.layers {
+            for layer in &manifest.layers {
                 if let Some(root) =
-                    PreparedLayer::prepare_cached(&imported.manifest, layer, &layout.store).await?
+                    PreparedLayer::prepare_cached(manifest, layer, &layout.store).await?
                 {
                     let digest: Digest = layer.digest_str().parse()?;
                     if let Some(previous) = scutes.insert(digest, root) {
@@ -121,7 +116,7 @@ impl OciLayout {
                 }
             }
             roots
-                .verify_complete(&imported.manifest)
+                .verify_complete(manifest)
                 .context("invalid carapace tip")?;
         }
         layout.check_guest_verity()?;
@@ -156,6 +151,16 @@ impl OciLayout {
             staging,
             store,
             manifests: Vec::new(),
+            roots: index
+                .manifests
+                .iter()
+                .map(|entry| {
+                    Ok((
+                        entry.digest.parse()?,
+                        entry.annotations.get(REF_NAME_ANNOTATION).cloned(),
+                    ))
+                })
+                .collect::<Result<_>>()?,
             blobs: HashMap::new(),
             guest_verity: Vec::new(),
         };
@@ -164,9 +169,20 @@ impl OciLayout {
             .map(PathBuf::from)
             .collect();
         let mut seen = HashSet::new();
-        for entry in index.manifests {
+        ensure!(
+            layout
+                .roots
+                .iter()
+                .map(|(digest, _)| digest)
+                .collect::<HashSet<_>>()
+                .len()
+                == layout.roots.len(),
+            "duplicate OCI manifest"
+        );
+        let mut pending = index.manifests;
+        while let Some(entry) = pending.pop() {
             ensure!(
-                entry.media_type == MANIFEST_TYPE,
+                entry.media_type == MANIFEST_TYPE || entry.media_type == INDEX_TYPE,
                 "unsupported index entry media type"
             );
             ensure!(
@@ -178,8 +194,21 @@ impl OciLayout {
             );
             ensure!(entry.size <= METADATA_CAP, "manifest exceeds metadata cap");
             let digest = layout.copy_blob(&root, &entry.digest, entry.size, &mut expected)?;
-            ensure!(seen.insert(digest.clone()), "duplicate OCI manifest");
             let bytes = std::fs::read(layout.store.blob_path(&digest))?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+            ensure!(
+                value["mediaType"] == entry.media_type && value["schemaVersion"] == 2,
+                "index entry type or schema mismatch"
+            );
+            if !seen.insert(digest.clone()) {
+                continue;
+            }
+            if entry.media_type == INDEX_TYPE {
+                let nested: LayoutIndex = serde_json::from_slice(&bytes)?;
+                ensure!(!nested.manifests.is_empty(), "OCI index has no manifests");
+                pending.extend(nested.manifests);
+                continue;
+            }
             let manifest =
                 Manifest::decode_json(bytes.as_slice()).context("invalid OCI manifest")?;
             ensure!(
@@ -248,11 +277,7 @@ impl OciLayout {
                     }
                 }
             }
-            layout.manifests.push(ImportedManifest {
-                digest,
-                manifest,
-                tag: entry.annotations.get(REF_NAME_ANNOTATION).cloned(),
-            });
+            layout.manifests.push(manifest);
         }
         for path in files.keys() {
             ensure!(
@@ -451,7 +476,11 @@ impl OciLayout {
             self.manifests.len() == 1,
             "build OCI index must contain exactly one manifest"
         );
-        let digest = self.manifests[0].digest.clone();
+        ensure!(
+            self.roots.len() == 1,
+            "build OCI index must contain exactly one root"
+        );
+        let digest = self.roots[0].0.clone();
         let tag = tag
             .parse::<Reference>()
             .with_context(|| format!("invalid tag {tag}"))?
@@ -488,22 +517,22 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let imported = OciLayout::read(&args.input, &store).await?;
     let mut tags = BTreeMap::new();
-    for entry in &imported.manifests {
-        if let Some(tag) = args.tag.as_ref().or(entry.tag.as_ref()) {
+    for (digest, tag) in &imported.roots {
+        if let Some(tag) = args.tag.as_ref().or(tag.as_ref()) {
             let tag = tag
                 .parse::<Reference>()
                 .with_context(|| format!("invalid tag {tag}"))?
                 .to_string();
             ensure!(
-                tags.insert(tag, entry.digest.clone()).is_none(),
+                tags.insert(tag, digest.clone()).is_none(),
                 "duplicate OCI tag"
             );
         }
     }
     imported.commit(&store).await?;
-    for entry in &imported.manifests {
-        if args.tag.is_none() && entry.tag.is_none() {
-            println!("loaded {} (untagged)", entry.digest);
+    for (digest, tag) in &imported.roots {
+        if args.tag.is_none() && tag.is_none() {
+            println!("loaded {digest} (untagged)");
         }
     }
     for (tag, digest) in tags {

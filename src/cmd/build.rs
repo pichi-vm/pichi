@@ -16,9 +16,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements};
-use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use super::cache::ImageStore as _;
+use pichi_artifact::{Digest, Manifest, Reference, Requirements};
+use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{BuildArgs, PullArgs, PullPolicy};
 #[cfg(test)]
@@ -37,17 +37,6 @@ use crate::config::Config;
 const REPO_TAG: &str = "repo";
 const CACHE_TAG: &str = "cache";
 const OUTPUT_TAG: &str = "output";
-
-/// Platform selector for local OCI index walks (same token as `pichi pull`).
-const TARGET_OS: &str = "pichi";
-
-fn target_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => other,
-    }
-}
 
 /// Conglobate Follow-up A lock (images → index digest). Default name is
 /// `pichi.lock`. Host reads only the image reference keys + pins for
@@ -331,12 +320,7 @@ pub(crate) async fn image_cached(
     let target: Reference = canonical
         .parse()
         .with_context(|| format!("invalid image reference: {reference}"))?;
-    if let ReferenceKind::Digest(d) = &target.kind
-        && blob_store.blob_exists(d).await
-    {
-        return Ok(true);
-    }
-    Ok(db.resolve_tag(&target.to_string()).await?.is_some())
+    blob_store.cached(&target, db).await
 }
 
 /// Strip an optional `sha256:` prefix for lock-pin comparisons.
@@ -403,58 +387,11 @@ pub(crate) async fn resolve_manifest(
     let target: Reference = canonical
         .parse()
         .with_context(|| format!("invalid reference: {reference}"))?;
-    let digest = match &target.kind {
-        ReferenceKind::Digest(d) => {
-            if blob_store.blob_exists(d).await {
-                d.clone()
-            } else {
-                // D-02: `pichi pull` of an OCI index digest-ref drops the
-                // index and tags `name@digest` → picked platform manifest.
-                // Conglobate `tag@digest` pins for DEFAULT_BUILD_IMAGE hit
-                // that path; fall back to the tag db when the pin digest
-                // itself is not a stored blob. Lock-seeded source indexes
-                // still hit the blob_exists branch above.
-                let key = target.to_string();
-                db.resolve_tag(&key).await?.ok_or_else(|| {
-                    anyhow!(
-                        "ref not in cache: {key} (digest blob {d} missing)\n  hint: pichi pull {key}"
-                    )
-                })?
-            }
-        }
-        ReferenceKind::Tag(_) => {
-            let key = target.to_string();
-            db.resolve_tag(&key)
-                .await?
-                .ok_or_else(|| anyhow!("ref not in cache: {key}\n  hint: pichi pull {key}"))?
-        }
-    };
-    let bytes = blob_store
-        .get_blob(&digest)
+    let digest = blob_store.resolve(&target, db).await?;
+    let (_, manifest) = blob_store
+        .manifest(&digest)
         .await
-        .with_context(|| format!("reading manifest blob {digest}"))?;
-    let v: serde_json::Value =
-        serde_json::from_slice(&bytes).with_context(|| format!("parse mediaType of {digest}"))?;
-    let media_type = v.get("mediaType").and_then(|x| x.as_str()).unwrap_or("");
-    let manifest_bytes = if media_type == OCI_IMAGE_INDEX_MEDIA_TYPE {
-        let picked_str = pick_pichi_entry_from_index(&bytes, TARGET_OS, target_arch())
-            .with_context(|| format!("picking pichi entry from index {digest}"))?;
-        let picked: Digest = picked_str
-            .parse()
-            .with_context(|| format!("parse picked digest {picked_str}"))?;
-        blob_store
-            .get_blob(&picked)
-            .await
-            .with_context(|| {
-                format!(
-                    "reading index entry {picked} for {reference} (seed the carapace behind the lock pin)"
-                )
-            })?
-    } else {
-        bytes
-    };
-    let manifest = Manifest::decode_json(manifest_bytes.as_slice())
-        .with_context(|| format!("validating manifest for {reference}"))?;
+        .with_context(|| format!("reading image {reference}; try pichi pull {reference}"))?;
     Ok((digest, manifest))
 }
 
@@ -577,6 +514,8 @@ async fn boot_serve_and_wait(
 mod tests {
     use super::*;
     use dillo_config::FsSpec;
+    use pichi_artifact::ReferenceKind;
+    use pichi_storage::TagDb as _;
 
     fn parse_fs(value: &str) -> FsSpec {
         serde_keyvalue::from_key_values(value).expect("--fs value parses as dillo FsSpec")
@@ -718,20 +657,16 @@ mod tests {
         let tag_ref = "ghcr.io/example/appliance:1";
         assert!(!image_cached(tag_ref, &db, &blob_store).await.unwrap());
 
-        let digest: Digest =
-            "sha256:abababababababababababababababababababababababababababababababab"
-                .parse()
-                .unwrap();
+        let digest = crate::cmd::load::tests::LayoutFixture::new().write(&graphroot);
         db.set_tag(tag_ref, &digest).await.unwrap();
         assert!(image_cached(tag_ref, &db, &blob_store).await.unwrap());
 
-        // Digest pin whose index blob is absent is cached once the canonical
-        // `name@digest` tag exists (D-02 drops the index on pull).
+        // A legacy mapping to another digest cannot satisfy the pin.
         let pin = "ghcr.io/pichi-vm/conglobate:0.2.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         assert!(!image_cached(pin, &db, &blob_store).await.unwrap());
         let canon = canonicalize_reference(pin);
         db.set_tag(canon.as_ref(), &digest).await.unwrap();
-        assert!(image_cached(pin, &db, &blob_store).await.unwrap());
+        assert!(!image_cached(pin, &db, &blob_store).await.unwrap());
     }
 
     #[test]
@@ -885,12 +820,9 @@ mod tests {
             "sha256:deadbeef"
         );
     }
-    /// D-02 pull drops OCI indexes: a Conglobate `tag@digest` pin whose
-    /// digest is an index is cached as `name@digest` → platform manifest
-    /// only. `resolve_manifest` must fall back to the tag db so
-    /// DEFAULT_BUILD_IMAGE resolves after `pichi pull`.
+    /// A pin must never resolve to different metadata through a tag mapping.
     #[tokio::test]
-    async fn resolve_manifest_digest_pin_falls_back_to_tag_db() {
+    async fn resolve_manifest_rejects_missing_pin_despite_tag_mapping() {
         use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -938,14 +870,10 @@ mod tests {
         db.set_tag(&tag_key, &platform_digest).await.unwrap();
 
         let pinned = format!("ghcr.io/pichi-vm/conglobate:0.2.0@{index_digest}");
-        let (got, manifest) = resolve_manifest(&pinned, &db, &blob_store)
+        let error = resolve_manifest(&pinned, &db, &blob_store)
             .await
-            .expect("digest pin must resolve via tag db when index blob absent");
-        assert_eq!(got, platform_digest);
-        assert!(
-            manifest.partition_layers().is_ok(),
-            "resolved manifest should partition as a bootable appliance"
-        );
+            .unwrap_err();
+        assert!(error.to_string().contains("pichi pull"));
     }
     #[test]
     fn build_lock_is_required_but_may_have_no_remote_inputs() {

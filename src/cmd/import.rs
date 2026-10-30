@@ -30,10 +30,11 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use pichi_artifact::{
     Config, ConfigDescriptor, Digest, DtbDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest,
-    PmiDescriptor, Reference, ReferenceKind,
+    PmiDescriptor, Reference,
 };
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
+use super::cache::ImageStore as _;
 use crate::cli::{ImportPmiArgs, ImportRawArgs};
 use crate::cmd::manifest_ext::ManifestExt as _;
 use crate::config::Config as PichiConfig;
@@ -182,22 +183,9 @@ async fn carapace_scutes_manifest(
         let carapace_ref: Reference = carapace
             .parse()
             .with_context(|| format!("invalid carapace reference: {carapace}"))?;
-        match &carapace_ref.kind {
-            ReferenceKind::Digest(d) => d.clone(),
-            ReferenceKind::Tag(_) => {
-                let key = carapace_ref.to_string();
-                db.resolve_tag(&key)
-                    .await?
-                    .ok_or_else(|| anyhow!("carapace ref not found in cache: {key}"))?
-            }
-        }
+        blob_store.resolve(&carapace_ref, db).await?
     };
-    let src_bytes = blob_store
-        .get_blob(&src_digest)
-        .await
-        .with_context(|| format!("reading carapace manifest {src_digest}"))?;
-    let mut manifest = Manifest::decode_json(src_bytes.as_slice())
-        .with_context(|| format!("validating carapace manifest {src_digest}"))?;
+    let (_, mut manifest) = blob_store.manifest(&src_digest).await?;
     if manifest.scute_layers()?.is_empty() {
         bail!("{carapace} is not a carapace (no scute layers)");
     }

@@ -49,8 +49,8 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
-    // Resolve indexes and pull-created tag mappings through the same path
-    // as build, including informational tags on digest-pinned references.
+    // Resolve indexes through the same path as build, including informational
+    // tags on digest-pinned references.
     let canonical = canonicalize_reference(&args.reference);
     let target_ref: Reference = canonical
         .parse()

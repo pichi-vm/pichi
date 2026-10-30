@@ -305,21 +305,6 @@ pub const SMOKE_SOURCE_REF: &str = "qualification.local/fedora:43";
 /// Includes the locked context plan used by the real build smoke.
 pub const SMOKE_CONGLOBATE_REF: &str = "f88a7215ee93f85fe340991730e6e7a8046f02fc";
 
-/// Exact index digest pinned in Conglobate's `lock.yaml` for [`SMOKE_SOURCE_REF`].
-pub const SMOKE_LOCK_INDEX: &str =
-    "sha256:4e335e141a3f950ed68c68f23c112930c51af5ec9658d1263353eb229a6429d1";
-
-/// Placeholder inner-manifest digest from the fixture index (32×`0x11`).
-/// Harness stores the real carapace manifest bytes under this digest (blob
-/// store trusts the caller digest; content need not hash to it).
-pub const SMOKE_PLACEHOLDER_MANIFEST: &str =
-    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
-
-/// Exact OCI index bytes (343, no trailing newline) whose SHA-256 is
-/// [`SMOKE_LOCK_INDEX`]. Encoding matches Conglobate `tests/distro/prepare.py`
-/// (`sort_keys=True`, separators `,` / `:`).
-pub const SMOKE_INDEX_BYTES: &[u8] = br#"{"manifests":[{"artifactType":"application/vnd.pichi.artifact.v1+json","digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","mediaType":"application/vnd.oci.image.manifest.v1+json","platform":{"architecture":"amd64","os":"pichi"},"size":2}],"mediaType":"application/vnd.oci.image.index.v1+json","schemaVersion":2}"#;
-
 /// Conglobate smoke context under the repo mount.
 pub const SMOKE_CONTEXT: &str = "tests/distro/context";
 pub const SMOKE_PLAN: &str = "plan.yaml";
@@ -341,21 +326,15 @@ pub fn tag_digest(graphroot: &Path, reference: &str) -> String {
     dig
 }
 
-/// Seed [`SMOKE_SOURCE_REF`] so its tag resolves to [`SMOKE_LOCK_INDEX`] and
-/// the carapace behind the placeholder index entry is a tiny imported ext4.
-///
-/// Steps: `pichi import raw` → copy that manifest under
-/// [`SMOKE_PLACEHOLDER_MANIFEST`] → write [`SMOKE_INDEX_BYTES`] under
-/// [`SMOKE_LOCK_INDEX`] → retag. Not real Fedora GHCR.
-pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) {
-    assert_eq!(
-        SMOKE_INDEX_BYTES.len(),
-        343,
-        "fixture index byte length drifted"
-    );
+/// Import a tiny source carapace and retain its authentic platform index.
+/// Returns the index digest to record in the smoke repository's lock.
+pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) -> String {
+    use pichi_artifact::{Digest, Reference};
+    use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+    use sha2::{Digest as _, Sha256};
+
     let src = tmp.join("qualification-fedora43.ext4");
     make_ext4(&src, &[("os-release", "ID=fedora\nVERSION_ID=43\n")]);
-    // Import under a throwaway tag; we retag to the lock pin below.
     assert_pichi_ok(
         "import smoke source carapace",
         &pichi(
@@ -366,65 +345,37 @@ pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) {
                 "raw",
                 src.to_str().unwrap(),
                 "-t",
-                "smoke-seed:tmp",
+                SMOKE_SOURCE_REF,
             ],
         ),
     );
-    let real_manifest = tag_digest(graphroot, "smoke-seed:tmp");
-
-    // Await on the ambient #[tokio::test] runtime. Do not nest
-    // Builder::new_current_thread().block_on — that panics with
-    // "Cannot start a runtime from within a runtime" once the official
-    // DEFAULT_BUILD_IMAGE pin is pullable and this path is no longer
-    // skipped.
-    // common::pichi sets XDG_DATA_HOME=graphroot → CacheLayout graphroot is
-    // `$XDG_DATA_HOME/pichi/storage` (rootless).
-    let storage = graphroot.join("pichi").join("storage");
-    {
-        use pichi_artifact::{Digest, Reference};
-        use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
-
-        let blob_store = FilesystemBlobStore::new(&storage);
-        let db = FilesystemTagDb::open(&storage).expect("open tag db");
-
-        let real_digest: Digest = real_manifest.parse().expect("parse real manifest digest");
-        let manifest_bytes = blob_store
-            .get_blob(&real_digest)
-            .await
-            .expect("read imported manifest");
-
-        let placeholder: Digest = SMOKE_PLACEHOLDER_MANIFEST
-            .parse()
-            .expect("parse placeholder digest");
-        blob_store
-            .put_blob(&placeholder, &manifest_bytes)
-            .await
-            .expect("put carapace behind placeholder digest");
-
-        let index_digest: Digest = SMOKE_LOCK_INDEX.parse().expect("parse lock index digest");
-        blob_store
-            .put_blob(&index_digest, SMOKE_INDEX_BYTES)
-            .await
-            .expect("put fixture index blob");
-
-        let tag_ref: Reference = SMOKE_SOURCE_REF.parse().expect("parse smoke ref");
-        db.set_tag(&tag_ref.to_string(), &index_digest)
-            .await
-            .expect("tag smoke source at lock index");
-    }
-
-    // Pin check: inspect reports the index digest (tag → index).
-    let got = tag_digest(graphroot, SMOKE_SOURCE_REF);
-    assert_eq!(
-        got, SMOKE_LOCK_INDEX,
-        "smoke source tag must resolve to Conglobate lock pin"
-    );
+    let storage = graphroot.join("pichi/storage");
+    let store = FilesystemBlobStore::new(&storage);
+    let db = FilesystemTagDb::open(&storage).unwrap();
+    let manifest: Digest = tag_digest(graphroot, SMOKE_SOURCE_REF).parse().unwrap();
+    let bytes = store.get_blob(&manifest).await.unwrap();
+    let index = serde_json::json!({
+        "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [{
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "artifactType": "application/vnd.pichi.artifact.v1+json",
+            "digest": manifest.to_string(), "size": bytes.len(),
+            "platform": {"os": "pichi", "architecture": "amd64"}
+        }]
+    });
+    let bytes = serde_json::to_vec(&index).unwrap();
+    let digest = Digest::Sha256(Sha256::digest(&bytes).into());
+    store.put_blob(&digest, &bytes).await.unwrap();
+    let reference: Reference = SMOKE_SOURCE_REF.parse().unwrap();
+    db.set_tag(&reference.to_string(), &digest).await.unwrap();
+    assert_eq!(tag_digest(graphroot, SMOKE_SOURCE_REF), digest.to_string());
+    digest.to_string()
 }
 
 /// Commit the smoke context from the appliance source revision into a fresh
 /// repository. Read the sibling checkout without changing it; CI clones the
 /// source when that checkout is absent.
-pub fn prepare_smoke_repo(tmp: &Path) -> (PathBuf, String) {
+pub fn prepare_smoke_repo(tmp: &Path, index: &str) -> (PathBuf, String) {
     let sibling = Path::new(env!("CARGO_MANIFEST_DIR")).join("../conglobate");
     let has_commit = Command::new("git")
         .args([
@@ -465,7 +416,7 @@ pub fn prepare_smoke_repo(tmp: &Path) -> (PathBuf, String) {
     let repo = tmp.join("smoke-repo");
     let context = repo.join(SMOKE_CONTEXT);
     std::fs::create_dir_all(&context).unwrap();
-    for name in [SMOKE_PLAN, SMOKE_LOCK, "message.txt"] {
+    for name in [SMOKE_PLAN, "message.txt"] {
         let output = Command::new("git")
             .args([
                 "show",
@@ -477,11 +428,11 @@ pub fn prepare_smoke_repo(tmp: &Path) -> (PathBuf, String) {
         assert!(output.status.success(), "read pinned {name}");
         std::fs::write(context.join(name), output.stdout).unwrap();
     }
-    assert!(
-        std::fs::read_to_string(context.join(SMOKE_LOCK))
-            .unwrap()
-            .contains(SMOKE_LOCK_INDEX)
-    );
+    std::fs::write(
+        context.join(SMOKE_LOCK),
+        format!("version: 1\nimages:\n  {SMOKE_SOURCE_REF}:\n    index: {index}\n"),
+    )
+    .unwrap();
     // The tiny seed has no shell. Retain the upstream COPY, omitting its
     // Fedora-specific RUN assertions, and commit those exact fixture inputs.
     let plan = std::fs::read_to_string(context.join(SMOKE_PLAN)).unwrap();

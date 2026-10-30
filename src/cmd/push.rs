@@ -1,42 +1,21 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `pichi push <ref>` — REGISTRY-02.
-//!
-//! Throwaway tokio runtime per call (Pattern 1, mirrors `src/cmd/pull.rs`).
-//! Reads the cached manifest + layer blobs, runs HEAD-before-PUT for each
-//! blob (skip on present), and finally pushes the manifest LAST as raw bytes
-//! (Pitfall 3: preserves the OCI digest).
-//!
-//! Pipeline (per Plan 05 / 44-RESEARCH §"Push Pipeline"):
-//!
-//! 1. Resolve tag → manifest digest via [`FilesystemTagDb::resolve_tag`].
-//! 2. Read raw manifest bytes via [`BlobStore::get_blob`] (Pitfall 3 — never
-//!    re-serialise; `Manifest::to_bytes()` MUST NOT appear in this
-//!    file, enforced by the Plan 05 negative-grep gate).
-//! 3. Pre-push re-validation via [`Manifest::from_reader_validated`] as
-//!    a cheap O(layers) safety net (the validation result is discarded; only
-//!    the structural error path is consumed).
-//! 4. For each layer: HEAD → (cross-repo mount attempt — skipped for v0.8;
-//!    no source-repo configuration surface yet) → `push_blob_stream` from
-//!    [`BlobStore::open_blob`].
-//! 5. Push manifest LAST via [`Registry::push_manifest`] with content-type
-//!    `application/vnd.oci.image.manifest.v1+json`, RAW bytes from cache.
-//!
-//! T-44-05-03 ordering invariant: the layer loop body completes (last
-//! `push_blob_stream` returns Ok) BEFORE `push_manifest` is called. Registry
-//! would reject a manifest pointing at a missing blob anyway, but pushing in
-//! the opposite order risks intermediate states observers can race with.
+//! Publish cached images without changing their content identity.
+//! Authenticate index and manifest metadata, upload configuration and layers,
+//! then publish manifests before their parent indexes. The destination tag is
+//! updated last. Every referenced platform must be available in the cache.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+use super::cache::ImageStore as _;
 use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use futures_util::stream;
-use pichi_artifact::{Digest, Manifest, Reference};
+use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind};
 use pichi_registry::Registry;
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::PushArgs;
 use crate::config::Config;
@@ -46,8 +25,7 @@ use crate::config::Config;
 /// the `application/vnd.pichi.artifact.v1+json` discriminator (REGISTRY-07).
 const PUSH_MANIFEST_CONTENT_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 
-/// Entry point for `pichi push`. Builds a throwaway tokio current-thread
-/// runtime, drives [`push_inner`], drops the runtime before returning.
+/// Publish the cached image at the requested reference.
 pub async fn run(args: PushArgs, config: &Config) -> Result<()> {
     // Defense-in-depth: parse + canonicalise BEFORE any I/O (BL-02).
     let target_ref: Reference = args
@@ -80,28 +58,39 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
     blob_store: &dyn BlobStore,
     tag_db: &FilesystemTagDb,
 ) -> Result<()> {
-    // 1. Resolve tag → manifest digest.
-    let target_str = target.to_string();
-    let manifest_digest = tag_db
-        .resolve_tag(&target_str)
-        .await?
-        .ok_or_else(|| anyhow!("ref not in cache: {target}"))?;
-
-    // 2. Read cached manifest bytes (raw — preserves OCI digest per Pitfall 3).
-    let raw_manifest = blob_store
-        .get_blob(&manifest_digest)
-        .await
-        .with_context(|| format!("read manifest {manifest_digest} from cache"))?;
-
-    // 3-6: push the manifest and its blobs.
-    push_manifest_and_blobs(
-        registry,
-        blob_store,
-        &target,
-        raw_manifest.as_slice(),
-        PUSH_MANIFEST_CONTENT_TYPE,
-    )
-    .await
+    let root = blob_store.resolve(&target, tag_db).await?;
+    let images = blob_store.export(&root).await?;
+    for image in images {
+        let destination = if image.digest == root {
+            target.clone()
+        } else {
+            Reference {
+                registry: target.registry.clone(),
+                repo: target.repo.clone(),
+                kind: ReferenceKind::Digest(image.digest.clone()),
+            }
+        };
+        if image.is_index() {
+            registry
+                .push_manifest(
+                    &destination,
+                    pichi_registry::OCI_IMAGE_INDEX_MEDIA_TYPE,
+                    Bytes::from(image.bytes),
+                )
+                .await
+                .map_err(|error| anyhow!("push image index {destination}: {error}"))?;
+        } else {
+            push_manifest_and_blobs(
+                registry,
+                blob_store,
+                &destination,
+                &image.bytes,
+                PUSH_MANIFEST_CONTENT_TYPE,
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Push one image manifest and all its blobs (config + layers) to `target`,
@@ -242,6 +231,7 @@ mod tests {
         ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
     };
     use pichi_registry::MockRegistry;
+    use pichi_storage::TagDb as _;
     use std::collections::BTreeMap;
     use std::path::Path;
     use tempfile::TempDir;

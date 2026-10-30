@@ -21,7 +21,7 @@
 //!
 //! When `pichi pull <tag>` resolves to an `application/vnd.oci.image.index.v1+json`
 //! the walker picks the single pichi entry matching the runtime platform; the
-//! index itself is dropped (D-02). REGISTRY-05 / Pitfall 1: this module exists
+//! index is retained by the caller. REGISTRY-05 / Pitfall 1: this module exists
 //! precisely so pichi never relies on oci-client's auto-resolving manifest
 //! API (the one that internally invokes the platform-resolver); the walk
 //! semantics are pichi-controlled and brittle-tested. The literal API name

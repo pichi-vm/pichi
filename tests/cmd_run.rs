@@ -211,15 +211,15 @@ async fn run_resolves_cached_index_references() {
             });
             let bytes = serde_json::to_vec(&index).unwrap();
             let digest = sha256_digest(&bytes);
-            let canonical = format!("registry.example/app@{digest}");
+            let canonical = format!("127.0.0.1:9/app@{digest}");
             if index_stored {
                 store.put_blob(&digest, &bytes).await.unwrap();
             } else {
-                // Pull keeps the selected manifest and records this mapping.
+                // A legacy mapping cannot replace the missing pinned index.
                 db.set_tag(&canonical, &manifest_digest).await.unwrap();
             }
             let reference = if informational_tag {
-                format!("registry.example/app:label@{digest}")
+                format!("127.0.0.1:9/app:label@{digest}")
             } else {
                 canonical
             };
@@ -230,8 +230,17 @@ async fn run_resolves_cached_index_references() {
                 .env("XDG_DATA_HOME", tmp.path())
                 .env("PICHI_DILLO", &stub)
                 .args(["run", &reference])
-                .assert()
-                .success();
+                .assert();
+            if !index_stored {
+                let assert = assert.failure();
+                assert!(String::from_utf8_lossy(&assert.get_output().stderr).contains("pulling"));
+                assert!(
+                    !record.exists(),
+                    "must not launch a different manifest under the missing pin"
+                );
+                continue;
+            }
+            let assert = assert.success();
             assert!(
                 !String::from_utf8_lossy(&assert.get_output().stderr).contains("pulling"),
                 "cached input must not trigger a network pull"

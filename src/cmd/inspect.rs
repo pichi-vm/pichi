@@ -15,14 +15,15 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+use super::cache::ImageStore as _;
 use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use minijinja::Environment;
 use serde::Serialize;
 use serde_json::Value;
 
-use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference, ReferenceKind};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::InspectArgs;
 use crate::config::Config;
@@ -46,6 +47,10 @@ struct IndexInspectOutput {
     media_type: String,
     entries: Vec<IndexEntryInfo>,
     note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manifest: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manifest_digest: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -64,38 +69,32 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
-    let target_ref: Reference = args
-        .reference
+    let target_ref: Reference = super::build::canonicalize_reference(&args.reference)
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
 
-    // Resolve to a digest. If the ref is digest-form, use directly.
-    let digest = match &target_ref.kind {
-        ReferenceKind::Digest(d) => d.clone(),
-        ReferenceKind::Tag(_) => {
-            let key = target_ref.to_string();
-            db.resolve_tag(&key)
-                .await?
-                .ok_or_else(|| anyhow!("ref not found in cache: {key}"))?
-        }
-    };
-
-    let bytes = blob_store
-        .get_blob(&digest)
-        .await
-        .with_context(|| format!("reading manifest blob {digest}"))?;
-    let value: Value = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parsing manifest JSON for {digest}"))?;
-
-    // D-20: branch on the blob's mediaType.
-    let media_type = value
-        .get("mediaType")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    if media_type == OCI_IMAGE_INDEX_MEDIA_TYPE {
-        return inspect_index(args, &digest, &value);
+    let digest = blob_store.resolve(&target_ref, &db).await?;
+    let metadata = blob_store.metadata(&digest).await?;
+    if metadata.is_index() {
+        let selected = match metadata.selected_entry() {
+            Ok(entry) => {
+                let selected: Digest = entry["digest"]
+                    .as_str()
+                    .context("index entry has no digest")?
+                    .parse()?;
+                if blob_store.blob_exists(&selected).await {
+                    let (selected, _) = blob_store.manifest(&digest).await?;
+                    Some(selected)
+                } else {
+                    None
+                }
+            }
+            Err(_) => None,
+        };
+        return inspect_index(args, &digest, &metadata.value, selected);
     }
+    let bytes = metadata.bytes;
+    let value = metadata.value;
 
     // Bare manifest path. Validate defensively, then emit the manifest verbatim
     // plus its resolved digest.
@@ -108,7 +107,12 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     args.emit(&output)
 }
 
-fn inspect_index(args: InspectArgs, digest: &Digest, value: &Value) -> Result<()> {
+fn inspect_index(
+    args: InspectArgs,
+    digest: &Digest,
+    value: &Value,
+    selected: Option<super::cache::ImageMetadata>,
+) -> Result<()> {
     let mut entries = Vec::new();
     let manifests = value
         .get("manifests")
@@ -140,7 +144,10 @@ fn inspect_index(args: InspectArgs, digest: &Digest, value: &Value) -> Result<()
             is_pichi,
         });
     }
-    let note = if pichi_count == 0 {
+    let note = if selected.is_some() {
+        "The cached platform manifest is included below; digest identifies the original index."
+            .to_string()
+    } else if pichi_count == 0 {
         "No pichi-artifactType entry found in this index. To pull a multi-arch tag's pichi entry: pichi pull <ref>".to_string()
     } else {
         format!(
@@ -152,6 +159,8 @@ fn inspect_index(args: InspectArgs, digest: &Digest, value: &Value) -> Result<()
         media_type: OCI_IMAGE_INDEX_MEDIA_TYPE.to_string(),
         entries,
         note,
+        manifest_digest: selected.as_ref().map(|image| image.digest.to_string()),
+        manifest: selected.map(|image| image.value),
     };
     args.emit(&output)
 }

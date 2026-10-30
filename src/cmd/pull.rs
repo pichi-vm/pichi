@@ -7,41 +7,24 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use anyhow::{Context, Result, anyhow};
-use bytes::Bytes;
-
-use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+use anyhow::{Context, Result, anyhow, ensure};
+#[cfg(test)]
+use pichi_artifact::Manifest;
+use pichi_artifact::{Digest, Reference};
 
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 
+#[cfg(test)]
+use super::cache::TARGET_ARCH;
+use super::cache::{ImageMetadata, ImageStore as _};
 use super::layer::PreparedLayer;
-use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry, pick_pichi_entry_from_index};
+use pichi_registry::Registry;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::{PullArgs, PullPolicy};
 use crate::config::Config;
 use futures_util::stream::{self as futures_stream, StreamExt};
 
-/// Target platform `os` for D-02 index walks. A carapace is NOT "used on" an
-/// OS — it *is* a pichi VM guest's root filesystem — so the OCI `platform.os`
-/// field (whose meaning is "the OS this artifact runs on") doesn't apply. We
-/// repurpose it as a pichi-owned selector token: producer (`carapace import` /
-/// the multi-arch index) and consumer (here) agree on `"pichi"`. This is also
-/// honest signalling to container runtimes, which then correctly refuse the
-/// carapace as a runnable image (no host platform matches `pichi/*`).
-const TARGET_OS: &str = "pichi";
-
-/// Target platform architecture for D-02 index walks: the host CPU (the guest
-/// runs the host's architecture — dillo virtualizes the native CPU, no
-/// cross-arch emulation), normalized to OCI/GOARCH names. A multi-arch base
-/// (e.g. ghcr.io/pichi-vm/fedora) is selected per the running host.
-fn target_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => other,
-    }
-}
 /// Max layers downloaded concurrently, matching podman's default of 3.
 const PULL_CONCURRENCY: usize = 3;
 
@@ -62,11 +45,11 @@ pub async fn run(args: PullArgs, config: &Config) -> Result<()> {
 
     // --pull=never short-circuits before any network I/O.
     if policy == PullPolicy::Never {
-        return tag_db
-            .resolve_tag(&target_ref.to_string())
-            .await?
-            .map(|_| ())
-            .ok_or_else(|| anyhow!("pull policy `never`: ref not in cache: {target_ref}"));
+        ensure!(
+            blob_store.cached(&target_ref, &tag_db).await?,
+            "pull policy `never`: ref not in cache: {target_ref}"
+        );
+        return Ok(());
     }
 
     pull_inner(target_ref, policy, args.quiet, config, &blob_store, &tag_db).await
@@ -85,7 +68,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     let target_str = target.to_string();
 
     // --pull=missing: skip network if cached.
-    if policy == PullPolicy::Missing && tag_db.resolve_tag(&target_str).await?.is_some() {
+    if policy == PullPolicy::Missing && blob_store.cached(&target, tag_db).await? {
         return Ok(());
     }
     // --pull=newer: GET upstream manifest digest, compare to cached
@@ -96,7 +79,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
                 .pull_manifest_by_tag(&target)
                 .await
                 .map_err(|e| anyhow!("--pull=newer fetch for {target}: {e}"))?;
-            if upstream == cached {
+            if upstream == cached && blob_store.cached(&target, tag_db).await? {
                 return Ok(());
             }
         }
@@ -109,35 +92,37 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         .await
         .map_err(|e| anyhow!("pull_manifest_by_tag {target}: {e}"))?;
 
-    // 2. Branch on mediaType (D-02 / D-20 index walk OR bare manifest).
-    let v: serde_json::Value = serde_json::from_slice(&raw).context("parse manifest mediaType")?;
-    let media_type = v.get("mediaType").and_then(|x| x.as_str()).unwrap_or("");
-    let (final_bytes, final_digest): (Bytes, Digest) = if media_type == OCI_IMAGE_INDEX_MEDIA_TYPE {
-        // D-02 index walk: pick the pichi entry, fetch by digest, drop
-        // the index (do NOT persist it).
-        let picked_str = pick_pichi_entry_from_index(&raw, TARGET_OS, target_arch())?;
-        let picked: Digest = picked_str
-            .parse()
-            .with_context(|| format!("parse picked digest {picked_str}"))?;
+    if let pichi_artifact::ReferenceKind::Digest(expected) = &target.kind {
+        ensure!(
+            &digest_str == expected,
+            "registry returned a different image digest"
+        );
+    }
+    let root = ImageMetadata::try_from((digest_str, raw.to_vec()))?;
+    let selected = if root.is_index() {
+        let entry = root.selected_entry()?;
+        let picked: Digest = entry["digest"]
+            .as_str()
+            .context("index entry has no digest")?
+            .parse()?;
         let bytes = registry
             .pull_manifest_by_digest(&target.registry, &target.repo, &picked)
             .await
             .map_err(|e| anyhow!("pull_manifest_by_digest {picked}: {e}"))?;
-        (bytes, picked)
+        let selected = ImageMetadata::try_from((picked, bytes.to_vec()))?;
+        selected.check_descriptor(entry)?;
+        Some(selected)
     } else {
-        // Bare manifest: reject if non-pichi artifactType (REGISTRY-07).
-        let at = v.get("artifactType").and_then(|x| x.as_str());
-        if at != Some(MEDIA_TYPE_PICHI_ARTIFACT_V1) {
-            anyhow::bail!(
-                "manifest at {target} has artifactType={at:?}, expected {MEDIA_TYPE_PICHI_ARTIFACT_V1}"
-            );
-        }
-        (raw, digest_str)
+        None
     };
+    let selected = selected.as_ref().unwrap_or(&root);
+    let final_digest = &selected.digest;
+    let final_bytes = &selected.bytes;
 
     // 3. Validate the pichi manifest BEFORE fetching any blob (Phase 42 D-11
     //    host-side validation).
-    let manifest = Manifest::decode_json(final_bytes.as_ref())
+    let manifest = selected
+        .manifest()
         .with_context(|| format!("validate pichi manifest {final_digest}"))?;
 
     // 4a. Pull the config blob when it is a real `vnd.pichi.config.v1+json`
@@ -200,12 +185,12 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     //    SUMMARY: live-walk refcounts; no sidecar; set_tag is the single
     //    commit point and takes its own flock (DO NOT wrap in
     //    the cache-wide advisory-lock helper per Pitfall 2).
-    blob_store
-        .put_blob(&final_digest, &final_bytes)
-        .await
-        .with_context(|| format!("put_blob manifest {final_digest}"))?;
+    if root.is_index() {
+        blob_store.put_blob(final_digest, final_bytes).await?;
+    }
+    blob_store.put_blob(&root.digest, &root.bytes).await?;
     tag_db
-        .set_tag(&target_str, &final_digest)
+        .set_tag(&target_str, &root.digest)
         .await
         .with_context(|| format!("set_tag {target_str}"))?;
 
@@ -307,8 +292,9 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         // Pre-set the tag in the cache.
-        let cached =
-            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"any cached manifest").into());
+        let layer = Digest::Sha256([42; 32]);
+        let (bytes, cached) = make_pichi_manifest(&layer, 4096);
+        blob_store.put_blob(&cached, &bytes).await.unwrap();
         db.set_tag(&target.to_string(), &cached).await.unwrap();
 
         let mock = MockRegistry::new();
@@ -546,11 +532,9 @@ mod tests {
         );
     }
 
-    /// REGISTRY-05 / D-02: index manifest is walked via
-    /// pick_pichi_entry_from_index; the picked pichi manifest is fetched and
-    /// committed; the index's own digest is NOT present in BlobStore.
+    /// Pull preserves the registry index and only fetches the selected platform.
     #[tokio::test(flavor = "current_thread")]
-    async fn pull_index_walks_and_drops_index() {
+    async fn pull_preserves_index_identity() {
         let (_tmp, g) = graphroot();
         let db = open_db(&g);
         let blob_store = FilesystemBlobStore::new(&g);
@@ -574,14 +558,20 @@ mod tests {
                 "digest": picked_manifest_digest.to_string(),
                 "size": picked_manifest_bytes.len(),
                 "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
-                "platform": {"os": "pichi", "architecture": target_arch()}
+                "platform": {"os": "pichi", "architecture": TARGET_ARCH}
+            }, {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": format!("sha256:{}", "ab".repeat(32)),
+                "size": 123,
+                "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                "platform": {"os": "pichi", "architecture": "not-this-host"}
             }]
         });
-        let index_bytes = Bytes::from(serde_json::to_vec(&index).unwrap());
+        let index_bytes = Bytes::from(serde_json::to_vec_pretty(&index).unwrap());
         let index_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&index_bytes).into());
         // Insert the index under the tag.
-        mock.insert_manifest("ghcr.io", "example/foo", "bar", index_bytes);
+        mock.insert_manifest("ghcr.io", "example/foo", "bar", index_bytes.clone());
         // Insert the layer blob.
         mock.insert_blob(
             "ghcr.io",
@@ -606,14 +596,51 @@ mod tests {
             blob_store.blob_exists(&picked_manifest_digest).await,
             "picked manifest blob must be present"
         );
-        // Index's own digest is NOT in BlobStore (D-02: index dropped).
-        assert!(
-            !blob_store.blob_exists(&index_digest).await,
-            "index manifest must NOT be persisted (D-02)"
+        assert_eq!(
+            blob_store.get_blob(&index_digest).await.unwrap(),
+            index_bytes
         );
-        // Tag resolves to PICKED manifest digest (not the index's).
         let resolved = db.resolve_tag(&target.to_string()).await.unwrap();
-        assert_eq!(resolved.as_ref(), Some(&picked_manifest_digest));
+        assert_eq!(resolved.as_ref(), Some(&index_digest));
+        tokio::fs::remove_file(blob_store.blob_path(&picked_manifest_digest))
+            .await
+            .unwrap();
+        pull_inner_with_registry(
+            target.clone(),
+            PullPolicy::Newer,
+            true,
+            &mock,
+            &blob_store,
+            &db,
+        )
+        .await
+        .unwrap();
+        assert!(blob_store.blob_exists(&picked_manifest_digest).await);
+        mock.insert_manifest("ghcr.io", "example/foo", "bar", picked_manifest_bytes);
+        let (_fresh, fresh_root) = graphroot();
+        let fresh_store = FilesystemBlobStore::new(&fresh_root);
+        let fresh_db = open_db(&fresh_root);
+        let pin: Reference = format!("ghcr.io/example/foo@{index_digest}")
+            .parse()
+            .unwrap();
+        pull_inner_with_registry(
+            pin.clone(),
+            PullPolicy::Missing,
+            true,
+            &mock,
+            &fresh_store,
+            &fresh_db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fresh_db.resolve_tag(&pin.to_string()).await.unwrap(),
+            Some(index_digest.clone())
+        );
+        assert_eq!(
+            fresh_store.get_blob(&index_digest).await.unwrap(),
+            index_bytes
+        );
     }
 
     // ====================================================================

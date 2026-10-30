@@ -13,15 +13,14 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use crate::cmd::manifest_ext::ManifestExt as _;
+use crate::cmd::build::resolve_manifest;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 
 use conglobate::{CarapacePlan, PmiPlan};
-use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::UpdateArgs;
 use crate::config::Config;
@@ -112,35 +111,6 @@ fn collect_refs(build_dir: &Path) -> Result<Vec<String>> {
     }
 
     Ok(refs.into_iter().collect())
-}
-
-/// Resolve a cached reference to its manifest digest + parsed manifest.
-async fn resolve_manifest(
-    reference: &str,
-    db: &FilesystemTagDb,
-    blob_store: &FilesystemBlobStore,
-) -> Result<(Digest, Manifest)> {
-    let target: Reference = reference
-        .parse()
-        .with_context(|| format!("invalid reference: {reference}"))?;
-    let digest = match &target.kind {
-        ReferenceKind::Digest(d) => d.clone(),
-        ReferenceKind::Tag(_) => {
-            let key = target.to_string();
-            db.resolve_tag(&key).await?.ok_or_else(|| {
-                anyhow!(
-                    "ref not in cache: {key}\n  hint: pichi pull {key} (then re-run pichi update)"
-                )
-            })?
-        }
-    };
-    let bytes = blob_store
-        .get_blob(&digest)
-        .await
-        .with_context(|| format!("reading manifest blob {digest}"))?;
-    let manifest = Manifest::decode_json(bytes.as_slice())
-        .with_context(|| format!("validating manifest {digest}"))?;
-    Ok((digest, manifest))
 }
 
 #[cfg(test)]
