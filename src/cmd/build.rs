@@ -10,18 +10,19 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use conglobate::{CarapacePlan, PmiPlan};
 use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
-use crate::cli::{BuildArgs, DEFAULT_LOCK, DEFAULT_PLAN, PullArgs, PullPolicy};
+use crate::cli::{BuildArgs, PullArgs, PullPolicy};
+#[cfg(test)]
+use crate::cli::{DEFAULT_LOCK, DEFAULT_PLAN};
 #[cfg(unix)]
 use crate::cmd::build_port::clear_device_cloexec;
 use crate::cmd::build_port::{
@@ -81,9 +82,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         args.context.clone()
     };
 
-    let build_dir = args.dir.join("pichi.build");
-    let legacy_project = build_dir.is_dir();
-
     let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
@@ -113,24 +111,10 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         None
     };
 
-    // Transitional source-carapace pass-through (BUILD.md §3): resolve the
-    // locked images from the RO cache and wire each as a vGPT. Prefer
-    // `pichi.lock` (or `-l`/`--lock`) under `--context`; fall back to legacy
-    // `pichi.build/` plan `from:` keys when that layout is present.
+    // Source preparation follows the current lock contract. Plans are parsed
+    // only by Conglobate; legacy host plan parsing is no longer supported.
     let build_lock = load_build_lock(&args.dir, &context, &lock)?;
-    let source_refs = if let Some(parsed) = build_lock.as_ref() {
-        parsed.images.keys().cloned().collect()
-    } else if legacy_project {
-        collect_source_refs(&build_dir)?
-    } else {
-        bail!(
-            "no build lock at {} and no pichi.build/ under {} — expected {} (-l/--lock) and {} (-p/--plan), or a legacy pichi.build project",
-            path_under_context(&args.dir, &context, &lock).display(),
-            args.dir.display(),
-            DEFAULT_LOCK,
-            DEFAULT_PLAN,
-        );
-    };
+    let source_refs: Vec<_> = build_lock.images.keys().cloned().collect();
 
     let mut gpt_specs = Vec::new();
     // Appliance root carapace first (corium discovers it by PARTUUID), then
@@ -146,9 +130,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         let (digest, manifest) = resolve_manifest(reference, &db, &blob_store)
             .await
             .with_context(|| format!("resolving source carapace {reference}"))?;
-        if let Some(parsed) = build_lock.as_ref()
-            && let Some(pin) = parsed.images.get(reference)
-        {
+        if let Some(pin) = build_lock.images.get(reference) {
             let pinned = normalize_digest(pin.index.trim());
             let got_owned = digest.to_string();
             let got = normalize_digest(&got_owned);
@@ -388,13 +370,9 @@ fn path_under_context(repo: &Path, context: &str, rel: &str) -> PathBuf {
 }
 
 /// Load the build lock (`pichi.lock` by default; `-l`/`--lock` overrides)
-/// when present. Returns `Ok(None)` if the file is missing (legacy
-/// `pichi.build/` projects).
-fn load_build_lock(repo: &Path, context: &str, lock_rel: &str) -> Result<Option<BuildLockFile>> {
+/// without interpreting any plan on the host.
+fn load_build_lock(repo: &Path, context: &str, lock_rel: &str) -> Result<BuildLockFile> {
     let path = path_under_context(repo, context, lock_rel);
-    if !path.is_file() {
-        return Ok(None);
-    }
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("reading build lock {}", path.display()))?;
     let parsed: BuildLockFile = serde_yaml::from_str(&text)
@@ -406,38 +384,7 @@ fn load_build_lock(repo: &Path, context: &str, lock_rel: &str) -> Result<Option<
             parsed.version
         );
     }
-    if parsed.images.is_empty() {
-        bail!("build lock {}: images map is empty", path.display());
-    }
-    Ok(Some(parsed))
-}
-
-/// Read `carapace.yaml` (`from:`) and `pmi.yaml` (`from:`, if present),
-/// returning the unique source-carapace references, sorted.
-fn collect_source_refs(build_dir: &Path) -> Result<Vec<String>> {
-    let mut refs: BTreeSet<String> = BTreeSet::new();
-
-    let carapace_yaml = build_dir.join("carapace.yaml");
-    if carapace_yaml.is_file() {
-        let text = std::fs::read_to_string(&carapace_yaml)
-            .with_context(|| format!("reading {}", carapace_yaml.display()))?;
-        let plan = CarapacePlan::parse(&text)
-            .with_context(|| format!("parsing {}", carapace_yaml.display()))?;
-        refs.insert(plan.from);
-    }
-
-    let pmi_yaml = build_dir.join("pmi.yaml");
-    if pmi_yaml.is_file() {
-        let text = std::fs::read_to_string(&pmi_yaml)
-            .with_context(|| format!("reading {}", pmi_yaml.display()))?;
-        let plan =
-            PmiPlan::parse(&text).with_context(|| format!("parsing {}", pmi_yaml.display()))?;
-        if let Some(from) = plan.from {
-            refs.insert(from);
-        }
-    }
-
-    Ok(refs.into_iter().collect())
+    Ok(parsed)
 }
 
 /// Resolve a cached reference to its parsed pichi manifest.
@@ -827,24 +774,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn collect_source_refs_reads_from_keys() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let bd = tmp.path().join("pichi.build");
-        std::fs::create_dir_all(&bd).unwrap();
-        std::fs::write(bd.join("carapace.yaml"), "from: reg/base:1\n").unwrap();
-        std::fs::write(
-            bd.join("pmi.yaml"),
-            "from: reg/kbuilder:2\ninto: /tmp/x.pmi\n",
-        )
-        .unwrap();
-        let refs = collect_source_refs(&bd).unwrap();
-        assert_eq!(
-            refs,
-            vec!["reg/base:1".to_string(), "reg/kbuilder:2".to_string()]
-        );
-    }
-
     /// Host-side smoke: mounts, build-port exchange, then guest OCI import.
     #[tokio::test]
     async fn smoke_port_output_import() {
@@ -949,9 +878,7 @@ mod tests {
             "version: 1\nimages:\n  qualification.local/fedora:43:\n    index: sha256:deadbeef\n",
         )
         .unwrap();
-        let parsed = load_build_lock(tmp.path(), "tests/distro/context", "pichi.lock")
-            .unwrap()
-            .expect("lock present");
+        let parsed = load_build_lock(tmp.path(), "tests/distro/context", "pichi.lock").unwrap();
         assert_eq!(parsed.version, 1);
         assert_eq!(
             parsed.images["qualification.local/fedora:43"].index,
@@ -1018,6 +945,18 @@ mod tests {
         assert!(
             manifest.partition_layers().is_ok(),
             "resolved manifest should partition as a bootable appliance"
+        );
+    }
+    #[test]
+    fn build_lock_is_required_but_may_have_no_remote_inputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(load_build_lock(tmp.path(), ".", "pichi.lock").is_err());
+        std::fs::write(tmp.path().join("pichi.lock"), "version: 1\nimages: {}\n").unwrap();
+        assert!(
+            load_build_lock(tmp.path(), ".", "pichi.lock")
+                .unwrap()
+                .images
+                .is_empty()
         );
     }
 }
