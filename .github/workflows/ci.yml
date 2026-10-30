@@ -30,6 +30,29 @@ jobs:
     permissions:
       contents: read
 
+  # RPM expands macros even in comments; parse with Fedora's Rust macros.
+  copr-spec:
+    name: copr spec
+    runs-on: ubuntu-24.04
+    container: registry.fedoraproject.org/fedora:44
+    permissions:
+      contents: read
+    steps:
+      - name: Install RPM macros
+        shell: bash
+        run: dnf -y install rpm-build cargo-rpm-macros
+
+      - uses: actions/checkout@v7.0.1
+
+      - name: Parse spec
+        shell: bash
+        run: |
+          set -euo pipefail
+          rpmspec -P packaging/pichi.spec 2>&1 | tee /tmp/pichi-spec.log
+          if grep -q 'Macro expanded in comment' /tmp/pichi-spec.log; then
+            exit 1
+          fi
+
   # Independent of the OS matrix: packaging flakes must not burn the
   # platform runners. Copr runs this Makefile as root with dnf; here
   # we install rpm tools via apt and the pinned nightly (this repo has
