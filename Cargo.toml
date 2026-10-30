@@ -36,6 +36,7 @@ bytes.workspace = true
 cap-std = "4.0.3"
 env_logger.workspace = true
 futures-util.workspace = true
+fs4.workspace = true
 hex.workspace = true
 humansize.workspace = true
 log.workspace = true

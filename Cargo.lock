@@ -3082,6 +3082,7 @@ dependencies = [
  "dillo",
  "dillo-config",
  "env_logger",
+ "fs4",
  "futures-util",
  "hex",
  "humansize",

@@ -17,8 +17,6 @@ use tokio_util::io::{StreamReader, SyncIoBridge};
 
 use crate::cmd::manifest_ext::ManifestExt as _;
 
-const DECOMPRESSED_CAP: u64 = 16 * 1024 * 1024 * 1024;
-
 pub(super) struct PreparedLayer {
     source: Option<NamedTempFile>,
     deflated: Option<NamedTempFile>,
@@ -129,17 +127,22 @@ impl PreparedLayer {
                     }
                     Err(err) => return Err(err.into()),
                 };
+                // Bound expansion by available scratch storage, not a format
+                // size. Concurrent allocations and verity writes can still
+                // exhaust the filesystem; those I/O errors abort publication.
+                let capacity = fs4::available_space(scratch)?;
                 let mut decoded = DecodedReader {
                     input: decoder,
                     output: BufWriter::new(data.as_file()),
                     count: 0,
+                    capacity,
                 };
                 let root = if scute.annotations.data_blocks.is_some() {
                     let header = manifest.verity_header(scute, None)?;
                     if header.parameters.data.count.get()
-                        > DECOMPRESSED_CAP / u64::from(header.parameters.data.size.bytes().get())
+                        > capacity / u64::from(header.parameters.data.size.bytes().get())
                     {
-                        bail!("decompressed size exceeds cap");
+                        bail!("decompressed size exceeds available scratch capacity");
                     }
                     let root = header.format_padded(&mut decoded, output.as_file_mut())?;
                     decoded.output.flush()?;
@@ -247,6 +250,7 @@ struct DecodedReader<R, W> {
     input: R,
     output: W,
     count: u64,
+    capacity: u64,
 }
 
 impl<R: Read, W: Write> Read for DecodedReader<R, W> {
@@ -256,10 +260,10 @@ impl<R: Read, W: Write> Read for DecodedReader<R, W> {
             .count
             .checked_add(count as u64)
             .ok_or(io::ErrorKind::InvalidData)?;
-        if self.count > DECOMPRESSED_CAP {
+        if self.count > self.capacity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "decompressed size exceeds cap",
+                "decompressed size exceeds available scratch capacity",
             ));
         }
         self.output.write_all(&out[..count])?;
@@ -411,7 +415,8 @@ mod tests {
     #[test]
     fn rejects_wrong_lengths_digests_and_trailing_frames_without_leaking_temps() {
         let scratch = tempfile::tempdir().unwrap();
-        for declared in [0, 1, 3, DECOMPRESSED_CAP / 4096 + 1, u64::MAX] {
+        let over_capacity = fs4::available_space(scratch.path()).unwrap() / 4096 + 1;
+        for declared in [0, 1, 3, over_capacity, u64::MAX] {
             let fixture = Fixture::new(true, Some(declared));
             assert!(fixture.prepare(scratch.path()).is_err());
         }
@@ -458,7 +463,7 @@ mod tests {
         // Minimal zstd frame with Window_Descriptor for 256 MiB — above
         // ruzstd's DEFAULT_MAX_WINDOW_SIZE (128 MiB). Bytes from
         // `printf 'window-size rejection fixture\n' | zstd --long=28`.
-        // Orthogonal to DECOMPRESSED_CAP: the decoder must refuse the
+        // Independently of scratch capacity: the decoder must refuse the
         // frame header before any decompressed-size accounting runs.
         const WIRE: &[u8] = &[
             0x28, 0xb5, 0x2f, 0xfd, 0x04, 0x90, 0xf1, 0x00, 0x00, 0x77, 0x69, 0x6e, 0x64, 0x6f,
@@ -525,5 +530,29 @@ mod tests {
             assert!(format!("{error:#}").contains("late network failure"));
         }
         assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+    }
+    #[test]
+    fn decoded_bytes_obey_the_supplied_storage_budget() {
+        for (input, accepted) in [(b"1234".as_slice(), true), (b"12345".as_slice(), false)] {
+            let mut reader = DecodedReader {
+                input,
+                output: Vec::new(),
+                count: 0,
+                capacity: 4,
+            };
+            assert_eq!(io::copy(&mut reader, &mut io::sink()).is_ok(), accepted);
+            assert!(reader.output.len() <= 4);
+        }
+        let mut reader = DecodedReader {
+            input: b"12345".as_slice(),
+            output: Vec::new(),
+            count: 0,
+            capacity: 4,
+        };
+        let mut chunk = [0; 2];
+        assert_eq!(reader.read(&mut chunk).unwrap(), 2);
+        assert_eq!(reader.read(&mut chunk).unwrap(), 2);
+        assert!(reader.read(&mut chunk).is_err());
+        assert_eq!(reader.output, b"1234");
     }
 }
