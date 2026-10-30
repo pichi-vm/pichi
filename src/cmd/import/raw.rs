@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use carapace::image::{Plan as _, Planned};
 use conglobate::artifact::{Digest, Manifest, Reference};
-use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use sha2::{Digest as _, Sha256};
 use tempfile::NamedTempFile;
 
@@ -52,6 +52,8 @@ impl ImportArgs {
             .await
             .context("import staging task panicked")??;
 
+        let db = FilesystemTagDb::open(graphroot)?;
+        let _guard = db.lock_index().await?;
         let path = store.blob_path(&staged.cow_digest);
         tokio::fs::create_dir_all(path.parent().context("blob path has no parent")?).await?;
         tokio::fs::rename(staged.verity.path(), path.verity_path()).await?;
@@ -63,9 +65,7 @@ impl ImportArgs {
             .await?;
         let index = store.local_index(&staged.manifest_digest, None).await?;
         if let Some(tag) = &staged.tag {
-            FilesystemTagDb::open(graphroot)?
-                .set_tag(tag, &index)
-                .await?;
+            db.set_tag_locked(tag, &index).await?;
         }
         if !quiet {
             log::info!(
@@ -194,6 +194,7 @@ impl<R: Read, W: Write> Read for StoredScute<R, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pichi_storage::TagDb as _;
     use tempfile::TempDir;
 
     fn make_args(tmp: &TempDir, raw_image: PathBuf, tag: &str) -> (ImportArgs, PathBuf) {

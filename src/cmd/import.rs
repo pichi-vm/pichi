@@ -32,7 +32,7 @@ use conglobate::artifact::{
     Config, ConfigDescriptor, Digest, DtbDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest,
     PmiDescriptor, Reference,
 };
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use super::cache::ImageStore as _;
 use crate::cli::{ImportPmiArgs, ImportRawArgs};
@@ -89,6 +89,9 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         Some(p) => Some(read_launch_contract(p).await?),
         None => None,
     };
+
+    // Protect inherited cache inputs and new blobs until the tag is published.
+    let _guard = db.lock_index().await?;
 
     // Assemble the manifest. With `--carapace`, start from the cached carapace
     // (reuse its scutes and verity parameter annotations) and keep only its
@@ -149,7 +152,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     let index = blob_store.local_index(&manifest_digest, None).await?;
 
     if let Some(dest_key) = &dest_key {
-        db.set_tag(dest_key, &index)
+        db.set_tag_locked(dest_key, &index)
             .await
             .with_context(|| format!("set_tag {dest_key}"))?;
     }

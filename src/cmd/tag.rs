@@ -37,12 +37,13 @@ pub async fn run(args: TagArgs, config: &Config) -> Result<()> {
     let src_key = src_ref.to_string();
     let dst_key = dst_ref.to_string();
 
+    let _guard = db.lock_index().await?;
     let digest = db
         .resolve_tag(&src_key)
         .await?
         .ok_or_else(|| anyhow!("source ref not found in cache: {src_key}"))?;
 
-    db.set_tag(&dst_key, &digest)
+    db.set_tag_locked(&dst_key, &digest)
         .await
         .with_context(|| format!("creating tag {dst_key}"))?;
 

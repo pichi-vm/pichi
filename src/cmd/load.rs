@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail, ensure};
 use cap_std::fs::Dir;
 use conglobate::artifact::{Digest, Manifest, Reference};
 use conglobate::artifact::{Index as LayoutIndex, IndexDescriptor as LayoutEntry, LayoutMarker};
-use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use sha2::{Digest as _, Sha256};
 
 use crate::cli::LoadArgs;
@@ -452,9 +452,10 @@ impl OciLayout {
             .parse::<Reference>()
             .with_context(|| format!("invalid tag {tag}"))?
             .to_string();
+        let _guard = db.lock_index().await?;
         let roots = self.commit(store).await?;
         let digest = roots[0].clone();
-        db.set_tag(&tag, &digest).await?;
+        db.set_tag_locked(&tag, &digest).await?;
         Ok(digest)
     }
 
@@ -506,6 +507,7 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
             ensure!(tags.insert(tag, position).is_none(), "duplicate OCI tag");
         }
     }
+    let _guard = db.lock_index().await?;
     let indexes = imported.commit(&store).await?;
     for (digest, entry) in indexes.iter().zip(&imported.roots) {
         if args.tag.is_none() && !entry.annotations.contains_key(REF_NAME_ANNOTATION) {
@@ -514,7 +516,7 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
     }
     for (tag, position) in tags {
         let digest = &indexes[position];
-        db.set_tag(&tag, digest).await?;
+        db.set_tag_locked(&tag, digest).await?;
         println!("loaded {tag}");
     }
     Ok(())
@@ -525,6 +527,7 @@ pub(super) mod tests {
     use super::*;
     use crate::cmd::test_support::ScuteFixture as _;
     use crate::cmd::verity::VerityParams;
+    use pichi_storage::TagDb as _;
     use serde_json::{Value, json};
 
     const TEST_CAPACITY: u64 = 4 * 1024 * 1024;

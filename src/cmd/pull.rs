@@ -63,6 +63,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     blob_store: &dyn BlobStore,
     tag_db: &FilesystemTagDb,
 ) -> Result<()> {
+    let _guard = tag_db.lock_index().await?;
     let target_str = target.to_string();
 
     // --pull=missing: skip network if cached.
@@ -180,16 +181,15 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         .verify(&manifest)
         .with_context(|| format!("verifying carapace root for {final_digest}"))?;
 
-    // 5. Atomic commit per D-03 refined per Pitfall 11 / Phase 42 Plan 05
-    //    SUMMARY: live-walk refcounts; no sidecar; set_tag is the single
-    //    commit point and takes its own flock (DO NOT wrap in
-    //    the cache-wide advisory-lock helper per Pitfall 2).
+    // Publish the root only after every layer has been prepared. The index
+    // lock covers shared-cache writes and this final tag update, so collection
+    // cannot delete an in-progress image before it becomes reachable.
     if root.is_index() {
         blob_store.put_blob(final_digest, final_bytes).await?;
     }
     blob_store.put_blob(&root.digest, &root.bytes).await?;
     tag_db
-        .set_tag(&target_str, &root.digest)
+        .set_tag_locked(&target_str, &root.digest)
         .await
         .with_context(|| format!("set_tag {target_str}"))?;
 
@@ -478,7 +478,7 @@ mod tests {
             if line.contains(".put_blob(") || line.contains(".put_blob_from_path(") {
                 last_put_blob_idx = Some(i + 1);
             }
-            if line.contains(".set_tag(") {
+            if line.contains(".set_tag_locked(") {
                 first_set_tag_idx = first_set_tag_idx.or(Some(i + 1));
             }
         }
