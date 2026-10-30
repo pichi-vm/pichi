@@ -171,6 +171,78 @@ async fn run_execs_dillo_with_manifest_derived_devices() {
 }
 
 #[tokio::test]
+async fn run_resolves_cached_index_references() {
+    for index_stored in [false, true] {
+        for informational_tag in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let g = graphroot(&tmp);
+            let (pmi_path, _) = populate_bootable(&g, "myapp:1").await;
+            let store = FilesystemBlobStore::new(&g);
+            let db = FilesystemTagDb::open(&g).unwrap();
+            let manifest_digest = db
+                .resolve_tag("docker.io/library/myapp:1")
+                .await
+                .unwrap()
+                .unwrap();
+            let manifest_bytes = store.get_blob(&manifest_digest).await.unwrap();
+            let manifest_size = manifest_bytes.len();
+            let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+            let architecture = match std::env::consts::ARCH {
+                "x86_64" => "amd64",
+                "aarch64" => "arm64",
+                other => other,
+            };
+            let index = serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": pichi_registry::OCI_IMAGE_INDEX_MEDIA_TYPE,
+                "manifests": [{
+                    "mediaType": manifest.media_type,
+                    "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                    "digest": format!("sha256:{}", "44".repeat(32)),
+                    "size": 1,
+                    "platform": { "os": "pichi", "architecture": "not-this-host" },
+                }, {
+                    "mediaType": manifest.media_type,
+                    "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                    "digest": manifest_digest.to_string(),
+                    "size": manifest_size,
+                    "platform": { "os": "pichi", "architecture": architecture },
+                }],
+            });
+            let bytes = serde_json::to_vec(&index).unwrap();
+            let digest = sha256_digest(&bytes);
+            let canonical = format!("registry.example/app@{digest}");
+            if index_stored {
+                store.put_blob(&digest, &bytes).await.unwrap();
+            } else {
+                // Pull keeps the selected manifest and records this mapping.
+                db.set_tag(&canonical, &manifest_digest).await.unwrap();
+            }
+            let reference = if informational_tag {
+                format!("registry.example/app:label@{digest}")
+            } else {
+                canonical
+            };
+            let record = tmp.path().join("argv.txt");
+            let stub = make_stub_dillo(tmp.path(), &record);
+            let assert = Command::cargo_bin("pichi")
+                .unwrap()
+                .env("XDG_DATA_HOME", tmp.path())
+                .env("PICHI_DILLO", &stub)
+                .args(["run", &reference])
+                .assert()
+                .success();
+            assert!(
+                !String::from_utf8_lossy(&assert.get_output().stderr).contains("pulling"),
+                "cached input must not trigger a network pull"
+            );
+            let argv = std::fs::read_to_string(&record).unwrap();
+            assert!(argv.lines().any(|arg| arg == pmi_path.to_string_lossy()));
+        }
+    }
+}
+
+#[tokio::test]
 async fn run_forwards_cpus_and_memory() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
