@@ -13,18 +13,17 @@
 
 use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
-use serde_json::json;
 use std::path::Path;
 
-use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+use conglobate::artifact::{
+    Digest, Index, IndexDescriptor, LayoutMarker, MEDIA_TYPE_OCI_MANIFEST_V1,
+    MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference,
+};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::SaveArgs;
 use crate::config::Config;
 
-const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
-const OCI_LAYOUT_MARKER: &str = r#"{"imageLayoutVersion":"1.0.0"}"#;
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 
 pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
@@ -54,7 +53,11 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
     tokio::fs::create_dir_all(&blobs_dir)
         .await
         .with_context(|| format!("create {}", blobs_dir.display()))?;
-    tokio::fs::write(out.join("oci-layout"), OCI_LAYOUT_MARKER).await?;
+    tokio::fs::write(
+        out.join("oci-layout"),
+        serde_json::to_vec(&LayoutMarker::default())?,
+    )
+    .await?;
 
     // Manifest, config (unless the inline empty config), and every layer —
     // copied concurrently (each is an independent file copy).
@@ -83,17 +86,17 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
     )
     .await?;
 
-    let index = json!({
-        "schemaVersion": 2,
-        "mediaType": OCI_IMAGE_INDEX_MEDIA_TYPE,
-        "manifests": [{
-            "mediaType": OCI_IMAGE_MANIFEST_MEDIA_TYPE,
-            "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "digest": manifest_digest.to_string(),
-            "size": raw_manifest.len(),
-            "annotations": { REF_NAME_ANNOTATION: tag },
+    let index = Index {
+        manifests: vec![IndexDescriptor {
+            media_type: MEDIA_TYPE_OCI_MANIFEST_V1.into(),
+            artifact_type: Some(MEDIA_TYPE_PICHI_ARTIFACT_V1.into()),
+            digest: manifest_digest.to_string(),
+            size: raw_manifest.len() as u64,
+            platform: None,
+            annotations: [(REF_NAME_ANNOTATION.into(), tag.clone())].into(),
         }],
-    });
+        ..Index::default()
+    };
     tokio::fs::write(
         out.join("index.json"),
         serde_json::to_vec_pretty(&index).context("serialise index.json")?,

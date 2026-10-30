@@ -36,7 +36,9 @@ use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
-use conglobate::artifact::{Index as ImageIndex, IndexDescriptor as ManifestDescriptor};
+use conglobate::artifact::{
+    Index as ImageIndex, IndexDescriptor as ManifestDescriptor, LayoutMarker,
+};
 
 use crate::atomic::write_atomic;
 use crate::lock::lock_exclusive_async;
@@ -44,9 +46,6 @@ use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1};
 
 /// OCI annotation key for the human-readable image reference (tag).
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
-
-/// Contents of the `oci-layout` marker file at the cache root.
-const OCI_LAYOUT_MARKER: &str = r#"{"imageLayoutVersion":"1.0.0"}"#;
 
 /// Tag-to-digest mapping trait. Implementations MUST be `Send + Sync`.
 #[async_trait]
@@ -152,9 +151,13 @@ impl FilesystemTagDb {
             return Ok(());
         }
         let parent = path.parent().expect("oci-layout path has a parent");
-        write_atomic(parent, &path, OCI_LAYOUT_MARKER.as_bytes())
-            .await
-            .context("failed to write oci-layout marker")
+        write_atomic(
+            parent,
+            &path,
+            &serde_json::to_vec(&LayoutMarker::default())?,
+        )
+        .await
+        .context("failed to write oci-layout marker")
     }
 
     /// Lock-free-write variant of [`TagDb::delete_tag`] for use inside a
