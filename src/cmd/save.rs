@@ -11,6 +11,7 @@
 //! platform is supplied later via `pichi manifest annotate`, not here (podman's
 //! save carries no platform either).
 
+use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use serde_json::json;
 use std::path::Path;
@@ -45,7 +46,7 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
         .get_blob(&manifest_digest)
         .await
         .with_context(|| format!("read manifest {manifest_digest}"))?;
-    let manifest = Manifest::from_reader_validated(raw_manifest.as_slice())
+    let manifest = Manifest::decode_json(raw_manifest.as_slice())
         .with_context(|| format!("parse cached manifest {manifest_digest}"))?;
 
     let out = &args.output;

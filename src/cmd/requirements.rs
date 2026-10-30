@@ -30,7 +30,8 @@ pub async fn load_requirements(
         .get_blob(&digest)
         .await
         .with_context(|| format!("reading config blob {digest}"))?;
-    let config = Config::from_json(&bytes).context("parsing config blob")?;
+    let config: Config = serde_json::from_slice(&bytes).context("parsing config blob")?;
+    config.validate().context("invalid config blob")?;
     Ok(Some(config.requirements))
 }
 

@@ -18,7 +18,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::cli::LoadArgs;
 use crate::cmd::layer::PreparedLayer;
-use crate::cmd::manifest_ext::ScuteRoots;
+use crate::cmd::manifest_ext::{ManifestExt as _, ScuteRoots};
 use crate::config::Config;
 
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -177,8 +177,8 @@ impl OciLayout {
             let digest = layout.copy_blob(&root, &entry.digest, entry.size, &mut expected)?;
             ensure!(seen.insert(digest.clone()), "duplicate OCI manifest");
             let bytes = std::fs::read(layout.store.blob_path(&digest))?;
-            let manifest = Manifest::from_reader_validated(bytes.as_slice())
-                .context("invalid OCI manifest")?;
+            let manifest =
+                Manifest::decode_json(bytes.as_slice()).context("invalid OCI manifest")?;
             ensure!(
                 manifest.schema_version == 2 && manifest.media_type == MANIFEST_TYPE,
                 "invalid manifest schema or media type"
@@ -193,10 +193,10 @@ impl OciLayout {
                 );
                 let digest = layout.copy_blob(&root, &config.digest, config.size, &mut expected)?;
                 if !config.is_empty() {
-                    pichi_artifact::Config::from_json(&std::fs::read(
-                        layout.store.blob_path(&digest),
-                    )?)
-                    .context("invalid launch config")?;
+                    let config: pichi_artifact::Config =
+                        serde_json::from_slice(&std::fs::read(layout.store.blob_path(&digest))?)
+                            .context("invalid launch config")?;
+                    config.validate().context("invalid launch config")?;
                 }
             }
             if manifest.layers.iter().any(|l| {
@@ -507,7 +507,6 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::cmd::manifest_ext::ManifestExt as _;
     use crate::cmd::test_support::ScuteFixture as _;
     use crate::cmd::verity::VerityParams;
     use serde_json::{Value, json};
@@ -650,7 +649,7 @@ pub(super) mod tests {
             );
             let bytes = store.get_blob(&digest).await.unwrap();
             assert_eq!(bytes, serde_json::to_vec(&fixture.manifest).unwrap());
-            let manifest = Manifest::from_reader_validated(&bytes[..]).unwrap();
+            let manifest = Manifest::decode_json(&bytes[..]).unwrap();
             assert_eq!(
                 manifest.carapace_top_root(&store).await.unwrap(),
                 fixture.tip

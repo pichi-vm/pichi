@@ -15,6 +15,7 @@
 
 mod common;
 
+use pichi::cmd::manifest_ext::ManifestExt as _;
 use std::path::{Path, PathBuf};
 
 use common::{
@@ -55,10 +56,8 @@ async fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
         .await
         .unwrap()
         .expect("carapace tag resolves");
-    let mut manifest = Manifest::from_reader_validated(
-        blob_store.get_blob(&cara_digest).await.unwrap().as_slice(),
-    )
-    .unwrap();
+    let mut manifest =
+        Manifest::decode_json(blob_store.get_blob(&cara_digest).await.unwrap().as_slice()).unwrap();
 
     let pmi_bytes = std::fs::read(pmi).unwrap();
     let pmi_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes).into());
@@ -69,7 +68,7 @@ async fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
     }));
 
     manifest.validate().unwrap();
-    let bytes = manifest.to_bytes().unwrap();
+    let bytes = serde_json::to_vec(&manifest).unwrap();
     let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     db.set_tag(&app_tag.parse::<Reference>().unwrap().to_string(), &digest)

@@ -81,7 +81,7 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
         ],
         annotations: chain_annotations(),
     };
-    let bytes = manifest.to_bytes().unwrap();
+    let bytes = serde_json::to_vec(&manifest).unwrap();
     let digest = manifest.digest().unwrap();
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     // Store under the normalized reference key (`myapp:1` →

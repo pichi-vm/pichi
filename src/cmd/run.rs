@@ -81,7 +81,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
         .get_blob(&digest)
         .await
         .with_context(|| format!("reading manifest blob {digest}"))?;
-    let manifest = Manifest::from_reader_validated(bytes.as_slice())
+    let manifest = Manifest::decode_json(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
 
     // 3. Architecture-mismatch fail-closed check (accept if absent).

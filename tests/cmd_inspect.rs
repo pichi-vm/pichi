@@ -59,7 +59,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
         ],
         annotations: chain_annotations(),
     };
-    let bytes = m.to_bytes().unwrap();
+    let bytes = serde_json::to_vec(&m).unwrap();
     let digest = m.digest().unwrap();
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
@@ -117,7 +117,7 @@ async fn inspect_format_reaches_dotted_annotation() {
         })],
         annotations: chain_annotations(),
     };
-    let bytes = m.to_bytes().unwrap();
+    let bytes = serde_json::to_vec(&m).unwrap();
     let digest = m.digest().unwrap();
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();

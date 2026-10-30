@@ -506,7 +506,7 @@ async fn resolve_manifest(
     } else {
         bytes
     };
-    let manifest = Manifest::from_reader_validated(manifest_bytes.as_slice())
+    let manifest = Manifest::decode_json(manifest_bytes.as_slice())
         .with_context(|| format!("validating manifest for {reference}"))?;
     Ok((digest, manifest))
 }

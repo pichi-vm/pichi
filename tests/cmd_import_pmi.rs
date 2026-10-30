@@ -9,6 +9,7 @@
 //! scutes are combined in. The carapace reference is read-only — its tag is
 //! never modified — and the bootable artifact is always its own `-t`.
 
+use pichi::cmd::manifest_ext::ManifestExt as _;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
@@ -44,7 +45,7 @@ async fn resolve_manifest(g: &Path, key: &str) -> Manifest {
         .unwrap_or_else(|| panic!("tag must resolve: {key}"));
     let blob_store = FilesystemBlobStore::new(g);
     let bytes = blob_store.get_blob(&digest).await.unwrap();
-    Manifest::from_reader_validated(bytes.as_slice()).unwrap()
+    Manifest::decode_json(bytes.as_slice()).unwrap()
 }
 
 /// Fixture: a raw image, a PMI, and a DTB in `tmp`.

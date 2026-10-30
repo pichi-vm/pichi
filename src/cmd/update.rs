@@ -13,6 +13,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+use crate::cmd::manifest_ext::ManifestExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -137,7 +138,7 @@ async fn resolve_manifest(
         .get_blob(&digest)
         .await
         .with_context(|| format!("reading manifest blob {digest}"))?;
-    let manifest = Manifest::from_reader_validated(bytes.as_slice())
+    let manifest = Manifest::decode_json(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
     Ok((digest, manifest))
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use assert_cmd::Command;
+use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_artifact::{Digest, Manifest};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
@@ -39,7 +40,7 @@ async fn save_load_preserves_manifest_and_rebuilds_verity_on_cache_hits() {
         .unwrap();
     let source_store = FilesystemBlobStore::new(&source);
     let bytes = source_store.get_blob(&digest).await.unwrap();
-    let manifest = Manifest::from_reader_validated(bytes.as_slice()).unwrap();
+    let manifest = Manifest::decode_json(bytes.as_slice()).unwrap();
     let cow: Digest = manifest.layers[0].digest_str().parse().unwrap();
     let tree = std::fs::read(source_store.blob_path(&cow).verity_path()).unwrap();
     let store = FilesystemBlobStore::new(&destination);

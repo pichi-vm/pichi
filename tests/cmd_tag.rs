@@ -49,7 +49,7 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> pichi_artifac
         })],
         annotations: chain_annotations(),
     };
-    let bytes = m.to_bytes().unwrap();
+    let bytes = serde_json::to_vec(&m).unwrap();
     let digest = m.digest().unwrap();
     let blob_store = FilesystemBlobStore::new(graphroot);
     blob_store.put_blob(&digest, &bytes).await.unwrap();
