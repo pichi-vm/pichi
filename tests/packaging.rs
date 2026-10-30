@@ -4,16 +4,16 @@
 use std::process::Command;
 
 #[test]
-fn rpm_manifest_keeps_runtime_dependencies_and_removes_test_artifacts() {
+fn host_manifest_keeps_runtime_dependencies_and_removes_test_artifacts() {
     let directory = tempfile::tempdir().unwrap();
     // RPM builds use repository text with LF endings. Windows checkouts may
     // convert both inputs to CRLF, which is not valid unified-patch syntax.
     let source = include_str!("../Cargo.toml").replace("\r\n", "\n");
     std::fs::write(directory.path().join("Cargo.toml"), &source).unwrap();
-    let patch = directory.path().join("rpm-manifest.patch");
+    let patch = directory.path().join("host-manifest.patch");
     std::fs::write(
         &patch,
-        include_str!("../packaging/rpm-manifest.patch").replace("\r\n", "\n"),
+        include_str!("../packaging/host-manifest.patch").replace("\r\n", "\n"),
     )
     .unwrap();
     let result = Command::new("git")
