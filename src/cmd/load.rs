@@ -12,14 +12,14 @@ use std::path::{Path, PathBuf};
 use super::cache::ImageStore as _;
 use anyhow::{Context, Result, bail, ensure};
 use cap_std::fs::Dir;
-use conglobate::artifact::{Digest, Layer, Manifest, Reference};
+use conglobate::artifact::{Digest, Manifest, Reference};
 use conglobate::artifact::{Index as LayoutIndex, IndexDescriptor as LayoutEntry, LayoutMarker};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use sha2::{Digest as _, Sha256};
 
 use crate::cli::LoadArgs;
 use crate::cmd::cache::METADATA_CAP;
-use crate::cmd::layer::PreparedLayer;
+use crate::cmd::layer::{PreparedLayer, ScuteFiles};
 use crate::cmd::manifest_ext::{ManifestExt as _, ScuteRoots};
 use crate::config::Config;
 
@@ -38,7 +38,7 @@ pub(super) struct OciLayout {
     manifests: Vec<Manifest>,
     roots: Vec<LayoutEntry>,
     blobs: HashMap<Digest, u64>,
-    guest_verity: Vec<(Digest, PathBuf)>,
+    guest_verity: Vec<(PathBuf, PathBuf)>,
 }
 
 impl OciLayout {
@@ -61,7 +61,6 @@ impl OciLayout {
             .context("reading complete OCI output layout")?;
         // The snapshot contains only OCI blobs. No pre-existing sidecars can
         // short-circuit rebuilding: every scute is rebuilt from cow + salt.
-        let mut scutes = HashMap::new();
         let mut expanded_size = 0u64;
         for manifest in &layout.manifests {
             let mut roots = ScuteRoots::default();
@@ -69,20 +68,8 @@ impl OciLayout {
                 if let Some(root) =
                     PreparedLayer::prepare_cached(manifest, layer, &layout.store).await?
                 {
-                    let digest: Digest = layer.digest_str().parse()?;
-                    if let Some(previous) = scutes.insert(digest, root) {
-                        ensure!(
-                            previous == root,
-                            "conflicting verity parameters for the same COW"
-                        );
-                    }
-                    let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = layer else {
-                        unreachable!("only scutes have a verity root")
-                    };
-                    let size = manifest
-                        .verity_header(scute, None)?
-                        .parameters
-                        .data_size()?;
+                    let files = ScuteFiles::new(manifest, layer, &layout.store)?;
+                    let size = std::fs::metadata(files.data)?.len();
                     expanded_size = expanded_size
                         .checked_add(size)
                         .context("expanded OCI size overflow")?;
@@ -240,7 +227,7 @@ impl OciLayout {
                             &root,
                             &sidecar,
                             *size,
-                            layer.digest_str().parse()?,
+                            ScuteFiles::new(&manifest, layer, &layout.store)?.verity,
                         )?;
                         expected.insert(sidecar);
                     }
@@ -395,7 +382,7 @@ impl OciLayout {
         root: &Dir,
         name: &Path,
         size: u64,
-        digest: Digest,
+        rebuilt: PathBuf,
     ) -> Result<()> {
         ensure!(
             size <= self.capacity,
@@ -406,14 +393,14 @@ impl OciLayout {
             .path()
             .join(format!("guest-verity-{}", self.guest_verity.len()));
         Self::copy_content(root, name, size, File::create(&target)?)?;
-        self.guest_verity.push((digest, target));
+        self.guest_verity.push((rebuilt, target));
         Ok(())
     }
 
     fn check_guest_verity(&self) -> Result<()> {
-        for (digest, path) in &self.guest_verity {
+        for (rebuilt, path) in &self.guest_verity {
             let mut guest = File::open(path)?;
-            let mut rebuilt = File::open(self.store.blob_path(digest).verity_path())?;
+            let mut rebuilt = File::open(rebuilt)?;
             ensure!(
                 guest.metadata()?.len() == rebuilt.metadata()?.len(),
                 "guest verity size mismatch"
@@ -467,13 +454,13 @@ impl OciLayout {
             let source = self.store.blob_path(digest);
             let target = store.blob_path(digest);
             tokio::fs::create_dir_all(target.parent().context("blob has no parent")?).await?;
-            for (src, dst) in [
-                (source.verity_path(), target.verity_path()),
-                (source.deflated_path(), target.deflated_path()),
-            ] {
-                if src.exists() {
-                    tokio::fs::rename(src, dst).await?;
-                }
+            let prepared = source.prepared_files()?;
+            if !prepared.is_empty() {
+                tokio::fs::create_dir_all(target.prepared_dir()).await?;
+            }
+            for file in prepared {
+                let name = file.file_name().context("prepared file has no name")?;
+                tokio::fs::rename(&file, target.prepared_dir().join(name)).await?;
             }
             store.put_blob_from_path(&source, digest).await?;
         }
@@ -528,6 +515,7 @@ pub(super) mod tests {
     use super::*;
     use crate::cmd::test_support::ScuteFixture as _;
     use crate::cmd::verity::VerityParams;
+    use conglobate::artifact::Layer;
     use pichi_storage::TagDb as _;
     use serde_json::{Value, json};
 
@@ -567,6 +555,10 @@ pub(super) mod tests {
 
         fn add_scute(&mut self, compressed: bool) {
             let cow = vec![self.blobs.len() as u8 + 1; 8192].scute();
+            self.add_cow(cow, compressed);
+        }
+
+        fn add_cow(&mut self, cow: Vec<u8>, compressed: bool) {
             let output = VerityParams {
                 data_block_size: 4096,
                 hash_block_size: 4096,
@@ -634,7 +626,58 @@ pub(super) mod tests {
                 let path = dir.join("blobs/sha256").join(
                     Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(blob).into()).hex(),
                 );
-                std::fs::write(path.verity_path(), tree).unwrap();
+                std::fs::write(path.with_extension("verity"), tree).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_cow_keeps_trees_for_different_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FilesystemBlobStore::new(dir.path().join("cache"));
+        let shared = vec![9; 8192].scute();
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&shared).into());
+        let mut chains = Vec::new();
+        for additional_parent in [false, true] {
+            let mut fixture = LayoutFixture::new();
+            if additional_parent {
+                fixture.add_scute(false);
+            }
+            let parent = fixture.tip;
+            fixture.add_cow(shared.clone(), false);
+            fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash"] =
+                hex::encode(fixture.tip).into();
+            let manifest: Manifest = serde_json::from_value(fixture.manifest.clone()).unwrap();
+            let layer = manifest.layers.last().unwrap();
+            assert_eq!(layer.digest_str(), digest.to_string());
+            let Layer::Scute(scute) = layer else {
+                panic!("uncompressed fixture");
+            };
+            assert_eq!(scute.annotations.salt, hex::encode(parent));
+            let files = ScuteFiles::new(&manifest, layer, &store).unwrap();
+            let layout = dir.path().join(chains.len().to_string());
+            fixture.write(&layout);
+            chains.push((layout, manifest, files.verity, fixture.trees.pop().unwrap()));
+        }
+        assert_ne!(chains[0].2, chains[1].2);
+        assert_ne!(chains[0].3, chains[1].3);
+        for _ in 0..2 {
+            for (layout, _, _, _) in &chains {
+                OciLayout::read(layout, &store)
+                    .await
+                    .unwrap()
+                    .commit(&store)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(store.get_blob(&digest).await.unwrap(), shared);
+            for (_, manifest, path, expected) in &chains {
+                assert_eq!(std::fs::read(path).unwrap(), *expected);
+                let spec =
+                    crate::cmd::run::build_gpt_spec(manifest, &manifest.scute_layers(), &store)
+                        .await
+                        .unwrap();
+                assert!(spec.contains(path.to_str().unwrap()), "{spec}");
             }
         }
     }
@@ -701,7 +744,11 @@ pub(super) mod tests {
                     .blob_path(&Digest::Sha256(
                         <sha2::Sha256 as sha2::Digest>::digest(blob).into(),
                     ))
-                    .verity_path();
+                    .prepared_files()
+                    .unwrap()
+                    .into_iter()
+                    .find(|path| path.extension().is_some_and(|ext| ext == "verity"))
+                    .unwrap();
                 assert_eq!(std::fs::read(&path).unwrap(), *tree);
                 std::fs::write(path, b"stale cache tree").unwrap();
             }
@@ -930,7 +977,7 @@ pub(super) mod tests {
                     } else {
                         bytes.pop();
                     }
-                    std::fs::write(cow.verity_path(), bytes).unwrap();
+                    std::fs::write(cow.with_extension("verity"), bytes).unwrap();
                 }
                 "oversized blob" => File::create(&cow)
                     .unwrap()

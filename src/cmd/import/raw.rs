@@ -19,6 +19,7 @@ use tempfile::NamedTempFile;
 
 use self::manifest::BaseManifest as _;
 use crate::cmd::cache::ImageStore as _;
+use crate::cmd::layer::ScuteFiles;
 use crate::cmd::verity::{VerityFormat as _, VerityParams};
 
 #[derive(Debug)]
@@ -55,8 +56,9 @@ impl ImportArgs {
         let db = FilesystemTagDb::open(graphroot)?;
         let _guard = db.lock_index().await?;
         let path = store.blob_path(&staged.cow_digest);
-        tokio::fs::create_dir_all(path.parent().context("blob path has no parent")?).await?;
-        tokio::fs::rename(staged.verity.path(), path.verity_path()).await?;
+        let files = ScuteFiles::from_header(&path, false, &staged.header)?;
+        tokio::fs::create_dir_all(path.prepared_dir()).await?;
+        tokio::fs::rename(staged.verity.path(), files.verity).await?;
         store
             .put_blob_from_path(staged.cow.path(), &staged.cow_digest)
             .await?;
@@ -83,6 +85,7 @@ struct StagedImport {
     cow: NamedTempFile,
     cow_digest: Digest,
     verity: NamedTempFile,
+    header: devmap_verity::Header,
     manifest_bytes: Vec<u8>,
     manifest_digest: Digest,
     tag: Option<String>,
@@ -128,15 +131,16 @@ impl StagedImport {
             output: BufWriter::new(cow.as_file()),
             hash: Sha256::new(),
         };
-        let root = VerityParams {
+        let header = VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
             salt: salt.clone(),
             uuid: [0; 16],
         }
-        .header(size)?
-        .format_padded(&mut reader, verity.as_file_mut())
-        .context("streaming scute and formatting verity")?;
+        .header(size)?;
+        let root = header
+            .format_padded(&mut reader, verity.as_file_mut())
+            .context("streaming scute and formatting verity")?;
         let cow_digest = reader.finish()?;
         cow.as_file().sync_all()?;
         verity.as_file().sync_all()?;
@@ -161,6 +165,7 @@ impl StagedImport {
             cow,
             cow_digest,
             verity,
+            header,
             manifest_bytes,
             manifest_digest,
             tag,
@@ -222,14 +227,20 @@ mod tests {
 
         args.run(&graphroot).await.unwrap();
 
-        // Image index, manifest, cow and verity in blobs/sha256/.
+        // Index, manifest, cow and its prepared directory.
         let blobs_dir = graphroot.join("blobs").join("sha256");
         let entries: Vec<_> = std::fs::read_dir(&blobs_dir).unwrap().collect();
-        assert_eq!(entries.len(), 4, "expected index, manifest, cow and verity");
+        assert_eq!(
+            entries.len(),
+            4,
+            "expected index, manifest, cow and preparation"
+        );
 
         let verity_path = std::fs::read_dir(&blobs_dir)
             .unwrap()
             .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_none())
+            .flat_map(|path| path.prepared_files().unwrap())
             .find(|path| path.extension().is_some_and(|ext| ext == "verity"))
             .unwrap();
         let bytes = std::fs::read(verity_path).unwrap();

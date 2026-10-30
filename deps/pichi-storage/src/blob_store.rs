@@ -59,9 +59,8 @@ pub trait BlobStore: Send + Sync {
     /// The path may not exist on disk yet; no I/O is performed, so this stays
     /// synchronous.
     ///
-    /// Used to derive sidecar paths (`<src>.deflated` for `+zstd` layers,
-    /// `<src>.verity` for every scute — D-01) and to unlink the source +
-    /// sidecars together (D-08, `cmd::rmi`).
+    /// Used to derive parameter-specific files in `<src>.prepared/` and
+    /// unlink all derived files when their source is no longer referenced.
     ///
     /// Implementations MUST return a path with NO file extension on the final
     /// component (the sidecar helpers in `pichi_storage::sidecar` rely on

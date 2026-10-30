@@ -1,74 +1,97 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Sidecar-next-to-source helpers for derived blobs (Phase 46 D-01, D-03, D-08).
-//!
-//! Phase 46 introduces two derived files alongside cached source blobs
-//! (`<graphroot>/blobs/sha256/<hex>`):
-//!
-//! - `<src>.deflated` — decompressed scute bytes, zero-padded to the declared
-//!   data-block extent; also used for raw scutes with a partial final block.
-//!   Aligned raw scutes use their source bytes.
-//! - `<src>.verity`   — dm-verity hash tree (byte-exact
-//!   `tools/import::verity::compute` format) — carapace exposes this as the
-//!   guest's hash device so dm-verity activation can read pre-computed hashes
-//!
-//! No `.roothash` sidecar: pichi never reads the roothash. The publisher
-//! bakes `corium=<hex>` into the PMI cmdline at arma-build time; the
-//! guest reads it from cmdline at boot. pichi is dumb storage.
-//!
-//! The write/unlink helpers are async: the atomic temp-write-then-rename
-//! (blocking, sync-only in the `tempfile` crate) runs in `spawn_blocking`,
-//! and unlinks use `tokio::fs`. The path resolvers are pure and stay sync.
-//!
-//! ## Path scheme: `Path::with_extension`
-//!
-//! Both resolvers below rely on the source `<src>` having NO file extension
-//! on its final component (it is a 64-char lowercase hex string — see
-//! `FilesystemBlobStore::blob_path`). `Path::with_extension` REPLACES any
-//! existing extension; the unit tests assert exact path strings to guard this.
+//! Prepared files live in `<blob>.prepared/`. Encoded blob identity does not
+//! identify its verity parameters: callers supply a reconstruction key for
+//! trees and a padded byte length for decoded or partially aligned raw data.
+//! Legacy flat sidecars are
+//! ignored when reading, but retained in cleanup accounting.
 
+use conglobate::artifact::Digest;
 use std::path::{Path, PathBuf};
 
-/// Sidecar-path derivation + cleanup for a cached blob path. `Path` is foreign,
-/// so these hang off a local extension trait (per the "extension trait when you
-/// don't own the type" rule) — callers read `blob_path.verity_path()` and
-/// `blob_path.unlink_with_sidecars().await`.
+/// Paths and cleanup for files derived from a cached source blob.
 #[allow(async_fn_in_trait)] // used only via static dispatch on Path values
 pub trait BlobSidecarExt {
-    /// `<self>.deflated` — decompressed bytes with final-block zero padding
-    /// (compressed or partially aligned raw scutes; aligned raw uses its source).
     #[must_use]
-    fn deflated_path(&self) -> PathBuf;
-    /// `<self>.verity` — the dm-verity hash tree (byte-exact with
-    /// devmap's verity formatter), exposed to the guest as the hash device.
+    fn prepared_dir(&self) -> PathBuf;
     #[must_use]
-    fn verity_path(&self) -> PathBuf;
-    /// Unlink this blob path plus its `.deflated`/`.verity` siblings (D-08),
-    /// tolerating a missing sibling (`NotFound` → `Ok`).
+    fn deflated_path(&self, padded_bytes: u64) -> PathBuf;
+    #[must_use]
+    fn verity_path(&self, parameters: &Digest) -> PathBuf;
+    /// List regular prepared files without following symlinks.
+    fn prepared_files(&self) -> std::io::Result<Vec<PathBuf>>;
+    /// Count prepared and legacy sidecars, excluding directory metadata.
+    fn sidecar_bytes(&self) -> std::io::Result<u64>;
+    /// Remove the source and all derived files, tolerating missing paths.
     async fn unlink_with_sidecars(&self) -> std::io::Result<()>;
 }
 
 impl BlobSidecarExt for Path {
-    fn deflated_path(&self) -> PathBuf {
-        self.with_extension("deflated")
+    fn prepared_dir(&self) -> PathBuf {
+        self.with_extension("prepared")
     }
 
-    fn verity_path(&self) -> PathBuf {
-        self.with_extension("verity")
+    fn deflated_path(&self, padded_bytes: u64) -> PathBuf {
+        self.prepared_dir().join(format!("{padded_bytes}.deflated"))
+    }
+
+    fn verity_path(&self, parameters: &Digest) -> PathBuf {
+        self.prepared_dir()
+            .join(format!("{}.verity", parameters.hex()))
+    }
+
+    fn prepared_files(&self) -> std::io::Result<Vec<PathBuf>> {
+        let directory = self.prepared_dir();
+        match std::fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+            Ok(_) => (),
+        }
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                files.push(entry.path());
+            }
+        }
+        Ok(files)
+    }
+
+    fn sidecar_bytes(&self) -> std::io::Result<u64> {
+        let mut bytes = 0u64;
+        for path in self.prepared_files()?.into_iter().chain([
+            self.with_extension("verity"),
+            self.with_extension("deflated"),
+        ]) {
+            match std::fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.is_file() => bytes = bytes.saturating_add(metadata.len()),
+                Ok(_) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(bytes)
     }
 
     async fn unlink_with_sidecars(&self) -> std::io::Result<()> {
-        fn ignore_enoent(r: std::io::Result<()>) -> std::io::Result<()> {
-            match r {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                other => other,
+        for path in [
+            self.to_owned(),
+            self.with_extension("deflated"),
+            self.with_extension("verity"),
+        ] {
+            match tokio::fs::remove_file(path).await {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                result => result?,
             }
         }
-        ignore_enoent(tokio::fs::remove_file(self).await)?;
-        ignore_enoent(tokio::fs::remove_file(self.deflated_path()).await)?;
-        ignore_enoent(tokio::fs::remove_file(self.verity_path()).await)?;
-        Ok(())
+        match tokio::fs::remove_dir_all(self.prepared_dir()).await {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
     }
 }
 
@@ -96,16 +119,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn paths_use_with_extension_correctly() {
+    fn prepared_paths_include_reconstruction_inputs() {
         let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let src = PathBuf::from(format!("/tmp/abc/blobs/sha256/{hex}"));
+        let key = Digest::Sha256([0x11; 32]);
         assert_eq!(
-            src.deflated_path(),
-            PathBuf::from(format!("/tmp/abc/blobs/sha256/{hex}.deflated")),
+            src.deflated_path(8192),
+            src.with_extension("prepared").join("8192.deflated")
         );
         assert_eq!(
-            src.verity_path(),
-            PathBuf::from(format!("/tmp/abc/blobs/sha256/{hex}.verity")),
+            src.verity_path(&key),
+            src.with_extension("prepared")
+                .join(format!("{}.verity", key.hex()))
+        );
+        assert_ne!(src.deflated_path(8192), src.deflated_path(4096));
+        assert_ne!(
+            src.verity_path(&key),
+            src.verity_path(&Digest::Sha256([0x22; 32]))
         );
     }
 
@@ -143,12 +173,15 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let src = dir.path().join("aaa");
         std::fs::write(&src, b"source").unwrap();
-        std::fs::write(src.verity_path(), b"verity").unwrap();
+        std::fs::write(src.with_extension("verity"), b"verity").unwrap();
 
         src.unlink_with_sidecars().await.unwrap();
 
         assert!(!src.exists(), "source should be unlinked");
-        assert!(!src.verity_path().exists(), ".verity should be unlinked");
+        assert!(
+            !src.with_extension("verity").exists(),
+            ".verity should be unlinked"
+        );
     }
 
     #[tokio::test]
@@ -156,13 +189,57 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let src = dir.path().join("bbb");
         std::fs::write(&src, b"source").unwrap();
-        std::fs::write(src.deflated_path(), b"deflated").unwrap();
+        std::fs::write(src.with_extension("deflated"), b"deflated").unwrap();
 
         src.unlink_with_sidecars().await.unwrap();
         assert!(!src.exists());
-        assert!(!src.deflated_path().exists());
+        assert!(!src.with_extension("deflated").exists());
 
         src.unlink_with_sidecars().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn counts_and_removes_all_preparation_variants_and_legacy_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("aaa");
+        std::fs::create_dir(source.prepared_dir()).unwrap();
+        std::fs::write(&source, [0; 11]).unwrap();
+        for (path, size) in [
+            (source.deflated_path(8192), 3),
+            (source.deflated_path(5120), 5),
+            (source.verity_path(&Digest::Sha256([1; 32])), 7),
+            (source.verity_path(&Digest::Sha256([2; 32])), 13),
+            (source.with_extension("verity"), 17),
+            (source.with_extension("deflated"), 19),
+        ] {
+            std::fs::write(path, vec![0; size]).unwrap();
+        }
+        assert_eq!(source.prepared_files().unwrap().len(), 4);
+        assert_eq!(source.sidecar_bytes().unwrap(), 64);
+        source.unlink_with_sidecars().await.unwrap();
+        source.unlink_with_sidecars().await.unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prepared_listing_and_cleanup_do_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let outside = external.path().join("keep");
+        std::fs::write(&outside, b"untouched").unwrap();
+        let source = dir.path().join("aaa");
+        std::fs::create_dir(source.prepared_dir()).unwrap();
+        symlink(&outside, source.prepared_dir().join("link.verity")).unwrap();
+        assert!(source.prepared_files().unwrap().is_empty());
+        assert_eq!(source.sidecar_bytes().unwrap(), 0);
+        source.unlink_with_sidecars().await.unwrap();
+        assert_eq!(std::fs::read(&outside).unwrap(), b"untouched");
+        symlink(external.path(), source.prepared_dir()).unwrap();
+        assert!(source.prepared_files().is_err());
+        source.unlink_with_sidecars().await.unwrap();
+        assert_eq!(std::fs::read(outside).unwrap(), b"untouched");
     }
 
     #[cfg(unix)]
@@ -174,7 +251,7 @@ mod tests {
         std::fs::create_dir(&parent).unwrap();
         let src = parent.join("ccc");
         std::fs::write(&src, b"source").unwrap();
-        std::fs::write(src.verity_path(), b"verity").unwrap();
+        std::fs::write(src.with_extension("verity"), b"verity").unwrap();
 
         let original = std::fs::metadata(&parent).unwrap().permissions();
         let mut readonly = original.clone();

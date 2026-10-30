@@ -399,3 +399,54 @@ async fn prune_sorts_orphans_by_digest_ascii() {
         "ASCII sort: aaaa line must precede bbbb line; got stdout={stdout:?}"
     );
 }
+
+#[test]
+fn prune_counts_all_variants_and_headless_files_once() {
+    use pichi_storage::BlobSidecarExt;
+    let tmp = TempDir::new().unwrap();
+    let blobs = graphroot(&tmp).join("blobs/sha256");
+    std::fs::create_dir_all(&blobs).unwrap();
+    for (name, source_present) in [('a', true), ('b', false)] {
+        let source = blobs.join(name.to_string().repeat(64));
+        if source_present {
+            std::fs::write(&source, [0; 10]).unwrap();
+        }
+        std::fs::create_dir(source.prepared_dir()).unwrap();
+        std::fs::write(source.deflated_path(8192), [0; 20]).unwrap();
+        for key in [1, 2] {
+            std::fs::write(
+                source.verity_path(&conglobate::artifact::Digest::Sha256([key; 32])),
+                [0; 30],
+            )
+            .unwrap();
+        }
+        std::fs::write(source.with_extension("verity"), [0; 40]).unwrap();
+        std::fs::write(source.with_extension("deflated"), [0; 50]).unwrap();
+    }
+    let dry = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args(["system", "prune", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(std::fs::read_dir(&blobs).unwrap().count(), 7);
+    let real = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args(["system", "prune"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(dry, real);
+    assert!(
+        String::from_utf8(real)
+            .unwrap()
+            .contains("Total reclaimed: 350 B (1 blobs)")
+    );
+    assert_eq!(std::fs::read_dir(blobs).unwrap().count(), 0);
+}
