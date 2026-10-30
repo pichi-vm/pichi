@@ -116,7 +116,7 @@ mod tests {
     /// chain annotations carry the Phase 42 D-06 locked values.
     #[test]
     fn manifest_has_locked_chain_annotations() {
-        let cow_digest = Digest::from_bytes_sha256(b"deadbeef");
+        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
         let salt = vec![0u8; 32];
         let m = Manifest::base(
             &cow_digest,
@@ -161,7 +161,7 @@ mod tests {
     /// of zeros for a default-flag import).
     #[test]
     fn bottom_scute_salt_is_zero_prefix() {
-        let cow_digest = Digest::from_bytes_sha256(b"deadbeef");
+        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
         let salt = vec![0u8; 32]; // default: just the prefix, no suffix
         let m = Manifest::base(
             &cow_digest,
@@ -186,7 +186,7 @@ mod tests {
     /// 32-byte zero prefix.
     #[test]
     fn salt_with_author_suffix_appends_after_prefix() {
-        let cow_digest = Digest::from_bytes_sha256(b"deadbeef");
+        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
         let mut salt = vec![0u8; 32];
         salt.extend_from_slice(&[0xAB, 0xCD, 0xEF]);
         let m = Manifest::base(
@@ -210,7 +210,7 @@ mod tests {
     /// Manifest passes `validate()` (Phase 42 D-07 rules).
     #[test]
     fn build_passes_validate() {
-        let cow_digest = Digest::from_bytes_sha256(b"deadbeef");
+        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
         let salt = vec![0u8; 32];
         let m = Manifest::base(
             &cow_digest,
@@ -230,7 +230,7 @@ mod tests {
     /// by `pichi import pmi`).
     #[test]
     fn build_is_carapace_only() {
-        let cow_digest = Digest::from_bytes_sha256(b"deadbeef");
+        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
         let salt = vec![0u8; 32];
         let m = Manifest::base(
             &cow_digest,
@@ -271,7 +271,7 @@ mod tests {
             "ab".repeat(32),
         );
         let m = Manifest::base(
-            &Digest::from_bytes_sha256(b"deadbeef"),
+            &Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into()),
             16384,
             &[0u8; 32],
             "2026-05-07T12:00:00Z",

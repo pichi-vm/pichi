@@ -431,7 +431,7 @@ impl Registry for HttpRegistry {
         // (push consumes the bytes). The registry's location-header URL also
         // contains the assigned digest, but we trust local sha256 for the
         // return value (D-11: CVM-friendly local validation).
-        let computed = Digest::from_bytes_sha256(&bytes);
+        let computed = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
         let _location_url = client
             .push_manifest_raw(&oci_ref, bytes, ct)
             .await
@@ -652,11 +652,14 @@ mod tests {
                 }],
                 AuthEnv::default(),
             );
-            let digest = Digest::from_bytes_sha256(if valid {
-                b"scute bytes"
-            } else {
-                b"wrong bytes"
-            });
+            let digest = Digest::Sha256(
+                <sha2::Sha256 as sha2::Digest>::digest(if valid {
+                    b"scute bytes"
+                } else {
+                    b"wrong bytes"
+                })
+                .into(),
+            );
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 let stream = registry
                     .pull_blob_stream(&address, "test/scute", &digest, 11)

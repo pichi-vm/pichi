@@ -61,7 +61,7 @@ async fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
     .unwrap();
 
     let pmi_bytes = std::fs::read(pmi).unwrap();
-    let pmi_digest = Digest::from_bytes_sha256(&pmi_bytes);
+    let pmi_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes).into());
     blob_store.put_blob(&pmi_digest, &pmi_bytes).await.unwrap();
     manifest.layers.push(Layer::Pmi(PmiDescriptor {
         digest: pmi_digest.to_string(),
@@ -70,7 +70,7 @@ async fn package_app(xdg: &Path, cara_tag: &str, app_tag: &str, pmi: &Path) {
 
     manifest.validate().unwrap();
     let bytes = manifest.to_bytes().unwrap();
-    let digest = Digest::from_bytes_sha256(&bytes);
+    let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     db.set_tag(&app_tag.parse::<Reference>().unwrap().to_string(), &digest)
         .await

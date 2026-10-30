@@ -224,7 +224,7 @@ mod tests {
     async fn put_get_round_trip() {
         let (_dir, s) = make_store();
         let data = b"hello world";
-        let digest = Digest::from_bytes_sha256(data);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(data).into());
         s.put_blob(&digest, data).await.unwrap();
         let got = s.get_blob(&digest).await.unwrap();
         assert_eq!(got, data);
@@ -235,7 +235,7 @@ mod tests {
     async fn put_creates_correct_path() {
         let (dir, s) = make_store();
         let data = b"path-check";
-        let digest = Digest::from_bytes_sha256(data);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(data).into());
         s.put_blob(&digest, data).await.unwrap();
         let expected = dir.path().join("blobs").join("sha256").join(digest.hex());
         assert!(expected.exists(), "expected blob at {}", expected.display());
@@ -246,7 +246,7 @@ mod tests {
     async fn put_is_idempotent() {
         let (_dir, s) = make_store();
         let data = b"idempotent";
-        let digest = Digest::from_bytes_sha256(data);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(data).into());
         s.put_blob(&digest, data).await.unwrap();
         s.put_blob(&digest, data).await.unwrap(); // second call must be a no-op
         assert_eq!(s.get_blob(&digest).await.unwrap(), data);
@@ -257,7 +257,7 @@ mod tests {
     async fn open_blob_returns_readable_handle() {
         let (_dir, s) = make_store();
         let data: Vec<u8> = (0u8..100).collect();
-        let digest = Digest::from_bytes_sha256(&data);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&data).into());
         s.put_blob(&digest, &data).await.unwrap();
         let mut h = s.open_blob(&digest).await.unwrap();
         let mut buf = Vec::new();
@@ -269,8 +269,8 @@ mod tests {
     #[tokio::test]
     async fn blob_exists_present_and_absent() {
         let (_dir, s) = make_store();
-        let d_present = Digest::from_bytes_sha256(b"x");
-        let d_absent = Digest::from_bytes_sha256(b"y");
+        let d_present = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"x").into());
+        let d_absent = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"y").into());
         s.put_blob(&d_present, b"x").await.unwrap();
         assert!(s.blob_exists(&d_present).await);
         assert!(!s.blob_exists(&d_absent).await);
@@ -280,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn delete_blob_returns_true_for_existing_false_for_missing() {
         let (_dir, s) = make_store();
-        let d = Digest::from_bytes_sha256(b"to-delete");
+        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"to-delete").into());
         assert!(!s.delete_blob(&d).await.unwrap());
         s.put_blob(&d, b"to-delete").await.unwrap();
         assert!(s.delete_blob(&d).await.unwrap());
@@ -298,7 +298,7 @@ mod tests {
     #[tokio::test]
     async fn get_blob_missing_errors() {
         let (_dir, s) = make_store();
-        let d = Digest::from_bytes_sha256(b"never-stored");
+        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"never-stored").into());
         let err = s.get_blob(&d).await.unwrap_err();
         assert!(
             err.to_string().contains("blob not found"),
@@ -315,7 +315,7 @@ mod tests {
         let staging = scratch.join("staged.bin");
         let data: Vec<u8> = (0u8..=255).cycle().take(8 * 1024).collect();
         std::fs::write(&staging, &data).unwrap();
-        let digest = Digest::from_bytes_sha256(&data);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&data).into());
 
         s.put_blob_from_path(&staging, &digest).await.unwrap();
 
@@ -336,7 +336,7 @@ mod tests {
         let (_dir, s) = make_store();
         let scratch = s.scratch_dir().await.unwrap();
         let data = b"idempotent-rename".to_vec();
-        let digest = Digest::from_bytes_sha256(&data);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&data).into());
 
         let s1 = scratch.join("s1.bin");
         std::fs::write(&s1, &data).unwrap();
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn blob_path_inherent_returns_expected_shape() {
         let store = FilesystemBlobStore::new("/tmp/abc");
-        let digest = Digest::from_bytes_sha256(b"hello");
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"hello").into());
         let p = store.blob_path(&digest);
         assert_eq!(
             p,
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn blob_path_via_trait_returns_same_path() {
         let store: Box<dyn BlobStore> = Box::new(FilesystemBlobStore::new("/tmp/xyz"));
-        let digest = Digest::from_bytes_sha256(b"world");
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"world").into());
         let p = store.blob_path(&digest);
         assert_eq!(
             p,
@@ -394,7 +394,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let store = Arc::new(FilesystemBlobStore::new(dir.path()));
         let data: &'static [u8] = b"concurrent-write-payload";
-        let digest = Digest::from_bytes_sha256(data);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(data).into());
 
         let handles: Vec<_> = (0..8)
             .map(|_| {

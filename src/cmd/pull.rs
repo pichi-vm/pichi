@@ -293,7 +293,7 @@ mod tests {
         // clean of false-positive call sites that future contributors might
         // cargo-cult into production code).
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
-        let digest = Digest::from_bytes_sha256(&bytes);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
         (bytes, digest)
     }
 
@@ -307,7 +307,8 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         // Pre-set the tag in the cache.
-        let cached = Digest::from_bytes_sha256(b"any cached manifest");
+        let cached =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"any cached manifest").into());
         db.set_tag(&target.to_string(), &cached).await.unwrap();
 
         let mock = MockRegistry::new();
@@ -424,13 +425,15 @@ mod tests {
         // but changes the byte content + sha256 digest. If cmd::pull
         // re-serialises, the stored bytes won't match the mock's bytes.
         let dummy_layer_data = b"hello-layer-data";
-        let layer_digest = Digest::from_bytes_sha256(dummy_layer_data);
+        let layer_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(dummy_layer_data).into());
         let (clean_manifest, _clean_digest) =
             make_pichi_manifest(&layer_digest, dummy_layer_data.len() as u64);
         let mut raw_with_ws: Vec<u8> = clean_manifest.to_vec();
         raw_with_ws.extend_from_slice(b"   \n"); // trailing whitespace
         let raw_bytes = Bytes::from(raw_with_ws);
-        let expected_digest = Digest::from_bytes_sha256(&raw_bytes);
+        let expected_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&raw_bytes).into());
 
         mock.insert_manifest("ghcr.io", "example/foo", "bar", raw_bytes.clone());
         // Insert the layer blob too so fetch_one_layer can succeed.
@@ -506,7 +509,8 @@ mod tests {
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         let mock = MockRegistry::new();
         let layer_data = b"layer-blob-bytes-for-end-state-check";
-        let layer_digest = Digest::from_bytes_sha256(layer_data);
+        let layer_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
         let (manifest_bytes, manifest_digest) =
             make_pichi_manifest(&layer_digest, layer_data.len() as u64);
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
@@ -555,7 +559,8 @@ mod tests {
 
         // Build a pichi manifest first (the picked entry).
         let layer_data = b"index-walk-layer-bytes";
-        let layer_digest = Digest::from_bytes_sha256(layer_data);
+        let layer_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
         let (picked_manifest_bytes, picked_manifest_digest) =
             make_pichi_manifest(&layer_digest, layer_data.len() as u64);
         // Insert the picked manifest by digest (no tag).
@@ -573,7 +578,8 @@ mod tests {
             }]
         });
         let index_bytes = Bytes::from(serde_json::to_vec(&index).unwrap());
-        let index_digest = Digest::from_bytes_sha256(&index_bytes);
+        let index_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&index_bytes).into());
         // Insert the index under the tag.
         mock.insert_manifest("ghcr.io", "example/foo", "bar", index_bytes);
         // Insert the layer blob.
@@ -658,7 +664,7 @@ mod tests {
             annotations,
         };
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
-        let digest = Digest::from_bytes_sha256(&bytes);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
         (bytes, digest)
     }
 
@@ -712,7 +718,7 @@ mod tests {
             annotations,
         };
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
-        let digest = Digest::from_bytes_sha256(&bytes);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
         (bytes, digest)
     }
 
@@ -750,7 +756,8 @@ mod tests {
             decompressed.as_slice(),
             ruzstd::encoding::CompressionLevel::Fastest,
         );
-        let layer_digest = Digest::from_bytes_sha256(&compressed);
+        let layer_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&compressed).into());
         let (manifest_bytes, _manifest_digest) = make_scute_manifest(
             &layer_digest,
             compressed.len() as u64,
@@ -806,7 +813,8 @@ mod tests {
         let mock = MockRegistry::new();
 
         let layer_data: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(4096 * 2).collect();
-        let layer_digest = Digest::from_bytes_sha256(&layer_data);
+        let layer_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&layer_data).into());
         let (manifest_bytes, _manifest_digest) = make_scute_manifest(
             &layer_digest,
             layer_data.len() as u64,
@@ -848,7 +856,8 @@ mod tests {
         // Build the scute payload + compute its expected roothash so the
         // synthetic PMI can carry the matching value.
         let scute_data: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(4096).collect();
-        let scute_digest = Digest::from_bytes_sha256(&scute_data);
+        let scute_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&scute_data).into());
         let params = pull_side_verity_params();
         let expected_root = params
             .compute(&scute_data)
@@ -859,7 +868,7 @@ mod tests {
         let mut pmi_bytes = vec![0u8; 4096];
         let pattern = format!("corium={}", hex::encode(expected_root));
         pmi_bytes[100..100 + pattern.len()].copy_from_slice(pattern.as_bytes());
-        let pmi_digest = Digest::from_bytes_sha256(&pmi_bytes);
+        let pmi_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes).into());
 
         let (manifest_bytes, _manifest_digest) = make_scute_plus_pmi_manifest(
             &scute_digest,
@@ -921,7 +930,8 @@ mod tests {
         let mock = MockRegistry::new();
 
         let layer_data: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(4096 * 3).collect();
-        let layer_digest = Digest::from_bytes_sha256(&layer_data);
+        let layer_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&layer_data).into());
         let (manifest_bytes, _manifest_digest) =
             make_scute_manifest(&layer_digest, layer_data.len() as u64, false);
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
@@ -965,7 +975,8 @@ mod tests {
                         data.as_slice(),
                         ruzstd::encoding::CompressionLevel::Fastest,
                     );
-                    let digest = Digest::from_bytes_sha256(&wire);
+                    let digest =
+                        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
                     let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, true);
                     let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
                     if stale_tip {

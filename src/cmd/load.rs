@@ -564,7 +564,7 @@ pub(super) mod tests {
             };
             self.manifest["layers"].as_array_mut().unwrap().push(json!({
                 "mediaType": if compressed { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
-                "digest": Digest::from_bytes_sha256(&wire).to_string(),
+                "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
                 "size": wire.len(),
                 "annotations": {
                     "dev.pichi.scute.verity.salt": hex::encode(self.tip),
@@ -580,14 +580,15 @@ pub(super) mod tests {
             std::fs::create_dir_all(dir.join("blobs/sha256")).unwrap();
             for blob in &self.blobs {
                 std::fs::write(
-                    dir.join("blobs/sha256")
-                        .join(Digest::from_bytes_sha256(blob).hex()),
+                    dir.join("blobs/sha256").join(
+                        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(blob).into()).hex(),
+                    ),
                     blob,
                 )
                 .unwrap();
             }
             let bytes = serde_json::to_vec(&self.manifest).unwrap();
-            let digest = Digest::from_bytes_sha256(&bytes);
+            let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
             std::fs::write(dir.join("blobs/sha256").join(digest.hex()), &bytes).unwrap();
             std::fs::write(dir.join("oci-layout"), br#"{"imageLayoutVersion":"1.0.0"}"#).unwrap();
             std::fs::write(
@@ -609,9 +610,9 @@ pub(super) mod tests {
 
         fn sidecars(&self, dir: &Path) {
             for (blob, tree) in self.blobs.iter().zip(&self.trees) {
-                let path = dir
-                    .join("blobs/sha256")
-                    .join(Digest::from_bytes_sha256(blob).hex());
+                let path = dir.join("blobs/sha256").join(
+                    Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(blob).into()).hex(),
+                );
                 std::fs::write(path.verity_path(), tree).unwrap();
             }
         }
@@ -657,7 +658,9 @@ pub(super) mod tests {
             assert!(manifest.carapace_verity_hash().is_none());
             for (blob, tree) in fixture.blobs.iter().zip(&fixture.trees) {
                 let path = store
-                    .blob_path(&Digest::from_bytes_sha256(blob))
+                    .blob_path(&Digest::Sha256(
+                        <sha2::Sha256 as sha2::Digest>::digest(blob).into(),
+                    ))
                     .verity_path();
                 assert_eq!(std::fs::read(&path).unwrap(), *tree);
                 std::fs::write(path, b"stale cache tree").unwrap();
@@ -741,7 +744,8 @@ pub(super) mod tests {
             let store = FilesystemBlobStore::new(dir.path().join("cache"));
             let db = FilesystemTagDb::open(dir.path().join("cache")).unwrap();
             let key = "built:v1".parse::<Reference>().unwrap().to_string();
-            let old = Digest::from_bytes_sha256(b"existing tag");
+            let old =
+                Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"existing tag").into());
             db.set_tag(&key, &old).await.unwrap();
             let mut fixture = LayoutFixture::new();
             match case {
@@ -761,7 +765,7 @@ pub(super) mod tests {
                 "missing config" | "bad config" | "inline config" => {
                     fixture.manifest["config"] = json!({
                         "mediaType": pichi_artifact::MEDIA_TYPE_PICHI_CONFIG_V1,
-                        "digest": Digest::from_bytes_sha256(b"bad config").to_string(),
+                        "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"bad config").into()).to_string(),
                         "size": 10,
                     });
                     if case != "missing config" {
@@ -823,8 +827,13 @@ pub(super) mod tests {
             }
             let digest = fixture.write(&output);
             let cow = output.join("blobs/sha256").join(
-                Digest::from_bytes_sha256(fixture.blobs.first().map_or(&b""[..], Vec::as_slice))
-                    .hex(),
+                Digest::Sha256(
+                    <sha2::Sha256 as sha2::Digest>::digest(
+                        fixture.blobs.first().map_or(&b""[..], Vec::as_slice),
+                    )
+                    .into(),
+                )
+                .hex(),
             );
             let mut index: Value =
                 serde_json::from_slice(&std::fs::read(output.join("index.json")).unwrap()).unwrap();
@@ -852,9 +861,10 @@ pub(super) mod tests {
                 }
                 "unexpected file" => std::fs::write(output.join("secret"), b"secret").unwrap(),
                 "unreferenced blob" => std::fs::write(
-                    output
-                        .join("blobs/sha256")
-                        .join(Digest::from_bytes_sha256(b"extra").hex()),
+                    output.join("blobs/sha256").join(
+                        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"extra").into())
+                            .hex(),
+                    ),
                     b"extra",
                 )
                 .unwrap(),
@@ -948,7 +958,7 @@ pub(super) mod tests {
         let mut second = fixture.manifest.clone();
         second["annotations"]["org.opencontainers.image.created"] = "2026-10-28T00:00:00Z".into();
         let bytes = serde_json::to_vec(&second).unwrap();
-        let other = Digest::from_bytes_sha256(&bytes);
+        let other = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
         std::fs::write(output.join("blobs/sha256").join(other.hex()), &bytes).unwrap();
         let index_path = output.join("index.json");
         let mut index: Value =
@@ -982,8 +992,13 @@ pub(super) mod tests {
             let fixture = LayoutFixture::new();
             fixture.write(&output);
             let cow = output.join("blobs/sha256").join(
-                Digest::from_bytes_sha256(fixture.blobs.first().map_or(&b""[..], Vec::as_slice))
-                    .hex(),
+                Digest::Sha256(
+                    <sha2::Sha256 as sha2::Digest>::digest(
+                        fixture.blobs.first().map_or(&b""[..], Vec::as_slice),
+                    )
+                    .into(),
+                )
+                .hex(),
             );
             let path = match case {
                 "root" => output.clone(),
