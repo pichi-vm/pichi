@@ -102,14 +102,19 @@ impl PreparedLayer {
         let root = match layer {
             Layer::Scute(scute) => {
                 let mut output = NamedTempFile::new_in(scratch)?;
-                let root = manifest
-                    .verity_header(scute, Some(scute.size))?
-                    .format_padded(&mut wire, output.as_file_mut())?;
+                let header = manifest.verity_header(scute, Some(scute.size))?;
+                let root = if header.parameters.data_size()? == scute.size {
+                    header.format_padded(&mut wire, output.as_file_mut())?
+                } else {
+                    let (data, root) =
+                        Self::prepare_data(&mut wire, &header, output.as_file_mut(), scratch)?;
+                    deflated = Some(data);
+                    root
+                };
                 verity = Some(output);
                 Some(root)
             }
             Layer::ScuteZstd(scute) => {
-                let data = NamedTempFile::new_in(scratch)?;
                 let mut output = NamedTempFile::new_in(scratch)?;
                 let decoder = match ruzstd::decoding::StreamingDecoder::new(&mut wire) {
                     Ok(decoder) => decoder,
@@ -127,25 +132,9 @@ impl PreparedLayer {
                     }
                     Err(err) => return Err(err.into()),
                 };
-                // Bound expansion by available scratch storage, not a format
-                // size. Concurrent allocations and verity writes can still
-                // exhaust the filesystem; those I/O errors abort publication.
-                let capacity = fs4::available_space(scratch)?;
-                let mut decoded = DecodedReader {
-                    input: decoder,
-                    output: BufWriter::new(data.as_file()),
-                    count: 0,
-                    capacity,
-                };
                 let header = manifest.verity_header(scute, None)?;
-                if header.parameters.data.count.get()
-                    > capacity / u64::from(header.parameters.data.size.bytes().get())
-                {
-                    bail!("decompressed size exceeds available scratch capacity");
-                }
-                let root = header.format_padded(&mut decoded, output.as_file_mut())?;
-                decoded.output.flush()?;
-                drop(decoded);
+                let (data, root) =
+                    Self::prepare_data(decoder, &header, output.as_file_mut(), scratch)?;
                 deflated = Some(data);
                 verity = Some(output);
                 Some(root)
@@ -165,6 +154,34 @@ impl PreparedLayer {
             verity,
             root,
         })
+    }
+
+    /// Store the data stream while hashing it, then materialize final-block padding.
+    fn prepare_data(
+        input: impl Read,
+        header: &devmap_verity::Header,
+        hash: &mut std::fs::File,
+        scratch: &Path,
+    ) -> Result<(NamedTempFile, [u8; 32])> {
+        let data = NamedTempFile::new_in(scratch)?;
+        // Storage capacity and the header's expansion bound are independent.
+        // Concurrent allocations and tree writes can still fail with I/O errors.
+        let capacity = fs4::available_space(scratch)?;
+        let padded_size = header.parameters.data_size()?;
+        if padded_size > capacity {
+            bail!("prepared data extent exceeds available scratch capacity");
+        }
+        let mut decoded = DecodedReader {
+            input,
+            output: BufWriter::new(data.as_file()),
+            count: 0,
+            capacity,
+        };
+        let root = header.format_padded(&mut decoded, hash)?;
+        decoded.output.flush()?;
+        drop(decoded);
+        data.as_file().set_len(padded_size)?;
+        Ok((data, root))
     }
 
     async fn commit(self, store: &dyn BlobStore, digest: &Digest) -> Result<Option<[u8; 32]>> {
@@ -271,7 +288,11 @@ mod tests {
 
     impl Fixture {
         fn new(compressed: bool, declared: u64) -> Self {
-            let data = vec![0x5a; 4097];
+            Self::with_size(compressed, declared, 4097)
+        }
+
+        fn with_size(compressed: bool, declared: u64, size: usize) -> Self {
+            let data = vec![0x5a; size];
             let wire = if compressed {
                 ruzstd::encoding::compress_to_vec(
                     data.as_slice(),
@@ -340,10 +361,10 @@ mod tests {
                 std::fs::read(result.source.as_ref().unwrap().path()).unwrap(),
                 fixture.wire
             );
-            if let Some(deflated) = result.deflated.as_ref() {
-                // The partial final block's padding is only a formatter input.
-                assert_eq!(std::fs::read(deflated.path()).unwrap(), fixture.data);
-            }
+            let deflated = result.deflated.as_ref().unwrap();
+            let mut padded = fixture.data.clone();
+            padded.resize(8192, 0);
+            assert_eq!(std::fs::read(deflated.path()).unwrap(), padded);
             let params = VerityParams {
                 data_block_size: 4096,
                 hash_block_size: 4096,
@@ -357,6 +378,21 @@ mod tests {
             assert_eq!(verity_bytes, params.compute(&fixture.data).unwrap().blob);
             drop(result);
             assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn aligned_raw_data_needs_no_prepared_copy() {
+        for compressed in [false, true] {
+            let fixture = Fixture::with_size(compressed, 2, 8192);
+            let scratch = tempfile::tempdir().unwrap();
+            let prepared = fixture.prepare(scratch.path()).unwrap();
+            assert_eq!(prepared.deflated.is_some(), compressed);
+            assert_eq!(prepared.root, Some(fixture.root));
+            assert_eq!(
+                std::fs::read(prepared.source.as_ref().unwrap()).unwrap(),
+                fixture.wire
+            );
         }
     }
 
@@ -382,13 +418,19 @@ mod tests {
                 );
                 assert_eq!(std::fs::read(&path).unwrap(), fixture.wire);
             }
-            if compressed {
-                std::fs::remove_file(path.deflated_path()).unwrap();
+            let mut padded = fixture.data.clone();
+            padded.resize(8192, 0);
+            for stale in [None, Some(vec![0x33; 4097]), Some(vec![0x33; 8192])] {
+                if let Some(bytes) = stale {
+                    std::fs::write(path.deflated_path(), bytes).unwrap();
+                } else {
+                    std::fs::remove_file(path.deflated_path()).unwrap();
+                }
                 let root = PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
                     .await
                     .unwrap();
                 assert_eq!(root, expected.root);
-                assert_eq!(std::fs::read(path.deflated_path()).unwrap(), fixture.data);
+                assert_eq!(std::fs::read(path.deflated_path()).unwrap(), padded);
             }
         }
     }

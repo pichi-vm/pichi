@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use super::cache::ImageStore as _;
 use anyhow::{Context, Result, bail, ensure};
 use cap_std::fs::Dir;
-use conglobate::artifact::{Digest, Manifest, Reference};
+use conglobate::artifact::{Digest, Layer, Manifest, Reference};
 use conglobate::artifact::{Index as LayoutIndex, IndexDescriptor as LayoutEntry, LayoutMarker};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use sha2::{Digest as _, Sha256};
@@ -76,12 +76,13 @@ impl OciLayout {
                             "conflicting verity parameters for the same COW"
                         );
                     }
-                    let path = layout.store.blob_path(&layer.digest_str().parse()?);
-                    let size = if matches!(layer, conglobate::artifact::Layer::ScuteZstd(_)) {
-                        std::fs::metadata(path.deflated_path())?.len()
-                    } else {
-                        layer.size()
+                    let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = layer else {
+                        unreachable!("only scutes have a verity root")
                     };
+                    let size = manifest
+                        .verity_header(scute, None)?
+                        .parameters
+                        .data_size()?;
                     expanded_size = expanded_size
                         .checked_add(size)
                         .context("expanded OCI size overflow")?;
