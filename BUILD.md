@@ -241,6 +241,18 @@ the full extent covered by its verity tree. The encoded OCI blob retains its
 original bytes and digest. Raw inputs with a partial final block also receive
 this padded data file; aligned raw inputs use their original cached blob.
 
+Pull and load retain the registry blob with its original OCI digest and prepare
+an uncompressed, block-aligned data file and its verity tree. For aligned raw
+scutes, the original blob is already the prepared data file. Compressed scutes
+and raw scutes with a partial final block have a separate prepared data file.
+The registry index and manifest retain their original bytes and descriptors.
+
+Run and build use the same file selection and pass only the prepared data and
+verity files to Dillo's GPT backend, including for build appliances and source
+carapaces. If preparation is missing, Pichi recreates it from the retained blob
+through the same bounded preparation path. Incorrect prepared extents fail
+before Dillo starts. Dillo never receives compressed COW bytes.
+
 For **every scute**, including cache hits, the host rebuilds dm-verity from
 the cow bytes and the full manifest salt. Reconstruction uses SHA-256,
 format 1/hash type 1, 4,096-byte data/hash blocks, and a zero UUID. The host

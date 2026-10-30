@@ -4,7 +4,7 @@
 //! Streaming layer preparation shared by pull and load.
 
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::cmd::verity::VerityFormat as _;
 use anyhow::{Context as _, Result, bail};
@@ -16,6 +16,33 @@ use tempfile::NamedTempFile;
 use tokio_util::io::{StreamReader, SyncIoBridge};
 
 use crate::cmd::manifest_ext::ManifestExt as _;
+
+/// Uncompressed data and its paired hash tree prepared in the local cache.
+pub(super) struct ScuteFiles {
+    pub data: PathBuf,
+    pub verity: PathBuf,
+}
+
+impl ScuteFiles {
+    pub(super) fn new(manifest: &Manifest, layer: &Layer, store: &dyn BlobStore) -> Result<Self> {
+        let (scute, compressed) = match layer {
+            Layer::Scute(scute) => (scute, false),
+            Layer::ScuteZstd(scute) => (scute, true),
+            _ => bail!("metadata layer has no scute files"),
+        };
+        let source = store.blob_path(&scute.digest.parse()?);
+        let header = manifest.verity_header(scute, (!compressed).then_some(scute.size))?;
+        let data = if compressed || scute.size != header.parameters.data_size()? {
+            source.deflated_path()
+        } else {
+            source.clone()
+        };
+        Ok(Self {
+            data,
+            verity: source.verity_path(),
+        })
+    }
+}
 
 pub(super) struct PreparedLayer {
     source: Option<NamedTempFile>,

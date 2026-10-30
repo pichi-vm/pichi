@@ -8,6 +8,7 @@
 //! rule these run/build-specific queries live here as an extension trait rather
 //! than as free functions scattered across the command modules.
 
+use crate::cmd::layer::{PreparedLayer, ScuteFiles};
 use crate::cmd::platform::PlatformExt as _;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -17,7 +18,7 @@ use conglobate::artifact::{
     Digest, DtbDescriptor, Layer, Manifest, PmiDescriptor, ScuteDescriptor,
 };
 use devmap_verity::{HashType, Header};
-use pichi_storage::{BlobSidecarExt, BlobStore};
+use pichi_storage::BlobStore;
 
 /// Chain-wide verity annotation keys.
 const ANN_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
@@ -35,11 +36,10 @@ pub trait ManifestExt {
         Self: Sized;
     /// The base-DTB layer, if the artifact carries one (detached-mode PMI).
     fn dtb_layer(&self) -> Option<&DtbDescriptor>;
-    /// Partition layers into the single PMI descriptor + ordered scute list.
-    /// `+zstd` scutes are not yet supported by `run`.
-    fn partition_layers(&self) -> Result<(&PmiDescriptor, Vec<&ScuteDescriptor>)>;
+    /// Partition layers into the single PMI descriptor + scute layers.
+    fn partition_layers(&self) -> Result<(&PmiDescriptor, Vec<&Layer>)>;
     /// Collect scute layers with no PMI requirement (build `from:` sources).
-    fn scute_layers(&self) -> Result<Vec<&ScuteDescriptor>>;
+    fn scute_layers(&self) -> Vec<&Layer>;
     /// Fail closed when the artifact's declared architecture ≠ the host.
     fn check_architecture(&self) -> Result<()>;
     /// Header for a scute using the manifest's reconstruction parameters.
@@ -69,39 +69,22 @@ impl ManifestExt for Manifest {
         })
     }
 
-    fn partition_layers(&self) -> Result<(&PmiDescriptor, Vec<&ScuteDescriptor>)> {
-        let mut pmi: Option<&PmiDescriptor> = None;
-        let mut scutes: Vec<&ScuteDescriptor> = Vec::new();
-        for layer in &self.layers {
-            match layer {
-                Layer::Pmi(d) => pmi = Some(d),
-                Layer::Scute(d) => scutes.push(d),
-                Layer::Dtb(_) => {}
-                Layer::ScuteZstd(_) => bail!(
-                    "this artifact has zstd-compressed scute layers; `pichi run` does not yet \
-                     support them (decompressed-COW handling is deferred)"
-                ),
-            }
-        }
+    fn partition_layers(&self) -> Result<(&PmiDescriptor, Vec<&Layer>)> {
+        let pmi = self.layers.iter().find_map(|layer| match layer {
+            Layer::Pmi(descriptor) => Some(descriptor),
+            _ => None,
+        });
         let pmi = pmi.ok_or_else(|| {
             anyhow!("artifact is not bootable (no PMI layer); usable as a `from:` source only")
         })?;
-        Ok((pmi, scutes))
+        Ok((pmi, self.scute_layers()))
     }
 
-    fn scute_layers(&self) -> Result<Vec<&ScuteDescriptor>> {
-        let mut scutes: Vec<&ScuteDescriptor> = Vec::new();
-        for layer in &self.layers {
-            match layer {
-                Layer::Scute(d) => scutes.push(d),
-                Layer::Pmi(_) | Layer::Dtb(_) => {}
-                Layer::ScuteZstd(_) => bail!(
-                    "this carapace has zstd-compressed scute layers; the build path does not yet \
-                     support them (decompressed-COW handling is deferred)"
-                ),
-            }
-        }
-        Ok(scutes)
+    fn scute_layers(&self) -> Vec<&Layer> {
+        self.layers
+            .iter()
+            .filter(|layer| matches!(layer, Layer::Scute(_) | Layer::ScuteZstd(_)))
+            .collect()
     }
 
     fn check_architecture(&self) -> Result<()> {
@@ -166,20 +149,21 @@ impl ManifestExt for Manifest {
             _ => return Ok(None),
         };
         let digest: Digest = scute.digest.parse()?;
-        let path = blob_store.blob_path(&digest);
-        let path = if compressed {
-            path.deflated_path()
-        } else {
-            path
-        };
+        let files = ScuteFiles::new(self, layer, blob_store)?;
+        if !tokio::fs::try_exists(&files.data).await?
+            || !tokio::fs::try_exists(&files.verity).await?
+        {
+            return PreparedLayer::prepare_cached(self, layer, blob_store).await;
+        }
+        let path = files.data;
         let size = tokio::fs::metadata(&path)
             .await
             .with_context(|| format!("reading cached scute {}", path.display()))?
             .len();
-        if !compressed && size != scute.size {
-            bail!("cached scute size mismatch: {digest}");
+        let header = self.verity_header(scute, (!compressed).then_some(scute.size))?;
+        if size != header.parameters.data_size()? {
+            bail!("prepared scute extent mismatch: {digest}");
         }
-        let header = self.verity_header(scute, Some(size))?;
         let root = tokio::task::spawn_blocking(move || {
             let input = std::io::BufReader::new(std::fs::File::open(path)?);
             header.root(input)

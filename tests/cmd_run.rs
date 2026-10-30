@@ -172,6 +172,106 @@ async fn run_execs_dillo_with_manifest_derived_devices() {
 }
 
 #[tokio::test]
+async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
+    use pichi_storage::BlobSidecarExt as _;
+
+    for compressed in [false, true] {
+        for length in [4097, 8192] {
+            let source = TempDir::new().unwrap();
+            let root = graphroot(&source);
+            populate_bootable(&root, "workflow:source").await;
+            let store = FilesystemBlobStore::new(&root);
+            let tags = FilesystemTagDb::open(&root).unwrap();
+            let tag = "docker.io/library/workflow:source";
+            let original = tags.resolve_tag(tag).await.unwrap().unwrap();
+            let mut manifest: Manifest =
+                serde_json::from_slice(&store.get_blob(&original).await.unwrap()).unwrap();
+            let mut data = vec![0x5a; length];
+            let wire = if compressed {
+                ruzstd::encoding::compress_to_vec(
+                    data.as_slice(),
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                )
+            } else {
+                data.clone()
+            };
+            let digest = sha256_digest(&wire);
+            store.put_blob(&digest, &wire).await.unwrap();
+            store.put_blob(&sha256_digest(b"{}"), b"{}").await.unwrap();
+            let descriptor = ScuteDescriptor {
+                digest: digest.to_string(),
+                size: wire.len() as u64,
+                annotations: ScuteAnnotations {
+                    data_blocks: 2u64.try_into().unwrap(),
+                    salt: "00".repeat(32),
+                },
+            };
+            manifest.layers[0] = if compressed {
+                Layer::ScuteZstd(descriptor)
+            } else {
+                Layer::Scute(descriptor)
+            };
+            let bytes = serde_json::to_vec(&manifest).unwrap();
+            let manifest_digest = sha256_digest(&bytes);
+            store.put_blob(&manifest_digest, &bytes).await.unwrap();
+            tags.set_tag(tag, &manifest_digest).await.unwrap();
+            let layout = source.path().join("layout");
+            Command::cargo_bin("pichi")
+                .unwrap()
+                .env("XDG_DATA_HOME", source.path())
+                .args(["save", tag, "-o"])
+                .arg(&layout)
+                .assert()
+                .success();
+
+            let destination = TempDir::new().unwrap();
+            let record = destination.path().join("argv.txt");
+            let dillo = make_stub_dillo(destination.path(), &record);
+            Command::cargo_bin("pichi")
+                .unwrap()
+                .env("XDG_DATA_HOME", destination.path())
+                .arg("load")
+                .arg(&layout)
+                .args(["--tag", tag])
+                .assert()
+                .success();
+            let prepared = FilesystemBlobStore::new(&graphroot(&destination));
+            assert_eq!(prepared.get_blob(&manifest_digest).await.unwrap(), bytes);
+            let blob = prepared.blob_path(&digest);
+            let data_path = if compressed || length != 8192 {
+                blob.deflated_path()
+            } else {
+                blob.clone()
+            };
+            data.resize(8192, 0);
+            assert_eq!(std::fs::read(&blob).unwrap(), wire);
+            assert_eq!(std::fs::read(&data_path).unwrap(), data);
+            let verity = std::fs::read(blob.verity_path()).unwrap();
+            assert!(!verity.is_empty());
+            for _ in 0..2 {
+                Command::cargo_bin("pichi")
+                    .unwrap()
+                    .env("XDG_DATA_HOME", destination.path())
+                    .env("PICHI_DILLO", &dillo)
+                    .args(["run", tag])
+                    .assert()
+                    .success();
+                let argv = std::fs::read_to_string(&record).unwrap();
+                let args: Vec<_> = argv.lines().collect();
+                let spec = args[args.iter().position(|arg| *arg == "--gpt").unwrap() + 1];
+                let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(spec).unwrap();
+                assert_eq!(gpt.partitions.len(), 2);
+                assert_eq!(gpt.partitions[0].path, data_path);
+                assert_eq!(gpt.partitions[1].path, blob.verity_path());
+                assert_eq!(std::fs::read(blob.verity_path()).unwrap(), verity);
+                assert_eq!(prepared.get_blob(&manifest_digest).await.unwrap(), bytes);
+                assert_eq!(std::fs::read(&blob).unwrap(), wire);
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn run_resolves_cached_index_references() {
     for index_stored in [false, true] {
         for informational_tag in [false, true] {

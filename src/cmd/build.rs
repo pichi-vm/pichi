@@ -106,9 +106,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         if digest != pin.index {
             bail!("cached {reference} does not match lock pin {}", pin.index);
         }
-        let scutes = manifest
-            .scute_layers()
-            .with_context(|| format!("reading scutes of source carapace {reference}"))?;
+        let scutes = manifest.scute_layers();
         if scutes.is_empty() {
             bail!("source carapace {reference} has no scute layers");
         }

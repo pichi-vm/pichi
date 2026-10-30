@@ -767,6 +767,76 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn pull_prepares_both_encodings_for_run_and_build() {
+        for compressed in [false, true] {
+            for length in [4097, 8192] {
+                let (_tmp, g) = graphroot();
+                let db = open_db(&g);
+                let store = FilesystemBlobStore::new(&g);
+                let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
+                let registry = MockRegistry::new();
+                let data = vec![0x5a; length];
+                let wire = if compressed {
+                    ruzstd::encoding::compress_to_vec(
+                        data.as_slice(),
+                        ruzstd::encoding::CompressionLevel::Fastest,
+                    )
+                } else {
+                    data.clone()
+                };
+                let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
+                let (bytes, manifest_digest) =
+                    make_scute_manifest(&digest, wire.len() as u64, length as u64, compressed);
+                let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+                registry.insert_manifest("ghcr.io", "example/foo", "bar", bytes.clone());
+                registry.insert_blob(
+                    "ghcr.io",
+                    "example/foo",
+                    digest.clone(),
+                    Bytes::from(wire.clone()),
+                );
+                let source = store.blob_path(&digest);
+                let expected_data = if compressed || length != 8192 {
+                    source.deflated_path()
+                } else {
+                    source.clone()
+                };
+                let mut padded = data;
+                padded.resize(8192, 0);
+                for _ in 0..2 {
+                    pull_inner_with_registry(
+                        target.clone(),
+                        PullPolicy::Always,
+                        true,
+                        &registry,
+                        &store,
+                        &db,
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(store.get_blob(&manifest_digest).await.unwrap(), bytes);
+                    assert_eq!(std::fs::read(&source).unwrap(), wire);
+                    assert_eq!(std::fs::read(&expected_data).unwrap(), padded);
+                    let tree = std::fs::read(source.verity_path()).unwrap();
+                    assert!(!tree.is_empty());
+                    let spec = crate::cmd::run::build_gpt_spec(
+                        &manifest,
+                        &manifest.scute_layers(),
+                        &store,
+                    )
+                    .await
+                    .unwrap();
+                    let gpt: dillo_config::GptSpec =
+                        serde_keyvalue::from_key_values(&spec).unwrap();
+                    assert_eq!(gpt.partitions[0].path, expected_data);
+                    assert_eq!(gpt.partitions[1].path, source.verity_path());
+                    assert_eq!(std::fs::read(source.verity_path()).unwrap(), tree);
+                }
+            }
+        }
+    }
+
     /// Plan 02 Task 1 (a): pull a `+zstd` scute and assert the source blob
     /// + `.deflated` + `.verity` sidecars are committed to disk.
     #[tokio::test(flavor = "current_thread")]
@@ -1112,7 +1182,9 @@ mod tests {
                     registry.insert_manifest("ghcr.io", "example/foo", "bar", bytes);
                     if cached {
                         store.put_blob(&digest, &wire).await.unwrap();
-                        tokio::fs::write(store.blob_path(&digest).deflated_path(), &data)
+                        let mut padded = data;
+                        padded.resize(8192, 0);
+                        tokio::fs::write(store.blob_path(&digest).deflated_path(), &padded)
                             .await
                             .unwrap();
                     } else {
