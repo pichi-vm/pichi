@@ -383,3 +383,101 @@ async fn local_imports_publish_retained_platform_indexes() {
         Some(root)
     );
 }
+
+#[tokio::test]
+async fn publishers_wait_for_collection_before_writing_blobs() {
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    for kind in ["raw", "pmi", "load", "pull"] {
+        let registry = std::env::var("PICHI_TEST_REGISTRY").ok();
+        if kind == "pull" && registry.is_none() {
+            eprintln!("PICHI_TEST_REGISTRY unset; skipping publication lock pull case");
+            continue;
+        }
+        let fixture = Fixture::new().await;
+        let raw = fixture.directory.path().join("input.raw");
+        let dtb = fixture.directory.path().join("input.dtb");
+        std::fs::write(&raw, [71; 8192]).unwrap();
+        std::fs::write(&dtb, [72; 4096]).unwrap();
+        let saved = fixture.directory.path().join("saved");
+        let tag = registry
+            .filter(|_| kind == "pull")
+            .map(|registry| format!("{registry}/publication-lock:image"))
+            .unwrap_or_else(|| "local:locked".into());
+        if matches!(kind, "load" | "pull") {
+            for args in [
+                vec!["import", "raw", raw.to_str().unwrap(), "-t", &tag],
+                if kind == "load" {
+                    vec!["save", &tag, "-o", saved.to_str().unwrap()]
+                } else {
+                    vec!["push", &tag]
+                },
+                vec!["rmi", &tag],
+            ] {
+                let output = fixture.run(&args);
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+        let root = fixture.directory.path().join("pichi/storage");
+        let before = std::fs::read_dir(root.join("blobs/sha256"))
+            .unwrap()
+            .count();
+        let guard = pichi_storage::lock_exclusive(&root.join("index.json.lock")).unwrap();
+        let mut command = Command::new(assert_cmd::cargo::cargo_bin!("pichi"));
+        command
+            .env("XDG_DATA_HOME", fixture.directory.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        match kind {
+            "load" => {
+                command.args(["load", saved.to_str().unwrap(), "--tag", &tag]);
+            }
+            "pull" => {
+                command.args(["pull", &tag]);
+            }
+            _ => {
+                command.args(["import", kind, raw.to_str().unwrap(), "-t", &tag]);
+                if kind == "pmi" {
+                    command.args(["--dtb", dtb.to_str().unwrap()]);
+                }
+            }
+        }
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut published_while_collecting = false;
+        while Instant::now() < deadline {
+            if std::fs::read_dir(root.join("blobs/sha256"))
+                .unwrap()
+                .count()
+                != before
+            {
+                published_while_collecting = true;
+                break;
+            }
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "publisher must wait for the collector"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(guard);
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !published_while_collecting,
+            "{kind} exposed unreferenced content while collection held the lock"
+        );
+        assert!(fixture.run(&["system", "prune"]).status.success());
+        assert!(fixture.run(&["inspect", &tag]).status.success());
+    }
+}

@@ -160,6 +160,38 @@ impl FilesystemTagDb {
         .context("failed to write oci-layout marker")
     }
 
+    /// Hold the cache index lock across blob publication and tag updates.
+    /// Dropping the returned file releases the lock. Use `set_tag_locked`
+    /// while holding it; `set_tag` would try to acquire the same lock again.
+    pub async fn lock_index(&self) -> Result<tokio::fs::File> {
+        lock_exclusive_async(&self.lock_path()).await
+    }
+
+    /// Set a tag while the caller holds `lock_index` or `with_index_lock`.
+    /// This shares the ordinary tag write path without reacquiring its lock.
+    pub async fn set_tag_locked(&self, tag: &str, digest: &Digest) -> Result<()> {
+        self.ensure_oci_layout_marker().await?;
+        let mut index = self.read_index().await?;
+
+        // Overwrite semantics: drop any existing entry for this tag first.
+        index
+            .manifests
+            .retain(|m| m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag));
+        index.manifests.push(ManifestDescriptor {
+            artifact_type: None,
+            platform: None,
+            media_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
+            digest: digest.to_string(),
+            size: 0,
+            annotations: {
+                let mut a = BTreeMap::new();
+                a.insert(REF_NAME_ANNOTATION.to_string(), tag.to_string());
+                a
+            },
+        });
+        self.write_index_atomic(&index).await
+    }
+
     /// Lock-free-write variant of [`TagDb::delete_tag`] for use inside a
     /// [`crate::with_index_lock`] window.
     ///
@@ -190,27 +222,8 @@ impl TagDb for FilesystemTagDb {
     async fn set_tag(&self, tag: &str, digest: &Digest) -> Result<()> {
         // Read-modify-write under a non-blocking advisory flock; the guard is
         // held across the awaited reads/writes and released on drop.
-        let _guard = lock_exclusive_async(&self.lock_path()).await?;
-        self.ensure_oci_layout_marker().await?;
-        let mut index = self.read_index().await?;
-
-        // Overwrite semantics: drop any existing entry for this tag first.
-        index
-            .manifests
-            .retain(|m| m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag));
-        index.manifests.push(ManifestDescriptor {
-            artifact_type: None,
-            platform: None,
-            media_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-            digest: digest.to_string(),
-            size: 0,
-            annotations: {
-                let mut a = BTreeMap::new();
-                a.insert(REF_NAME_ANNOTATION.to_string(), tag.to_string());
-                a
-            },
-        });
-        self.write_index_atomic(&index).await
+        let _guard = self.lock_index().await?;
+        self.set_tag_locked(tag, digest).await
     }
 
     async fn resolve_tag(&self, tag: &str) -> Result<Option<Digest>> {
@@ -245,7 +258,7 @@ impl TagDb for FilesystemTagDb {
     }
 
     async fn delete_tag(&self, tag: &str) -> Result<bool> {
-        let _guard = lock_exclusive_async(&self.lock_path()).await?;
+        let _guard = self.lock_index().await?;
         self.delete_tag_locked(tag).await
     }
 }
