@@ -151,7 +151,7 @@ impl StagedImport {
             &args.created_rfc3339,
             &args.annotations,
         )?;
-        let manifest_bytes = manifest.to_bytes()?;
+        let manifest_bytes = serde_json::to_vec(&manifest)?;
         let manifest_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
         Ok(Self {

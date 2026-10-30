@@ -99,7 +99,7 @@ async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
             }
             still_referenced.insert(entry.digest.clone());
             if let Ok(bytes) = blob_store.get_blob(&entry.digest).await {
-                if let Ok(m) = Manifest::from_reader(bytes.as_slice()) {
+                if let Ok(m) = serde_json::from_reader::<_, Manifest>(bytes.as_slice()) {
                     for layer in &m.layers {
                         // digest_str is "sha256:<hex>" — round-trip via parse.
                         if let Ok(d) = layer.digest_str().parse::<Digest>() {
@@ -115,7 +115,7 @@ async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
         let mut candidates: HashSet<Digest> = HashSet::new();
         candidates.insert(target_digest.clone());
         if let Ok(bytes) = blob_store.get_blob(&target_digest).await {
-            if let Ok(m) = Manifest::from_reader(bytes.as_slice()) {
+            if let Ok(m) = serde_json::from_reader::<_, Manifest>(bytes.as_slice()) {
                 for layer in &m.layers {
                     if let Ok(d) = layer.digest_str().parse::<Digest>() {
                         candidates.insert(d);

@@ -137,7 +137,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
 
     // 3. Validate the pichi manifest BEFORE fetching any blob (Phase 42 D-11
     //    host-side validation).
-    let manifest = Manifest::from_reader_validated(final_bytes.as_ref())
+    let manifest = Manifest::decode_json(final_bytes.as_ref())
         .with_context(|| format!("validate pichi manifest {final_digest}"))?;
 
     // 4a. Pull the config blob when it is a real `vnd.pichi.config.v1+json`

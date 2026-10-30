@@ -32,7 +32,7 @@
 //!
 //! Live set = the union, over every tag in `FilesystemTagDb::list_tags`,
 //! of `{tag.digest} ∪ {layer.digest_str().parse() for layer in
-//! Manifest::from_reader(blob_store.get_blob(tag.digest)).layers}`.
+//! serde_json::from_reader::<_, Manifest>(blob_store.get_blob(tag.digest)).layers}`.
 //! Identical structure to `cmd::rmi::rmi_one`'s `still_referenced`
 //! accumulator (`src/cmd/rmi.rs:88-105`); copy of the loop minus the
 //! per-target filter (prune walks ALL tags). Manifests that fail to
@@ -88,7 +88,7 @@ pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
             for entry in &all_tags {
                 still_referenced.insert(entry.digest.clone());
                 if let Ok(bytes) = blob_store.get_blob(&entry.digest).await {
-                    if let Ok(m) = Manifest::from_reader(bytes.as_slice()) {
+                    if let Ok(m) = serde_json::from_reader::<_, Manifest>(bytes.as_slice()) {
                         for layer in &m.layers {
                             // digest_str is "sha256:<hex>" — round-trip via parse.
                             if let Ok(d) = layer.digest_str().parse::<Digest>() {
@@ -413,7 +413,7 @@ mod tests {
             })],
             annotations: chain_annotations(),
         };
-        let mbytes = m.to_bytes().unwrap();
+        let mbytes = serde_json::to_vec(&m).unwrap();
         let mdigest = m.digest().unwrap();
 
         let bs = FilesystemBlobStore::new(g);

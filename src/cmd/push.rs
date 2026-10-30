@@ -30,6 +30,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use futures_util::stream;
@@ -116,8 +117,8 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
 ) -> Result<()> {
     // Pre-push re-validation (cheap O(layers) safety net); also the source of
     // truth for the config + layer walk below.
-    let manifest = Manifest::from_reader_validated(raw_manifest)
-        .context("re-validate manifest before push")?;
+    let manifest =
+        Manifest::decode_json(raw_manifest).context("re-validate manifest before push")?;
 
     // Push the empty-config blob (`{}`, 2 bytes, sha256:44136fa3...)
     //      before any layer. OCI 1.1 lets the manifest carry inline `data`

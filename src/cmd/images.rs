@@ -122,7 +122,7 @@ impl Row {
         let manifest_bytes = blob_store.get_blob(&entry.digest).await.ok();
         let manifest = manifest_bytes
             .as_ref()
-            .and_then(|b| Manifest::from_reader(b.as_slice()).ok());
+            .and_then(|b| serde_json::from_reader::<_, Manifest>(b.as_slice()).ok());
 
         let (bootable, scute_count, size) = manifest
             .as_ref()

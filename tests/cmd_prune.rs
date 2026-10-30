@@ -60,7 +60,7 @@ async fn insert_manifest(
         })],
         annotations: chain_annotations(),
     };
-    let mbytes = m.to_bytes().unwrap();
+    let mbytes = serde_json::to_vec(&m).unwrap();
     let mdigest = m.digest().unwrap();
     let bs = FilesystemBlobStore::new(graphroot);
     use pichi_storage::BlobStore;

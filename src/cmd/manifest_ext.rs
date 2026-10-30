@@ -27,6 +27,10 @@ const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 /// pichi-side queries and validations on a cached [`Manifest`].
 #[allow(async_fn_in_trait)] // used only via static dispatch on Manifest values
 pub trait ManifestExt {
+    /// Decode and validate a manifest at a Pichi input boundary.
+    fn decode_json(reader: impl std::io::Read) -> Result<Self>
+    where
+        Self: Sized;
     /// The base-DTB layer, if the artifact carries one (detached-mode PMI).
     fn dtb_layer(&self) -> Option<&DtbDescriptor>;
     /// Partition layers into the single PMI descriptor + ordered scute list.
@@ -50,6 +54,12 @@ pub trait ManifestExt {
 }
 
 impl ManifestExt for Manifest {
+    fn decode_json(reader: impl std::io::Read) -> Result<Self> {
+        let manifest: Self = serde_json::from_reader(reader)?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
     fn dtb_layer(&self) -> Option<&DtbDescriptor> {
         self.layers.iter().find_map(|l| match l {
             Layer::Dtb(d) => Some(d),

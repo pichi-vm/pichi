@@ -121,9 +121,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     manifest
         .validate()
         .context("assembled bootable manifest failed self-validation (bug)")?;
-    let manifest_bytes = manifest
-        .to_bytes()
-        .context("serialising bootable manifest")?;
+    let manifest_bytes = serde_json::to_vec(&manifest).context("serialising bootable manifest")?;
     let manifest_digest =
         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
 
@@ -198,7 +196,7 @@ async fn carapace_scutes_manifest(
         .get_blob(&src_digest)
         .await
         .with_context(|| format!("reading carapace manifest {src_digest}"))?;
-    let mut manifest = Manifest::from_reader_validated(src_bytes.as_slice())
+    let mut manifest = Manifest::decode_json(src_bytes.as_slice())
         .with_context(|| format!("validating carapace manifest {src_digest}"))?;
     if manifest.scute_layers()?.is_empty() {
         bail!("{carapace} is not a carapace (no scute layers)");
@@ -258,7 +256,9 @@ async fn read_launch_contract(path: &Path) -> Result<(Digest, Vec<u8>)> {
     let cfg: Config = serde_yaml::from_str(&text)
         .with_context(|| format!("parse --config: {}", path.display()))?;
     cfg.validate().context("invalid --config")?;
-    let bytes = cfg.to_json().context("serialise config blob")?;
+    let mut cfg = cfg;
+    cfg.requirements.canonicalize();
+    let bytes = serde_json::to_vec(&cfg).context("serialise config blob")?;
     Ok((
         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into()),
         bytes,

@@ -15,6 +15,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use minijinja::Environment;
 use serde::Serialize;
@@ -98,7 +99,7 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
 
     // Bare manifest path. Validate defensively, then emit the manifest verbatim
     // plus its resolved digest.
-    Manifest::from_reader_validated(bytes.as_slice())
+    Manifest::decode_json(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
     let output = InspectOutput {
         digest: digest.to_string(),
