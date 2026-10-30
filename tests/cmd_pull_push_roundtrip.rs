@@ -229,3 +229,106 @@ async fn bit_identical_round_trip() {
         }
     }
 }
+
+/// A registry pin remains fetchable after the tag moves, without fetching
+/// an unselected platform or changing the upstream index bytes.
+#[tokio::test]
+async fn index_pin_survives_tag_move_and_fresh_cache() {
+    use pichi_artifact::Digest;
+    use pichi_storage::{BlobStore, FilesystemBlobStore};
+    use sha2::{Digest as _, Sha256};
+    let Some(base) = test_repo_base() else {
+        return;
+    };
+    let source = TempDir::new().unwrap();
+    let raw = source.path().join("input.raw");
+    std::fs::write(&raw, vec![73; 8192]).unwrap();
+    let tag = format!("{base}/index-pin:one");
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", source.path())
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", &tag])
+        .assert()
+        .success();
+    let root = graphroot(&source);
+    let store = FilesystemBlobStore::new(&root);
+    let tags = FilesystemTagDb::open(&root).unwrap();
+    let first = tags.resolve_tag(&tag).await.unwrap().unwrap();
+    let first_bytes = store.get_blob(&first).await.unwrap();
+    let mut second_value: serde_json::Value = serde_json::from_slice(&first_bytes).unwrap();
+    second_value["annotations"]["org.opencontainers.image.title"] = "other platform".into();
+    let second_bytes = serde_json::to_vec(&second_value).unwrap();
+    let second = Digest::Sha256(Sha256::digest(&second_bytes).into());
+    store.put_blob(&second, &second_bytes).await.unwrap();
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        arch => arch,
+    };
+    let other = if arch == "amd64" { "arm64" } else { "amd64" };
+    let index = serde_json::json!({
+        "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+        "annotations": {"org.opencontainers.image.title": "preserve this index"},
+        "manifests": [
+            {"mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.pichi.artifact.v1+json",
+             "digest": first.to_string(), "size": first_bytes.len(), "platform": {"os": "pichi", "architecture": arch}},
+            {"mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.pichi.artifact.v1+json",
+             "digest": second.to_string(), "size": second_bytes.len(), "platform": {"os": "pichi", "architecture": other}}
+        ]
+    });
+    let index_bytes = serde_json::to_vec_pretty(&index).unwrap();
+    let index_digest = Digest::Sha256(Sha256::digest(&index_bytes).into());
+    store.put_blob(&index_digest, &index_bytes).await.unwrap();
+    tags.set_tag(&tag, &index_digest).await.unwrap();
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", source.path())
+        .args(["push", &tag])
+        .assert()
+        .success();
+    // Retain the release independently of the moving tag. Registries may
+    // collect manifests after their last tag is removed; a digest pin only
+    // guarantees identity while the registry still stores the content.
+    let release = format!("{base}/index-pin:release");
+    tags.set_tag(&release, &index_digest).await.unwrap();
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", source.path())
+        .args(["push", &release])
+        .assert()
+        .success();
+    tags.set_tag(&tag, &second).await.unwrap();
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", source.path())
+        .args(["push", &tag])
+        .assert()
+        .success();
+    let destination = TempDir::new().unwrap();
+    let pin = format!("{base}/index-pin@{index_digest}");
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", destination.path())
+        .args(["pull", &pin])
+        .assert()
+        .success();
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", destination.path())
+        .args(["system", "prune"])
+        .assert()
+        .success();
+    let root = graphroot(&destination);
+    let store = FilesystemBlobStore::new(&root);
+    let tags = FilesystemTagDb::open(&root).unwrap();
+    assert_eq!(
+        tags.resolve_tag(&pin).await.unwrap(),
+        Some(index_digest.clone())
+    );
+    assert_eq!(store.get_blob(&index_digest).await.unwrap(), index_bytes);
+    assert_eq!(store.get_blob(&first).await.unwrap(), first_bytes);
+    assert!(
+        !store.blob_exists(&second).await,
+        "must not download the other platform"
+    );
+}

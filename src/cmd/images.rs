@@ -20,10 +20,9 @@ use humansize::{BINARY, format_size};
 use minijinja::Environment;
 use serde::Serialize;
 
-use pichi_artifact::{Layer, Manifest};
-use pichi_storage::{
-    BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry,
-};
+use super::cache::ImageStore as _;
+use pichi_artifact::Layer;
+use pichi_storage::{CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry};
 
 use crate::cli::ImagesArgs;
 use crate::config::Config;
@@ -119,10 +118,11 @@ impl Row {
         // Try to parse the manifest. On any failure, list the row with placeholder
         // values rather than dropping it (presentation-layer resilience — Phase 42
         // doesn't validate; that's `pichi inspect`'s job).
-        let manifest_bytes = blob_store.get_blob(&entry.digest).await.ok();
-        let manifest = manifest_bytes
-            .as_ref()
-            .and_then(|b| serde_json::from_reader::<_, Manifest>(b.as_slice()).ok());
+        let manifest = blob_store
+            .manifest(&entry.digest)
+            .await
+            .ok()
+            .map(|(_, manifest)| manifest);
 
         let (bootable, scute_count, size) = manifest
             .as_ref()

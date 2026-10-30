@@ -11,18 +11,17 @@
 //! platform is supplied later via `pichi manifest annotate`, not here (podman's
 //! save carries no platform either).
 
-use crate::cmd::manifest_ext::ManifestExt as _;
-use anyhow::{Context, Result, anyhow};
+use crate::cmd::cache::ImageStore as _;
+use anyhow::{Context, Result};
 use serde_json::json;
 use std::path::Path;
 
-use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference};
+use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::SaveArgs;
 use crate::config::Config;
 
-const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const OCI_LAYOUT_MARKER: &str = r#"{"imageLayoutVersion":"1.0.0"}"#;
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
@@ -38,16 +37,9 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
         .with_context(|| format!("opening tag db at {}", layout.graphroot.display()))?;
 
     let tag = reference.to_string();
-    let manifest_digest = tag_db
-        .resolve_tag(&tag)
-        .await?
-        .ok_or_else(|| anyhow!("ref not in cache: {tag}"))?;
-    let raw_manifest = blob_store
-        .get_blob(&manifest_digest)
-        .await
-        .with_context(|| format!("read manifest {manifest_digest}"))?;
-    let manifest = Manifest::decode_json(raw_manifest.as_slice())
-        .with_context(|| format!("parse cached manifest {manifest_digest}"))?;
+    let digest = blob_store.resolve(&reference, &tag_db).await?;
+    let images = blob_store.export(&digest).await?;
+    let root = images.last().context("image has no metadata")?;
 
     let out = &args.output;
     let blobs_dir = out.join("blobs").join("sha256");
@@ -56,30 +48,23 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
         .with_context(|| format!("create {}", blobs_dir.display()))?;
     tokio::fs::write(out.join("oci-layout"), OCI_LAYOUT_MARKER).await?;
 
-    // Manifest, config (unless the inline empty config), and every layer —
-    // copied concurrently (each is an independent file copy).
-    let mut to_copy: Vec<Digest> = vec![manifest_digest.clone()];
-    if manifest.config.data.is_none() {
-        to_copy.push(
-            manifest
-                .config
-                .digest
-                .parse()
-                .with_context(|| format!("invalid config digest: {}", manifest.config.digest))?,
-        );
-    }
-    for layer in &manifest.layers {
-        to_copy.push(
-            layer
-                .digest_str()
-                .parse()
-                .with_context(|| format!("invalid layer digest: {}", layer.digest_str()))?,
-        );
+    let mut to_copy = std::collections::HashSet::new();
+    for image in &images {
+        tokio::fs::write(blobs_dir.join(image.digest.hex()), &image.bytes).await?;
+        if !image.is_index() {
+            let manifest = image.manifest()?;
+            if !manifest.config.is_empty() {
+                to_copy.insert(manifest.config.digest.parse::<Digest>()?);
+            }
+            for layer in &manifest.layers {
+                to_copy.insert(layer.digest_str().parse::<Digest>()?);
+            }
+        }
     }
     futures_util::future::try_join_all(
         to_copy
             .iter()
-            .map(|d| copy_blob(&blob_store, d, &blobs_dir)),
+            .map(|digest| copy_blob(&blob_store, digest, &blobs_dir)),
     )
     .await?;
 
@@ -87,10 +72,10 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
         "schemaVersion": 2,
         "mediaType": OCI_IMAGE_INDEX_MEDIA_TYPE,
         "manifests": [{
-            "mediaType": OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+            "mediaType": root.value["mediaType"],
             "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "digest": manifest_digest.to_string(),
-            "size": raw_manifest.len(),
+            "digest": digest.to_string(),
+            "size": root.bytes.len(),
             "annotations": { REF_NAME_ANNOTATION: tag },
         }],
     });

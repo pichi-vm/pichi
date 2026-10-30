@@ -6,10 +6,8 @@
 //! published build image (`ghcr.io/pichi-vm/conglobate@sha256:…`).
 //!
 //! Host duties under test:
-//! - seed the exact Conglobate context index blob
-//!   (`sha256:4e335e14…`) under
-//!   `qualification.local/fedora:43`, with a tiny imported carapace behind
-//!   the placeholder inner-manifest digest;
+//! - import a tiny source carapace, retain its genuine platform index and
+//!   commit the matching lock in the smoke repository;
 //! - thin-launcher wires: virtiofs repo/cache/output + `dev.pichi.build`;
 //! - complete guest OCI import and host verity rebuild.
 //!
@@ -21,8 +19,8 @@
 mod common;
 
 use common::{
-    SMOKE_CONTEXT, SMOKE_LOCK, SMOKE_LOCK_INDEX, SMOKE_PLAN, SMOKE_SOURCE_REF, assert_pichi_ok,
-    kvm_available, pichi, prepare_smoke_repo, pull_build_image, seed_smoke_source_carapace,
+    SMOKE_CONTEXT, SMOKE_LOCK, SMOKE_PLAN, SMOKE_SOURCE_REF, assert_pichi_ok, kvm_available, pichi,
+    prepare_smoke_repo, pull_build_image, seed_smoke_source_carapace,
 };
 
 /// Bound so a missing guest poweroff cannot hang CI (safety after Conglobate #11).
@@ -44,13 +42,13 @@ async fn pichi_build_boots_official_image_to_poweroff() {
         return;
     }
 
-    // Seed lock-pinned index + carapace behind placeholder (not real Fedora).
-    seed_smoke_source_carapace(g, tmp.path()).await;
+    // Seed an authenticated index and record its actual digest.
+    let index = seed_smoke_source_carapace(g, tmp.path()).await;
 
     // Use the same Conglobate main revision as the pinned appliance.
     // That tree stores `plan.yaml` / `lock.yaml`; the smoke passes
     // those paths with `-p` / `-l`.
-    let (repo, git_ref) = prepare_smoke_repo(tmp.path());
+    let (repo, git_ref) = prepare_smoke_repo(tmp.path(), &index);
 
     // Timed spawn: BUILD.md requires guest exit 0 after the build.
     // Conglobate #11 adds SuccessAction=poweroff; keep a bound so a
@@ -114,6 +112,6 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     let out_digest = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
     assert!(
         out_digest.starts_with("sha256:"),
-        "imported smoke:out missing digest; source was {SMOKE_SOURCE_REF}@{SMOKE_LOCK_INDEX}"
+        "imported smoke:out missing digest; source was {SMOKE_SOURCE_REF}@{index}"
     );
 }

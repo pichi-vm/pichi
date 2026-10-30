@@ -28,8 +28,9 @@ use std::path::PathBuf;
 
 use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference, ReferenceKind};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
+use super::cache::ImageStore as _;
 use crate::cmd::push::push_manifest_and_blobs;
 
 use crate::cli::{ManifestAnnotateArgs, ManifestCreateArgs, ManifestPushArgs};
@@ -60,28 +61,13 @@ pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
         let src_ref: Reference = src
             .parse()
             .with_context(|| format!("invalid source reference: {src}"))?;
-        let digest = tag_db
-            .resolve_tag(&src_ref.to_string())
-            .await?
-            .ok_or_else(|| anyhow!("source not in local cache: {src}"))?;
-        let raw = blob_store
-            .get_blob(&digest)
-            .await
-            .with_context(|| format!("read local manifest {digest}"))?;
-        let value: Value =
-            serde_json::from_slice(&raw).with_context(|| format!("parse manifest {src}"))?;
-        let artifact_type = value.get("artifactType").and_then(|v| v.as_str());
-        if artifact_type != Some(MEDIA_TYPE_PICHI_ARTIFACT_V1) {
-            bail!(
-                "source {src} is not a pichi artifact (artifactType={artifact_type:?}); \
-                 refusing to add it to the list"
-            );
-        }
+        let root = blob_store.resolve(&src_ref, &tag_db).await?;
+        let (metadata, _) = blob_store.manifest(&root).await?;
         entries.push(json!({
             "mediaType": OCI_MANIFEST_MEDIA_TYPE,
             "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "digest": digest.to_string(),
-            "size": raw.len(),
+            "digest": metadata.digest.to_string(),
+            "size": metadata.bytes.len(),
             "annotations": { SOURCE_REF_ANNOTATION: src },
         }));
     }
