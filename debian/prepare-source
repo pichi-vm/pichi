@@ -1,0 +1,39 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+set -euo pipefail
+export LC_ALL=C
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+mkdir -p "${1:?Usage: debian/prepare-source OUTPUT_DIRECTORY}"
+outdir=$(cd "$1" && pwd)
+case "$outdir/" in
+    "$root/"*) echo 'Output directory must be outside the source tree.' >&2; exit 2 ;;
+esac
+version=$(dpkg-parsechangelog -l "$root/debian/changelog" -S Version)
+version=${version%-*}
+workdir=$(mktemp -d "$outdir/.pichi-source.XXXXXX")
+trap 'rm -rf "$workdir"' EXIT
+tree="$workdir/pichi-$version"
+mkdir -p "$tree"
+tar -C "$root" --exclude-vcs --exclude='./target' --exclude='./vendor' \
+    --exclude='./.pc' --exclude='./.codex' -cf - . |
+    tar -C "$tree" -xf -
+cd "$tree"
+cp Cargo.toml "$workdir/Cargo.toml"
+cp packaging/host-manifest.patch debian/patches/
+while read -r patch; do
+    patch -p1 < "debian/patches/$patch"
+done < debian/patches/series
+packaging/trim-cargo-lock
+cargo vendor --locked --versioned-dirs vendor > .cargo/vendor.toml
+
+# Keep the trimmed lock in the orig tarball; quilt supplies its manifest.
+cp "$workdir/Cargo.toml" Cargo.toml
+tar --sort=name --owner=0 --group=0 --numeric-owner \
+    --mtime="$(dpkg-parsechangelog -l debian/changelog -S Date)" \
+    --exclude="pichi-$version/debian" -C "$workdir" \
+    -cJf "$outdir/pichi_$version.orig.tar.xz" "pichi-$version"
+cd "$outdir"
+dpkg-source --before-build "$tree"
+dpkg-source -b "$tree"

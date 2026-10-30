@@ -1,0 +1,40 @@
+This packaging targets Ubuntu Resolute (26.04) for ppa:nmccallum/pichi.
+The binary package requires dillo-vm from the same archive. Upload remains
+on hold until that package is available.
+
+To prepare an unsigned source package from this checkout:
+
+    debian/prepare-source /absolute/path/to/output
+
+Source preparation needs Cargo, Rust, dpkg-dev, patch, GNU tar, and xz.
+It may access the network to fetch the dependencies pinned in Cargo.lock.
+It works in a temporary copy, copies packaging/host-manifest.patch into
+debian/patches/, and applies that host-only manifest patch. The repository
+keeps only the shared patch and the Debian series that names its copy.
+Preparation runs packaging/trim-cargo-lock to remove unused Cargo.lock
+entries and reject any new or changed dependency pin. Preparation then
+vendors the dependency graph (copies its sources for offline builds). The output
+directory must be outside the source tree and have space for that temporary
+copy and its vendor directory; use a disk-backed directory rather than a
+size-limited /tmp. Generated dependencies are never committed.
+
+Preparation vendors the shared host dependency graph once. The upstream
+(orig) tarball contains the original manifest, the generated trimmed lockfile,
+.cargo/vendor.toml and one vendor directory. The lock change is not a patch.
+dpkg-source applies the manifest patch from debian/patches using quilt
+(Debian's patch series format), so the build sees the matching manifest and
+lockfile. This orig tarball includes packaging-generated files; it is not
+an unmodified upstream release tarball.
+Git dependencies remain pinned to their lockfile revisions and use the same
+directory replacements as registry dependencies. The host-only manifest
+patch removes artifact dependencies, so neither preparation nor building
+needs nightly Cargo or RUSTC_BOOTSTRAP (unlike the Copr preparation command).
+
+The source package builds with the archive's Cargo and Rust, offline and
+locked (--frozen). Building a binary from the unpacked source uses:
+
+    dpkg-buildpackage -b -us -uc
+
+Only the host CLI is built. VM integration tests require separately built
+guest artifacts and are excluded; the binary's --help is checked instead.
+Source preparation and these commands do not upload anything to Launchpad.

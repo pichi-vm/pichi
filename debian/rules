@@ -1,0 +1,30 @@
+#!/usr/bin/make -f
+
+export CARGO_NET_OFFLINE = true
+export CARGO_TARGET_DIR = $(CURDIR)/target
+
+%:
+	dh $@ --buildsystem=none
+
+override_dh_auto_build:
+	cargo --config .cargo/vendor.toml build --release --frozen -p pichi --bin pichi
+
+override_dh_auto_test:
+	# VM integration tests need guest artifacts excluded from this host build.
+	target/release/pichi --help > /dev/null
+
+override_dh_auto_install:
+	install -D -m 0755 target/release/pichi debian/pichi/usr/bin/pichi
+
+override_dh_installdocs:
+	dh_installdocs README.md
+	mkdir -p debian/pichi/usr/share/doc/pichi/dependency-licenses
+	find vendor -type f \( -iname '*license*' -o -iname '*copying*' -o -iname '*notice*' \) \
+		-exec cp --parents -t debian/pichi/usr/share/doc/pichi/dependency-licenses {} +
+
+override_dh_auto_clean:
+	rm -rf target
+
+# Cargo checksums cover vendored Cargo.toml.orig files.
+override_dh_clean:
+	dh_clean -Xvendor/

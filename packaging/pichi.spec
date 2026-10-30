@@ -5,7 +5,7 @@
 # - package name pichi; CLI only (no library install)
 # - Source0 is the git tree; Source1 is the SRPM-time vendor/ tarball
 # - %%cargo_prep -v vendor; git/crates.io replacements come from the vendor step
-# - rpm-manifest.patch and lock pruning drop vm-tests deps for the host CLI
+# - host-manifest.patch and lock pruning drop vm-tests deps for the host CLI
 # - EPEL / CentOS Stream: rust-toolset; Fedora: cargo-rpm-macros
 
 %bcond_with check
