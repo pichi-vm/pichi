@@ -10,13 +10,15 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use std::collections::BTreeMap;
+use crate::cmd::platform::PlatformExt as _;
+use conglobate::artifact::Platform;
+use conglobate::build::Lock as BuildLockFile;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements};
+use conglobate::artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
@@ -26,7 +28,8 @@ use crate::cli::{DEFAULT_LOCK, DEFAULT_PLAN};
 #[cfg(unix)]
 use crate::cmd::build_port::clear_device_cloexec;
 use crate::cmd::build_port::{
-    self, BuildInput, console_arg, create_build_port_pipes, serve_build_port,
+    self, BuildInput, Response, ResponseExt as _, console_arg, create_build_port_pipes,
+    serve_build_port,
 };
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
@@ -40,32 +43,6 @@ const OUTPUT_TAG: &str = "output";
 
 /// Platform selector for local OCI index walks (same token as `pichi pull`).
 const TARGET_OS: &str = "pichi";
-
-fn target_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => other,
-    }
-}
-
-/// Conglobate Follow-up A lock (images → index digest). Default name is
-/// `pichi.lock`. Host reads only the image reference keys + pins for
-/// transitional source-carapace pass-through; `pichi.yaml` stays on the
-/// guest (BUILD.md §2.2).
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BuildLockFile {
-    version: u32,
-    images: BTreeMap<String, BuildLockImage>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BuildLockImage {
-    /// OCI index (or single-manifest) digest (`sha256:…`).
-    index: String,
-}
 
 pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let build_image_ref = resolve_build_image(args.build_image.as_deref());
@@ -114,7 +91,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     // Source preparation follows the current lock contract. Plans are parsed
     // only by Conglobate; legacy host plan parsing is no longer supported.
     let build_lock = load_build_lock(&args.dir, &context, &lock)?;
-    let source_refs: Vec<_> = build_lock.images.keys().cloned().collect();
 
     let mut gpt_specs = Vec::new();
     // Appliance root carapace first (corium discovers it by PARTUUID), then
@@ -126,20 +102,14 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
                 .with_context(|| format!("building vGPT for build image {build_image_ref}"))?,
         );
     }
-    for reference in &source_refs {
-        let (digest, manifest) = resolve_manifest(reference, &db, &blob_store)
+    for (reference, pin) in &build_lock.images {
+        let mut target: Reference = canonicalize_reference(reference).parse()?;
+        target.kind = ReferenceKind::Digest(pin.index.clone());
+        let (digest, manifest) = resolve_manifest(&target.to_string(), &db, &blob_store)
             .await
-            .with_context(|| format!("resolving source carapace {reference}"))?;
-        if let Some(pin) = build_lock.images.get(reference) {
-            let pinned = normalize_digest(pin.index.trim());
-            let got_owned = digest.to_string();
-            let got = normalize_digest(&got_owned);
-            if pinned != got {
-                bail!(
-                    "cached {reference} digest sha256:{got} does not match lock pin {}",
-                    pin.index
-                );
-            }
+            .with_context(|| format!("resolving pinned source {reference}"))?;
+        if digest != pin.index {
+            bail!("cached {reference} does not match lock pin {}", pin.index);
         }
         let scutes = manifest
             .scute_layers()
@@ -185,8 +155,8 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         context: Some(context),
         location: args.location.clone(),
     };
-    let response = build_input
-        .encode_success()
+    let response = Response::Success(build_input)
+        .encode_cbor()
         .context("encoding build-input success response")?;
 
     let pipes = create_build_port_pipes().context("creating build-port pipes")?;
@@ -339,14 +309,9 @@ async fn build_image_cached(
     Ok(db.resolve_tag(&target.to_string()).await?.is_some())
 }
 
-/// Strip an optional `sha256:` prefix for lock-pin comparisons.
-fn normalize_digest(s: &str) -> &str {
-    s.strip_prefix("sha256:").unwrap_or(s)
-}
-
 /// Map OCI `name:tag@digest` → `name@digest` before [`Reference`] parse.
 ///
-/// Conglobate locks pins as `tag@digest`. `pichi-artifact::Reference` currently
+/// Conglobate locks pins as `tag@digest`. `conglobate::artifact::Reference` currently
 /// folds `:tag` into `repo` when `@digest` is present, so GHCR blob paths 404.
 /// Digest wins; the tag is informational. No-op without `@digest` or without a
 /// `:tag` after the last `/`.
@@ -377,13 +342,6 @@ fn load_build_lock(repo: &Path, context: &str, lock_rel: &str) -> Result<BuildLo
         .with_context(|| format!("reading build lock {}", path.display()))?;
     let parsed: BuildLockFile = serde_yaml::from_str(&text)
         .with_context(|| format!("parsing build lock {}", path.display()))?;
-    if parsed.version != 1 {
-        bail!(
-            "build lock {}: unsupported version {} (expected 1)",
-            path.display(),
-            parsed.version
-        );
-    }
     Ok(parsed)
 }
 
@@ -437,8 +395,9 @@ async fn resolve_manifest(
         serde_json::from_slice(&bytes).with_context(|| format!("parse mediaType of {digest}"))?;
     let media_type = v.get("mediaType").and_then(|x| x.as_str()).unwrap_or("");
     let manifest_bytes = if media_type == OCI_IMAGE_INDEX_MEDIA_TYPE {
-        let picked_str = pick_pichi_entry_from_index(&bytes, TARGET_OS, target_arch())
-            .with_context(|| format!("picking pichi entry from index {digest}"))?;
+        let picked_str =
+            pick_pichi_entry_from_index(&bytes, TARGET_OS, Platform::host_architecture())
+                .with_context(|| format!("picking pichi entry from index {digest}"))?;
         let picked: Digest = picked_str
             .parse()
             .with_context(|| format!("parse picked digest {picked_str}"))?;
@@ -827,7 +786,7 @@ mod tests {
             context: Some("tests/distro/context".into()),
             location: None,
         };
-        let response = input.encode_success().unwrap();
+        let response = Response::Success(input).encode_cbor().unwrap();
 
         let pipes = create_build_port_pipes().unwrap();
         let mut device_tx = pipes.device_tx;
@@ -839,7 +798,7 @@ mod tests {
             // Hold-until-open: guest request arrives after host is waiting.
             thread::sleep(Duration::from_millis(50));
             let mut req = Vec::new();
-            ciborium::into_writer(&build_port::GuestRequest::expected(), &mut req).unwrap();
+            ciborium::into_writer(&build_port::GuestRequest::default(), &mut req).unwrap();
             device_tx.write_all(&req).unwrap();
             device_tx.flush().unwrap();
             let mut reply = Vec::new();
@@ -875,14 +834,16 @@ mod tests {
         std::fs::create_dir_all(&ctx).unwrap();
         std::fs::write(
             ctx.join("pichi.lock"),
-            "version: 1\nimages:\n  qualification.local/fedora:43:\n    index: sha256:deadbeef\n",
+            "version: 1\nimages:\n  qualification.local/fedora:43:\n    index: sha256:abababababababababababababababababababababababababababababababab\n",
         )
         .unwrap();
         let parsed = load_build_lock(tmp.path(), "tests/distro/context", "pichi.lock").unwrap();
         assert_eq!(parsed.version, 1);
         assert_eq!(
-            parsed.images["qualification.local/fedora:43"].index,
-            "sha256:deadbeef"
+            parsed.images["qualification.local/fedora:43"]
+                .index
+                .to_string(),
+            "sha256:abababababababababababababababababababababababababababababababab"
         );
     }
     /// D-02 pull drops OCI indexes: a Conglobate `tag@digest` pin whose

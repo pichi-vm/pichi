@@ -7,7 +7,7 @@
 //! [OCI Image Layout][1] `index.json` file at the cache root, with one
 //! `manifests` entry per tag. Each entry's
 //! `annotations["org.opencontainers.image.ref.name"]` carries the canonical
-//! tag string (per CONTEXT D-02: `pichi_artifact::Reference::Display` form).
+//! tag string (per CONTEXT D-02: `conglobate::artifact::Reference::Display` form).
 //!
 //! Concurrency model: `set_tag` and `delete_tag` perform read-modify-write
 //! under an advisory `flock(2)` on a sibling lockfile (`index.json.lock`).
@@ -36,14 +36,11 @@ use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use conglobate::artifact::{Index as ImageIndex, IndexDescriptor as ManifestDescriptor};
 
 use crate::atomic::write_atomic;
 use crate::lock::lock_exclusive_async;
-use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1};
-
-/// OCI image-index media type per the image-spec.
-const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1};
 
 /// OCI annotation key for the human-readable image reference (tag).
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
@@ -72,38 +69,6 @@ pub struct TagEntry {
     pub tag: String,
     /// The manifest digest this tag points at.
     pub digest: Digest,
-}
-
-// --- On-disk schema (OCI Image Index v1) ------------------------------------
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ImageIndex {
-    #[serde(rename = "schemaVersion")]
-    schema_version: u32,
-    #[serde(rename = "mediaType")]
-    media_type: String,
-    #[serde(default)]
-    manifests: Vec<ManifestDescriptor>,
-}
-
-impl Default for ImageIndex {
-    fn default() -> Self {
-        Self {
-            schema_version: 2,
-            media_type: OCI_IMAGE_INDEX_MEDIA_TYPE.to_string(),
-            manifests: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ManifestDescriptor {
-    #[serde(rename = "mediaType")]
-    media_type: String,
-    digest: String, // "sha256:<hex>"
-    size: u64,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    annotations: BTreeMap<String, String>,
 }
 
 // --- FilesystemTagDb --------------------------------------------------------
@@ -231,6 +196,8 @@ impl TagDb for FilesystemTagDb {
             .manifests
             .retain(|m| m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag));
         index.manifests.push(ManifestDescriptor {
+            artifact_type: None,
+            platform: None,
             media_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
             digest: digest.to_string(),
             size: 0,

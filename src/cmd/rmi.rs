@@ -32,7 +32,7 @@ use std::collections::HashSet;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use pichi_artifact::{Digest, Manifest, Reference};
+use conglobate::artifact::{Digest, Manifest, Reference};
 use pichi_storage::{
     BlobSidecarExt, BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry,
 };

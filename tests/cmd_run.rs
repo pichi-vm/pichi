@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use pichi_artifact::{
+use conglobate::artifact::{
     ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
     ScuteAnnotations, ScuteDescriptor,
 };
@@ -38,7 +38,7 @@ fn chain_annotations() -> std::collections::BTreeMap<String, String> {
     .collect()
 }
 
-fn sha256_digest(bytes: &[u8]) -> pichi_artifact::Digest {
+fn sha256_digest(bytes: &[u8]) -> conglobate::artifact::Digest {
     use sha2::{Digest as _, Sha256};
     let h = Sha256::digest(bytes);
     format!("sha256:{}", hex::encode(h)).parse().unwrap()
@@ -82,11 +82,12 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
         annotations: chain_annotations(),
     };
     let bytes = serde_json::to_vec(&manifest).unwrap();
-    let digest = manifest.digest().unwrap();
+    let digest =
+        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     // Store under the normalized reference key (`myapp:1` →
     // `docker.io/library/myapp:1`), matching how `pichi run` resolves it.
-    let key: pichi_artifact::Reference = tag.parse().unwrap();
+    let key: conglobate::artifact::Reference = tag.parse().unwrap();
     FilesystemTagDb::open(graphroot)
         .unwrap()
         .set_tag(&key.to_string(), &digest)

@@ -28,7 +28,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use pichi_artifact::{
+use conglobate::artifact::{
     Config, ConfigDescriptor, Digest, DtbDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest,
     PmiDescriptor, Reference, ReferenceKind,
 };
@@ -256,8 +256,6 @@ async fn read_launch_contract(path: &Path) -> Result<(Digest, Vec<u8>)> {
     let cfg: Config = serde_yaml::from_str(&text)
         .with_context(|| format!("parse --config: {}", path.display()))?;
     cfg.validate().context("invalid --config")?;
-    let mut cfg = cfg;
-    cfg.requirements.canonicalize();
     let bytes = serde_json::to_vec(&cfg).context("serialise config blob")?;
     Ok((
         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into()),

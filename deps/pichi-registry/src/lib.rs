@@ -41,8 +41,8 @@
 //! the feature flag and only inside this crate.
 
 use bytes::Bytes;
+use conglobate::artifact::{Digest, Reference};
 use futures_util::stream::Stream;
-use pichi_artifact::{Digest, Reference};
 use thiserror::Error;
 use tokio::io::AsyncWrite;
 
@@ -85,10 +85,6 @@ pub enum RegistryError {
     /// HTTP / TLS / I/O error from the transport layer.
     #[error("registry: transport error: {0}")]
     Transport(String),
-    /// Manifest bytes failed to parse as a `Manifest` (or the underlying
-    /// OCI shape).
-    #[error("registry: manifest parse error: {0}")]
-    Manifest(#[from] pichi_artifact::Error),
 }
 
 /// Convenience alias for `Result<T, RegistryError>`.
@@ -100,7 +96,7 @@ pub type Result<T> = std::result::Result<T, RegistryError>;
 /// - All methods are `async` (Rust 2024 native AFIT).
 /// - Manifest payloads are returned as raw [`Bytes`] (not parsed) so the
 ///   caller can choose whether to dispatch via D-20 (image-index walk) or
-///   parse directly as [`pichi_artifact::Manifest`]. Manifests are
+///   parse directly as [`conglobate::artifact::Manifest`]. Manifests are
 ///   KB-scale; streaming them adds zero value.
 /// - Blob payloads are STREAMING (D-01): `pull_blob` writes into an
 ///   [`AsyncWrite`] sink; `push_blob_stream` reads from a

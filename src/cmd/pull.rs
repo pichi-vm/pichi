@@ -7,10 +7,12 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
+use conglobate::artifact::Platform;
 
-use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
 
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 
@@ -31,17 +33,6 @@ use futures_util::stream::{self as futures_stream, StreamExt};
 /// carapace as a runnable image (no host platform matches `pichi/*`).
 const TARGET_OS: &str = "pichi";
 
-/// Target platform architecture for D-02 index walks: the host CPU (the guest
-/// runs the host's architecture — dillo virtualizes the native CPU, no
-/// cross-arch emulation), normalized to OCI/GOARCH names. A multi-arch base
-/// (e.g. ghcr.io/pichi-vm/fedora) is selected per the running host.
-fn target_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => other,
-    }
-}
 /// Max layers downloaded concurrently, matching podman's default of 3.
 const PULL_CONCURRENCY: usize = 3;
 
@@ -49,7 +40,7 @@ const PULL_CONCURRENCY: usize = 3;
 pub async fn run(args: PullArgs, config: &Config) -> Result<()> {
     // Defense-in-depth: parse + canonicalise BEFORE any I/O (BL-02 / T-43-02).
     // Also strip informational `:tag` from Conglobate `tag@digest` pins so
-    // `pichi-artifact::Reference` keeps a clean repo (see canonicalize_reference).
+    // `conglobate::artifact::Reference` keeps a clean repo (see canonicalize_reference).
     let canonical = crate::cmd::build::canonicalize_reference(&args.reference);
     let target_ref: Reference = canonical
         .parse()
@@ -115,7 +106,8 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     let (final_bytes, final_digest): (Bytes, Digest) = if media_type == OCI_IMAGE_INDEX_MEDIA_TYPE {
         // D-02 index walk: pick the pichi entry, fetch by digest, drop
         // the index (do NOT persist it).
-        let picked_str = pick_pichi_entry_from_index(&raw, TARGET_OS, target_arch())?;
+        let picked_str =
+            pick_pichi_entry_from_index(&raw, TARGET_OS, Platform::host_architecture())?;
         let picked: Digest = picked_str
             .parse()
             .with_context(|| format!("parse picked digest {picked_str}"))?;
@@ -232,8 +224,8 @@ pub(crate) async fn pull_inner(
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use pichi_artifact::Layer;
-    use pichi_artifact::{
+    use conglobate::artifact::Layer;
+    use conglobate::artifact::{
         ConfigDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
     };
     use pichi_registry::MockRegistry;
@@ -574,7 +566,7 @@ mod tests {
                 "digest": picked_manifest_digest.to_string(),
                 "size": picked_manifest_bytes.len(),
                 "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
-                "platform": {"os": "pichi", "architecture": target_arch()}
+                "platform": {"os": "pichi", "architecture": Platform::host_architecture()}
             }]
         });
         let index_bytes = Bytes::from(serde_json::to_vec(&index).unwrap());
@@ -620,7 +612,7 @@ mod tests {
     // Phase 46 Plan 02 Task 1 — sidecar derivation tests (CACHE-01, CACHE-02)
     // ====================================================================
 
-    use pichi_artifact::PmiDescriptor;
+    use conglobate::artifact::PmiDescriptor;
     use pichi_storage::BlobSidecarExt;
 
     /// Plan 02 helper: build a 1-Scute or 1-ScuteZstd manifest with a

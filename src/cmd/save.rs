@@ -16,7 +16,7 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::json;
 use std::path::Path;
 
-use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::SaveArgs;

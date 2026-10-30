@@ -28,7 +28,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 
-use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements, ScuteDescriptor};
+use conglobate::artifact::{
+    Digest, Manifest, Reference, ReferenceKind, Requirements, ScuteDescriptor,
+};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
@@ -196,7 +198,10 @@ pub(crate) async fn build_gpt_spec(
         // Per-scute dm-verity root from the cached cow (PARTUUID / label prep).
         // Launch never reads `dev.pichi.carapace.verity.hash`.
         let root: [u8; 32] = manifest
-            .cached_scute_root(&pichi_artifact::Layer::Scute((*scute).clone()), blob_store)
+            .cached_scute_root(
+                &conglobate::artifact::Layer::Scute((*scute).clone()),
+                blob_store,
+            )
             .await?
             .context("scute has no verity root")?;
 
@@ -301,7 +306,7 @@ mod tests {
 
     const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
-    use pichi_artifact::{
+    use conglobate::artifact::{
         ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
         ScuteAnnotations, ScuteDescriptor,
     };
@@ -428,7 +433,7 @@ mod tests {
     }
 
     fn dtb_layer_fixture() -> Layer {
-        Layer::Dtb(pichi_artifact::DtbDescriptor {
+        Layer::Dtb(conglobate::artifact::DtbDescriptor {
             digest: "sha256:4444444444444444444444444444444444444444444444444444444444444444"
                 .into(),
             size: 8192,

@@ -107,7 +107,7 @@ pub struct ImportRawArgs {
     pub raw_image: std::path::PathBuf,
     /// Tag to assign (e.g. `myapp:base`). Optional: omit to cache the carapace
     /// without a tag (ephemeral — the root hash is still printed). Validated
-    /// via `pichi_artifact::Reference::from_str` before any I/O.
+    /// via `conglobate::artifact::Reference::from_str` before any I/O.
     #[arg(short = 't', long)]
     pub tag: Option<String>,
     /// Hex-encoded author suffix appended after the 32-byte zero salt
@@ -324,12 +324,23 @@ pub struct BuildArgs {
     pub cpus: Option<u32>,
 }
 
-/// Args for `pichi update [<dir>]` — pin carapace references in
-/// `pichi.build/*.yaml` into `pichi.build/refs.lock` (BUILD.md §2.4 / §14).
+/// Resolve a committed plan's remote inputs into an OCI index lock.
 #[derive(Debug, ClapArgs)]
 pub struct UpdateArgs {
-    /// Project directory containing `pichi.build/` (default: current dir).
+    /// Project repository (default: current directory).
     pub dir: Option<std::path::PathBuf>,
+    /// Git ref to inspect; commit the generated lock before building it.
+    #[arg(long = "ref", default_value = "HEAD")]
+    pub git_ref: String,
+    #[arg(short = 'p', long, default_value = DEFAULT_PLAN, value_parser = parse_plan_path)]
+    pub plan: String,
+    #[arg(short = 'l', long, default_value = DEFAULT_LOCK, value_parser = parse_lock_path)]
+    pub lock: String,
+    #[arg(long, default_value = ".")]
+    pub context: String,
+    /// Conglobate executable used to inspect the committed plan.
+    #[arg(long, default_value = "conglobate")]
+    pub conglobate: std::path::PathBuf,
 }
 
 /// Args for `pichi run <ref>` — boot an artifact (auto-pulling if not cached).

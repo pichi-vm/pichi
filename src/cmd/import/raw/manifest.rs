@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
 
-use pichi_artifact::{
+use conglobate::artifact::{
     ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
     ScuteDescriptor,
 };
@@ -151,7 +151,7 @@ mod tests {
             Some("2026-05-07T12:00:00Z")
         );
         assert!(
-            m.carapace_verity_hash().is_none(),
+            !m.annotations.contains_key("dev.pichi.carapace.verity.hash"),
             "tip hash annotation must not be stamped"
         );
     }
@@ -298,7 +298,7 @@ mod tests {
             "sha256"
         );
         assert!(
-            m.carapace_verity_hash().is_none(),
+            !m.annotations.contains_key("dev.pichi.carapace.verity.hash"),
             "a caller-supplied tip hash is dropped"
         );
     }

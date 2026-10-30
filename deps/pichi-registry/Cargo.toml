@@ -9,8 +9,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+conglobate.workspace = true
 sha2.workspace = true
-pichi-artifact = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 

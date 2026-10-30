@@ -20,7 +20,7 @@ use humansize::{BINARY, format_size};
 use minijinja::Environment;
 use serde::Serialize;
 
-use pichi_artifact::{Layer, Manifest};
+use conglobate::artifact::{Layer, Manifest};
 use pichi_storage::{
     BlobStore, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry,
 };

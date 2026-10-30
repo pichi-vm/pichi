@@ -1,20 +1,23 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `ManifestExt`: pichi-side helpers on `pichi_artifact::Manifest`.
+//! `ManifestExt`: pichi-side helpers on `conglobate::artifact::Manifest`.
 //!
-//! `Manifest` is defined in `pichi-artifact` (it mirrors the normative wire
+//! `Manifest` is defined in `conglobate::artifact` (it mirrors the normative wire
 //! schema), so per the repo's "extension trait when you don't own the type"
 //! rule these run/build-specific queries live here as an extension trait rather
 //! than as free functions scattered across the command modules.
 
+use crate::cmd::platform::PlatformExt as _;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
 use crate::cmd::verity::{VerityFormat as _, VerityParams};
+use conglobate::artifact::{
+    Digest, DtbDescriptor, Layer, Manifest, PmiDescriptor, ScuteDescriptor,
+};
 use devmap_verity::{HashType, Header};
-use pichi_artifact::{Digest, DtbDescriptor, Layer, Manifest, PmiDescriptor, ScuteDescriptor};
 use pichi_storage::{BlobSidecarExt, BlobStore};
 
 /// Chain-wide verity annotation keys.
@@ -107,11 +110,7 @@ impl ManifestExt for Manifest {
             return Ok(());
         };
         let host = std::env::consts::ARCH;
-        let host_norm = match host {
-            "x86_64" => "amd64",
-            "aarch64" => "arm64",
-            other => other,
-        };
+        let host_norm = conglobate::artifact::Platform::host_architecture();
         if arch != host && arch != host_norm {
             bail!(
                 "artifact architecture {arch:?} does not match host {host:?} \

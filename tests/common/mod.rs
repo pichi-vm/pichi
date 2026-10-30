@@ -381,7 +381,7 @@ pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) {
     // `$XDG_DATA_HOME/pichi/storage` (rootless).
     let storage = graphroot.join("pichi").join("storage");
     {
-        use pichi_artifact::{Digest, Reference};
+        use conglobate::artifact::{Digest, Reference};
         use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
         let blob_store = FilesystemBlobStore::new(&storage);

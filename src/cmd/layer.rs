@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::cmd::verity::VerityFormat as _;
 use anyhow::{Context as _, Result, bail};
-use pichi_artifact::{Digest, Layer, Manifest, Reference};
+use conglobate::artifact::{Digest, Layer, Manifest, Reference};
 use pichi_registry::Registry;
 use pichi_storage::{BlobSidecarExt, BlobStore};
 use sha2::{Digest as _, Sha256};
@@ -307,10 +307,10 @@ mod tests {
             let manifest = serde_json::json!({
                 "schemaVersion": 2,
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-                "config": pichi_artifact::ConfigDescriptor::canonical(),
+                "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                "config": conglobate::artifact::ConfigDescriptor::canonical(),
                 "layers": [{
-                    "mediaType": if compressed { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
+                    "mediaType": if compressed { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
                     "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
                     "size": wire.len(), "annotations": annotations,
                 }],
@@ -472,10 +472,10 @@ mod tests {
         let manifest = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "config": pichi_artifact::ConfigDescriptor::canonical(),
+            "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            "config": conglobate::artifact::ConfigDescriptor::canonical(),
             "layers": [{
-                "mediaType": pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD,
+                "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD,
                 "digest": digest.to_string(),
                 "size": WIRE.len(),
                 "annotations": {

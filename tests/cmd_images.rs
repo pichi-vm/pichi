@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
-use pichi_artifact::{
+use conglobate::artifact::{
     ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
     ScuteAnnotations, ScuteDescriptor,
 };
@@ -37,7 +37,7 @@ async fn populate(
     graphroot: &std::path::Path,
     tag: &str,
     with_pmi: bool,
-) -> pichi_artifact::Digest {
+) -> conglobate::artifact::Digest {
     let mut layers = vec![Layer::Scute(ScuteDescriptor {
         digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111".into(),
         size: 4096,
@@ -62,7 +62,8 @@ async fn populate(
         annotations: chain_annotations(),
     };
     let bytes = serde_json::to_vec(&m).unwrap();
-    let digest = m.digest().unwrap();
+    let digest =
+        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     let blob_store = FilesystemBlobStore::new(graphroot);
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(graphroot).unwrap();

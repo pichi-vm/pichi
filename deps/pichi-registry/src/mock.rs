@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bytes::Bytes;
+use conglobate::artifact::{Digest, Reference};
 use futures_util::stream::{Stream, StreamExt};
-use pichi_artifact::{Digest, Reference};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::{Registry, RegistryError, Result};
@@ -130,8 +130,8 @@ impl MockRegistry {
 impl Registry for MockRegistry {
     async fn pull_manifest_by_tag(&self, reference: &Reference) -> Result<(Bytes, Digest)> {
         let key_tag = match &reference.kind {
-            pichi_artifact::ReferenceKind::Tag(t) => t.clone(),
-            pichi_artifact::ReferenceKind::Digest(d) => {
+            conglobate::artifact::ReferenceKind::Tag(t) => t.clone(),
+            conglobate::artifact::ReferenceKind::Digest(d) => {
                 // Digest-form refs go straight to manifests by digest.
                 let mkey = (
                     reference.registry.clone(),
@@ -275,7 +275,7 @@ impl Registry for MockRegistry {
             .lock()
             .expect("manifests mutex poisoned")
             .insert(mkey, bytes);
-        if let pichi_artifact::ReferenceKind::Tag(t) = &reference.kind {
+        if let conglobate::artifact::ReferenceKind::Tag(t) = &reference.kind {
             let tag_key = (
                 reference.registry.clone(),
                 reference.repo.clone(),

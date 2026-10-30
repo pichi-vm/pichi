@@ -21,7 +21,9 @@ use minijinja::Environment;
 use serde::Serialize;
 use serde_json::Value;
 
-use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference, ReferenceKind};
+use conglobate::artifact::{
+    Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference, ReferenceKind,
+};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::InspectArgs;

@@ -61,7 +61,7 @@ enum Command {
         #[command(subcommand)]
         cmd: cli::ManifestCmd,
     },
-    /// Resolve `pichi.build/*.yaml` carapace references into `refs.lock`.
+    /// Resolve a committed plan's remote images into its build lock.
     Update(cli::UpdateArgs),
     /// Boot a cached artifact by preparing the environment and exec'ing dillo.
     Run(cli::RunArgs),

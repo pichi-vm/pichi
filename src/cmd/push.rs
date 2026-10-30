@@ -33,8 +33,8 @@
 use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
+use conglobate::artifact::{Digest, Manifest, Reference};
 use futures_util::stream;
-use pichi_artifact::{Digest, Manifest, Reference};
 use pichi_registry::Registry;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
@@ -238,7 +238,7 @@ async fn blob_to_stream(
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use pichi_artifact::{
+    use conglobate::artifact::{
         ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
     };
     use pichi_registry::MockRegistry;

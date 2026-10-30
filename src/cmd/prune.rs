@@ -58,7 +58,7 @@ use std::collections::HashSet;
 use anyhow::{Context, Result};
 use humansize::{BINARY, format_size};
 
-use pichi_artifact::{Digest, Manifest};
+use conglobate::artifact::{Digest, Manifest};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::PruneArgs;
@@ -267,7 +267,7 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use pichi_artifact::{
+    use conglobate::artifact::{
         ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
         ScuteDescriptor,
     };
@@ -414,7 +414,9 @@ mod tests {
             annotations: chain_annotations(),
         };
         let mbytes = serde_json::to_vec(&m).unwrap();
-        let mdigest = m.digest().unwrap();
+        let mdigest = conglobate::artifact::Digest::Sha256(
+            <sha2::Sha256 as sha2::Digest>::digest(&mbytes).into(),
+        );
 
         let bs = FilesystemBlobStore::new(g);
         bs.put_blob(&mdigest, &mbytes).await.unwrap();

@@ -34,6 +34,7 @@ is still a valid image — a base others derive from.
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
 | `pichi run` | Boot a cached artifact (prepares the environment, execs dillo) |
+| `pichi update` | Resolve committed plan inputs into a build lock |
 | `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |
 | `pichi system` | System-level inspection and maintenance |
 
@@ -51,6 +52,24 @@ Plan and lock paths are relative to `--context` (default `.`). The defaults
 are `pichi.yaml` and `pichi.lock`. `-p`/`--plan` and `-l`/`--lock` override
 them. The build-port response carries those resolved relative paths as
 `plan` and `lock`, alongside the selected `context`.
+
+Create a lock with the matching Conglobate CLI installed:
+
+```sh
+pichi update . --ref HEAD --conglobate /path/to/conglobate
+```
+
+Conglobate reads the committed plan and reports its selected remote inputs.
+Pichi resolves those references from the local cache into `pichi.lock`; pull
+missing inputs first. Bare imported manifests receive a cached index wrapper
+without changing their tags. Existing index inputs retain their exact digest.
+Commit the generated lock before selecting that commit for `pichi build`.
+Working-tree plan edits do not affect inspection. `--context`, `--plan`, and
+`--lock` select alternative paths; the legacy `pichi.build` layout is retired.
+
+The `conglobate` library supplies shared artifact, lock, and build-port types.
+Its default feature set has no builder runtime dependencies. Build the matching
+executable with `cargo build --features cli --bin conglobate` in that repository.
 
 `-b`/`--build-image` selects the build appliance image. When it is omitted,
 pichi uses the digest-pinned default. If that image is not already cached,
