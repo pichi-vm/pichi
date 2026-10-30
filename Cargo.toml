@@ -58,20 +58,20 @@ dillo = { git = "https://github.com/pichi-vm/dillo", artifact = "bin", optional 
 
 # Optional guest musl binaries for `vm-tests` only. Production `pichi build`
 # launches Conglobate's shipped pichi image (see BUILD.md); it does not treat
-# conglobate as build-image `/init`. Pin corium to b1d2d24 (workspace carapace
-# 99caf794: Assemble/FromGpt, no `carapace::attach`) and set lib = false
-# (`CORIUM_ROOT_OK` is gone). Conglobate's lib (types only) is the host
+# conglobate as build-image `/init`. Corium and the host importer use the
+# same Carapace origin geometry. Guest artifacts set lib = false.
+# Conglobate's lib (types only) is the host
 # `conglobate` dep above — this entry shares that name to add only the
 # cross-built `bin` artifact (lib = false), so cargo unifies them. Conglobate's
 # engine dependencies follow the pinned appliance source.
 # Gated on `vm-tests`.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "f88a7215ee93f85fe340991730e6e7a8046f02fc", artifact = "bin:conglobate", lib = false, default-features = false, features = ["engine"], target = "x86_64-unknown-linux-musl", optional = true }
-corium = { git = "https://github.com/pichi-vm/corium", rev = "b1d2d24a8db9cf845c79a3cabc7cdd5dd6f0a275", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
+corium = { git = "https://github.com/pichi-vm/corium", rev = "0c6f5743263b1d7afb298521859b6679eb67f2af", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "f88a7215ee93f85fe340991730e6e7a8046f02fc", artifact = "bin:conglobate", lib = false, default-features = false, features = ["engine"], target = "aarch64-unknown-linux-musl", optional = true }
-corium = { git = "https://github.com/pichi-vm/corium", rev = "b1d2d24a8db9cf845c79a3cabc7cdd5dd6f0a275", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
+corium = { git = "https://github.com/pichi-vm/corium", rev = "0c6f5743263b1d7afb298521859b6679eb67f2af", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
@@ -138,7 +138,7 @@ uninlined_format_args = "allow"
 [workspace.dependencies]
 # Cross-product shared crates
 pichi-artifact = { git = "https://github.com/pichi-vm/pichi-artifact", rev = "e26a5cb552ef066a1216acc0da62ca2f9c178145" }
-carapace = { git = "https://github.com/pichi-vm/carapace", rev = "99caf7941ac8930a5761f6f843b6d8e53dd89587", default-features = false, features = ["image"] }
+carapace = { git = "https://github.com/pichi-vm/carapace", rev = "cb2606184afa826001a6c17cac19ec62e4d4ea09", default-features = false, features = ["image"] }
 devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "2679426fa1d4508fc5c3bbdf643efbdbe64a3edd" }
 devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "2679426fa1d4508fc5c3bbdf643efbdbe64a3edd", features = ["sha2"] }
 pmi = { git = "https://github.com/pichi-vm/pmi" }

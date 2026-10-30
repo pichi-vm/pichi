@@ -405,10 +405,6 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_sources_do_not_publish_a_tag() {
-        // Unix truncation creates a sparse file without allocating 64 GiB.
-        #[cfg(unix)]
-        let sizes = [0, 64 * 1024 * 1024 * 1024 + 1];
-        #[cfg(not(unix))]
         let sizes = [0];
         for size in sizes {
             let tmp = TempDir::new().unwrap();
@@ -425,5 +421,29 @@ mod tests {
                 .unwrap();
             assert_eq!(std::fs::read_dir(scratch).unwrap().count(), 0);
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn sparse_import_preserves_data_above_the_old_extent() {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("large.raw");
+        let mut source = File::create(&path).unwrap();
+        source.set_len(65 * 1024 * 1024 * 1024).unwrap();
+        source
+            .seek(SeekFrom::Start(64 * 1024 * 1024 * 1024 + 4096))
+            .unwrap();
+        source.write_all(&[0x5a; 4096]).unwrap();
+        drop(source);
+        let (args, scratch) = make_args(&tmp, path, "base:large");
+        let staged = StagedImport::new(args, &scratch).unwrap();
+        assert_eq!(staged.cow.as_file().metadata().unwrap().len(), 3 * 4096);
+        let mut cow = File::open(staged.cow.path()).unwrap();
+        cow.seek(SeekFrom::End(-4096)).unwrap();
+        let mut data = [0; 4096];
+        cow.read_exact(&mut data).unwrap();
+        assert_eq!(data, [0x5a; 4096]);
+        let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
+        manifest.validate().unwrap();
     }
 }
