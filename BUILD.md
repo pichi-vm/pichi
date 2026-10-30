@@ -201,6 +201,11 @@ otherwise the digest-pinned default (digest means the image content fingerprint)
 pulls it with the same path as `pichi pull` (`--pull=missing`) and then
 continues the build. The first build fetches the appliance.
 
+Run and build share cached-reference resolution. They accept bare manifests,
+stored image indexes, and index-digest references whose pull selected and
+cached a platform manifest. An informational tag in `name:tag@digest` does
+not change the digest selection.
+
 ### OCI import and verity verification
 
 After guest exit 0, `pichi build` imports the complete OCI layout at the

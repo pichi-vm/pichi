@@ -305,7 +305,7 @@ async fn ensure_build_image(
     db: &FilesystemTagDb,
     blob_store: &FilesystemBlobStore,
 ) -> Result<()> {
-    if build_image_cached(reference, db, blob_store).await? {
+    if image_cached(reference, db, blob_store).await? {
         return Ok(());
     }
     eprintln!("Unable to find build image {reference} locally; pulling...");
@@ -322,7 +322,7 @@ async fn ensure_build_image(
 }
 
 /// True when `resolve_manifest` would find `reference` without a pull.
-async fn build_image_cached(
+pub(crate) async fn image_cached(
     reference: &str,
     db: &FilesystemTagDb,
     blob_store: &FilesystemBlobStore,
@@ -330,7 +330,7 @@ async fn build_image_cached(
     let canonical = canonicalize_reference(reference);
     let target: Reference = canonical
         .parse()
-        .with_context(|| format!("invalid build-image reference: {reference}"))?;
+        .with_context(|| format!("invalid image reference: {reference}"))?;
     if let ReferenceKind::Digest(d) = &target.kind
         && blob_store.blob_exists(d).await
     {
@@ -394,7 +394,7 @@ fn load_build_lock(repo: &Path, context: &str, lock_rel: &str) -> Result<BuildLo
 /// an image index (Conglobate Follow-up A lock pins), else the bare manifest
 /// digest. Index entries are walked with the same `pichi`/`GOARCH` selector
 /// as `pichi pull` (D-02 / D-20).
-async fn resolve_manifest(
+pub(crate) async fn resolve_manifest(
     reference: &str,
     db: &FilesystemTagDb,
     blob_store: &FilesystemBlobStore,
@@ -716,22 +716,22 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&graphroot);
 
         let tag_ref = "ghcr.io/example/appliance:1";
-        assert!(!build_image_cached(tag_ref, &db, &blob_store).await.unwrap());
+        assert!(!image_cached(tag_ref, &db, &blob_store).await.unwrap());
 
         let digest: Digest =
             "sha256:abababababababababababababababababababababababababababababababab"
                 .parse()
                 .unwrap();
         db.set_tag(tag_ref, &digest).await.unwrap();
-        assert!(build_image_cached(tag_ref, &db, &blob_store).await.unwrap());
+        assert!(image_cached(tag_ref, &db, &blob_store).await.unwrap());
 
         // Digest pin whose index blob is absent is cached once the canonical
         // `name@digest` tag exists (D-02 drops the index on pull).
         let pin = "ghcr.io/pichi-vm/conglobate:0.2.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        assert!(!build_image_cached(pin, &db, &blob_store).await.unwrap());
+        assert!(!image_cached(pin, &db, &blob_store).await.unwrap());
         let canon = canonicalize_reference(pin);
         db.set_tag(canon.as_ref(), &digest).await.unwrap();
-        assert!(build_image_cached(pin, &db, &blob_store).await.unwrap());
+        assert!(image_cached(pin, &db, &blob_store).await.unwrap());
     }
 
     #[test]

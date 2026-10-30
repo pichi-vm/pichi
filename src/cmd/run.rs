@@ -26,12 +26,13 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 
-use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements, ScuteDescriptor};
-use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_artifact::{Digest, Manifest, Reference, Requirements, ScuteDescriptor};
+use pichi_storage::{BlobSidecarExt, FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
+use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
 use crate::config::Config;
@@ -48,47 +49,22 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
-    // 1. Resolve ref -> manifest digest.
-    let target_ref: Reference = args
-        .reference
+    // Resolve indexes and pull-created tag mappings through the same path
+    // as build, including informational tags on digest-pinned references.
+    let canonical = canonicalize_reference(&args.reference);
+    let target_ref: Reference = canonical
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
-    let digest = match &target_ref.kind {
-        ReferenceKind::Digest(d) => {
-            // Auto-pull on a cache miss, mirroring `docker`/`podman run`'s
-            // default `--pull=missing`.
-            if !blob_store.blob_exists(d).await {
-                auto_pull(&target_ref, config).await?;
-            }
-            d.clone()
-        }
-        ReferenceKind::Tag(_) => {
-            let key = target_ref.to_string();
-            match db.resolve_tag(&key).await? {
-                Some(d) => d,
-                None => {
-                    auto_pull(&target_ref, config).await?;
-                    db.resolve_tag(&key)
-                        .await?
-                        .ok_or_else(|| anyhow!("{key} not in cache after pull"))?
-                }
-            }
-        }
-    };
+    if !image_cached(&canonical, &db, &blob_store).await? {
+        auto_pull(&target_ref, config).await?;
+    }
+    let (_, manifest) = resolve_manifest(&canonical, &db, &blob_store).await?;
 
-    // 2. Read + validate the manifest snapshot.
-    let bytes = blob_store
-        .get_blob(&digest)
-        .await
-        .with_context(|| format!("reading manifest blob {digest}"))?;
-    let manifest = Manifest::decode_json(bytes.as_slice())
-        .with_context(|| format!("validating manifest {digest}"))?;
-
-    // 3. Architecture-mismatch fail-closed check (accept if absent).
+    // Architecture-mismatch fail-closed check (accept if absent).
     manifest.check_architecture()?;
 
-    // 4. Derive the dillo argv from the manifest + runtime resources, applying
-    //    the artifact's requirements.yaml floors (BUILD.md §7) when present.
+    // Derive the dillo argv from the manifest + runtime resources, applying
+    // the artifact's requirements.yaml floors (BUILD.md §7) when present.
     let reqs = requirements::load_requirements(&manifest, &blob_store).await?;
     let cpus = requirements::resolve_sized(
         args.cpus.or(config.run.cpus),
@@ -107,7 +83,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
     let interfaces = reqs.as_ref().map_or(0, |r| r.interfaces.len());
     let dillo_args = build_dillo_args(&manifest, &blob_store, cpus, memory, interfaces).await?;
 
-    // 5. Locate dillo and hand off.
+    // Locate dillo and hand off.
     let dillo = find_dillo();
     exec_dillo(&dillo, &dillo_args)
 }
