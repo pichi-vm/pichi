@@ -372,7 +372,7 @@ dependencies = [
 [[package]]
 name = "carapace"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/carapace?rev=99caf7941ac8930a5761f6f843b6d8e53dd89587#99caf7941ac8930a5761f6f843b6d8e53dd89587"
+source = "git+https://github.com/pichi-vm/carapace?rev=cb2606184afa826001a6c17cac19ec62e4d4ea09#cb2606184afa826001a6c17cac19ec62e4d4ea09"
 dependencies = [
  "devmap-core 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
  "devmap-linux 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
@@ -621,7 +621,7 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 [[package]]
 name = "corium"
 version = "0.2.0"
-source = "git+https://github.com/pichi-vm/corium?rev=b1d2d24a8db9cf845c79a3cabc7cdd5dd6f0a275#b1d2d24a8db9cf845c79a3cabc7cdd5dd6f0a275"
+source = "git+https://github.com/pichi-vm/corium?rev=0c6f5743263b1d7afb298521859b6679eb67f2af#0c6f5743263b1d7afb298521859b6679eb67f2af"
 dependencies = [
  "carapace",
  "log",
