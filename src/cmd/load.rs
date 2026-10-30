@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use super::cache::ImageStore as _;
 use anyhow::{Context, Result, bail, ensure};
 use cap_std::fs::Dir;
-use pichi_artifact::{Digest, Manifest, Reference};
+use conglobate::artifact::{Digest, Manifest, Reference};
+use conglobate::artifact::{Index as LayoutIndex, IndexDescriptor as LayoutEntry, LayoutMarker};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
-use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
 use crate::cli::LoadArgs;
@@ -23,36 +23,11 @@ use crate::cmd::layer::PreparedLayer;
 use crate::cmd::manifest_ext::{ManifestExt as _, ScuteRoots};
 use crate::config::Config;
 
-const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+use conglobate::artifact::{
+    MEDIA_TYPE_OCI_INDEX_V1 as INDEX_TYPE, MEDIA_TYPE_OCI_MANIFEST_V1 as MANIFEST_TYPE,
+};
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 const FILE_CAP: usize = 4096;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LayoutMarker {
-    image_layout_version: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LayoutIndex {
-    schema_version: u32,
-    media_type: String,
-    manifests: Vec<LayoutEntry>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LayoutEntry {
-    media_type: String,
-    artifact_type: Option<String>,
-    digest: String,
-    size: u64,
-    platform: Option<serde_json::Value>,
-    #[serde(default)]
-    annotations: BTreeMap<String, String>,
-}
 
 /// Owns a private snapshot. No guest path or cache sidecar is authoritative.
 /// The VM must have exited before build calls `read`.
@@ -102,7 +77,7 @@ impl OciLayout {
                         );
                     }
                     let path = layout.store.blob_path(&layer.digest_str().parse()?);
-                    let size = if matches!(layer, pichi_artifact::Layer::ScuteZstd(_)) {
+                    let size = if matches!(layer, conglobate::artifact::Layer::ScuteZstd(_)) {
                         std::fs::metadata(path.deflated_path())?.len()
                     } else {
                         layer.size()
@@ -182,7 +157,7 @@ impl OciLayout {
                 entry
                     .artifact_type
                     .as_deref()
-                    .is_none_or(|t| t == pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1),
+                    .is_none_or(|t| t == conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1),
                 "invalid index artifact type"
             );
             ensure!(entry.size <= METADATA_CAP, "manifest exceeds metadata cap");
@@ -218,7 +193,7 @@ impl OciLayout {
                 );
                 let digest = layout.copy_blob(&root, &config.digest, config.size, &mut expected)?;
                 if !config.is_empty() {
-                    let config: pichi_artifact::Config =
+                    let config: conglobate::artifact::Config =
                         serde_json::from_slice(&std::fs::read(layout.store.blob_path(&digest))?)
                             .context("invalid launch config")?;
                     config.validate().context("invalid launch config")?;
@@ -227,7 +202,8 @@ impl OciLayout {
             if manifest.layers.iter().any(|l| {
                 matches!(
                     l,
-                    pichi_artifact::Layer::Scute(_) | pichi_artifact::Layer::ScuteZstd(_)
+                    conglobate::artifact::Layer::Scute(_)
+                        | conglobate::artifact::Layer::ScuteZstd(_)
                 )
             }) {
                 for key in [
@@ -246,7 +222,8 @@ impl OciLayout {
                 layout.copy_blob(&root, layer.digest_str(), layer.size(), &mut expected)?;
                 if matches!(
                     layer,
-                    pichi_artifact::Layer::Scute(_) | pichi_artifact::Layer::ScuteZstd(_)
+                    conglobate::artifact::Layer::Scute(_)
+                        | conglobate::artifact::Layer::ScuteZstd(_)
                 ) {
                     ensure!(
                         manifest
@@ -567,8 +544,8 @@ pub(super) mod tests {
                 manifest: json!({
                     "schemaVersion": 2,
                     "mediaType": MANIFEST_TYPE,
-                    "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-                    "config": pichi_artifact::ConfigDescriptor::canonical(),
+                    "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                    "config": conglobate::artifact::ConfigDescriptor::canonical(),
                     "layers": [],
                     "annotations": {
                         "dev.pichi.carapace.verity.algo": "sha256",
@@ -605,7 +582,7 @@ pub(super) mod tests {
                 cow.clone()
             };
             self.manifest["layers"].as_array_mut().unwrap().push(json!({
-                "mediaType": if compressed { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
+                "mediaType": if compressed { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
                 "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
                 "size": wire.len(),
                 "annotations": {
@@ -639,7 +616,7 @@ pub(super) mod tests {
                     "schemaVersion": 2, "mediaType": INDEX_TYPE,
                     "manifests": [{
                         "mediaType": MANIFEST_TYPE,
-                        "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                        "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
                         "digest": digest.to_string(), "size": bytes.len(),
                         "annotations": { REF_NAME_ANNOTATION: "guest:ignored" },
                     }],
@@ -714,7 +691,11 @@ pub(super) mod tests {
                 manifest.carapace_top_root(&store).await.unwrap(),
                 fixture.tip
             );
-            assert!(manifest.carapace_verity_hash().is_none());
+            assert!(
+                !manifest
+                    .annotations
+                    .contains_key("dev.pichi.carapace.verity.hash")
+            );
             for (blob, tree) in fixture.blobs.iter().zip(&fixture.trees) {
                 let path = store
                     .blob_path(&Digest::Sha256(
@@ -823,7 +804,7 @@ pub(super) mod tests {
                 "config type" => fixture.manifest["config"]["mediaType"] = "text/plain".into(),
                 "missing config" | "bad config" | "inline config" => {
                     fixture.manifest["config"] = json!({
-                        "mediaType": pichi_artifact::MEDIA_TYPE_PICHI_CONFIG_V1,
+                        "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_CONFIG_V1,
                         "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"bad config").into()).to_string(),
                         "size": 10,
                     });

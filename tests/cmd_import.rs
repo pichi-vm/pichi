@@ -13,7 +13,7 @@ mod index;
 use std::path::PathBuf;
 
 use assert_cmd::Command;
-use pichi_artifact::{Layer, Manifest};
+use conglobate::artifact::{Layer, Manifest};
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 

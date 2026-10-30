@@ -14,112 +14,25 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-/// Named MULTIPORT port the host and Conglobate appliance agree on.
-pub(crate) const BUILD_PORT_NAME: &str = "dev.pichi.build";
+pub(crate) use conglobate::build::{
+    Input as BuildInput, PORT_NAME as BUILD_PORT_NAME, Request as GuestRequest, Response,
+};
 
-/// Guest → host request (v0).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct GuestRequest {
-    pub v: u32,
-    pub op: String,
+pub(crate) trait ResponseExt {
+    fn encode_cbor(&self) -> Result<Vec<u8>>;
 }
-
-impl GuestRequest {
-    pub(crate) fn expected() -> Self {
-        Self {
-            v: 1,
-            op: "build-input".to_string(),
-        }
-    }
-
-    pub(crate) fn validate(&self) -> Result<()> {
-        let expected = Self::expected();
-        if self.v != expected.v {
-            bail!("build-port request unsupported version {}", self.v);
-        }
-        if self.op != expected.op {
-            bail!("build-port request unknown op {:?}", self.op);
-        }
-        Ok(())
-    }
-}
-
-/// Host-prepared build-input fields (encoded into a success response).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BuildInput {
-    pub git_ref: String,
-    pub plan: String,
-    pub lock: String,
-    pub context: Option<String>,
-    pub location: Option<String>,
-}
-
-impl BuildInput {
-    /// Encode as the success response map (`v`/`ok` plus build-input fields).
-    pub(crate) fn encode_success(&self) -> Result<Vec<u8>> {
-        let mut map = Vec::new();
-        map.push((
-            ciborium::Value::Text("v".into()),
-            ciborium::Value::Integer(1.into()),
-        ));
-        map.push((
-            ciborium::Value::Text("ok".into()),
-            ciborium::Value::Bool(true),
-        ));
-        map.push((
-            ciborium::Value::Text("ref".into()),
-            ciborium::Value::Text(self.git_ref.clone()),
-        ));
-        map.push((
-            ciborium::Value::Text("plan".into()),
-            ciborium::Value::Text(self.plan.clone()),
-        ));
-        map.push((
-            ciborium::Value::Text("lock".into()),
-            ciborium::Value::Text(self.lock.clone()),
-        ));
-        if let Some(context) = &self.context {
-            map.push((
-                ciborium::Value::Text("context".into()),
-                ciborium::Value::Text(context.clone()),
-            ));
-        }
-        if let Some(location) = &self.location {
-            map.push((
-                ciborium::Value::Text("location".into()),
-                ciborium::Value::Text(location.clone()),
-            ));
-        }
+impl ResponseExt for Response {
+    fn encode_cbor(&self) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        ciborium::into_writer(&ciborium::Value::Map(map), &mut bytes)
-            .context("encoding build-port success response")?;
+        ciborium::into_writer(self, &mut bytes).context("encoding build-port response")?;
         Ok(bytes)
     }
 }
 
-/// Encode a failure response map.
-pub(crate) fn encode_failure(error: &str) -> Result<Vec<u8>> {
-    let map = vec![
-        (
-            ciborium::Value::Text("v".into()),
-            ciborium::Value::Integer(1.into()),
-        ),
-        (
-            ciborium::Value::Text("ok".into()),
-            ciborium::Value::Bool(false),
-        ),
-        (
-            ciborium::Value::Text("error".into()),
-            ciborium::Value::Text(error.to_string()),
-        ),
-    ];
-    let mut bytes = Vec::new();
-    ciborium::into_writer(&ciborium::Value::Map(map), &mut bytes)
-        .context("encoding build-port failure response")?;
-    Ok(bytes)
+fn encode_failure(error: &str) -> Result<Vec<u8>> {
+    Response::Failure(error.to_owned()).encode_cbor()
 }
 
 /// Read one guest request, validate it, write the prepared response bytes.
@@ -142,7 +55,7 @@ pub(crate) fn serve_build_port(
     };
     if let Err(err) = request.validate() {
         write_failure_response(&mut host_tx, &err.to_string())?;
-        return Err(err);
+        return Err(err.into());
     }
     host_tx
         .write_all(response)
@@ -316,7 +229,7 @@ mod tests {
             context: None,
             location: None,
         };
-        let bytes = input.encode_success().unwrap();
+        let bytes = Response::Success(input).encode_cbor().unwrap();
         let value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
         let ciborium::Value::Map(entries) = value else {
             panic!("expected map");
@@ -348,7 +261,7 @@ mod tests {
             context: Some("crates/x".into()),
             location: Some("https://example.test/x".into()),
         };
-        let bytes = input.encode_success().unwrap();
+        let bytes = Response::Success(input).encode_cbor().unwrap();
         let value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
         let ciborium::Value::Map(entries) = value else {
             panic!("map");
@@ -393,7 +306,7 @@ mod tests {
     fn serve_accepts_expected_request_and_writes_response() {
         let req = {
             let mut b = Vec::new();
-            ciborium::into_writer(&GuestRequest::expected(), &mut b).unwrap();
+            ciborium::into_writer(&GuestRequest::default(), &mut b).unwrap();
             b
         };
         let response = encode_failure("nope").unwrap();

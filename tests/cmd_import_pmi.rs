@@ -16,7 +16,7 @@ use pichi::cmd::manifest_ext::ManifestExt as _;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use pichi_artifact::{Layer, Manifest};
+use conglobate::artifact::{Layer, Manifest};
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
@@ -135,7 +135,7 @@ async fn import_pmi_without_carapace_is_pmi_only() {
         "PMI-only artifact has no scutes"
     );
     assert!(
-        m.carapace_verity_hash().is_none(),
+        !m.annotations.contains_key("dev.pichi.carapace.verity.hash"),
         "PMI-only artifact declares no carapace verity hash"
     );
 }

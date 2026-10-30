@@ -22,13 +22,13 @@ use minijinja::Environment;
 use serde::Serialize;
 use serde_json::Value;
 
-use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::InspectArgs;
 use crate::config::Config;
 
-const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+use conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1 as OCI_IMAGE_INDEX_MEDIA_TYPE;
 
 /// `pichi inspect` output: the manifest verbatim (the artifact of record) plus
 /// the resolved content digest — the one datum a content-addressed manifest

@@ -21,7 +21,7 @@ use minijinja::Environment;
 use serde::Serialize;
 
 use super::cache::ImageStore as _;
-use pichi_artifact::Layer;
+use conglobate::artifact::Layer;
 use pichi_storage::{CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry};
 
 use crate::cli::ImagesArgs;

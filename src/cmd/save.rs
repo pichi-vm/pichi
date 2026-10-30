@@ -13,17 +13,16 @@
 
 use crate::cmd::cache::ImageStore as _;
 use anyhow::{Context, Result};
-use serde_json::json;
 use std::path::Path;
 
-use pichi_artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference};
+use conglobate::artifact::{
+    Digest, Index, IndexDescriptor, LayoutMarker, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference,
+};
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::SaveArgs;
 use crate::config::Config;
 
-const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
-const OCI_LAYOUT_MARKER: &str = r#"{"imageLayoutVersion":"1.0.0"}"#;
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 
 pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
@@ -46,7 +45,11 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
     tokio::fs::create_dir_all(&blobs_dir)
         .await
         .with_context(|| format!("create {}", blobs_dir.display()))?;
-    tokio::fs::write(out.join("oci-layout"), OCI_LAYOUT_MARKER).await?;
+    tokio::fs::write(
+        out.join("oci-layout"),
+        serde_json::to_vec(&LayoutMarker::default())?,
+    )
+    .await?;
 
     let mut to_copy = std::collections::HashSet::new();
     for image in &images {
@@ -68,17 +71,20 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
     )
     .await?;
 
-    let index = json!({
-        "schemaVersion": 2,
-        "mediaType": OCI_IMAGE_INDEX_MEDIA_TYPE,
-        "manifests": [{
-            "mediaType": root.value["mediaType"],
-            "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "digest": digest.to_string(),
-            "size": root.bytes.len(),
-            "annotations": { REF_NAME_ANNOTATION: tag },
+    let index = Index {
+        manifests: vec![IndexDescriptor {
+            media_type: root.value["mediaType"]
+                .as_str()
+                .context("image has no media type")?
+                .into(),
+            artifact_type: Some(MEDIA_TYPE_PICHI_ARTIFACT_V1.into()),
+            digest: digest.to_string(),
+            size: root.bytes.len() as u64,
+            platform: None,
+            annotations: [(REF_NAME_ANNOTATION.into(), tag.clone())].into(),
         }],
-    });
+        ..Index::default()
+    };
     tokio::fs::write(
         out.join("index.json"),
         serde_json::to_vec_pretty(&index).context("serialise index.json")?,

@@ -17,6 +17,7 @@ mod layer;
 pub mod load;
 pub mod manifest;
 pub mod manifest_ext;
+mod platform;
 pub mod prune;
 pub mod pull;
 pub mod push;

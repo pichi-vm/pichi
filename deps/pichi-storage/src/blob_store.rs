@@ -16,7 +16,7 @@ use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use tokio::io::AsyncRead;
 
-use pichi_artifact::Digest;
+use conglobate::artifact::Digest;
 
 /// An async, streaming blob handle returned by [`BlobStore::open_blob`].
 pub type BlobReader = Box<dyn AsyncRead + Send + Unpin>;

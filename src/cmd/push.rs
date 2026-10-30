@@ -12,8 +12,8 @@ use super::cache::ImageStore as _;
 use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
+use conglobate::artifact::{Digest, Manifest, Reference, ReferenceKind};
 use futures_util::stream;
-use pichi_artifact::{Digest, Manifest, Reference, ReferenceKind};
 use pichi_registry::Registry;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
@@ -23,7 +23,7 @@ use crate::config::Config;
 /// Content-type for OCI image manifests. Plan 05 always pushes the pichi
 /// manifest under this media type — the inner `artifactType` field carries
 /// the `application/vnd.pichi.artifact.v1+json` discriminator (REGISTRY-07).
-const PUSH_MANIFEST_CONTENT_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as PUSH_MANIFEST_CONTENT_TYPE;
 
 /// Publish the cached image at the requested reference.
 pub async fn run(args: PushArgs, config: &Config) -> Result<()> {
@@ -227,7 +227,7 @@ async fn blob_to_stream(
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use pichi_artifact::{
+    use conglobate::artifact::{
         ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
     };
     use pichi_registry::MockRegistry;
@@ -274,7 +274,7 @@ mod tests {
                 digest: scute_digest.to_string(),
                 size: scute_size,
                 annotations: ScuteAnnotations {
-                    data_blocks: None,
+                    data_blocks: scute_size.div_ceil(4096).try_into().unwrap(),
                     salt: hex::encode([0u8; 32]),
                 },
             })],

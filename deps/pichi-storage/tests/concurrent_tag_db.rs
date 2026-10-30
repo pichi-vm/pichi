@@ -102,7 +102,7 @@ async fn with_index_lock_creates_graphroot_if_absent() {
 async fn with_index_lock_path_matches_filesystem_tag_db_lock_path() {
     // CRITICAL invariant: the helper MUST lock the SAME path that
     // FilesystemTagDb::set_tag locks against (`<graphroot>/index.json.lock`).
-    use pichi_artifact::Digest;
+    use conglobate::artifact::Digest;
 
     let tmp = tempfile::TempDir::new().unwrap();
     let layout_arc = Arc::new(layout(tmp.path()));

@@ -1,9 +1,11 @@
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -13,12 +13,6 @@
- workspace = true
+@@ -11,14 +11,6 @@
 
- [features]
+ [lints]
+ workspace = true
+-
+-[features]
 -# Gates the KVM/boot integration tests (build_*.rs). The default `cargo test`
 -# does not pull in the boot deps (arma/dillo/conglobate/corium artifacts); CI
 -# runs them explicitly: `cargo test -p pichi --features vm-tests`. The product
@@ -13,7 +15,7 @@
 
  [dependencies]
  anyhow.workspace = true
-@@ -52,8 +46,6 @@
+@@ -51,8 +43,6 @@
  ruzstd = "0.9.1"
  # Product binaries the boot tests orchestrate (host target). Optional so only
  # `vm-tests` resolves them; a plain `cargo test` pulls zero product artifacts.
@@ -22,16 +24,16 @@
 
  # Optional guest musl binaries for `vm-tests` only. Production `pichi build`
  # launches Conglobate's shipped pichi image (see BUILD.md); it does not treat
-@@ -64,35 +56,11 @@
+@@ -63,34 +53,11 @@
  # cross-built `bin` artifact (lib = false), so cargo unifies them. Conglobate's
- # engine dependencies follow the pinned appliance source.
+ # CLI dependencies follow the pinned appliance source.
  # Gated on `vm-tests`.
 -[target.'cfg(target_arch = "x86_64")'.dependencies]
--conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "f88a7215ee93f85fe340991730e6e7a8046f02fc", artifact = "bin:conglobate", lib = false, default-features = false, features = ["engine"], target = "x86_64-unknown-linux-musl", optional = true }
+-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "c9b48481a495410848bbb631e088359e2e84daff", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "x86_64-unknown-linux-musl", optional = true }
 -corium = { git = "https://github.com/pichi-vm/corium", rev = "0c6f5743263b1d7afb298521859b6679eb67f2af", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 -
 -[target.'cfg(target_arch = "aarch64")'.dependencies]
--conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "f88a7215ee93f85fe340991730e6e7a8046f02fc", artifact = "bin:conglobate", lib = false, default-features = false, features = ["engine"], target = "aarch64-unknown-linux-musl", optional = true }
+-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "c9b48481a495410848bbb631e088359e2e84daff", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "aarch64-unknown-linux-musl", optional = true }
 -corium = { git = "https://github.com/pichi-vm/corium", rev = "0c6f5743263b1d7afb298521859b6679eb67f2af", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 -
  [target.'cfg(unix)'.dependencies]
@@ -43,7 +45,6 @@
 -[dev-dependencies]
 -assert_cmd.workspace = true
 -tempfile.workspace = true
--pichi-artifact.workspace = true
 -pichi-storage.workspace = true
 -# Test-only: round-trip the `--gpt` kv string `cmd::run` emits back through
 -# dillo's device schema to guarantee the format parses as intended. Not a

@@ -3,7 +3,7 @@
 
 //! Cache lifetime follows OCI indexes, including shared and partially cached images.
 
-use pichi_artifact::Digest;
+use conglobate::artifact::Digest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};

@@ -5,8 +5,8 @@
 mod index;
 
 use assert_cmd::Command;
+use conglobate::artifact::{Digest, Manifest};
 use pichi::cmd::manifest_ext::ManifestExt as _;
-use pichi_artifact::{Digest, Manifest};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 #[tokio::test]

@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
-use pichi_artifact::{
+use conglobate::artifact::{
     ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
     ScuteDescriptor,
 };
@@ -37,7 +37,7 @@ async fn insert_manifest(
     graphroot: &std::path::Path,
     tag: &str,
     salt_seed: &str,
-) -> (pichi_artifact::Digest, pichi_artifact::Digest) {
+) -> (conglobate::artifact::Digest, conglobate::artifact::Digest) {
     let scute_digest = format!("sha256:{:0<64}", salt_seed);
     let m = Manifest {
         schema_version: 2,
@@ -48,18 +48,20 @@ async fn insert_manifest(
             digest: scute_digest.clone(),
             size: 1024,
             annotations: ScuteAnnotations {
-                data_blocks: None,
+                data_blocks: 1u64.try_into().unwrap(),
                 salt: format!("{:0<8}", salt_seed),
             },
         })],
         annotations: chain_annotations(),
     };
     let mbytes = serde_json::to_vec(&m).unwrap();
-    let mdigest = m.digest().unwrap();
+    let mdigest = conglobate::artifact::Digest::Sha256(
+        <sha2::Sha256 as sha2::Digest>::digest(&mbytes).into(),
+    );
     let bs = FilesystemBlobStore::new(graphroot);
     bs.put_blob(&mdigest, &mbytes).await.unwrap();
     // Insert a fake scute blob too so `delete_blob` actually finds something.
-    let parsed_scute: pichi_artifact::Digest = scute_digest.parse().unwrap();
+    let parsed_scute: conglobate::artifact::Digest = scute_digest.parse().unwrap();
     bs.put_blob(&parsed_scute, b"fake-scute-bytes")
         .await
         .unwrap();

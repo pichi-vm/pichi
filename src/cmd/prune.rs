@@ -51,7 +51,7 @@
 use anyhow::{Context, Result};
 use humansize::{BINARY, format_size};
 
-use pichi_artifact::Digest;
+use conglobate::artifact::Digest;
 use pichi_storage::{BlobSidecarExt, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
 use crate::cli::PruneArgs;
@@ -247,7 +247,7 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use pichi_artifact::{
+    use conglobate::artifact::{
         ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
         ScuteDescriptor,
     };
@@ -387,14 +387,16 @@ mod tests {
                 digest: scute_digest_str.clone(),
                 size: 1024,
                 annotations: ScuteAnnotations {
-                    data_blocks: None,
+                    data_blocks: 1u64.try_into().unwrap(),
                     salt: "00000000".into(),
                 },
             })],
             annotations: chain_annotations(),
         };
         let mbytes = serde_json::to_vec(&m).unwrap();
-        let mdigest = m.digest().unwrap();
+        let mdigest = conglobate::artifact::Digest::Sha256(
+            <sha2::Sha256 as sha2::Digest>::digest(&mbytes).into(),
+        );
 
         let bs = FilesystemBlobStore::new(g);
         bs.put_blob(&mdigest, &mbytes).await.unwrap();

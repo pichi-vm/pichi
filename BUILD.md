@@ -230,6 +230,13 @@ checks are preflight bounds, not reservations: concurrent writes, copies,
 and reconstructed verity data can still exhaust storage. Such I/O errors
 abort the import and leave tags unchanged.
 
+Every scute must declare a positive `dev.pichi.scute.verity.data-blocks`
+count. The count describes the decoded data rounded up to 4,096-byte blocks;
+it must agree with the raw descriptor size or the actual decoded length.
+Compressed inputs feed the verity formatter while they are decoded, using
+the declared count to place the hash tree. Missing or zero counts fail
+before any output tag changes, including when the blob is already cached.
+
 For **every scute**, including cache hits, the host rebuilds dm-verity from
 the cow bytes and the full manifest salt. Reconstruction uses SHA-256,
 format 1/hash type 1, 4,096-byte data/hash blocks, and a zero UUID. The host

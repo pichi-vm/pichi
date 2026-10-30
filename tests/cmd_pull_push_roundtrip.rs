@@ -240,7 +240,7 @@ async fn bit_identical_round_trip() {
 /// an unselected platform or changing the upstream index bytes.
 #[tokio::test]
 async fn index_pin_survives_tag_move_and_fresh_cache() {
-    use pichi_artifact::Digest;
+    use conglobate::artifact::Digest;
     use pichi_storage::{BlobStore, FilesystemBlobStore};
     use sha2::{Digest as _, Sha256};
     let Some(base) = test_repo_base() else {

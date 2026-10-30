@@ -49,6 +49,64 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     // That tree stores `plan.yaml` / `lock.yaml`; the smoke passes
     // those paths with `-p` / `-l`.
     let (repo, git_ref) = prepare_smoke_repo(tmp.path(), &index);
+    assert_pichi_ok(
+        "update",
+        &pichi(
+            g,
+            &[],
+            &[
+                "update",
+                repo.to_str().unwrap(),
+                "--ref",
+                &git_ref,
+                "--context",
+                SMOKE_CONTEXT,
+                "-p",
+                SMOKE_PLAN,
+                "-l",
+                SMOKE_LOCK,
+                "--conglobate",
+                common::CONGLOBATE_BIN,
+            ],
+        ),
+    );
+    let lock: conglobate::build::Lock =
+        serde_yaml::from_slice(&std::fs::read(repo.join(SMOKE_CONTEXT).join(SMOKE_LOCK)).unwrap())
+            .unwrap();
+    assert_eq!(lock.images[SMOKE_SOURCE_REF].index.to_string(), index);
+    assert_pichi_ok("prune after update", &pichi(g, &[], &["system", "prune"]));
+    // Build the committed lock produced by update, after cache collection.
+    for args in [
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "Record generated lock",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let revision = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(revision.status.success());
+    let git_ref = String::from_utf8(revision.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
 
     // Timed spawn: BUILD.md requires guest exit 0 after the build.
     // Conglobate #11 adds SuccessAction=poweroff; keep a bound so a
