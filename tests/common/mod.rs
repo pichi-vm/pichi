@@ -329,10 +329,6 @@ pub fn tag_digest(graphroot: &Path, reference: &str) -> String {
 /// Import a tiny source carapace and retain its authentic platform index.
 /// Returns the index digest to record in the smoke repository's lock.
 pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) -> String {
-    use pichi_artifact::{Digest, Reference};
-    use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
-    use sha2::{Digest as _, Sha256};
-
     let src = tmp.join("qualification-fedora43.ext4");
     make_ext4(&src, &[("os-release", "ID=fedora\nVERSION_ID=43\n")]);
     assert_pichi_ok(
@@ -349,27 +345,7 @@ pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) -> String 
             ],
         ),
     );
-    let storage = graphroot.join("pichi/storage");
-    let store = FilesystemBlobStore::new(&storage);
-    let db = FilesystemTagDb::open(&storage).unwrap();
-    let manifest: Digest = tag_digest(graphroot, SMOKE_SOURCE_REF).parse().unwrap();
-    let bytes = store.get_blob(&manifest).await.unwrap();
-    let index = serde_json::json!({
-        "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
-        "manifests": [{
-            "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "artifactType": "application/vnd.pichi.artifact.v1+json",
-            "digest": manifest.to_string(), "size": bytes.len(),
-            "platform": {"os": "pichi", "architecture": "amd64"}
-        }]
-    });
-    let bytes = serde_json::to_vec(&index).unwrap();
-    let digest = Digest::Sha256(Sha256::digest(&bytes).into());
-    store.put_blob(&digest, &bytes).await.unwrap();
-    let reference: Reference = SMOKE_SOURCE_REF.parse().unwrap();
-    db.set_tag(&reference.to_string(), &digest).await.unwrap();
-    assert_eq!(tag_digest(graphroot, SMOKE_SOURCE_REF), digest.to_string());
-    digest.to_string()
+    tag_digest(graphroot, SMOKE_SOURCE_REF)
 }
 
 /// Commit the smoke context from the appliance source revision into a fresh

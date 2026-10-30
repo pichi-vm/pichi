@@ -115,6 +115,32 @@ enum Visit {
 }
 
 pub(super) trait ImageStore: BlobStore {
+    /// Give a locally produced manifest a publishable platform index. An
+    /// existing index retains its exact bytes, including all platform entries.
+    async fn local_index(&self, digest: &Digest, platform: Option<Value>) -> Result<Digest> {
+        let metadata = self.metadata(digest).await?;
+        if metadata.is_index() {
+            return Ok(metadata.digest);
+        }
+        metadata.manifest()?;
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": OCI_IMAGE_INDEX_MEDIA_TYPE,
+            "manifests": [{
+                "mediaType": MANIFEST_TYPE,
+                "artifactType": pichi_artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                "digest": metadata.digest.to_string(),
+                "size": metadata.bytes.len(),
+                "platform": platform.unwrap_or_else(|| serde_json::json!({
+                    "os": TARGET_OS, "architecture": TARGET_ARCH
+                }))
+            }]
+        }))?;
+        let digest = Digest::Sha256(Sha256::digest(&bytes).into());
+        self.put_blob(&digest, &bytes).await?;
+        Ok(digest)
+    }
+
     async fn metadata(&self, digest: &Digest) -> Result<ImageMetadata> {
         let mut bytes = Vec::new();
         self.open_blob(digest)

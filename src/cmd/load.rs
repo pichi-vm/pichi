@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
+use super::cache::ImageStore as _;
 use anyhow::{Context, Result, bail, ensure};
 use cap_std::fs::Dir;
 use pichi_artifact::{Digest, Manifest, Reference};
@@ -41,13 +42,14 @@ struct LayoutIndex {
     manifests: Vec<LayoutEntry>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LayoutEntry {
     media_type: String,
     artifact_type: Option<String>,
     digest: String,
     size: u64,
+    platform: Option<serde_json::Value>,
     #[serde(default)]
     annotations: BTreeMap<String, String>,
 }
@@ -59,7 +61,7 @@ pub(super) struct OciLayout {
     staging: tempfile::TempDir,
     store: FilesystemBlobStore,
     manifests: Vec<Manifest>,
-    roots: Vec<(Digest, Option<String>)>,
+    roots: Vec<LayoutEntry>,
     blobs: HashMap<Digest, u64>,
     guest_verity: Vec<(Digest, PathBuf)>,
 }
@@ -151,16 +153,7 @@ impl OciLayout {
             staging,
             store,
             manifests: Vec::new(),
-            roots: index
-                .manifests
-                .iter()
-                .map(|entry| {
-                    Ok((
-                        entry.digest.parse()?,
-                        entry.annotations.get(REF_NAME_ANNOTATION).cloned(),
-                    ))
-                })
-                .collect::<Result<_>>()?,
+            roots: index.manifests.clone(),
             blobs: HashMap::new(),
             guest_verity: Vec::new(),
         };
@@ -173,7 +166,7 @@ impl OciLayout {
             layout
                 .roots
                 .iter()
-                .map(|(digest, _)| digest)
+                .map(|entry| &entry.digest)
                 .collect::<HashSet<_>>()
                 .len()
                 == layout.roots.len(),
@@ -480,17 +473,17 @@ impl OciLayout {
             self.roots.len() == 1,
             "build OCI index must contain exactly one root"
         );
-        let digest = self.roots[0].0.clone();
         let tag = tag
             .parse::<Reference>()
             .with_context(|| format!("invalid tag {tag}"))?
             .to_string();
-        self.commit(store).await?;
+        let roots = self.commit(store).await?;
+        let digest = roots[0].clone();
         db.set_tag(&tag, &digest).await?;
         Ok(digest)
     }
 
-    async fn commit(&self, store: &FilesystemBlobStore) -> Result<()> {
+    async fn commit(&self, store: &FilesystemBlobStore) -> Result<Vec<Digest>> {
         // Only fully validated private bytes reach the cache. Rename sidecars
         // even on cache hits, so old sidecars cannot bypass the fresh rebuild.
         for digest in self.blobs.keys() {
@@ -507,7 +500,15 @@ impl OciLayout {
             }
             store.put_blob_from_path(&source, digest).await?;
         }
-        Ok(())
+        let mut indexes = Vec::new();
+        for root in &self.roots {
+            indexes.push(
+                store
+                    .local_index(&root.digest.parse()?, root.platform.clone())
+                    .await?,
+            );
+        }
+        Ok(indexes)
     }
 }
 
@@ -517,26 +518,28 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let imported = OciLayout::read(&args.input, &store).await?;
     let mut tags = BTreeMap::new();
-    for (digest, tag) in &imported.roots {
-        if let Some(tag) = args.tag.as_ref().or(tag.as_ref()) {
+    for (position, entry) in imported.roots.iter().enumerate() {
+        if let Some(tag) = args
+            .tag
+            .as_ref()
+            .or(entry.annotations.get(REF_NAME_ANNOTATION))
+        {
             let tag = tag
                 .parse::<Reference>()
                 .with_context(|| format!("invalid tag {tag}"))?
                 .to_string();
-            ensure!(
-                tags.insert(tag, digest.clone()).is_none(),
-                "duplicate OCI tag"
-            );
+            ensure!(tags.insert(tag, position).is_none(), "duplicate OCI tag");
         }
     }
-    imported.commit(&store).await?;
-    for (digest, tag) in &imported.roots {
-        if args.tag.is_none() && tag.is_none() {
+    let indexes = imported.commit(&store).await?;
+    for (digest, entry) in indexes.iter().zip(&imported.roots) {
+        if args.tag.is_none() && !entry.annotations.contains_key(REF_NAME_ANNOTATION) {
             println!("loaded {digest} (untagged)");
         }
     }
-    for (tag, digest) in tags {
-        db.set_tag(&tag, &digest).await?;
+    for (tag, position) in tags {
+        let digest = &indexes[position];
+        db.set_tag(&tag, digest).await?;
         println!("loaded {tag}");
     }
     Ok(())
@@ -658,6 +661,24 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn load_preserves_supplied_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("output");
+        LayoutFixture::new().write(&output);
+        let path = output.join("index.json");
+        let mut index: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let platform = json!({"os": "pichi", "architecture": "arm64", "variant": "v8"});
+        index["manifests"][0]["platform"] = platform.clone();
+        std::fs::write(path, serde_json::to_vec(&index).unwrap()).unwrap();
+        let store = FilesystemBlobStore::new(dir.path().join("cache"));
+        let imported = OciLayout::read(&output, &store).await.unwrap();
+        let roots = imported.commit(&store).await.unwrap();
+        let index = store.metadata(&roots[0]).await.unwrap();
+        assert_eq!(index.value["manifests"][0]["platform"], platform);
+    }
+
+    #[tokio::test]
     async fn imports_guest_manifest_verbatim_and_rebuilds_on_cache_hits() {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("output");
@@ -672,15 +693,14 @@ pub(super) mod tests {
         fixture.sidecars(&output);
         for _ in 0..2 {
             let imported = OciLayout::read(&output, &store).await.unwrap();
-            assert_eq!(
-                imported
-                    .import_build(&store, &db, "built:v1")
-                    .await
-                    .unwrap(),
-                digest
-            );
+            let index = imported
+                .import_build(&store, &db, "built:v1")
+                .await
+                .unwrap();
+            let (metadata, _) = store.manifest(&index).await.unwrap();
+            assert_eq!(metadata.digest, digest);
             let key = "built:v1".parse::<Reference>().unwrap().to_string();
-            assert_eq!(db.resolve_tag(&key).await.unwrap(), Some(digest.clone()));
+            assert_eq!(db.resolve_tag(&key).await.unwrap(), Some(index));
             assert!(
                 db.resolve_tag(&"guest:ignored".parse::<Reference>().unwrap().to_string())
                     .await

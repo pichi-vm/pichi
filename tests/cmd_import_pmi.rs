@@ -9,12 +9,15 @@
 //! scutes are combined in. The carapace reference is read-only — its tag is
 //! never modified — and the bootable artifact is always its own `-t`.
 
+#[path = "support/index.rs"]
+mod index;
+
 use pichi::cmd::manifest_ext::ManifestExt as _;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use pichi_artifact::{Layer, Manifest};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
 fn graphroot(tmp: &TempDir) -> PathBuf {
@@ -44,7 +47,7 @@ async fn resolve_manifest(g: &Path, key: &str) -> Manifest {
         .unwrap()
         .unwrap_or_else(|| panic!("tag must resolve: {key}"));
     let blob_store = FilesystemBlobStore::new(g);
-    let bytes = blob_store.get_blob(&digest).await.unwrap();
+    let (_, bytes) = index::manifest(&blob_store, &digest).await;
     Manifest::decode_json(bytes.as_slice()).unwrap()
 }
 
@@ -138,7 +141,7 @@ async fn import_pmi_without_carapace_is_pmi_only() {
 }
 
 /// `import raw` without `-t` caches an ephemeral carapace (no tag) and prints
-/// the manifest digest — which is directly usable as a `--carapace` reference.
+/// the index digest — which is directly usable as a `--carapace` reference.
 #[tokio::test]
 async fn import_raw_without_tag_prints_digest_usable_as_carapace() {
     let tmp = TempDir::new().unwrap();
@@ -161,7 +164,7 @@ async fn import_raw_without_tag_prints_digest_usable_as_carapace() {
     let digest = digest.trim();
     assert!(
         digest.starts_with("sha256:") && digest.len() == "sha256:".len() + 64,
-        "import prints the manifest digest: {digest:?}"
+        "import prints the index digest: {digest:?}"
     );
 
     // No tags were created.
@@ -229,7 +232,7 @@ async fn import_pmi_with_config_sets_config_blob() {
 }
 
 /// `import pmi` without `-t` caches the bootable artifact untagged and prints
-/// its manifest digest (consistent with `import raw`).
+/// its index digest (consistent with `import raw`).
 #[tokio::test]
 async fn import_pmi_without_tag_prints_digest_and_leaves_no_tag() {
     let tmp = TempDir::new().unwrap();
@@ -252,7 +255,7 @@ async fn import_pmi_without_tag_prints_digest_and_leaves_no_tag() {
     let digest = String::from_utf8(out).unwrap();
     assert!(
         digest.trim().starts_with("sha256:"),
-        "prints the manifest digest: {digest:?}"
+        "prints the index digest: {digest:?}"
     );
 
     let db = FilesystemTagDb::open(&g).unwrap();

@@ -194,12 +194,12 @@ async fn rmi_after_import_leaves_no_orphans() {
         .assert()
         .success();
 
-    // Pre-rmi: 3 entries (cow + .verity + manifest); explicitly assert NO
+    // Pre-rmi: 4 entries (cow + .verity + manifest + index); explicitly assert NO
     // .deflated exists (D-04: identity-decompression import skips .deflated).
     let pre_count = count_blob_files(&g);
     assert_eq!(
-        pre_count, 3,
-        "pre-rmi: expected 3 entries (cow + manifest + .verity sidecar); got {pre_count}"
+        pre_count, 4,
+        "pre-rmi: expected 4 entries (cow + manifest + index + .verity sidecar); got {pre_count}"
     );
     let blobs = g.join("blobs").join("sha256");
     let deflated_present = std::fs::read_dir(&blobs)
@@ -269,9 +269,9 @@ async fn rmi_after_attach_leaves_no_orphans() {
 
     let pre_count = count_blob_files(&g);
     assert_eq!(
-        pre_count, 6,
-        "pre-rmi: expected 6 (cow + .verity + carapace-manifest + pmi + dtb + \
-         appliance-manifest); got {pre_count}"
+        pre_count, 8,
+        "pre-rmi: expected 8 (cow + .verity + carapace-manifest + pmi + dtb + \
+         appliance-manifest + two indexes); got {pre_count}"
     );
 
     Command::cargo_bin("pichi")
@@ -320,7 +320,7 @@ async fn rmi_with_other_tag_preserves_source_and_sidecars() {
         .unwrap();
 
     let pre_count = count_blob_files(&g);
-    assert_eq!(pre_count, 3, "pre-rmi: expected 3 entries");
+    assert_eq!(pre_count, 4, "pre-rmi: expected 4 entries");
 
     // rmi tag1 with --force (required because another tag references the
     // same manifest).
@@ -331,7 +331,7 @@ async fn rmi_with_other_tag_preserves_source_and_sidecars() {
         .assert()
         .success();
 
-    // tag1 gone, tag2 still resolves, all 3 files (cow + .verity + manifest)
+    // tag1 gone, tag2 still resolves, all 4 files (cow + .verity + manifest + index)
     // STILL present.
     let db = FilesystemTagDb::open(&g).unwrap();
     assert!(
@@ -346,7 +346,7 @@ async fn rmi_with_other_tag_preserves_source_and_sidecars() {
     );
     let post_count = count_blob_files(&g);
     assert_eq!(
-        post_count, 3,
+        post_count, 4,
         "post-rmi --force with shared tag: blobs+sidecars MUST be preserved (refcount integrity); got {post_count}"
     );
 }

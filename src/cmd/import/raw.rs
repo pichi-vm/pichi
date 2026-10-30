@@ -18,6 +18,7 @@ use sha2::{Digest as _, Sha256};
 use tempfile::NamedTempFile;
 
 use self::manifest::BaseManifest as _;
+use crate::cmd::cache::ImageStore as _;
 use crate::cmd::verity::{VerityFormat as _, VerityParams};
 
 #[derive(Debug)]
@@ -25,7 +26,7 @@ pub(crate) struct ImportArgs {
     /// Path to the raw image file to import.
     pub raw_image: PathBuf,
     /// Tag to assign (e.g. `myapp:base`). `None` caches the carapace without
-    /// tagging it. The manifest digest is printed in either case.
+    /// tagging it. The index digest is printed in either case.
     pub tag: Option<String>,
     /// Optional author-supplied salt suffix bytes (already hex-decoded).
     /// `None` = use just the 32-byte zero prefix (D-01 default).
@@ -60,19 +61,20 @@ impl ImportArgs {
         store
             .put_blob(&staged.manifest_digest, &staged.manifest_bytes)
             .await?;
+        let index = store.local_index(&staged.manifest_digest, None).await?;
         if let Some(tag) = &staged.tag {
             FilesystemTagDb::open(graphroot)?
-                .set_tag(tag, &staged.manifest_digest)
+                .set_tag(tag, &index)
                 .await?;
         }
         if !quiet {
             log::info!(
-                "pichi import: cached manifest {} (tag: {})",
-                staged.manifest_digest,
+                "pichi import: cached image {} (tag: {})",
+                index,
                 staged.tag.as_deref().unwrap_or("<none>")
             );
         }
-        println!("{}", staged.manifest_digest);
+        println!("{index}");
         Ok(())
     }
 }
@@ -208,7 +210,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_writes_three_blobs_and_a_tag() {
+    async fn run_writes_indexed_image_and_a_tag() {
         let tmp = TempDir::new().unwrap();
         let raw = tmp.path().join("input.raw");
         let mut data = vec![0u8; 64 * 1024]; // 4 chunks at chunk_size=32 sectors
@@ -218,14 +220,10 @@ mod tests {
 
         args.run(&graphroot).await.unwrap();
 
-        // Three blobs in <graphroot>/blobs/sha256/.
+        // Image index, manifest, cow and verity in blobs/sha256/.
         let blobs_dir = graphroot.join("blobs").join("sha256");
         let entries: Vec<_> = std::fs::read_dir(&blobs_dir).unwrap().collect();
-        assert_eq!(
-            entries.len(),
-            3,
-            "expected exactly 3 blobs (cow, verity, manifest)"
-        );
+        assert_eq!(entries.len(), 4, "expected index, manifest, cow and verity");
 
         let verity_path = std::fs::read_dir(&blobs_dir)
             .unwrap()

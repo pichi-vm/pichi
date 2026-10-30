@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+#[path = "support/index.rs"]
+mod index;
+
 use assert_cmd::Command;
 use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_artifact::{Digest, Manifest};
@@ -40,7 +43,8 @@ async fn save_load_preserves_manifest_and_rebuilds_verity_on_cache_hits() {
         .unwrap();
     let source_store = FilesystemBlobStore::new(&source);
     let bytes = source_store.get_blob(&digest).await.unwrap();
-    let manifest = Manifest::decode_json(bytes.as_slice()).unwrap();
+    let (manifest_digest, manifest_bytes) = index::manifest(&source_store, &digest).await;
+    let manifest = Manifest::decode_json(manifest_bytes.as_slice()).unwrap();
     let cow: Digest = manifest.layers[0].digest_str().parse().unwrap();
     let tree = std::fs::read(source_store.blob_path(&cow).verity_path()).unwrap();
     let store = FilesystemBlobStore::new(&destination);
@@ -60,6 +64,10 @@ async fn save_load_preserves_manifest_and_rebuilds_verity_on_cache_hits() {
             Some(digest.clone())
         );
         assert_eq!(store.get_blob(&digest).await.unwrap(), bytes);
+        assert_eq!(
+            store.get_blob(&manifest_digest).await.unwrap(),
+            manifest_bytes
+        );
         let sidecar = store.blob_path(&cow).verity_path();
         assert_eq!(std::fs::read(&sidecar).unwrap(), tree);
         std::fs::write(sidecar, b"stale cache verity").unwrap();

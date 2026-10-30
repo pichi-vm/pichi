@@ -156,7 +156,7 @@ pub struct ImportPmiArgs {
     /// NEW artifact; a carapace referenced via `--carapace` is left untouched.
     #[arg(short = 't', long)]
     pub tag: Option<String>,
-    /// Suppress progress reporting. The produced manifest digest is still
+    /// Suppress progress reporting. The produced image index digest is still
     /// printed to stdout (docker `-q` style).
     #[arg(long, default_value_t = false)]
     pub quiet: bool,
