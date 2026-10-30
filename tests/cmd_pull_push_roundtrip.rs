@@ -19,6 +19,9 @@
 
 #![allow(missing_docs)]
 
+#[path = "support/index.rs"]
+mod index;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -206,8 +209,11 @@ async fn bit_identical_round_trip() {
     // under the DECOMPRESSED digest (Phase 42 D-10) so the lookup may miss.
     // The `if let (Some, Some)` is the documented tolerance for that case;
     // when both sides ARE present, the bytes MUST match.
+    let root: serde_json::Value = serde_json::from_slice(manifest_bytes_after).unwrap();
+    let manifest_key = root["manifests"][0]["digest"].as_str().unwrap();
+    assert_eq!(snap_before[manifest_key], snap_after[manifest_key]);
     let manifest_json: serde_json::Value =
-        serde_json::from_slice(manifest_bytes_after).expect("manifest is valid JSON");
+        serde_json::from_slice(&snap_after[manifest_key]).unwrap();
     let layers = manifest_json
         .get("layers")
         .and_then(|l| l.as_array())
@@ -253,8 +259,8 @@ async fn index_pin_survives_tag_move_and_fresh_cache() {
     let root = graphroot(&source);
     let store = FilesystemBlobStore::new(&root);
     let tags = FilesystemTagDb::open(&root).unwrap();
-    let first = tags.resolve_tag(&tag).await.unwrap().unwrap();
-    let first_bytes = store.get_blob(&first).await.unwrap();
+    let local_index = tags.resolve_tag(&tag).await.unwrap().unwrap();
+    let (first, first_bytes) = index::manifest(&store, &local_index).await;
     let mut second_value: serde_json::Value = serde_json::from_slice(&first_bytes).unwrap();
     second_value["annotations"]["org.opencontainers.image.title"] = "other platform".into();
     let second_bytes = serde_json::to_vec(&second_value).unwrap();

@@ -7,11 +7,14 @@
 //! tests/cmd_tag.rs:60). Each test writes a small fixture file in the
 //! TempDir and points `pichi import` at it.
 
+#[path = "support/index.rs"]
+mod index;
+
 use std::path::PathBuf;
 
 use assert_cmd::Command;
 use pichi_artifact::{Layer, Manifest};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
 fn graphroot(tmp: &TempDir) -> PathBuf {
@@ -29,7 +32,7 @@ fn write_small_fixture(path: &std::path::Path) {
     std::fs::write(path, &buf).unwrap();
 }
 
-/// IMPORT-01: end-to-end import produces 3 blobs + 1 tag; manifest is
+/// IMPORT-01: end-to-end import produces 4 blobs + 1 tag; manifest is
 /// readable via `pichi inspect`.
 #[tokio::test]
 async fn import_happy_path() {
@@ -45,10 +48,10 @@ async fn import_happy_path() {
         .assert()
         .success();
 
-    // Three blobs (cow, verity, manifest).
+    // Four files: cow, verity, manifest and index.
     let blobs = g.join("blobs").join("sha256");
     let n = std::fs::read_dir(&blobs).unwrap().count();
-    assert_eq!(n, 3, "expected 3 blobs in {}", blobs.display());
+    assert_eq!(n, 4, "expected 4 blobs in {}", blobs.display());
 
     // Tag is set (canonical form: docker.io/library/myapp:base).
     let db = FilesystemTagDb::open(&g).unwrap();
@@ -76,7 +79,7 @@ async fn import_happy_path() {
 
     // Manifest has exactly one Scute layer (no PMI).
     let blob_store = FilesystemBlobStore::new(&g);
-    let bytes = blob_store.get_blob(&manifest_digest).await.unwrap();
+    let (_, bytes) = index::manifest(&blob_store, &manifest_digest).await;
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(manifest.layers.len(), 1, "exactly one layer (one scute)");
 }
@@ -166,7 +169,7 @@ async fn bottom_scute_salt_is_zero_prefix_e2e() {
         .unwrap()
         .unwrap();
     let blob_store = FilesystemBlobStore::new(&g);
-    let bytes = blob_store.get_blob(&manifest_digest).await.unwrap();
+    let (_, bytes) = index::manifest(&blob_store, &manifest_digest).await;
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     let salt = match &manifest.layers[0] {
         Layer::Scute(s) => s.annotations.salt.clone(),
@@ -238,7 +241,7 @@ async fn manifest_has_locked_verity_params_e2e() {
         .unwrap()
         .unwrap();
     let blob_store = FilesystemBlobStore::new(&g);
-    let bytes = blob_store.get_blob(&manifest_digest).await.unwrap();
+    let (_, bytes) = index::manifest(&blob_store, &manifest_digest).await;
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         manifest

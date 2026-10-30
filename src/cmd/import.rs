@@ -6,7 +6,7 @@
 //!
 //! - `import raw <raw.img>` — a raw disk image becomes a base **carapace**
 //!   (rootfs; no PMI). `-t` is optional: omit it to cache an ephemeral carapace
-//!   (the manifest digest is printed).
+//!   (the index digest is printed).
 //! - `import pmi <boot.pmi> --dtb <d>` — a pre-built, detached PMI (+ base DTB,
 //!   + optional launch config) becomes a **bootable** artifact. With
 //!   `--carapace <ref>` the referenced carapace's scutes are combined in (a
@@ -146,23 +146,23 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         .put_blob(&manifest_digest, &manifest_bytes)
         .await
         .with_context(|| format!("put_blob manifest {manifest_digest}"))?;
+    let index = blob_store.local_index(&manifest_digest, None).await?;
 
     if let Some(dest_key) = &dest_key {
-        db.set_tag(dest_key, &manifest_digest)
+        db.set_tag(dest_key, &index)
             .await
             .with_context(|| format!("set_tag {dest_key}"))?;
     }
 
     if !args.quiet {
         log::info!(
-            "pichi import pmi: cached bootable manifest {} (tag: {})",
-            manifest_digest,
+            "pichi import pmi: cached bootable image {} (tag: {})",
+            index,
             dest_key.as_deref().unwrap_or("<none>"),
         );
     }
-    // Print the produced artifact's content ID (pichi's identity is the
-    // manifest digest — what tags, `@sha256:…`, and `inspect` reference).
-    println!("{manifest_digest}");
+    // Print the same index identity used by tags, locks and publication.
+    println!("{index}");
     Ok(())
 }
 
@@ -174,7 +174,7 @@ async fn carapace_scutes_manifest(
     db: &FilesystemTagDb,
     carapace: &str,
 ) -> Result<Manifest> {
-    // Accept a bare `sha256:<hex>` manifest digest directly — that is exactly
+    // Accept a bare `sha256:<hex>` image digest directly — that is exactly
     // what `pichi import raw` prints, so an untagged carapace is referenceable
     // without inventing a repo. Otherwise parse as a tag / `repo@sha256:…` ref.
     let src_digest = if let Ok(digest) = carapace.parse::<Digest>() {

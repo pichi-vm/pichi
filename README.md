@@ -30,7 +30,7 @@ is still a valid image — a base others derive from.
 |---|---|
 | `pichi import` | Import a raw image (+ optional PMI / DTB / config) into the cache |
 | `pichi images` | List cached artifacts |
-| `pichi inspect` | Inspect a cached manifest |
+| `pichi inspect` | Inspect a cached image and its platform manifest |
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
 | `pichi run` | Boot a cached artifact (prepares the environment, execs dillo) |

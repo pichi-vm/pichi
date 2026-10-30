@@ -321,3 +321,65 @@ async fn cached_index_requires_the_selected_platform() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("ref not in cache"));
 }
+
+#[tokio::test]
+async fn local_imports_publish_retained_platform_indexes() {
+    let fixture = Fixture::new().await;
+    let raw = fixture.directory.path().join("input.raw");
+    std::fs::write(&raw, [42; 8192]).unwrap();
+    let output = fixture.run(&["import", "raw", raw.to_str().unwrap(), "-t", "local:base"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let root: Digest = String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let bytes = fixture.store.get_blob(&root).await.unwrap();
+    let index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        index["mediaType"],
+        "application/vnd.oci.image.index.v1+json"
+    );
+    assert_eq!(index["manifests"].as_array().unwrap().len(), 1);
+    let manifest: Digest = index["manifests"][0]["digest"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        fixture
+            .tags
+            .resolve_tag("docker.io/library/local:base")
+            .await
+            .unwrap(),
+        Some(root.clone())
+    );
+    assert!(fixture.run(&["system", "prune"]).status.success());
+    assert_eq!(fixture.store.get_blob(&root).await.unwrap(), bytes);
+    assert!(fixture.store.blob_exists(&manifest).await);
+    let saved = fixture.directory.path().join("saved");
+    assert!(
+        fixture
+            .run(&["save", "local:base", "-o", saved.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert!(
+        fixture
+            .run(&["load", saved.to_str().unwrap(), "--tag", "local:copy"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        fixture
+            .tags
+            .resolve_tag("docker.io/library/local:copy")
+            .await
+            .unwrap(),
+        Some(root)
+    );
+}
