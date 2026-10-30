@@ -293,7 +293,7 @@ mod tests {
     #[tokio::test]
     async fn set_and_resolve_round_trip() {
         let (_dir, db) = db();
-        let d = Digest::from_bytes_sha256(b"manifest-bytes");
+        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"manifest-bytes").into());
         db.set_tag("docker.io/library/alpine:latest", &d)
             .await
             .unwrap();
@@ -314,9 +314,9 @@ mod tests {
     async fn list_tags_returns_all() {
         use std::collections::HashSet;
         let (_dir, db) = db();
-        let d1 = Digest::from_bytes_sha256(b"one");
-        let d2 = Digest::from_bytes_sha256(b"two");
-        let d3 = Digest::from_bytes_sha256(b"three");
+        let d1 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"one").into());
+        let d2 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"two").into());
+        let d3 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"three").into());
         db.set_tag("a:latest", &d1).await.unwrap();
         db.set_tag("b:latest", &d2).await.unwrap();
         db.set_tag("c:latest", &d3).await.unwrap();
@@ -336,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn delete_tag_returns_true_then_false() {
         let (_dir, db) = db();
-        let d = Digest::from_bytes_sha256(b"toremove");
+        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"toremove").into());
         db.set_tag("foo:latest", &d).await.unwrap();
         assert!(db.delete_tag("foo:latest").await.unwrap());
         assert_eq!(db.resolve_tag("foo:latest").await.unwrap(), None);
@@ -346,7 +346,7 @@ mod tests {
     #[tokio::test]
     async fn persists_across_drop_and_reopen() {
         let dir = tempfile::TempDir::new().unwrap();
-        let d = Digest::from_bytes_sha256(b"persistent");
+        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"persistent").into());
         {
             let db = FilesystemTagDb::open(dir.path()).unwrap();
             db.set_tag("persist:tag", &d).await.unwrap();
@@ -366,8 +366,8 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db = std::sync::Arc::new(FilesystemTagDb::open(dir.path()).unwrap());
 
-        let d1 = Digest::from_bytes_sha256(b"data-one");
-        let d2 = Digest::from_bytes_sha256(b"data-two");
+        let d1 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"data-one").into());
+        let d2 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"data-two").into());
 
         let h1 = {
             let db = std::sync::Arc::clone(&db);
@@ -393,7 +393,7 @@ mod tests {
     async fn index_json_schema_is_oci_compliant() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = FilesystemTagDb::open(dir.path()).unwrap();
-        let d = Digest::from_bytes_sha256(b"oci-shape-check");
+        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"oci-shape-check").into());
         db.set_tag("registry.example/app:v1", &d).await.unwrap();
 
         let index_path = dir.path().join("index.json");
@@ -425,8 +425,8 @@ mod tests {
     #[tokio::test]
     async fn setting_same_tag_twice_overwrites() {
         let (_dir, db) = db();
-        let d1 = Digest::from_bytes_sha256(b"v1");
-        let d2 = Digest::from_bytes_sha256(b"v2");
+        let d1 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"v1").into());
+        let d2 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"v2").into());
         db.set_tag("x:latest", &d1).await.unwrap();
         db.set_tag("x:latest", &d2).await.unwrap();
         assert_eq!(db.resolve_tag("x:latest").await.unwrap(), Some(d2));

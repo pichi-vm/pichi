@@ -311,7 +311,7 @@ mod tests {
                 "config": pichi_artifact::ConfigDescriptor::canonical(),
                 "layers": [{
                     "mediaType": if compressed { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { pichi_artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
-                    "digest": Digest::from_bytes_sha256(&wire).to_string(),
+                    "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
                     "size": wire.len(), "annotations": annotations,
                 }],
                 "annotations": {
@@ -423,7 +423,8 @@ mod tests {
             let (Layer::Scute(d) | Layer::ScuteZstd(d)) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
-            d.digest = Digest::from_bytes_sha256(b"wrong").to_string();
+            d.digest =
+                Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"wrong").into()).to_string();
             assert!(fixture.prepare(scratch.path()).is_err());
         }
         let mut fixture = Fixture::new(true, Some(2));
@@ -432,7 +433,8 @@ mod tests {
             unreachable!()
         };
         d.size = fixture.wire.len() as u64;
-        d.digest = Digest::from_bytes_sha256(&fixture.wire).to_string();
+        d.digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&fixture.wire).into())
+            .to_string();
         let error = fixture.prepare(scratch.path()).err().unwrap();
         assert!(error.to_string().contains("trailing bytes"), "{error:#}");
         assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
@@ -466,7 +468,7 @@ mod tests {
         ];
         assert_eq!(DEFAULT_MAX_WINDOW_SIZE, 128 * 1024 * 1024);
 
-        let digest = Digest::from_bytes_sha256(WIRE);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(WIRE).into());
         let manifest = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",

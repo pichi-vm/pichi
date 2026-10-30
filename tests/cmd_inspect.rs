@@ -169,7 +169,8 @@ async fn inspect_image_index_lists_entries() {
         ]
     });
     let bytes = serde_json::to_vec(&index).unwrap();
-    let digest = pichi_artifact::Digest::from_bytes_sha256(&bytes);
+    let digest =
+        pichi_artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();

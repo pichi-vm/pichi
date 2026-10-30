@@ -290,7 +290,7 @@ mod tests {
             annotations,
         };
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
-        let digest = Digest::from_bytes_sha256(&bytes);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
         (bytes, digest)
     }
 
@@ -299,7 +299,8 @@ mod tests {
     async fn seed_cache(graphroot: &Path, tag: &str, layer_data: &[u8]) -> (Digest, Digest) {
         let blob_store = FilesystemBlobStore::new(graphroot);
         let db = FilesystemTagDb::open(graphroot).unwrap();
-        let layer_digest = Digest::from_bytes_sha256(layer_data);
+        let layer_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
         blob_store
             .put_blob(&layer_digest, layer_data)
             .await
@@ -488,7 +489,7 @@ mod tests {
             // NOTE: no top-level annotations → missing chain annotations.
         });
         let bytes = serde_json::to_vec(&bad_manifest).unwrap();
-        let digest = Digest::from_bytes_sha256(&bytes);
+        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
         blob_store.put_blob(&digest, &bytes).await.unwrap();
         db.set_tag(&target.to_string(), &digest).await.unwrap();
 
@@ -526,7 +527,8 @@ mod tests {
         let target: Reference = "ghcr.io/example/raw:1".parse().unwrap();
 
         let layer_data = b"raw-bytes-layer-data";
-        let layer_digest = Digest::from_bytes_sha256(layer_data);
+        let layer_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
         blob_store
             .put_blob(&layer_digest, layer_data)
             .await
@@ -536,7 +538,8 @@ mod tests {
         let mut raw_with_ws: Vec<u8> = clean_manifest.to_vec();
         raw_with_ws.extend_from_slice(b"   \n"); // trailing whitespace
         let raw_bytes = Bytes::from(raw_with_ws);
-        let manifest_digest = Digest::from_bytes_sha256(&raw_bytes);
+        let manifest_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&raw_bytes).into());
         blob_store
             .put_blob(&manifest_digest, raw_bytes.as_ref())
             .await

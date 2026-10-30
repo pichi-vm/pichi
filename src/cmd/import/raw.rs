@@ -152,7 +152,8 @@ impl StagedImport {
             &args.annotations,
         )?;
         let manifest_bytes = manifest.to_bytes()?;
-        let manifest_digest = Digest::from_bytes_sha256(&manifest_bytes);
+        let manifest_digest =
+            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
         Ok(Self {
             cow,
             cow_digest,
@@ -322,7 +323,10 @@ mod tests {
             assert_eq!(staged.cow_digest.to_string(), digest);
             assert_eq!(staged.cow.as_file().metadata().unwrap().len(), size);
             let bytes = std::fs::read(staged.cow.path()).unwrap();
-            assert_eq!(Digest::from_bytes_sha256(&bytes), staged.cow_digest);
+            assert_eq!(
+                Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into()),
+                staged.cow_digest
+            );
             let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
             assert!(manifest.carapace_verity_hash().is_none());
             let pichi_artifact::Layer::Scute(scute) = &manifest.layers[0] else {

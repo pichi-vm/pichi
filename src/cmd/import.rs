@@ -77,12 +77,12 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     let pmi_bytes = tokio::fs::read(&args.pmi)
         .await
         .with_context(|| format!("reading PMI file: {}", args.pmi.display()))?;
-    let pmi_digest = Digest::from_bytes_sha256(&pmi_bytes);
+    let pmi_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes).into());
 
     let dtb_bytes = tokio::fs::read(&args.dtb)
         .await
         .with_context(|| format!("reading DTB file: {}", args.dtb.display()))?;
-    let dtb_digest = Digest::from_bytes_sha256(&dtb_bytes);
+    let dtb_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&dtb_bytes).into());
 
     let config_blob = match &args.config {
         Some(p) => Some(read_launch_contract(p).await?),
@@ -124,7 +124,8 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     let manifest_bytes = manifest
         .to_bytes()
         .context("serialising bootable manifest")?;
-    let manifest_digest = Digest::from_bytes_sha256(&manifest_bytes);
+    let manifest_digest =
+        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
 
     // Commit blobs (PMI → DTB → config → manifest), then tag. Scute blobs (if
     // any) are already present — content-addressed no-op if re-put.
@@ -258,5 +259,8 @@ async fn read_launch_contract(path: &Path) -> Result<(Digest, Vec<u8>)> {
         .with_context(|| format!("parse --config: {}", path.display()))?;
     cfg.validate().context("invalid --config")?;
     let bytes = cfg.to_json().context("serialise config blob")?;
-    Ok((Digest::from_bytes_sha256(&bytes), bytes))
+    Ok((
+        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into()),
+        bytes,
+    ))
 }

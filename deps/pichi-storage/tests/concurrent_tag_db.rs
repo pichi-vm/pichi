@@ -128,7 +128,7 @@ async fn with_index_lock_path_matches_filesystem_tag_db_lock_path() {
     let setter = tokio::spawn(async move {
         let db = FilesystemTagDb::open(&layout_for_db.graphroot).unwrap();
         b2.wait().await;
-        let d = Digest::from_bytes_sha256(b"x");
+        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"x").into());
         db.set_tag("test:tag", &d).await.unwrap();
     });
 
