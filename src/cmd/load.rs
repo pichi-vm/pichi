@@ -25,15 +25,6 @@ const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 const METADATA_CAP: u64 = 1024 * 1024;
-#[cfg(not(test))]
-const BLOB_CAP: u64 = 16 * 1024 * 1024 * 1024;
-#[cfg(not(test))]
-const TOTAL_CAP: u64 = 64 * 1024 * 1024 * 1024;
-// Keep oversized fixtures small even on filesystems without sparse files.
-#[cfg(test)]
-const BLOB_CAP: u64 = 1024 * 1024;
-#[cfg(test)]
-const TOTAL_CAP: u64 = 4 * BLOB_CAP;
 const FILE_CAP: usize = 4096;
 
 #[derive(Deserialize)]
@@ -70,6 +61,7 @@ struct ImportedManifest {
 /// Owns a private snapshot. No guest path or cache sidecar is authoritative.
 /// The VM must have exited before build calls `read`.
 pub(super) struct OciLayout {
+    capacity: u64,
     staging: tempfile::TempDir,
     store: FilesystemBlobStore,
     manifests: Vec<ImportedManifest>,
@@ -79,9 +71,19 @@ pub(super) struct OciLayout {
 
 impl OciLayout {
     pub(super) async fn read(dir: &Path, destination: &FilesystemBlobStore) -> Result<Self> {
+        let scratch = destination.scratch_dir().await?;
+        let capacity = fs4::available_space(&scratch)?;
+        Self::read_with_capacity(dir, destination, capacity).await
+    }
+
+    async fn read_with_capacity(
+        dir: &Path,
+        destination: &FilesystemBlobStore,
+        capacity: u64,
+    ) -> Result<Self> {
         let staging = tempfile::tempdir_in(destination.scratch_dir().await?)?;
         let dir = dir.to_owned();
-        let layout = tokio::task::spawn_blocking(move || Self::snapshot(&dir, staging))
+        let layout = tokio::task::spawn_blocking(move || Self::snapshot(&dir, staging, capacity))
             .await
             .context("OCI snapshot task panicked")?
             .context("reading complete OCI output layout")?;
@@ -112,8 +114,8 @@ impl OciLayout {
                         .checked_add(size)
                         .context("expanded OCI size overflow")?;
                     ensure!(
-                        expanded_size <= TOTAL_CAP,
-                        "expanded OCI scutes exceed size cap"
+                        expanded_size <= layout.capacity,
+                        "expanded OCI scutes exceed scratch capacity"
                     );
                     roots.add(layer, root)?;
                 }
@@ -126,14 +128,14 @@ impl OciLayout {
         Ok(layout)
     }
 
-    fn snapshot(dir: &Path, staging: tempfile::TempDir) -> Result<Self> {
+    fn snapshot(dir: &Path, staging: tempfile::TempDir, capacity: u64) -> Result<Self> {
         ensure!(
             std::fs::symlink_metadata(dir)?.file_type().is_dir(),
             "OCI output must be a directory, not a symlink"
         );
         let root = Dir::open_ambient_dir(dir, cap_std::ambient_authority())?;
         let mut files = BTreeMap::new();
-        Self::scan(&root, Path::new(""), &mut files, &mut 0)?;
+        Self::scan(&root, Path::new(""), &mut files, &mut 0, capacity)?;
         let marker: LayoutMarker =
             serde_json::from_slice(&Self::small(&root, Path::new("oci-layout"), 4096)?)?;
         ensure!(
@@ -150,6 +152,7 @@ impl OciLayout {
         let store = FilesystemBlobStore::new(staging.path());
         std::fs::create_dir_all(staging.path().join("blobs/sha256"))?;
         let mut layout = Self {
+            capacity,
             staging,
             store,
             manifests: Vec::new(),
@@ -268,6 +271,7 @@ impl OciLayout {
         path: &Path,
         files: &mut BTreeMap<PathBuf, u64>,
         total: &mut u64,
+        capacity: u64,
     ) -> Result<()> {
         for entry in root.read_dir(if path.as_os_str().is_empty() {
             Path::new(".")
@@ -283,7 +287,7 @@ impl OciLayout {
                     "unexpected OCI directory: {}",
                     name.display()
                 );
-                Self::scan(root, &name, files, total)?;
+                Self::scan(root, &name, files, total, capacity)?;
                 continue;
             }
             ensure!(
@@ -299,7 +303,7 @@ impl OciLayout {
             let cap = match name.to_str() {
                 Some("oci-layout") => 4096,
                 Some("index.json") => METADATA_CAP,
-                _ if name.parent() == Some(Path::new("blobs/sha256")) => BLOB_CAP,
+                _ if name.parent() == Some(Path::new("blobs/sha256")) => capacity,
                 _ => bail!("unexpected OCI file: {}", name.display()),
             };
             ensure!(
@@ -311,7 +315,7 @@ impl OciLayout {
                 .checked_add(metadata.len())
                 .context("OCI size overflow")?;
             ensure!(
-                *total <= TOTAL_CAP && files.len() < FILE_CAP,
+                *total <= capacity && files.len() < FILE_CAP,
                 "OCI layout exceeds size or file count cap"
             );
             files.insert(name, metadata.len());
@@ -342,7 +346,7 @@ impl OciLayout {
         size: u64,
         expected: &mut HashSet<PathBuf>,
     ) -> Result<Digest> {
-        ensure!(size <= BLOB_CAP, "OCI blob exceeds size cap");
+        ensure!(size <= self.capacity, "OCI blob exceeds scratch capacity");
         let path = Self::blob_name(value)?;
         let digest: Digest = value.parse()?;
         expected.insert(path.clone());
@@ -374,14 +378,16 @@ impl OciLayout {
             path.display()
         );
         let mut hash = Sha256::new();
-        let mut count = 0;
+        let mut count = 0u64;
         let mut buffer = [0; 64 * 1024];
         loop {
             let length = input.read(&mut buffer)?;
             if length == 0 {
                 break;
             }
-            count += length as u64;
+            count = count
+                .checked_add(length as u64)
+                .context("OCI copy size overflow")?;
             ensure!(count <= size, "OCI file exceeds declared size");
             hash.update(&buffer[..length]);
             output.write_all(&buffer[..length])?;
@@ -397,7 +403,10 @@ impl OciLayout {
         size: u64,
         digest: Digest,
     ) -> Result<()> {
-        ensure!(size <= BLOB_CAP / 16, "guest verity exceeds cap");
+        ensure!(
+            size <= self.capacity,
+            "guest verity exceeds scratch capacity"
+        );
         let target = self
             .staging
             .path()
@@ -510,6 +519,8 @@ pub(super) mod tests {
     use crate::cmd::test_support::ScuteFixture as _;
     use crate::cmd::verity::VerityParams;
     use serde_json::{Value, json};
+
+    const TEST_CAPACITY: u64 = 4 * 1024 * 1024;
 
     pub(crate) struct LayoutFixture {
         manifest: Value,
@@ -879,12 +890,15 @@ pub(super) mod tests {
                     }
                     std::fs::write(cow.verity_path(), bytes).unwrap();
                 }
-                "oversized blob" => File::create(&cow).unwrap().set_len(BLOB_CAP + 1).unwrap(),
+                "oversized blob" => File::create(&cow)
+                    .unwrap()
+                    .set_len(TEST_CAPACITY + 1)
+                    .unwrap(),
                 "oversized total" => {
                     for n in 0..5 {
                         File::create(output.join("blobs/sha256").join(format!("{n:064x}")))
                             .unwrap()
-                            .set_len(BLOB_CAP)
+                            .set_len(TEST_CAPACITY / 4)
                             .unwrap();
                     }
                 }
@@ -915,7 +929,7 @@ pub(super) mod tests {
                     .set_len(METADATA_CAP + 1)
                     .unwrap();
             }
-            let result = match OciLayout::read(&output, &store).await {
+            let result = match OciLayout::read_with_capacity(&output, &store, TEST_CAPACITY).await {
                 Ok(layout) => layout.import_build(&store, &db, "built:v1").await,
                 Err(error) => Err(error),
             };
@@ -1025,5 +1039,25 @@ pub(super) mod tests {
             );
             assert!(external.exists());
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn scan_capacity_is_independent_of_the_old_image_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = dir.path().join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        let size = 65 * 1024 * 1024 * 1024;
+        File::create(blobs.join("ab".repeat(32)))
+            .unwrap()
+            .set_len(size)
+            .unwrap();
+        let root = Dir::open_ambient_dir(dir.path(), cap_std::ambient_authority()).unwrap();
+        let mut files = BTreeMap::new();
+        let mut total = 0;
+        OciLayout::scan(&root, Path::new(""), &mut files, &mut total, size).unwrap();
+        assert_eq!(total, size);
+        assert!(
+            OciLayout::scan(&root, Path::new(""), &mut BTreeMap::new(), &mut 0, size - 1).is_err()
+        );
     }
 }

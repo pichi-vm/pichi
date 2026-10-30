@@ -217,12 +217,13 @@ unreferenced blobs, unknown files/directories, symlinks, special files, and
 Unix hard links fail closed. All file access is confined to the opened output
 directory. No output tag changes until the complete layout passes validation.
 
-Limits: 4,096 files; 4 KiB for `oci-layout`; 1 MiB each for index, manifest,
-and config; 16 GiB per blob; 64 GiB total input and total expanded scute
-bytes. Compressed scutes retain the streaming decoder's 128 MiB window limit.
-Decoded output is bounded by available scratch capacity, with a declared
-block extent checked before expansion. Concurrent allocations and hash-tree
-writes can still exhaust that filesystem; write failures abort publication.
+Control-data limits remain 4,096 files, 4 KiB for `oci-layout`, and 1 MiB
+each for index, manifest, and config. Bulk input and expanded-scute bounds
+come from available scratch filesystem capacity, independently of Carapace
+geometry. The decoder retains its 128 MiB memory-window limit. These storage
+checks are preflight bounds, not reservations: concurrent writes, copies,
+and reconstructed verity data can still exhaust storage. Such I/O errors
+abort the import and leave tags unchanged.
 
 For **every scute**, including cache hits, the host rebuilds dm-verity from
 the cow bytes and the full manifest salt. Reconstruction uses SHA-256,
