@@ -6,8 +6,9 @@
 //! Phase 46 introduces two derived files alongside cached source blobs
 //! (`<graphroot>/blobs/sha256/<hex>`):
 //!
-//! - `<src>.deflated` — decompressed scute bytes (only written for `+zstd`
-//!   layers per D-04; for raw scutes the source IS the deflated bytes)
+//! - `<src>.deflated` — decompressed scute bytes, zero-padded to the declared
+//!   data-block extent; also used for raw scutes with a partial final block.
+//!   Aligned raw scutes use their source bytes.
 //! - `<src>.verity`   — dm-verity hash tree (byte-exact
 //!   `tools/import::verity::compute` format) — carapace exposes this as the
 //!   guest's hash device so dm-verity activation can read pre-computed hashes
@@ -35,8 +36,8 @@ use std::path::{Path, PathBuf};
 /// `blob_path.unlink_with_sidecars().await`.
 #[allow(async_fn_in_trait)] // used only via static dispatch on Path values
 pub trait BlobSidecarExt {
-    /// `<self>.deflated` — the decompressed-scute sidecar (only present for
-    /// `+zstd` layers per D-04; raw scutes are their own deflated bytes).
+    /// `<self>.deflated` — decompressed bytes with final-block zero padding
+    /// (compressed or partially aligned raw scutes; aligned raw uses its source).
     #[must_use]
     fn deflated_path(&self) -> PathBuf;
     /// `<self>.verity` — the dm-verity hash tree (byte-exact with

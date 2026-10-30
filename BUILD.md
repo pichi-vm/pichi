@@ -236,6 +236,10 @@ it must agree with the raw descriptor size or the actual decoded length.
 Compressed inputs feed the verity formatter while they are decoded, using
 the declared count to place the hash tree. Missing or zero counts fail
 before any output tag changes, including when the blob is already cached.
+Prepared data files include the final block's zero padding so they expose
+the full extent covered by its verity tree. The encoded OCI blob retains its
+original bytes and digest. Raw inputs with a partial final block also receive
+this padded data file; aligned raw inputs use their original cached blob.
 
 For **every scute**, including cache hits, the host rebuilds dm-verity from
 the cow bytes and the full manifest salt. Reconstruction uses SHA-256,
