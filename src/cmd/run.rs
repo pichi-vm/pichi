@@ -28,11 +28,12 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use conglobate::artifact::{Digest, Manifest, Reference, Requirements, ScuteDescriptor};
-use pichi_storage::{BlobSidecarExt, FilesystemBlobStore, FilesystemTagDb};
+use conglobate::artifact::{Digest, Layer, Manifest, Reference, Requirements};
+use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
 use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
+use crate::cmd::layer::ScuteFiles;
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
 use crate::config::Config;
@@ -152,30 +153,25 @@ async fn build_dillo_args(
     Ok(argv)
 }
 
-/// Build the `--gpt` value: a chain-ordered partition list `[cow0, verity0,
+/// Build the `--gpt` value: a manifest-ordered partition list `[cow0, verity0,
 /// cow1, verity1, ...]`. device-id/disk-guid are omitted so dillo derives
-/// them from the PARTUUIDs (matching the carapace formula).
+/// them from the PARTUUIDs (matching the carapace formula). Every data partition
+/// uses uncompressed, block-aligned bytes prepared by Pichi.
 pub(crate) async fn build_gpt_spec(
     manifest: &Manifest,
-    scutes: &[&ScuteDescriptor],
+    scutes: &[&Layer],
     blob_store: &FilesystemBlobStore,
 ) -> Result<String> {
     let mut parts: Vec<String> = Vec::with_capacity(scutes.len() * 2);
-    for scute in scutes {
-        let cow_digest: Digest = scute
-            .digest
-            .parse()
-            .with_context(|| format!("invalid scute digest: {}", scute.digest))?;
-        let cow_path = blob_store.blob_path(&cow_digest);
-        let v_path = cow_path.verity_path();
+    for layer in scutes {
+        let files = ScuteFiles::new(manifest, layer, blob_store)?;
+        let v_path = files.verity;
+        let cow_path = files.data;
 
         // Per-scute dm-verity root from the cached cow (PARTUUID / label prep).
         // Launch never reads `dev.pichi.carapace.verity.hash`.
         let root: [u8; 32] = manifest
-            .cached_scute_root(
-                &conglobate::artifact::Layer::Scute((*scute).clone()),
-                blob_store,
-            )
+            .cached_scute_root(layer, blob_store)
             .await?
             .context("scute has no verity root")?;
 
@@ -284,7 +280,7 @@ mod tests {
         ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
         ScuteAnnotations, ScuteDescriptor,
     };
-    use pichi_storage::{BlobStore, FilesystemBlobStore};
+    use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore};
     use tempfile::TempDir;
 
     fn chain_annotations() -> BTreeMap<String, String> {
@@ -358,7 +354,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn partition_layers_rejects_zstd_scutes() {
+    async fn partition_layers_preserves_scute_encoding() {
         let scute = ScuteDescriptor {
             digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .into(),
@@ -368,9 +364,14 @@ mod tests {
                 salt: "00".into(),
             },
         };
-        let m = manifest_with(vec![pmi_layer(), Layer::ScuteZstd(scute)]);
-        let err = m.partition_layers().unwrap_err();
-        assert!(err.to_string().contains("zstd"), "got: {err}");
+        let m = manifest_with(vec![
+            Layer::Scute(scute.clone()),
+            pmi_layer(),
+            Layer::ScuteZstd(scute),
+        ]);
+        let (_, scutes) = m.partition_layers().unwrap();
+        assert_eq!(scutes, vec![&m.layers[0], &m.layers[2]]);
+        assert_eq!(m.scute_layers(), scutes);
     }
 
     #[tokio::test]
@@ -447,7 +448,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multi_scute_gpt_uses_manifest_hash_type_without_writing_sidecars() {
+    async fn multi_scute_gpt_uses_manifest_hash_type_and_preserves_preparation() {
+        use crate::cmd::layer::PreparedLayer;
         use crate::cmd::verity::VerityFormat as _;
 
         let tmp = TempDir::new().unwrap();
@@ -470,7 +472,15 @@ mod tests {
         manifest
             .annotations
             .insert("dev.pichi.carapace.verity.hash-type".into(), "0".into());
-        let refs = scutes.iter().collect::<Vec<_>>();
+        let refs = manifest.scute_layers();
+        let mut prepared = Vec::new();
+        for layer in &refs {
+            PreparedLayer::prepare_cached(&manifest, layer, &store)
+                .await
+                .unwrap();
+            let path = store.blob_path(&layer.digest_str().parse().unwrap());
+            prepared.push(std::fs::read(path.verity_path()).unwrap());
+        }
         let spec = build_gpt_spec(&manifest, &refs, &store).await.unwrap();
         let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(&spec).unwrap();
         for (index, scute) in scutes.iter().enumerate() {
@@ -485,7 +495,8 @@ mod tests {
                 format!("c:{}", &hex::encode(root)[..34])
             );
             assert_eq!(gpt.partitions[index * 2].partuuid.to_bytes_le(), root[..16]);
-            assert!(!path.verity_path().exists());
+            assert_eq!(std::fs::read(path.verity_path()).unwrap(), prepared[index]);
+            assert_eq!(prepared[index], output.into_inner());
         }
     }
 
@@ -510,7 +521,9 @@ mod tests {
         };
         let m = manifest_with(vec![pmi_layer(), Layer::Scute(scute.clone())]);
 
-        let spec = build_gpt_spec(&m, &[&scute], &blob_store).await.unwrap();
+        let spec = build_gpt_spec(&m, &m.scute_layers(), &blob_store)
+            .await
+            .unwrap();
         // Must parse back through dillo's own device schema (same kv parser
         // dillo's `--gpt` uses).
         let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(&spec).unwrap();
@@ -532,6 +545,105 @@ mod tests {
         );
         // Paired cow/verity share the same 34-hex label body.
         assert_eq!(gpt.partitions[0].label[2..], gpt.partitions[1].label[2..]);
+    }
+
+    #[tokio::test]
+    async fn launch_uses_prepared_data_for_both_registry_encodings() {
+        for compressed in [false, true] {
+            for length in [4097, 8192] {
+                let tmp = TempDir::new().unwrap();
+                let store = FilesystemBlobStore::new(tmp.path());
+                let data = vec![0x5a; length];
+                let wire = if compressed {
+                    ruzstd::encoding::compress_to_vec(
+                        data.as_slice(),
+                        ruzstd::encoding::CompressionLevel::Fastest,
+                    )
+                } else {
+                    data.clone()
+                };
+                let digest = sha256_digest(&wire);
+                let scute = ScuteDescriptor {
+                    digest: digest.to_string(),
+                    size: wire.len() as u64,
+                    annotations: ScuteAnnotations {
+                        data_blocks: 2u64.try_into().unwrap(),
+                        salt: hex::encode([0; 32]),
+                    },
+                };
+                let layer = if compressed {
+                    Layer::ScuteZstd(scute)
+                } else {
+                    Layer::Scute(scute)
+                };
+                let manifest = manifest_with(vec![pmi_layer(), layer]);
+                assert!(
+                    build_dillo_args(&manifest, &store, None, None, 0)
+                        .await
+                        .is_err()
+                );
+                store.put_blob(&digest, &wire).await.unwrap();
+                let source = store.blob_path(&digest);
+                let expected_data = if compressed || length != 8192 {
+                    source.deflated_path()
+                } else {
+                    source.clone()
+                };
+                let mut padded = data;
+                padded.resize(8192, 0);
+                let expected_root = crate::cmd::verity::VerityParams {
+                    data_block_size: 4096,
+                    hash_block_size: 4096,
+                    salt: vec![0; 32],
+                    uuid: [0; 16],
+                }
+                .compute(&padded)
+                .unwrap()
+                .root_hash;
+                // Initial preparation and either missing sidecar use the same
+                // bounded preparation path before Dillo receives any files.
+                for missing in [
+                    None,
+                    Some(source.verity_path()),
+                    (expected_data != source).then(|| expected_data.clone()),
+                ] {
+                    if let Some(path) = missing {
+                        std::fs::remove_file(path).unwrap();
+                    }
+                    let argv = build_dillo_args(&manifest, &store, None, None, 0)
+                        .await
+                        .unwrap();
+                    let spec = &argv[argv.iter().position(|arg| arg == "--gpt").unwrap() + 1];
+                    let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(spec).unwrap();
+                    let build_spec = build_gpt_spec(&manifest, &manifest.scute_layers(), &store)
+                        .await
+                        .unwrap();
+                    assert_eq!(spec, &build_spec);
+                    assert_eq!(gpt.partitions.len(), 2);
+                    assert_eq!(gpt.partitions[0].path, expected_data);
+                    assert_eq!(gpt.partitions[1].path, source.verity_path());
+                    assert_eq!(
+                        gpt.partitions[0].partuuid.to_bytes_le(),
+                        expected_root[..16]
+                    );
+                    assert_eq!(
+                        gpt.partitions[1].partuuid.to_bytes_le(),
+                        expected_root[16..]
+                    );
+                    assert_eq!(std::fs::read(&source).unwrap(), wire);
+                    assert_eq!(std::fs::read(&expected_data).unwrap(), padded);
+                    assert!(std::fs::metadata(source.verity_path()).unwrap().len() > 0);
+                }
+                for invalid in [4096, 4097, 8191, 8193] {
+                    std::fs::write(&expected_data, vec![0; invalid]).unwrap();
+                    assert!(
+                        build_dillo_args(&manifest, &store, None, None, 0)
+                            .await
+                            .is_err()
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]

@@ -189,7 +189,7 @@ async fn carapace_scutes_manifest(
         blob_store.resolve(&carapace_ref, db).await?
     };
     let (_, mut manifest) = blob_store.manifest(&src_digest).await?;
-    if manifest.scute_layers()?.is_empty() {
+    if manifest.scute_layers().is_empty() {
         bail!("{carapace} is not a carapace (no scute layers)");
     }
     // Keep only the carapace's scute layers (drop any prior PMI/DTB so a re-run
