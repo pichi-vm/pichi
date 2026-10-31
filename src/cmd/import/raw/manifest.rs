@@ -26,8 +26,8 @@ use conglobate::artifact::{
 ///   - `dev.pichi.carapace.verity.algo` = `"sha256"`
 ///   - `dev.pichi.carapace.verity.data-block-size` = `"4096"`
 ///   - `dev.pichi.carapace.verity.hash-block-size` = `"4096"`
-///   - `dev.pichi.carapace.verity.hash` is not written. The tip comes
-///     from the scute graph. A caller-supplied tip hash is dropped.
+///   - `dev.pichi.carapace.verity.hash` commits the computed scute root.
+///     Caller annotations cannot override the commitment.
 /// - `org.opencontainers.image.created` = caller-supplied RFC 3339 string.
 /// - Config descriptor: the canonical OCI empty config (base carapaces carry
 ///   no launch contract; `pichi import pmi` sets one if given a `--config`).
@@ -40,6 +40,7 @@ pub(super) trait BaseManifest {
         cow_digest: &Digest,
         cow_size: u64,
         full_salt: &[u8],
+        root: &[u8; 32],
         created_rfc3339: &str,
         extra: &BTreeMap<String, String>,
     ) -> Result<Manifest>;
@@ -50,6 +51,7 @@ impl BaseManifest for Manifest {
         cow_digest: &Digest,
         cow_size: u64,
         full_salt: &[u8],
+        root: &[u8; 32],
         created_rfc3339: &str,
         extra: &BTreeMap<String, String>,
     ) -> Result<Manifest> {
@@ -77,7 +79,7 @@ impl BaseManifest for Manifest {
             "dev.pichi.carapace.verity.hash-type".to_string(),
             crate::cmd::verity::VERITY_HASH_TYPE_NORMAL.to_string(),
         );
-        annotations.remove("dev.pichi.carapace.verity.hash");
+        annotations.insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
         annotations
             .entry("org.opencontainers.image.created".to_string())
             .or_insert_with(|| created_rfc3339.to_string());
@@ -122,6 +124,7 @@ mod tests {
             &cow_digest,
             16384,
             &salt,
+            &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
         )
@@ -150,9 +153,9 @@ mod tests {
                 .map(String::as_str),
             Some("2026-05-07T12:00:00Z")
         );
-        assert!(
-            !m.annotations.contains_key("dev.pichi.carapace.verity.hash"),
-            "tip hash annotation must not be stamped"
+        assert_eq!(
+            m.annotations.get("dev.pichi.carapace.verity.hash"),
+            Some(&"ab".repeat(32))
         );
     }
 
@@ -167,6 +170,7 @@ mod tests {
             &cow_digest,
             16384,
             &salt,
+            &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
         )
@@ -193,6 +197,7 @@ mod tests {
             &cow_digest,
             16384,
             &salt,
+            &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
         )
@@ -216,6 +221,7 @@ mod tests {
             &cow_digest,
             16384,
             &salt,
+            &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
         )
@@ -236,6 +242,7 @@ mod tests {
             &cow_digest,
             16384,
             &salt,
+            &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
         )
@@ -268,12 +275,13 @@ mod tests {
         );
         extra.insert(
             "dev.pichi.carapace.verity.hash".to_string(),
-            "ab".repeat(32),
+            "cd".repeat(32),
         );
         let m = Manifest::base(
             &Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into()),
             16384,
             &[0u8; 32],
+            &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &extra,
         )
@@ -297,9 +305,9 @@ mod tests {
             m.annotations.get("dev.pichi.carapace.verity.algo").unwrap(),
             "sha256"
         );
-        assert!(
-            !m.annotations.contains_key("dev.pichi.carapace.verity.hash"),
-            "a caller-supplied tip hash is dropped"
+        assert_eq!(
+            m.annotations.get("dev.pichi.carapace.verity.hash"),
+            Some(&"ab".repeat(32))
         );
     }
 }

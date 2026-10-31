@@ -37,8 +37,8 @@ pub(crate) struct ImportArgs {
     pub created_rfc3339: String,
     /// Extra OCI/provenance annotations to stamp on the manifest, already
     /// parsed from `KEY=VALUE`. Merged verbatim; the structural
-    /// `dev.pichi.carapace.verity.*` keys always take precedence, a
-    /// caller-supplied tip hash is dropped, and a caller-supplied
+    /// `dev.pichi.carapace.verity.*` keys, including the computed root,
+    /// always take precedence. A caller-supplied
     /// `org.opencontainers.image.created` wins over the timestamp above.
     pub annotations: std::collections::BTreeMap<String, String>,
 }
@@ -150,6 +150,7 @@ impl StagedImport {
             &cow_digest,
             size,
             &salt,
+            &root,
             &args.created_rfc3339,
             &args.annotations,
         )?;
@@ -326,10 +327,12 @@ mod tests {
                 staged.cow_digest
             );
             let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
-            assert!(
-                !manifest
+            assert_eq!(
+                manifest
                     .annotations
-                    .contains_key("dev.pichi.carapace.verity.hash")
+                    .get("dev.pichi.carapace.verity.hash")
+                    .map(String::as_str),
+                Some(root)
             );
             let conglobate::artifact::Layer::Scute(scute) = &manifest.layers[0] else {
                 panic!("expected scute")
@@ -362,11 +365,7 @@ mod tests {
             "sha256:e912b9b25375cf235229c113b88eb7fcc038073c703696c4904f1712fa193823"
         );
         let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
-        assert!(
-            !manifest
-                .annotations
-                .contains_key("dev.pichi.carapace.verity.hash")
-        );
+
         let bytes = std::fs::read(staged.cow.path()).unwrap();
         let formatted = VerityParams {
             data_block_size: 4096,
@@ -376,6 +375,10 @@ mod tests {
         }
         .compute(&bytes)
         .unwrap();
+        assert_eq!(
+            manifest.annotations.get("dev.pichi.carapace.verity.hash"),
+            Some(&hex::encode(formatted.root_hash))
+        );
         assert_eq!(
             hex::encode(formatted.root_hash),
             "4c7a21cbde4adb55ded7748c0d36471fe6f30942890580ac3d2a498719e7838e"

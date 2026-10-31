@@ -92,7 +92,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
 
     // Assemble the manifest. With `--carapace`, start from the cached carapace
     // (reuse its scutes and verity parameter annotations) and keep only its
-    // scute layers. A cached tip hash annotation is dropped. Without
+    // scute layers and the committed tip hash annotation. Without
     // `--carapace`, start from an empty scute-less manifest (a PMI-only
     // bootable artifact).
     let mut manifest = match &args.carapace {
@@ -194,9 +194,6 @@ async fn carapace_scutes_manifest(
     manifest
         .layers
         .retain(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)));
-    manifest
-        .annotations
-        .remove("dev.pichi.carapace.verity.hash");
     Ok(manifest)
 }
 
