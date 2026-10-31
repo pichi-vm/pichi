@@ -109,7 +109,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
             .env("XDG_DATA_HOME", &source_home)
             .args(["import", "raw"])
             .arg(&raw)
-            .args(["--salt", suffix, "-t", &tag, "--quiet"])
+            .args(["-t", &tag, "--quiet"])
             .assert()
             .success()
             .get_output()
