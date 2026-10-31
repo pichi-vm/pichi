@@ -85,6 +85,8 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
             "app:base",
             "-t",
             "app:1",
+            "--annotation",
+            "dev.pichi.carapace.verity.hash=caller-cannot-replace-root",
         ])
         .assert()
         .success();
@@ -103,6 +105,15 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
     assert!(app.layers.iter().any(|l| matches!(l, Layer::Scute(_))));
     assert!(app.layers.iter().any(|l| matches!(l, Layer::Pmi(_))));
     assert!(app.layers.iter().any(|l| matches!(l, Layer::Dtb(_))));
+    let root = base
+        .annotations
+        .get("dev.pichi.carapace.verity.hash")
+        .unwrap();
+    assert_eq!(root.len(), 64);
+    assert_eq!(
+        app.annotations.get("dev.pichi.carapace.verity.hash"),
+        Some(root)
+    );
 }
 
 /// Kind 3: `import pmi` without `--carapace` produces a PMI-only bootable

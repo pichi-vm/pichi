@@ -241,8 +241,13 @@ For **every scute**, including cache hits, the host rebuilds dm-verity from
 the cow bytes and the full manifest salt. Reconstruction uses SHA-256,
 format 1/hash type 1, 4,096-byte data/hash blocks, and a zero UUID. The host
 requires a complete salt chain from the zero-prefix base to exactly one tip;
-manifest layer order does not determine that chain. A tip-hash annotation
-is never used as a trust anchor. Only rebuilt sidecars enter the cache.
+manifest layer order does not determine that chain. Only rebuilt sidecars
+enter the cache.
+
+`pichi import raw` records the computed chain root in the manifest annotation
+`dev.pichi.carapace.verity.hash`. `pichi import pmi --carapace` preserves this
+root when adding boot components. Caller annotations cannot replace it.
+PMI-only images carry no carapace root.
 
 **Guest verity choice (#26):** guest verity is optional and never
 authoritative. If supplied as `blobs/sha256/<cow-digest>.verity`, it must
