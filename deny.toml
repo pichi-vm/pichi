@@ -17,6 +17,11 @@ allow = [
 ]
 confidence-threshold = 0.8
 
+# winx provides cap-std's Windows support under Apache with extra permissions.
+[[licenses.exceptions]]
+name = "winx"
+allow = ["Apache-2.0 WITH LLVM-exception"]
+
 [advisories]
 version = 2
 ignore = []
