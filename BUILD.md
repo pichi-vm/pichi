@@ -206,6 +206,41 @@ stored image indexes, and index-digest references whose pull selected and
 cached a platform manifest. An informational tag in `name:tag@digest` does
 not change the digest selection.
 
+### Host checkout and submodules
+
+Point `<dir>` at the top of the main Git checkout. Use `--context` when
+the plan and lock live below that top directory. A linked `git worktree`,
+a submodule's own checkout, or a checkout made with `--separate-git-dir`
+has a `.git` file pointing elsewhere; build from the main checkout instead.
+Pichi checks this before resolving or pulling the build appliance.
+
+Pichi shares the whole checkout through one read-only `repo` virtiofs mount
+(a host directory made visible to the guest), including `.git/modules`,
+where Git keeps submodule history. A submodule is a Git repository recorded
+inside another repository at a particular commit. Stage the submodules the
+build reads yourself, for example `git submodule update --init -- vendor/lib`.
+For nested submodules, add `--recursive` as needed. Pichi and Conglobate
+never initialize, update, or fetch submodules. Pichi does not copy or narrow
+the checkout.
+
+Conglobate uses the selected revision's `.gitmodules` names and recorded
+commits, including nested stores under their parent's `modules/<name>`.
+Only modules read by the selected plan, lock, static reads, or COPY sources
+need to be staged. Unused missing modules are allowed. Conglobate checks
+needed stores and commits before execution and supports eight nested levels.
+
+The superproject must have its own objects. Pichi rejects entries in
+`.git/objects/info/alternates`, which would borrow another object store.
+Run `git repack -a -d` and remove the alternates file, or use a full clone.
+Conglobate also refuses alternates in any module store it uses. Keep `.git`
+and `.git/modules` inside `<dir>`; relative symlinks within the mount work,
+but links outside it and absolute host paths cannot be shared this way.
+
+After a launcher or guest failure, Pichi prints static staging guidance.
+Use the path in Conglobate's error with
+`git submodule update --init --recursive -- <path>`, then retry.
+Pichi does not inspect submodule contents or select which ones a build needs.
+
 ### OCI import and verity verification
 
 After guest exit 0, `pichi build` imports the complete OCI layout at the

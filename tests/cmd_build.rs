@@ -52,6 +52,11 @@ fn build_help_documents_plan_context_and_defaults() {
         "help should say a missing appliance is pulled:\n{stdout}"
     );
     assert!(
+        stdout.contains("Top of the main git checkout")
+            && stdout.contains("pichi never fetches them"),
+        "checkout and submodule guidance missing:\n{stdout}"
+    );
+    assert!(
         !["-f, --file", "--recipe", "--subdir", "PICHI_BUILD_IMAGE"]
             .iter()
             .any(|flag| stdout.contains(flag)),
@@ -103,6 +108,12 @@ fn build_requires_ref_during_argument_parsing() {
 #[test]
 fn build_missing_appliance_attempts_pull() {
     let tmp = tempfile::TempDir::new().unwrap();
+    let git = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .arg(tmp.path())
+        .status()
+        .unwrap();
+    assert!(git.success());
     let assert = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())

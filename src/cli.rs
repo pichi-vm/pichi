@@ -290,7 +290,10 @@ pub const DEFAULT_LOCK: &str = "pichi.lock";
 /// relative to `--context`.
 #[derive(Debug, ClapArgs)]
 pub struct BuildArgs {
-    /// Project directory mounted as the `repo` virtiofs share.
+    /// Top of the main git checkout, mounted read-only as `repo`.
+    ///
+    /// Stage needed submodules yourself; pichi never fetches them.
+    /// Use --context for a plan below the checkout top.
     pub dir: std::path::PathBuf,
     /// Tag for the produced artifact (e.g. `myapp:v1`).
     #[arg(short = 't', long)]
