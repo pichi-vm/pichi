@@ -234,15 +234,22 @@ pub(crate) fn parse_annotations(pairs: &[String]) -> Result<BTreeMap<String, Str
     Ok(map)
 }
 
-/// Read a launch-contract config file (JSON or YAML — `serde_yaml` reads both),
+/// Read a launch-contract config file (JSON or YAML — `serde-saphyr` reads both),
 /// validate its requirements, and re-serialise to canonical config-blob JSON.
 /// Returns the blob's digest and bytes for storage as the manifest config.
 async fn read_launch_contract(path: &Path) -> Result<(Digest, Vec<u8>)> {
     let text = tokio::fs::read_to_string(path)
         .await
         .with_context(|| format!("read --config: {}", path.display()))?;
-    let cfg: Config = serde_yaml::from_str(&text)
-        .with_context(|| format!("parse --config: {}", path.display()))?;
+    let cfg: Config = serde_saphyr::from_str_with_options(
+        &text,
+        serde_saphyr::options! {
+            // Match YAML 1.2 scalars and leave merge keys to the schema.
+            strict_booleans: true,
+            merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        },
+    )
+    .with_context(|| format!("parse --config: {}", path.display()))?;
     cfg.validate().context("invalid --config")?;
     let bytes = serde_json::to_vec(&cfg).context("serialise config blob")?;
     Ok((
