@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use conglobate::artifact::{Layer, Manifest};
-use pichi_storage::{FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
 fn graphroot(tmp: &TempDir) -> PathBuf {
@@ -213,33 +213,76 @@ async fn import_pmi_with_config_sets_config_blob() {
     let g = graphroot(&tmp);
     let (_raw, pmi, dtb) = fixtures(&tmp);
     let cfg = tmp.path().join("config.yaml");
-    std::fs::write(
-        &cfg,
+    let mut configs = Vec::new();
+    for text in [
         "version: 1\nrequirements:\n  memory:\n    required: 512\n  cpus:\n    required: 2\n",
-    )
-    .unwrap();
+        r#"{"version":1,"requirements":{"memory":{"required":512},"cpus":{"required":2}}}"#,
+        "version: 1\nrequirements:\n  memory: &minimum\n    required: 512\n  cpus: *minimum\n",
+    ] {
+        std::fs::write(&cfg, text).unwrap();
 
-    pichi(&tmp)
-        .args([
-            "import",
-            "pmi",
-            pmi.to_str().unwrap(),
-            "--dtb",
-            dtb.to_str().unwrap(),
-            "--config",
-            cfg.to_str().unwrap(),
-            "-t",
-            "boot:1",
-        ])
-        .assert()
-        .success();
+        pichi(&tmp)
+            .args([
+                "import",
+                "pmi",
+                pmi.to_str().unwrap(),
+                "--dtb",
+                dtb.to_str().unwrap(),
+                "--config",
+                cfg.to_str().unwrap(),
+                "-t",
+                "boot:1",
+            ])
+            .assert()
+            .success();
 
-    let m = resolve_manifest(&g, "docker.io/library/boot:1").await;
-    assert!(
-        !m.config.is_empty(),
-        "config blob must be a real vnd.pichi.config.v1+json, not the empty config"
-    );
-    assert_eq!(m.config.media_type, "application/vnd.pichi.config.v1+json");
+        let m = resolve_manifest(&g, "docker.io/library/boot:1").await;
+        assert!(
+            !m.config.is_empty(),
+            "config blob must be a real vnd.pichi.config.v1+json, not the empty config"
+        );
+        assert_eq!(m.config.media_type, "application/vnd.pichi.config.v1+json");
+        let bytes = FilesystemBlobStore::new(&g)
+            .get_blob(&m.config.digest.parse().unwrap())
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(config["requirements"]["memory"]["required"], 512);
+        configs.push(bytes);
+    }
+    assert_eq!(configs[0], configs[1]);
+    let alias: serde_json::Value = serde_json::from_slice(&configs[2]).unwrap();
+    assert_eq!(alias["requirements"]["cpus"]["required"], 512);
+}
+
+#[test]
+fn import_pmi_config_errors_include_path_and_location() {
+    let tmp = TempDir::new().unwrap();
+    let (_raw, pmi, dtb) = fixtures(&tmp);
+    let cfg = tmp.path().join("invalid.yaml");
+    for text in [
+        "version: 1\nrequirements: [\n",
+        "version: 1\nrequirements:\n  memory:\n    required: invalid\n",
+        "version: 1\n<<: {requirements: {}}\n",
+    ] {
+        std::fs::write(&cfg, text).unwrap();
+        let output = pichi(&tmp)
+            .args(["import", "pmi"])
+            .arg(&pmi)
+            .arg("--dtb")
+            .arg(&dtb)
+            .arg("--config")
+            .arg(&cfg)
+            .assert()
+            .failure()
+            .get_output()
+            .stderr
+            .clone();
+        let diagnostic = String::from_utf8(output).unwrap();
+        assert!(diagnostic.contains(cfg.to_str().unwrap()), "{diagnostic}");
+        assert!(diagnostic.contains("line"), "{diagnostic}");
+        assert!(diagnostic.contains("column"), "{diagnostic}");
+    }
 }
 
 /// `import pmi` without `-t` caches the bootable artifact untagged and prints

@@ -68,9 +68,10 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             ],
         ),
     );
-    let lock: conglobate::build::Lock =
-        serde_yaml::from_slice(&std::fs::read(repo.join(SMOKE_CONTEXT).join(SMOKE_LOCK)).unwrap())
-            .unwrap();
+    let lock: conglobate::build::Lock = serde_saphyr::from_slice(
+        &std::fs::read(repo.join(SMOKE_CONTEXT).join(SMOKE_LOCK)).unwrap(),
+    )
+    .unwrap();
     assert_eq!(lock.images[SMOKE_SOURCE_REF].index.to_string(), index);
     assert_pichi_ok("prune after update", &pichi(g, &[], &["system", "prune"]));
     // Build the committed lock produced by update, after cache collection.

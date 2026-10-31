@@ -321,6 +321,7 @@ pub(crate) fn canonicalize_reference(s: &str) -> std::borrow::Cow<'_, str> {
 /// Capability-relative opens resolve symlinks without allowing either the
 /// selected context or the lock to escape its containing directory.
 fn load_build_lock(repo: &Path, context: &str, lock_rel: &str) -> Result<BuildLockFile> {
+    let path = repo.join(context).join(lock_rel);
     let repo = cap_std::fs::Dir::open_ambient_dir(repo, cap_std::ambient_authority())
         .context("opening build repository")?;
     let context = repo
@@ -329,7 +330,16 @@ fn load_build_lock(repo: &Path, context: &str, lock_rel: &str) -> Result<BuildLo
     let text = context
         .read_to_string(lock_rel)
         .with_context(|| format!("reading build lock {lock_rel} within context"))?;
-    serde_yaml::from_str(&text).with_context(|| format!("parsing build lock {lock_rel}"))
+    let parsed: BuildLockFile = serde_saphyr::from_str_with_options(
+        &text,
+        serde_saphyr::options! {
+            // Match YAML 1.2 scalars and leave merge keys to the schema.
+            strict_booleans: true,
+            merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        },
+    )
+    .with_context(|| format!("parsing build lock {}", path.display()))?;
+    Ok(parsed)
 }
 
 /// Resolve a cached reference to its parsed pichi manifest.
@@ -850,6 +860,43 @@ mod tests {
                 .to_string(),
             "sha256:abababababababababababababababababababababababababababababababab"
         );
+    }
+
+    #[test]
+    fn build_lock_accepts_yaml_and_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        for text in [
+            "# Current lock\nversion: 1\nimages: {}\n",
+            "---\nversion: 1\nimages: {}\n...\n",
+            r#"{"version": 1, "images": {}}"#,
+        ] {
+            std::fs::write(tmp.path().join("pichi.lock"), text).unwrap();
+            let lock = load_build_lock(tmp.path(), ".", "pichi.lock").unwrap();
+            assert_eq!(lock.version, 1);
+            assert!(lock.images.is_empty());
+        }
+    }
+
+    #[test]
+    fn build_lock_errors_include_path_and_location() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".").join("pichi.lock");
+        for text in ["version: invalid\nimages: {}\n", "version: 1\nimages: [\n"] {
+            std::fs::write(&path, text).unwrap();
+            let error = load_build_lock(tmp.path(), ".", "pichi.lock").unwrap_err();
+            let diagnostic = format!("{error:#}");
+            assert!(diagnostic.contains(path.to_str().unwrap()), "{diagnostic}");
+            assert!(diagnostic.contains("line"), "{diagnostic}");
+            assert!(diagnostic.contains("column"), "{diagnostic}");
+        }
+        for text in [
+            "version: 1\nversion: 2\nimages: {}\n",
+            "version: 1\nimages: {}\n---\nversion: 2\nimages: {}\n",
+            "version: 1\nimages: {base: {index: sha256:invalid}}\n",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(load_build_lock(tmp.path(), ".", "pichi.lock").is_err());
+        }
     }
     /// A pin must never resolve to different metadata through a tag mapping.
     #[tokio::test]
