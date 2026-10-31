@@ -110,10 +110,6 @@ pub struct ImportRawArgs {
     /// via `conglobate::artifact::Reference::from_str` before any I/O.
     #[arg(short = 't', long)]
     pub tag: Option<String>,
-    /// Hex-encoded author suffix appended after the 32-byte zero salt
-    /// prefix (D-01). Default (no flag): salt = 32 zero bytes only.
-    #[arg(long)]
-    pub salt: Option<String>,
     /// Suppress progress reporting. The carapace root hash is still printed to
     /// stdout (docker `-q` style) — it is the value a detached PMI bakes into
     /// its measured cmdline (`corium=`) before `pichi import pmi`.
@@ -356,23 +352,14 @@ pub struct RunArgs {
     pub memory: Option<u32>,
 }
 
-/// `--salt` hex decode is fallible — use TryFrom so bad hex is rejected
-/// at the dispatch boundary with `with_context`, not silently swallowed.
+/// Validate annotation arguments before dispatching the import.
 impl TryFrom<ImportRawArgs> for crate::cmd::import::raw::ImportArgs {
     type Error = anyhow::Error;
     fn try_from(a: ImportRawArgs) -> anyhow::Result<Self> {
-        use anyhow::Context as _;
-        let salt_suffix = a
-            .salt
-            .as_deref()
-            .map(hex::decode)
-            .transpose()
-            .with_context(|| format!("invalid --salt hex: {:?}", a.salt))?;
         let annotations = crate::cmd::import::parse_annotations(&a.annotations)?;
         Ok(Self {
             raw_image: a.raw_image,
             tag: a.tag,
-            salt_suffix,
             quiet: a.quiet,
             created_rfc3339: String::new(), // overwritten by cmd::import::run_raw
             annotations,

@@ -147,7 +147,6 @@ mod tests {
         crate::cmd::import::raw::ImportArgs {
             raw_image: raw,
             tag: Some(reference.into()),
-            salt_suffix: None,
             quiet: true,
             created_rfc3339: "2026-06-22T00:00:00Z".into(),
             annotations: BTreeMap::new(),

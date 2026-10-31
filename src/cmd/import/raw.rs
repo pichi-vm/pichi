@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use carapace::image::{Plan as _, Planned};
 use conglobate::artifact::{Digest, Manifest, Reference};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
@@ -29,9 +29,6 @@ pub(crate) struct ImportArgs {
     /// Tag to assign (e.g. `myapp:base`). `None` caches the carapace without
     /// tagging it. The index digest is printed in either case.
     pub tag: Option<String>,
-    /// Optional author-supplied salt suffix bytes (already hex-decoded).
-    /// `None` = use just the 32-byte zero prefix (D-01 default).
-    pub salt_suffix: Option<Vec<u8>>,
     /// If true, suppress progress reporting.
     pub quiet: bool,
     /// Creation timestamp supplied by the command or test fixture.
@@ -102,16 +99,10 @@ impl StagedImport {
                     .with_context(|| format!("invalid tag reference: {tag}"))
             })
             .transpose()?;
-        let mut salt = vec![0; 32];
-        if let Some(suffix) = args.salt_suffix {
-            if salt.len() + suffix.len() > 256 {
-                bail!(
-                    "--salt suffix too long: prefix(32) + suffix({}) > verity_sb.salt[256]",
-                    suffix.len()
-                );
-            }
-            salt.extend_from_slice(&suffix);
-        }
+        // The zero parent prefix identifies the base; each new scute gets
+        // independent randomness without changing its COW bytes.
+        let mut salt = vec![0; 64];
+        getrandom::fill(&mut salt[32..]).context("generating scute salt")?;
         let image = File::open(&args.raw_image)
             .with_context(|| format!("opening input image: {}", args.raw_image.display()))?;
         if !args.quiet {
@@ -208,7 +199,6 @@ mod tests {
         let args = ImportArgs {
             raw_image,
             tag: Some(tag.to_string()),
-            salt_suffix: None,
             quiet: true,
             created_rfc3339: "2026-05-07T12:00:00Z".to_string(),
             annotations: std::collections::BTreeMap::new(),
@@ -282,7 +272,7 @@ mod tests {
         let chunk = u32::from_le_bytes(cow[12..16].try_into().unwrap());
         assert_eq!(chunk, 8);
     }
-    /// Fixed digests/roots from the retired writer guard artifact identity,
+    /// Fixed digests and unsuffixed roots guard artifact compatibility,
     /// including zero images and the 256-exception metadata-area boundary.
     #[test]
     fn preserves_legacy_cow_bytes_and_roots() {
@@ -339,13 +329,6 @@ mod tests {
                 staged.cow_digest
             );
             let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
-            assert_eq!(
-                manifest
-                    .annotations
-                    .get("dev.pichi.carapace.verity.hash")
-                    .map(String::as_str),
-                Some(root)
-            );
             let conglobate::artifact::Layer::Scute(scute) = &manifest.layers[0] else {
                 panic!("expected scute")
             };
@@ -359,6 +342,22 @@ mod tests {
             .compute(&bytes)
             .unwrap();
             assert_eq!(hex::encode(formatted.root_hash), root);
+            let salt = hex::decode(&scute.annotations.salt).unwrap();
+            assert_eq!(salt.len(), 64);
+            assert_eq!(&salt[..32], &[0; 32]);
+            assert_eq!(staged.header.parameters.salt.as_ref(), salt);
+            let formatted = VerityParams {
+                data_block_size: 4096,
+                hash_block_size: 4096,
+                salt,
+                uuid: [0; 16],
+            }
+            .compute(&bytes)
+            .unwrap();
+            assert_eq!(
+                manifest.annotations.get("dev.pichi.carapace.verity.hash"),
+                Some(&hex::encode(formatted.root_hash))
+            );
             assert_eq!(std::fs::read(staged.verity.path()).unwrap(), formatted.blob);
             drop(staged);
             assert_eq!(std::fs::read_dir(scratch).unwrap().count(), 0);
@@ -388,17 +387,26 @@ mod tests {
         .compute(&bytes)
         .unwrap();
         assert_eq!(
-            manifest.annotations.get("dev.pichi.carapace.verity.hash"),
-            Some(&hex::encode(formatted.root_hash))
-        );
-        assert_eq!(
             hex::encode(formatted.root_hash),
             "4c7a21cbde4adb55ded7748c0d36471fe6f30942890580ac3d2a498719e7838e"
         );
+        let formatted = VerityParams {
+            data_block_size: 4096,
+            hash_block_size: 4096,
+            salt: staged.header.parameters.salt.as_ref().to_vec(),
+            uuid: [0; 16],
+        }
+        .compute(&bytes)
+        .unwrap();
+        assert_eq!(
+            manifest.annotations.get("dev.pichi.carapace.verity.hash"),
+            Some(&hex::encode(formatted.root_hash))
+        );
+        assert_eq!(std::fs::read(staged.verity.path()).unwrap(), formatted.blob);
     }
 
     #[test]
-    fn sparse_and_dense_sources_produce_identical_artifacts() {
+    fn identical_content_shares_cow_bytes_but_gets_independent_salts() {
         use std::io::{Seek as _, SeekFrom};
         let tmp = TempDir::new().unwrap();
         let sparse_path = tmp.path().join("sparse.raw");
@@ -413,12 +421,27 @@ mod tests {
         let sparse = StagedImport::new(args, &scratch).unwrap();
         let (args, _) = make_args(&tmp, dense_path, "base:1");
         let dense = StagedImport::new(args, &scratch).unwrap();
-        assert_eq!(sparse.manifest_bytes, dense.manifest_bytes);
+        assert_eq!(sparse.cow_digest, dense.cow_digest);
+        assert_ne!(sparse.manifest_digest, dense.manifest_digest);
+        assert_ne!(
+            sparse.header.parameters.salt.as_ref()[32..],
+            dense.header.parameters.salt.as_ref()[32..]
+        );
+        let sparse_manifest: Manifest = serde_json::from_slice(&sparse.manifest_bytes).unwrap();
+        let dense_manifest: Manifest = serde_json::from_slice(&dense.manifest_bytes).unwrap();
+        assert_ne!(
+            sparse_manifest
+                .annotations
+                .get("dev.pichi.carapace.verity.hash"),
+            dense_manifest
+                .annotations
+                .get("dev.pichi.carapace.verity.hash")
+        );
         assert_eq!(
             std::fs::read(sparse.cow.path()).unwrap(),
             std::fs::read(dense.cow.path()).unwrap()
         );
-        assert_eq!(
+        assert_ne!(
             std::fs::read(sparse.verity.path()).unwrap(),
             std::fs::read(dense.verity.path()).unwrap()
         );

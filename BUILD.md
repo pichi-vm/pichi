@@ -262,7 +262,12 @@ PMI and DTB descriptors do not participate in scute order. Only rebuilt
 sidecars enter the cache.
 
 `pichi import raw` records the computed chain root in the manifest annotation
-`dev.pichi.carapace.verity.hash`. `pichi import pmi --carapace` preserves this
+`dev.pichi.carapace.verity.hash`. Each import generates a fresh 32-byte salt
+suffix using the operating system's cryptographic random source, after the
+32-byte zero parent prefix. Importing identical data again preserves the COW
+blob digest but produces a different salt, verity tree, root and manifest.
+Loading or reusing an existing layer preserves its recorded salt.
+`pichi import pmi --carapace` preserves this
 root when adding boot components. Caller annotations cannot replace it.
 PMI-only images carry no carapace root.
 

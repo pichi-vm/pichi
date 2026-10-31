@@ -21,7 +21,7 @@ use conglobate::artifact::{
 ///
 /// - One Scute layer carrying `cow_digest`, `cow_size`, and the
 ///   `dev.pichi.scute.verity.salt` annotation (hex-encoded full salt —
-///   32-byte zero prefix per CONTEXT D-01 plus optional author suffix).
+///   32-byte zero parent prefix followed by a 32-byte random suffix).
 /// - Top-level chain annotations per Phase 42 D-06:
 ///   - `dev.pichi.carapace.verity.algo` = `"sha256"`
 ///   - `dev.pichi.carapace.verity.data-block-size` = `"4096"`
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn bottom_scute_salt_is_zero_prefix() {
         let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
-        let salt = vec![0u8; 32]; // default: just the prefix, no suffix
+        let salt = vec![0u8; 32]; // Existing layers may have no suffix.
         let m = Manifest::base(
             &cow_digest,
             16384,
@@ -186,13 +186,12 @@ mod tests {
         );
     }
 
-    /// CONTEXT D-01: author-supplied suffix is appended AFTER the
-    /// 32-byte zero prefix.
+    /// Preserve the producer's full salt, including its random suffix.
     #[test]
-    fn salt_with_author_suffix_appends_after_prefix() {
+    fn preserves_full_salt() {
         let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
         let mut salt = vec![0u8; 32];
-        salt.extend_from_slice(&[0xAB, 0xCD, 0xEF]);
+        salt.extend_from_slice(&[0xAB; 32]);
         let m = Manifest::base(
             &cow_digest,
             16384,
@@ -207,8 +206,7 @@ mod tests {
         };
         assert_eq!(
             scute.annotations.salt,
-            format!("{}{}", "0".repeat(64), "abcdef"),
-            "32 zero bytes + 3 author bytes = 64+6 hex chars"
+            format!("{}{}", "0".repeat(64), "ab".repeat(32))
         );
     }
 

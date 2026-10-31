@@ -145,8 +145,7 @@ async fn rejects_bad_chunk_size() {
         .failure();
 }
 
-/// CONTEXT D-01 (e2e): default-flag import writes salt = 32 zero bytes
-/// = 64 hex zero chars in the manifest's scute annotation.
+/// New base scutes have a zero parent prefix and a 32-byte random suffix.
 #[tokio::test]
 async fn bottom_scute_salt_is_zero_prefix_e2e() {
     let tmp = TempDir::new().unwrap();
@@ -175,11 +174,9 @@ async fn bottom_scute_salt_is_zero_prefix_e2e() {
         Layer::Scute(s) => s.annotations.salt.clone(),
         _ => panic!("expected scute layer"),
     };
-    assert_eq!(
-        salt,
-        "0".repeat(64),
-        "salt prefix is 32 zero bytes (= 64 hex zeros)"
-    );
+    let salt = hex::decode(salt).unwrap();
+    assert_eq!(salt.len(), 64);
+    assert_eq!(&salt[..32], &[0; 32]);
 }
 
 /// IMPORT-01 (extended): a base import is not bootable — its manifest carries

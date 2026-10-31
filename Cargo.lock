@@ -3083,6 +3083,7 @@ dependencies = [
  "env_logger",
  "fs4",
  "futures-util",
+ "getrandom 0.4.3",
  "hex",
  "humansize",
  "log",
