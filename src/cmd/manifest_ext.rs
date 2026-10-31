@@ -9,7 +9,6 @@
 //! than as free functions scattered across the command modules.
 
 use crate::cmd::platform::PlatformExt as _;
-use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
@@ -51,7 +50,7 @@ pub trait ManifestExt {
         layer: &Layer,
         blob_store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>>;
-    /// Unique graph-derived tip: the top scute dm-verity root.
+    /// Reconstructed tip after verifying scutes in manifest order.
     /// Host trust is the OCI digest. This root is not read from an annotation.
     async fn carapace_top_root(&self, blob_store: &dyn BlobStore) -> Result<[u8; 32]>;
 }
@@ -204,8 +203,8 @@ impl ManifestExt for Manifest {
 /// Roots computed from the data in this operation, never read from sidecar metadata.
 #[derive(Default)]
 pub(super) struct ScuteRoots {
-    roots: Vec<[u8; 32]>,
-    parents: HashSet<[u8; 32]>,
+    root: [u8; 32],
+    count: usize,
 }
 
 impl ScuteRoots {
@@ -214,78 +213,34 @@ impl ScuteRoots {
             bail!("non-scute layer supplied a verity root");
         };
         let salt = hex::decode(&scute.annotations.salt)?;
-        if let Some(prefix) = salt.get(..32) {
-            let prefix: [u8; 32] = prefix.try_into()?;
-            if prefix != [0; 32] {
-                self.parents.insert(prefix);
-            }
+        let parent = salt
+            .get(..32)
+            .context("scute salt is shorter than its parent root")?;
+        if parent != self.root {
+            bail!("scutes must appear in base-to-tip manifest order");
         }
-        self.roots.push(root);
+        self.root = root;
+        self.count += 1;
         Ok(())
     }
 
     fn top(&self) -> Result<[u8; 32]> {
-        let tops: Vec<_> = self
-            .roots
-            .iter()
-            .filter(|r| !self.parents.contains(*r))
-            .collect();
-        match tops.as_slice() {
-            [top] => Ok(**top),
-            [] => bail!("carapace chain has no top scute"),
-            _ => bail!("carapace chain is not linear ({} top scutes)", tops.len()),
+        if self.count == 0 {
+            bail!("carapace chain has no top scute");
         }
+        Ok(self.root)
     }
 
-    /// OCI imports must carry a complete chain, including the zero-prefix
-    /// base. Walking consumes every scute, rejecting missing parents and cycles.
-    pub(super) fn verify_complete(&self, manifest: &Manifest) -> Result<()> {
-        self.verify(manifest)?;
-        let mut parents = HashMap::new();
-        for (layer, root) in manifest
+    /// Confirm that every scute was reconstructed in manifest order.
+    pub(super) fn verify(&self, manifest: &Manifest) -> Result<()> {
+        let expected = manifest
             .layers
             .iter()
             .filter(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)))
-            .zip(&self.roots)
-        {
-            let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = layer else {
-                unreachable!()
-            };
-            let salt = hex::decode(&scute.annotations.salt)?;
-            let parent: [u8; 32] = salt
-                .get(..32)
-                .context("scute salt is shorter than its parent root")?
-                .try_into()?;
-            if parents.insert(*root, parent).is_some() {
-                bail!("duplicate scute root");
-            }
+            .count();
+        if self.count != expected {
+            bail!("not every manifest scute was reconstructed");
         }
-        if parents.is_empty() {
-            return Ok(());
-        }
-        let mut root = self.top()?;
-        while root != [0; 32] {
-            root = parents
-                .remove(&root)
-                .context("carapace chain has a missing parent or cycle")?;
-        }
-        if !parents.is_empty() {
-            bail!("carapace chain contains unreachable scutes");
-        }
-        Ok(())
-    }
-
-    /// When scutes are present, require exactly one graph-derived tip.
-    /// `dev.pichi.carapace.verity.hash` is ignored if a manifest still carries it.
-    pub(super) fn verify(&self, manifest: &Manifest) -> Result<()> {
-        if !manifest
-            .layers
-            .iter()
-            .any(|layer| matches!(layer, Layer::Scute(_) | Layer::ScuteZstd(_)))
-        {
-            return Ok(());
-        }
-        self.top()?;
         Ok(())
     }
 }

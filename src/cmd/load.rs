@@ -92,9 +92,7 @@ impl OciLayout {
                     roots.add(layer, root)?;
                 }
             }
-            roots
-                .verify_complete(manifest)
-                .context("invalid carapace tip")?;
+            roots.verify(manifest).context("invalid carapace tip")?;
         }
         layout.check_guest_verity()?;
         Ok(layout)
@@ -664,8 +662,6 @@ pub(super) mod tests {
         let mut fixture = LayoutFixture::new();
         fixture.add_scute(false);
         fixture.add_scute(true);
-        // Descriptor order has no bearing on the salt graph.
-        fixture.manifest["layers"].as_array_mut().unwrap().reverse();
         let digest = fixture.write(&output);
         fixture.sidecars(&output);
         for _ in 0..2 {
@@ -759,6 +755,8 @@ pub(super) mod tests {
             "inline config",
             "salt",
             "disconnected salt",
+            "reversed chain",
+            "reordered children",
             "fork",
             "duplicate layer",
             "duplicate manifest",
@@ -818,6 +816,16 @@ pub(super) mod tests {
                 "short salt" => {
                     fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
                         "00".into()
+                }
+                "reversed chain" | "reordered children" => {
+                    fixture.add_scute(false);
+                    fixture.add_scute(true);
+                    let layers = fixture.manifest["layers"].as_array_mut().unwrap();
+                    if case == "reversed chain" {
+                        layers.reverse();
+                    } else {
+                        layers.swap(1, 2);
+                    }
                 }
                 "missing base" => {
                     fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
