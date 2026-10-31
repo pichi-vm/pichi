@@ -374,7 +374,7 @@ impl OciLayout {
         );
         let mut hash = Sha256::new();
         let mut count = 0u64;
-        let mut buffer = [0; 64 * 1024];
+        let mut buffer = vec![0; 64 * 1024].into_boxed_slice();
         loop {
             let length = input.read(&mut buffer)?;
             if length == 0 {
@@ -419,8 +419,8 @@ impl OciLayout {
                 guest.metadata()?.len() == rebuilt.metadata()?.len(),
                 "guest verity size mismatch"
             );
-            let mut a = [0; 64 * 1024];
-            let mut b = [0; 64 * 1024];
+            let mut a = vec![0; 64 * 1024].into_boxed_slice();
+            let mut b = vec![0; 64 * 1024].into_boxed_slice();
             loop {
                 let count = guest.read(&mut a)?;
                 if count == 0 {
@@ -798,7 +798,7 @@ pub(super) mod tests {
                 }
                 "layer type" => fixture.manifest["layers"][0]["mediaType"] = "text/plain".into(),
                 "layer digest" => {
-                    fixture.manifest["layers"][0]["digest"] = "sha256:../../escape".into()
+                    fixture.manifest["layers"][0]["digest"] = "sha256:../../escape".into();
                 }
                 "layer size" => fixture.manifest["layers"][0]["size"] = 1.into(),
                 "config type" => fixture.manifest["config"]["mediaType"] = "text/plain".into(),
@@ -817,27 +817,27 @@ pub(super) mod tests {
                 }
                 "short salt" => {
                     fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
-                        "00".into()
+                        "00".into();
                 }
                 "missing base" => {
                     fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
-                        hex::encode([42; 32]).into()
+                        hex::encode([42; 32]).into();
                 }
                 "salt mismatch" => {
                     fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
-                        hex::encode([0; 64]).into()
+                        hex::encode([0; 64]).into();
                 }
                 "hash type" => {
                     fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash-type"] =
-                        "0".into()
+                        "0".into();
                 }
                 "oversized hash block" => {
                     fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash-block-size"] =
-                        "2147483648".into()
+                        "2147483648".into();
                 }
                 "salt" => {
                     fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
-                        "zz".into()
+                        "zz".into();
                 }
                 "disconnected salt" => {
                     fixture.add_scute(false);
@@ -857,11 +857,11 @@ pub(super) mod tests {
                 }
                 "bad blocks" => {
                     fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.data-blocks"] =
-                        "0".into()
+                        "0".into();
                 }
                 "bad geometry" => {
                     fixture.manifest["annotations"]["dev.pichi.carapace.verity.data-block-size"] =
-                        "3".into()
+                        "3".into();
                 }
                 _ => {}
             }
@@ -881,7 +881,7 @@ pub(super) mod tests {
                 "missing marker" => std::fs::remove_file(output.join("oci-layout")).unwrap(),
                 "bad marker" => {
                     std::fs::write(output.join("oci-layout"), br#"{"imageLayoutVersion":"9"}"#)
-                        .unwrap()
+                        .unwrap();
                 }
                 "empty index" => index["manifests"] = json!([]),
                 "index schema" => index["schemaVersion"] = 1.into(),
@@ -891,7 +891,7 @@ pub(super) mod tests {
                 "entry digest" => index["manifests"][0]["digest"] = "sha256:../../escape".into(),
                 "entry size" => index["manifests"][0]["size"] = 1.into(),
                 "missing manifest" => {
-                    std::fs::remove_file(output.join("blobs/sha256").join(digest.hex())).unwrap()
+                    std::fs::remove_file(output.join("blobs/sha256").join(digest.hex())).unwrap();
                 }
                 "missing cow" => std::fs::remove_file(&cow).unwrap(),
                 "tampered cow" => {

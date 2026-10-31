@@ -161,9 +161,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         &pmi_path,
         dtb_path.as_deref(),
         &gpt_specs,
-        &repo_dir,
-        &cache_dir,
-        output_dir.path(),
+        [&repo_dir, &cache_dir, output_dir.path()],
         Some(&console),
         memory,
         cpus,
@@ -193,9 +191,7 @@ pub(crate) fn build_dillo_args(
     pmi_path: &Path,
     dtb_path: Option<&Path>,
     gpt_specs: &[String],
-    repo_dir: &Path,
-    cache_dir: &Path,
-    output_dir: &Path,
+    [repo_dir, cache_dir, output_dir]: [&Path; 3],
     console: Option<&str>,
     memory_mib: Option<u32>,
     cpus: Option<u32>,
@@ -256,8 +252,7 @@ pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:b9e26e
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
 fn resolve_build_image(flag: Option<&str>) -> String {
-    flag.map(str::to_owned)
-        .unwrap_or_else(|| DEFAULT_BUILD_IMAGE.to_owned())
+    flag.map_or_else(|| DEFAULT_BUILD_IMAGE.to_owned(), str::to_owned)
 }
 
 /// Pull the resolved appliance when it is not already cached.
@@ -311,7 +306,7 @@ pub(crate) fn canonicalize_reference(s: &str) -> std::borrow::Cow<'_, str> {
     };
     let name = &s[..at];
     let digest = &s[at..]; // includes '@'
-    let search_from = name.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let search_from = name.rfind('/').map_or(0, |i| i + 1);
     let Some(rel_colon) = name[search_from..].find(':') else {
         return std::borrow::Cow::Borrowed(s);
     };
@@ -400,11 +395,11 @@ async fn boot_serve_and_wait(
     }
     #[cfg(windows)]
     {
-        // FDs are only consumed by the unix pre_exec path; silence -D warnings.
-        let _ = (device_rx_fd, device_tx_fd);
         // tokio::process::Command does not wrap inherit_handles; apply it on
         // the inner std::process::Command (nightly feature gated in lib.rs).
         use std::os::windows::process::CommandExt as _;
+        // FDs are only consumed by the unix pre_exec path; silence -D warnings.
+        let _ = (device_rx_fd, device_tx_fd);
         cmd.as_std_mut().inherit_handles(true);
     }
 
@@ -492,9 +487,11 @@ mod tests {
             Path::new("/cache/blobs/sha256/deadbeef"),
             None,
             &["partitions=[[path=/c,partuuid=u,typeguid=t,label=c:x]]".to_string()],
-            Path::new("/proj"),
-            Path::new("/var/cache/pichi"),
-            Path::new("/run/out"),
+            [
+                Path::new("/proj"),
+                Path::new("/var/cache/pichi"),
+                Path::new("/run/out"),
+            ],
             Some(&console),
             Some(4096),
             Some(8),
@@ -568,9 +565,7 @@ mod tests {
             Path::new("/p.pmi"),
             None,
             &[],
-            Path::new("/proj"),
-            Path::new("/cache"),
-            Path::new("/out"),
+            [Path::new("/proj"), Path::new("/cache"), Path::new("/out")],
             None,
             None,
             None,
@@ -587,9 +582,7 @@ mod tests {
             Path::new("/p.pmi"),
             Some(Path::new("/cache/blobs/sha256/dtbdead")),
             &[],
-            Path::new("/proj"),
-            Path::new("/cache"),
-            Path::new("/out"),
+            [Path::new("/proj"), Path::new("/cache"), Path::new("/out")],
             None,
             None,
             None,
@@ -686,9 +679,11 @@ mod tests {
             Path::new("/cache/blobs/sha256/deadbeef"),
             None,
             &[],
-            Path::new("/proj"),
-            Path::new("/var/cache/pichi"),
-            Path::new("/run/out"),
+            [
+                Path::new("/proj"),
+                Path::new("/var/cache/pichi"),
+                Path::new("/run/out"),
+            ],
             Some(&console),
             None,
             None,

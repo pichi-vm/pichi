@@ -135,11 +135,7 @@ impl HttpRegistry {
         if let Some(c) = cache.get(registry) {
             return c.clone(); // oci_client::Client is Arc-internally — cheap clone.
         }
-        let insecure = self
-            .entries
-            .get(registry)
-            .map(|e| e.insecure)
-            .unwrap_or(false);
+        let insecure = self.entries.get(registry).is_some_and(|e| e.insecure);
         let protocol = if insecure {
             // Pitfall 10: explicit per-registry insecure escape hatch.
             ClientProtocol::HttpsExcept(vec![registry.to_string()])
@@ -209,11 +205,11 @@ fn build_oci_ref(registry: &str, repo: &str, tag_or_digest: Option<&str>) -> Res
 /// precedence; otherwise Basic credentials are used, and anonymous requests get
 /// no auth header. Never logs the values (Pitfall 14).
 trait ApplyAuth {
-    fn apply_auth(self, token: &Option<String>, auth: &RegistryAuth) -> Self;
+    fn apply_auth(self, token: Option<&str>, auth: &RegistryAuth) -> Self;
 }
 
 impl ApplyAuth for reqwest::RequestBuilder {
-    fn apply_auth(self, token: &Option<String>, auth: &RegistryAuth) -> Self {
+    fn apply_auth(self, token: Option<&str>, auth: &RegistryAuth) -> Self {
         if let Some(t) = token {
             self.bearer_auth(t)
         } else if let RegistryAuth::Basic(user, pass) = auth {
@@ -463,11 +459,7 @@ impl Registry for HttpRegistry {
             .await
             .map_err(RegistryError::from)?;
 
-        let insecure = self
-            .entries
-            .get(registry)
-            .map(|e| e.insecure)
-            .unwrap_or(false);
+        let insecure = self.entries.get(registry).is_some_and(|e| e.insecure);
         let scheme = if insecure { "http" } else { "https" };
 
         // 1. Begin an upload session.
@@ -476,7 +468,7 @@ impl Registry for HttpRegistry {
             .http
             .post(&uploads)
             .header(reqwest::header::CONTENT_LENGTH, "0")
-            .apply_auth(&token, &auth)
+            .apply_auth(token.as_deref(), &auth)
             .send()
             .await
             .map_err(|e| RegistryError::Transport(format!("begin upload in {repo}: {e}")))?;
@@ -514,7 +506,7 @@ impl Registry for HttpRegistry {
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .header(reqwest::header::CONTENT_LENGTH, size)
             .body(body)
-            .apply_auth(&token, &auth)
+            .apply_auth(token.as_deref(), &auth)
             .send()
             .await
             .map_err(|e| RegistryError::Transport(format!("upload blob {digest}: {e}")))?;

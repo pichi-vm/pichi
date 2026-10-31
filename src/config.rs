@@ -102,9 +102,7 @@ impl Config {
     /// a config file; the env bridge is a no-op outside CI.
     pub fn registry_entries(&self) -> Vec<RegistryEntry> {
         let test_reg = std::env::var("PICHI_TEST_REGISTRY").ok();
-        let test_insec = std::env::var("PICHI_TEST_REGISTRY_INSECURE")
-            .ok()
-            .is_some_and(|v| !v.is_empty());
+        let test_insec = std::env::var("PICHI_TEST_REGISTRY_INSECURE").is_ok_and(|v| !v.is_empty());
 
         let mut entries: Vec<RegistryEntry> = self
             .registries
@@ -127,14 +125,15 @@ impl Config {
 
         // If the test registry isn't declared in config, synthesise an insecure
         // entry so integration tests work without a config file.
-        if let Some(reg) = test_reg {
-            if test_insec && !entries.iter().any(|e| e.prefix == reg) {
-                entries.push(RegistryEntry {
-                    prefix: reg,
-                    insecure: true,
-                    auth_hint: None,
-                });
-            }
+        if let Some(reg) = test_reg
+            && test_insec
+            && !entries.iter().any(|e| e.prefix == reg)
+        {
+            entries.push(RegistryEntry {
+                prefix: reg,
+                insecure: true,
+                auth_hint: None,
+            });
         }
         entries
     }
@@ -162,15 +161,15 @@ impl Config {
         env_override: Option<&Path>,
     ) -> Result<Self> {
         let mut cfg = Self::default();
-        if let Some(p) = system {
-            if let Some(file_cfg) = Self::read_optional(p)? {
-                cfg.merge(file_cfg);
-            }
+        if let Some(p) = system
+            && let Some(file_cfg) = Self::read_optional(p)?
+        {
+            cfg.merge(file_cfg);
         }
-        if let Some(p) = user {
-            if let Some(file_cfg) = Self::read_optional(p)? {
-                cfg.merge(file_cfg);
-            }
+        if let Some(p) = user
+            && let Some(file_cfg) = Self::read_optional(p)?
+        {
+            cfg.merge(file_cfg);
         }
         if let Some(p) = env_override {
             let contents = std::fs::read_to_string(p)
@@ -223,6 +222,8 @@ impl Config {
 /// System-wide config path: `/etc/pichi/config.toml` on Unix,
 /// `%PROGRAMDATA%\pichi\config.toml` on Windows. `pub(crate)` so
 /// `system info` reports the same path the loader consults.
+// Windows can lack PROGRAMDATA; keep the same optional interface on Unix.
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(unix)]
 pub(crate) fn system_config_path() -> Option<PathBuf> {
     Some(PathBuf::from("/etc/pichi/config.toml"))

@@ -89,7 +89,7 @@ pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
     Ok(())
 }
 
-pub async fn annotate(args: ManifestAnnotateArgs, config: &Config) -> Result<()> {
+pub fn annotate(args: ManifestAnnotateArgs, config: &Config) -> Result<()> {
     let list_ref: Reference = args
         .list
         .parse()

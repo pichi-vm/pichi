@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
     // internally; network commands are async end to end.
     match cli.command {
         Command::System { cmd } => match cmd {
-            cli::SystemCmd::Info(args) => system::run(args, &config).await,
+            cli::SystemCmd::Info(args) => system::run(args, &config),
             cli::SystemCmd::Prune(args) => cmd::prune::run(args, &config).await,
         },
         Command::Images(args) => cmd::images::run(args, &config).await,
@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Push(args) => cmd::push::run(args, &config).await,
         Command::Manifest { cmd } => match cmd {
             cli::ManifestCmd::Create(args) => cmd::manifest::create(args, &config).await,
-            cli::ManifestCmd::Annotate(args) => cmd::manifest::annotate(args, &config).await,
+            cli::ManifestCmd::Annotate(args) => cmd::manifest::annotate(args, &config),
             cli::ManifestCmd::Push(args) => cmd::manifest::push(args, &config).await,
         },
         Command::Update(args) => cmd::update::run(args, &config).await,

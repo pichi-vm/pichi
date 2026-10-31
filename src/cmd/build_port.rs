@@ -108,8 +108,11 @@ pub(crate) fn create_build_port_pipes() -> Result<BuildPortPipes> {
     let device_tx_fd = fd_number(&device_tx);
     // `std::io::pipe` ends are CLOEXEC / non-inheritable. Host ends stay that
     // way; device ends must be inheritable so dillo can adopt `pipe:N`.
-    set_device_inheritable(&device_rx)?;
-    set_device_inheritable(&device_tx)?;
+    #[cfg(windows)]
+    {
+        set_device_inheritable(&device_rx)?;
+        set_device_inheritable(&device_tx)?;
+    }
     Ok(BuildPortPipes {
         host_tx,
         host_rx,
@@ -155,12 +158,8 @@ fn pipe_pair() -> Result<(std::fs::File, std::fs::File)> {
 
 /// Mark a device-side pipe end inheritable (Windows). On Unix, inheritance is
 /// handled by clearing `FD_CLOEXEC` in the child's `pre_exec` instead.
+#[cfg(windows)]
 fn set_device_inheritable(file: &std::fs::File) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let _ = file;
-        Ok(())
-    }
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;

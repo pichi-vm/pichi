@@ -8,7 +8,7 @@
 //!   (rootfs; no PMI). `-t` is optional: omit it to cache an ephemeral carapace
 //!   (the index digest is printed).
 //! - `import pmi <boot.pmi> --dtb <d>` — a pre-built, detached PMI (+ base DTB,
-//!   + optional launch config) becomes a **bootable** artifact. With
+//!   plus optional launch config) becomes a **bootable** artifact. With
 //!   `--carapace <ref>` the referenced carapace's scutes are combined in (a
 //!   rootfs appliance); without it the result is PMI-only (bootable, no rootfs).
 //!   The `--carapace` reference is READ-ONLY — its tag is never modified; the

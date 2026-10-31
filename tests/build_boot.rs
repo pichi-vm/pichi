@@ -43,7 +43,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     }
 
     // Seed an authenticated index and record its actual digest.
-    let index = seed_smoke_source_carapace(g, tmp.path()).await;
+    let index = seed_smoke_source_carapace(g, tmp.path());
 
     // Use the same Conglobate main revision as the pinned appliance.
     // That tree stores `plan.yaml` / `lock.yaml`; the smoke passes

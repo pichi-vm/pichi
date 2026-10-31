@@ -15,7 +15,7 @@ use conglobate::artifact::{
     ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
     ScuteDescriptor,
 };
-use pichi_storage::{FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
 fn chain_annotations() -> BTreeMap<String, String> {
@@ -65,7 +65,6 @@ async fn insert_manifest(
         <sha2::Sha256 as sha2::Digest>::digest(&mbytes).into(),
     );
     let bs = FilesystemBlobStore::new(graphroot);
-    use pichi_storage::BlobStore;
     bs.put_blob(&mdigest, &mbytes).await.unwrap();
     let parsed_scute: conglobate::artifact::Digest = scute_digest.parse().unwrap();
     bs.put_blob(&parsed_scute, b"fake-scute-bytes")
@@ -90,13 +89,11 @@ fn write_raw_fixture(path: &std::path::Path) {
 /// (Verbatim from `tests/cmd_rmi.rs:149-158`.)
 fn count_blob_files(graphroot: &std::path::Path) -> usize {
     let blobs = graphroot.join("blobs").join("sha256");
-    std::fs::read_dir(&blobs)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(&blobs).map_or(0, |rd| {
+        rd.filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .count()
+    })
 }
 
 /// (1) Empty graphroot: `Nothing to prune.\n`, exit 0.
@@ -208,7 +205,6 @@ async fn prune_shared_tag_preservation() {
     // Pre-prune sanity: the manifest + scute blobs survive (b:1 still
     // points at them).
     let bs = FilesystemBlobStore::new(&g);
-    use pichi_storage::BlobStore;
     assert!(
         bs.blob_exists(&mdigest).await,
         "manifest must survive shared rmi"

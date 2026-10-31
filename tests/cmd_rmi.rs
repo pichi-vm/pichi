@@ -168,13 +168,11 @@ fn write_raw_fixture(path: &std::path::Path) {
 /// Helper: count files in `<graphroot>/blobs/sha256/`.
 fn count_blob_files(graphroot: &std::path::Path) -> usize {
     let blobs = graphroot.join("blobs").join("sha256");
-    std::fs::read_dir(&blobs)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(&blobs).map_or(0, |rd| {
+        rd.filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .count()
+    })
 }
 
 /// CACHE-04 / D-08: after rmi, blobs/sha256/ contains ZERO files for an

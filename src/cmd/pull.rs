@@ -71,15 +71,15 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     }
     // --pull=newer: GET upstream manifest digest, compare to cached
     // (W6 revision: GET-then-compare, HEAD optimisation deferred).
-    if policy == PullPolicy::Newer {
-        if let Some(cached) = tag_db.resolve_tag(&target_str).await? {
-            let (_raw, upstream) = registry
-                .pull_manifest_by_tag(&target)
-                .await
-                .map_err(|e| anyhow!("--pull=newer fetch for {target}: {e}"))?;
-            if upstream == cached && blob_store.cached(&target, tag_db).await? {
-                return Ok(());
-            }
+    if policy == PullPolicy::Newer
+        && let Some(cached) = tag_db.resolve_tag(&target_str).await?
+    {
+        let (_raw, upstream) = registry
+            .pull_manifest_by_tag(&target)
+            .await
+            .map_err(|e| anyhow!("--pull=newer fetch for {target}: {e}"))?;
+        if upstream == cached && blob_store.cached(&target, tag_db).await? {
+            return Ok(());
         }
     }
 
@@ -331,9 +331,7 @@ mod tests {
         // No blobs written — BlobStore dir should be empty (or at most have
         // sha256 dir created lazily).
         let blobs_dir = g.join("blobs").join("sha256");
-        let n = std::fs::read_dir(&blobs_dir)
-            .map(|r| r.count())
-            .unwrap_or(0);
+        let n = std::fs::read_dir(&blobs_dir).map_or(0, std::iter::Iterator::count);
         assert_eq!(n, 0, "no blobs must be written on REGISTRY-07 reject");
     }
 
@@ -387,9 +385,7 @@ mod tests {
         // anyway — but the load-bearing assertion is that `put_blob` for the
         // manifest itself was NOT called (we error out before atomic commit).
         let blobs_dir = g.join("blobs").join("sha256");
-        let n = std::fs::read_dir(&blobs_dir)
-            .map(|r| r.count())
-            .unwrap_or(0);
+        let n = std::fs::read_dir(&blobs_dir).map_or(0, std::iter::Iterator::count);
         assert_eq!(n, 0, "no blobs must be written on validation reject");
     }
 

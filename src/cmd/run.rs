@@ -232,12 +232,12 @@ fn resolve_dillo(override_path: Option<OsString>, current_exe: Option<PathBuf>) 
         return PathBuf::from(p);
     }
     let exe_name = if cfg!(windows) { "dillo.exe" } else { "dillo" };
-    if let Some(exe) = current_exe {
-        if let Some(dir) = exe.parent() {
-            let cand = dir.join(exe_name);
-            if cand.is_file() {
-                return cand;
-            }
+    if let Some(exe) = current_exe
+        && let Some(dir) = exe.parent()
+    {
+        let cand = dir.join(exe_name);
+        if cand.is_file() {
+            return cand;
         }
     }
     PathBuf::from(exe_name)

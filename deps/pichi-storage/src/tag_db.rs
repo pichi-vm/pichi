@@ -17,7 +17,7 @@
 //! new file in full — never a torn write).
 //!
 //! The trait surface is async: since the actual work is blocking file locking
-//! + fsync, every method offloads its synchronous body via `spawn_blocking`
+//! plus fsync, every method offloads its synchronous body via `spawn_blocking`
 //! (the store is `Clone`, so moving it into the closure is cheap). The
 //! sync bodies remain as private helpers, and `delete_tag_locked` stays a
 //! sync `pub` method for use inside a `with_index_lock` closure.
@@ -93,10 +93,10 @@ impl FilesystemTagDb {
 
         // Backward-compat shim: if the caller passed a *.redb file path
         // (legacy), treat its parent as the root.
-        if root.extension().is_some_and(|e| e == "redb") {
-            if let Some(parent) = root.parent() {
-                root = parent.to_path_buf();
-            }
+        if root.extension().is_some_and(|e| e == "redb")
+            && let Some(parent) = root.parent()
+        {
+            root = parent.to_path_buf();
         }
 
         std::fs::create_dir_all(&root)

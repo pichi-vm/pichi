@@ -328,7 +328,7 @@ pub fn tag_digest(graphroot: &Path, reference: &str) -> String {
 
 /// Import a tiny source carapace and retain its authentic platform index.
 /// Returns the index digest to record in the smoke repository's lock.
-pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) -> String {
+pub fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) -> String {
     let src = tmp.join("qualification-fedora43.ext4");
     make_ext4(&src, &[("os-release", "ID=fedora\nVERSION_ID=43\n")]);
     assert_pichi_ok(
