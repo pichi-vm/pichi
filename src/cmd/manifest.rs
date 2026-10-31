@@ -62,7 +62,17 @@ pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
             .parse()
             .with_context(|| format!("invalid source reference: {src}"))?;
         let root = blob_store.resolve(&src_ref, &tag_db).await?;
-        let (metadata, _) = blob_store.manifest(&root).await?;
+        let mut metadata = blob_store.metadata(&root).await?;
+        if metadata.is_index() {
+            // Each source identifies one platform; assembly is independent
+            // of the host that publishes the combined index.
+            let [entry] = metadata.entries()? else {
+                bail!("manifest source {src} must contain exactly one platform manifest");
+            };
+            (metadata, _) = blob_store.manifest_entry(entry).await?;
+        } else {
+            metadata.manifest()?;
+        }
         entries.push(json!({
             "mediaType": OCI_MANIFEST_MEDIA_TYPE,
             "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,

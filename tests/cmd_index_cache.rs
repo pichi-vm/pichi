@@ -306,6 +306,99 @@ async fn indexed_image_commands_select_the_cached_platform() {
 }
 
 #[tokio::test]
+async fn manifest_create_combines_sources_without_selecting_the_host_platform() {
+    let fixture = Fixture::new().await;
+    let mut expected = Vec::new();
+    for arch in ["amd64", "arm64"] {
+        let tag = format!("registry.example/image:{arch}");
+        let index = fixture.index(&tag, false).await;
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fixture.store.get_blob(&index).await.unwrap()).unwrap();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fixture.store.get_blob(&fixture.manifest).await.unwrap())
+                .unwrap();
+        manifest["annotations"]["org.opencontainers.image.architecture"] = json!(arch);
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let digest = Fixture::put(&fixture.store, &bytes).await;
+        value["manifests"][0]["digest"] = json!(digest.to_string());
+        value["manifests"][0]["size"] = json!(bytes.len());
+        value["manifests"][0]["platform"]["architecture"] = json!(arch);
+        let index = Fixture::put(&fixture.store, &serde_json::to_vec(&value).unwrap()).await;
+        fixture.tags.set_tag(&tag, &index).await.unwrap();
+        expected.push((tag, digest, bytes));
+    }
+    let list = "registry.example/image:combined";
+    let output = fixture.run(&["manifest", "create", list, &expected[0].0, &expected[1].0]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for (arch, (tag, _, _)) in ["amd64", "arm64"].iter().zip(&expected) {
+        let output = fixture.run(&[
+            "manifest", "annotate", list, tag, "--os", "pichi", "--arch", arch,
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let directory = fixture.directory.path().join("pichi/storage/manifests");
+    let lists = std::fs::read_dir(directory)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(lists.len(), 1);
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(lists[0].path()).unwrap()).unwrap();
+    for (entry, (_, digest, bytes)) in value["manifests"].as_array().unwrap().iter().zip(&expected)
+    {
+        assert_eq!(entry["digest"], digest.to_string());
+        assert_eq!(entry["size"], bytes.len());
+        assert_eq!(fixture.store.get_blob(digest).await.unwrap(), *bytes);
+    }
+    assert_eq!(value["manifests"][0]["platform"]["architecture"], "amd64");
+    assert_eq!(value["manifests"][1]["platform"]["architecture"], "arm64");
+}
+
+#[tokio::test]
+async fn manifest_create_rejects_ambiguous_or_invalid_sources_before_writing() {
+    for fault in ["empty", "multiple", "size", "media-type", "digest"] {
+        let fixture = Fixture::new().await;
+        let tag = "registry.example/image:source";
+        let index = fixture.index(tag, false).await;
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fixture.store.get_blob(&index).await.unwrap()).unwrap();
+        match fault {
+            "empty" => value["manifests"] = json!([]),
+            "multiple" => {
+                let duplicate = value["manifests"][0].clone();
+                value["manifests"].as_array_mut().unwrap().push(duplicate);
+            }
+            "size" => value["manifests"][0]["size"] = json!(1),
+            "media-type" => {
+                value["manifests"][0]["mediaType"] =
+                    json!("application/vnd.oci.image.index.v1+json")
+            }
+            "digest" => std::fs::write(fixture.store.blob_path(&fixture.manifest), b"{}").unwrap(),
+            _ => unreachable!(),
+        }
+        let index = Fixture::put(&fixture.store, &serde_json::to_vec(&value).unwrap()).await;
+        fixture.tags.set_tag(tag, &index).await.unwrap();
+        let output = fixture.run(&["manifest", "create", "registry.example/image:combined", tag]);
+        assert!(!output.status.success(), "accepted {fault} source");
+        assert!(
+            !fixture
+                .directory
+                .path()
+                .join("pichi/storage/manifests")
+                .exists()
+        );
+    }
+}
+
+#[tokio::test]
 async fn cached_index_requires_the_selected_platform() {
     let fixture = Fixture::new().await;
     let tag = "registry.example/image:one";

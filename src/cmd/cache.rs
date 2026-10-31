@@ -186,20 +186,25 @@ pub(super) trait ImageStore: BlobStore {
     }
 
     async fn manifest(&self, digest: &Digest) -> Result<(ImageMetadata, Manifest)> {
-        let mut metadata = self.metadata(digest).await?;
+        let metadata = self.metadata(digest).await?;
         if metadata.is_index() {
-            let entry = metadata.selected_entry()?;
-            let selected = self
-                .metadata(
-                    &entry["digest"]
-                        .as_str()
-                        .context("index entry has no digest")?
-                        .parse()?,
-                )
-                .await?;
-            selected.check_descriptor(entry)?;
-            metadata = selected;
+            return self.manifest_entry(metadata.selected_entry()?).await;
         }
+        let manifest = metadata.manifest()?;
+        Ok((metadata, manifest))
+    }
+
+    /// Authenticate the manifest referenced by an already selected descriptor.
+    async fn manifest_entry(&self, entry: &Value) -> Result<(ImageMetadata, Manifest)> {
+        let metadata = self
+            .metadata(
+                &entry["digest"]
+                    .as_str()
+                    .context("index entry has no digest")?
+                    .parse()?,
+            )
+            .await?;
+        metadata.check_descriptor(entry)?;
         let manifest = metadata.manifest()?;
         Ok((metadata, manifest))
     }
