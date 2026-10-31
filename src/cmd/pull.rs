@@ -240,49 +240,6 @@ mod tests {
         FilesystemTagDb::open(graphroot).unwrap()
     }
 
-    /// Build a minimal D-07-valid pichi manifest with one Scute layer.
-    /// Returns (canonical bytes, manifest digest). The tip hash annotation
-    /// is not written; pull ignores it.
-    fn make_pichi_manifest(scute_digest: &Digest, scute_size: u64) -> (Bytes, Digest) {
-        let mut annotations = BTreeMap::new();
-        annotations.insert("dev.pichi.carapace.verity.algo".into(), "sha256".into());
-        annotations.insert(
-            "dev.pichi.carapace.verity.data-block-size".into(),
-            "4096".into(),
-        );
-        annotations.insert(
-            "dev.pichi.carapace.verity.hash-block-size".into(),
-            "4096".into(),
-        );
-        annotations.insert("dev.pichi.carapace.verity.version".into(), "1".into());
-        annotations.insert("dev.pichi.carapace.verity.hash-type".into(), "1".into());
-        let manifest = Manifest {
-            schema_version: 2,
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: ConfigDescriptor::canonical(),
-            layers: vec![Layer::Scute(ScuteDescriptor {
-                digest: scute_digest.to_string(),
-                size: scute_size,
-                annotations: ScuteAnnotations {
-                    data_blocks: scute_size.div_ceil(4096).try_into().unwrap(),
-                    // 32 zero bytes (SALT_ZERO_PREFIX) so the verity feed has
-                    // a valid salt to use on the pull side.
-                    salt: hex::encode([0u8; 32]),
-                },
-            })],
-            annotations,
-        };
-        // Use serde_json directly: the Pitfall 3 negative-grep gate forbids
-        // calling Manifest's serialise helper in this file even for
-        // fixture construction (Plan 03's prophylaxis pattern: keep the gate
-        // clean of false-positive call sites that future contributors might
-        // cargo-cult into production code).
-        let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
-        (bytes, digest)
-    }
-
     /// REGISTRY-03: --pull=missing skips network when cached. Drives
     /// pull_inner_with_registry with a MockRegistry that PANICS on use to
     /// prove no method is invoked.
@@ -294,7 +251,7 @@ mod tests {
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         // Pre-set the tag in the cache.
         let layer = Digest::Sha256([42; 32]);
-        let (bytes, cached) = make_pichi_manifest(&layer, 4096);
+        let (bytes, cached) = make_scute_manifest(&layer, 4096, &[0; 4096], false);
         blob_store.put_blob(&cached, &bytes).await.unwrap();
         db.set_tag(&target.to_string(), &cached).await.unwrap();
 
@@ -414,8 +371,12 @@ mod tests {
         let dummy_layer_data = b"hello-layer-data";
         let layer_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(dummy_layer_data).into());
-        let (clean_manifest, _clean_digest) =
-            make_pichi_manifest(&layer_digest, dummy_layer_data.len() as u64);
+        let (clean_manifest, _clean_digest) = make_scute_manifest(
+            &layer_digest,
+            dummy_layer_data.len() as u64,
+            dummy_layer_data,
+            false,
+        );
         let mut raw_with_ws: Vec<u8> = clean_manifest.to_vec();
         raw_with_ws.extend_from_slice(b"   \n"); // trailing whitespace
         let raw_bytes = Bytes::from(raw_with_ws);
@@ -499,7 +460,7 @@ mod tests {
         let layer_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
         let (manifest_bytes, manifest_digest) =
-            make_pichi_manifest(&layer_digest, layer_data.len() as u64);
+            make_scute_manifest(&layer_digest, layer_data.len() as u64, layer_data, false);
         mock.insert_manifest("ghcr.io", "example/foo", "bar", manifest_bytes);
         mock.insert_blob(
             "ghcr.io",
@@ -547,7 +508,7 @@ mod tests {
         let layer_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
         let (picked_manifest_bytes, picked_manifest_digest) =
-            make_pichi_manifest(&layer_digest, layer_data.len() as u64);
+            make_scute_manifest(&layer_digest, layer_data.len() as u64, layer_data, false);
         // Insert the picked manifest by digest (no tag).
         mock.insert_manifest_by_digest("ghcr.io", "example/foo", picked_manifest_bytes.clone());
         // Build the index pointing at it.
@@ -656,7 +617,7 @@ mod tests {
     fn make_scute_manifest(
         scute_digest: &Digest,
         scute_size: u64,
-        data_size: u64,
+        data: &[u8],
         is_zstd: bool,
     ) -> (Bytes, Digest) {
         let mut annotations = BTreeMap::new();
@@ -671,11 +632,15 @@ mod tests {
         );
         annotations.insert("dev.pichi.carapace.verity.version".into(), "1".into());
         annotations.insert("dev.pichi.carapace.verity.hash-type".into(), "1".into());
+        annotations.insert(
+            "dev.pichi.carapace.verity.hash".into(),
+            hex::encode(pull_side_verity_params().compute(data).unwrap().root_hash),
+        );
         let scute_desc = ScuteDescriptor {
             digest: scute_digest.to_string(),
             size: scute_size,
             annotations: ScuteAnnotations {
-                data_blocks: data_size.div_ceil(4096).try_into().unwrap(),
+                data_blocks: (data.len() as u64).div_ceil(4096).try_into().unwrap(),
                 salt: hex::encode([0u8; 32]),
             },
         };
@@ -690,61 +655,6 @@ mod tests {
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: ConfigDescriptor::canonical(),
             layers: vec![layer],
-            annotations,
-        };
-        let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
-        (bytes, digest)
-    }
-
-    /// Plan 02 helper: build a 2-layer manifest (1 Scute + 1 PMI) with a
-    /// 32-zero salt on the scute. The PMI bytes are caller-supplied so a
-    /// test can poke a `corium=<hex>` token in there.
-    fn make_scute_plus_pmi_manifest(
-        scute_digest: &Digest,
-        scute_size: u64,
-        data_size: u64,
-        is_zstd_scute: bool,
-        pmi_digest: &Digest,
-        pmi_size: u64,
-    ) -> (Bytes, Digest) {
-        let mut annotations = BTreeMap::new();
-        annotations.insert("dev.pichi.carapace.verity.algo".into(), "sha256".into());
-        annotations.insert(
-            "dev.pichi.carapace.verity.data-block-size".into(),
-            "4096".into(),
-        );
-        annotations.insert(
-            "dev.pichi.carapace.verity.hash-block-size".into(),
-            "4096".into(),
-        );
-        annotations.insert("dev.pichi.carapace.verity.version".into(), "1".into());
-        annotations.insert("dev.pichi.carapace.verity.hash-type".into(), "1".into());
-        let scute_desc = ScuteDescriptor {
-            digest: scute_digest.to_string(),
-            size: scute_size,
-            annotations: ScuteAnnotations {
-                data_blocks: data_size.div_ceil(4096).try_into().unwrap(),
-                salt: hex::encode([0u8; 32]),
-            },
-        };
-        let scute_layer = if is_zstd_scute {
-            Layer::ScuteZstd(scute_desc)
-        } else {
-            Layer::Scute(scute_desc)
-        };
-        let manifest = Manifest {
-            schema_version: 2,
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: ConfigDescriptor::canonical(),
-            layers: vec![
-                scute_layer,
-                Layer::Pmi(PmiDescriptor {
-                    digest: pmi_digest.to_string(),
-                    size: pmi_size,
-                }),
-            ],
             annotations,
         };
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
@@ -787,7 +697,7 @@ mod tests {
                 };
                 let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
                 let (bytes, manifest_digest) =
-                    make_scute_manifest(&digest, wire.len() as u64, length as u64, compressed);
+                    make_scute_manifest(&digest, wire.len() as u64, &data, compressed);
                 let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
                 registry.insert_manifest("ghcr.io", "example/foo", "bar", bytes.clone());
                 registry.insert_blob(
@@ -864,7 +774,7 @@ mod tests {
         let (manifest_bytes, _manifest_digest) = make_scute_manifest(
             &layer_digest,
             compressed.len() as u64,
-            decompressed.len() as u64,
+            &decompressed,
             /* is_zstd= */ true,
         );
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
@@ -926,7 +836,7 @@ mod tests {
         let (manifest_bytes, _manifest_digest) = make_scute_manifest(
             &layer_digest,
             layer_data.len() as u64,
-            layer_data.len() as u64,
+            &layer_data,
             /* is_zstd= */ false,
         );
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
@@ -983,15 +893,14 @@ mod tests {
         pmi_bytes[100..100 + pattern.len()].copy_from_slice(pattern.as_bytes());
         let pmi_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes).into());
 
-        let (manifest_bytes, _manifest_digest) = make_scute_plus_pmi_manifest(
-            &scute_digest,
-            scute_data.len() as u64,
-            scute_data.len() as u64,
-            /* is_zstd_scute= */ false,
-            &pmi_digest,
-            pmi_bytes.len() as u64,
-        );
-        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        let (bytes, _) =
+            make_scute_manifest(&scute_digest, scute_data.len() as u64, &scute_data, false);
+        let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+        manifest.layers.push(Layer::Pmi(PmiDescriptor {
+            digest: pmi_digest.to_string(),
+            size: pmi_bytes.len() as u64,
+        }));
+        let manifest_bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
         let files =
             crate::cmd::layer::ScuteFiles::new(&manifest, manifest.scute_layers()[0], &blob_store)
                 .unwrap();
@@ -1046,12 +955,8 @@ mod tests {
         let layer_data: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(4096 * 3).collect();
         let layer_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&layer_data).into());
-        let (manifest_bytes, _manifest_digest) = make_scute_manifest(
-            &layer_digest,
-            layer_data.len() as u64,
-            layer_data.len() as u64,
-            false,
-        );
+        let (manifest_bytes, _manifest_digest) =
+            make_scute_manifest(&layer_digest, layer_data.len() as u64, &layer_data, false);
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
         let files =
             crate::cmd::layer::ScuteFiles::new(&manifest, manifest.scute_layers()[0], &blob_store)
@@ -1102,8 +1007,7 @@ mod tests {
                     data.clone()
                 };
                 let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
-                let (bytes, _) =
-                    make_scute_manifest(&digest, wire.len() as u64, data.len() as u64, compressed);
+                let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, &data, compressed);
                 let mut next: Manifest = serde_json::from_slice(&bytes).unwrap();
                 let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut next.layers[0] else {
                     unreachable!()
@@ -1117,6 +1021,9 @@ mod tests {
                 registry.insert_blob("ghcr.io", "example/foo", digest, Bytes::from(wire));
             }
             let mut manifest = manifest.unwrap();
+            manifest
+                .annotations
+                .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(parent));
             manifest.layers = order
                 .into_iter()
                 .map(|index| layers[index].clone())
@@ -1166,8 +1073,7 @@ mod tests {
                 data.clone()
             };
             let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
-            let (bytes, _) =
-                make_scute_manifest(&digest, wire.len() as u64, data.len() as u64, compressed);
+            let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, &data, compressed);
             let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
             let mut trees = Vec::new();
             for suffix in [0xaa, 0xbb] {
@@ -1178,6 +1084,10 @@ mod tests {
                     unreachable!()
                 };
                 scute.annotations.salt = hex::encode(&params.salt);
+                manifest.annotations.insert(
+                    "dev.pichi.carapace.verity.hash".into(),
+                    hex::encode(params.compute(&data).unwrap().root_hash),
+                );
                 let registry = MockRegistry::new();
                 registry.insert_manifest(
                     "ghcr.io",
@@ -1217,15 +1127,13 @@ mod tests {
         }
     }
 
-    /// Pull ignores `dev.pichi.carapace.verity.hash`. Tagging succeeds for
-    /// cached and uncached zstd inputs only with a valid block count, whether
-    /// the tip annotation is absent or stale. Missing and zero counts fail
-    /// before publication. The tip is reconstructed in manifest order.
+    /// Cached and uncached input must reconstruct the declared tip with a
+    /// valid block count before replacing an existing tag.
     #[tokio::test(flavor = "current_thread")]
-    async fn pull_ignores_tip_hash_annotation() {
+    async fn pull_requires_tip_commitment_and_block_count() {
         for declared in [None, Some(0u64), Some(2)] {
             for cached in [false, true] {
-                for stale_tip in [false, true] {
+                for tip in ["correct", "missing", "zero", "malformed", "wrong"] {
                     let (_tmp, g) = graphroot();
                     let db = open_db(&g);
                     let store = FilesystemBlobStore::new(&g);
@@ -1238,14 +1146,33 @@ mod tests {
                     );
                     let digest =
                         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
-                    let (bytes, _) =
-                        make_scute_manifest(&digest, wire.len() as u64, data.len() as u64, true);
+                    let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, &data, true);
                     let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
-                    if stale_tip {
-                        manifest.annotations.insert(
-                            "dev.pichi.carapace.verity.hash".into(),
-                            hex::encode([0u8; 32]),
-                        );
+                    if cached {
+                        store.put_blob(&digest, &wire).await.unwrap();
+                        PreparedLayer::prepare_cached(&manifest, &manifest.layers[0], &store)
+                            .await
+                            .unwrap();
+                    }
+                    let key = "dev.pichi.carapace.verity.hash";
+                    match tip {
+                        "missing" => {
+                            manifest.annotations.remove(key);
+                        }
+                        "zero" => {
+                            manifest
+                                .annotations
+                                .insert(key.into(), hex::encode([0; 32]));
+                        }
+                        "malformed" => {
+                            manifest.annotations.insert(key.into(), "not a root".into());
+                        }
+                        "wrong" => {
+                            manifest
+                                .annotations
+                                .insert(key.into(), hex::encode([42; 32]));
+                        }
+                        _ => {}
                     }
                     let mut manifest = serde_json::to_value(manifest).unwrap();
                     let annotations = manifest["layers"][0]["annotations"]
@@ -1260,18 +1187,12 @@ mod tests {
                         annotations.remove("dev.pichi.scute.verity.data-blocks");
                     }
                     let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
+                    let old = Digest::Sha256([0x77; 32]);
+                    db.set_tag(&target.to_string(), &old).await.unwrap();
+                    let expected =
+                        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
                     registry.insert_manifest("ghcr.io", "example/foo", "bar", bytes);
-                    if cached {
-                        store.put_blob(&digest, &wire).await.unwrap();
-                        let mut padded = data;
-                        padded.resize(8192, 0);
-                        tokio::fs::write(
-                            store.blob_path(&digest).with_extension("deflated"),
-                            &padded,
-                        )
-                        .await
-                        .unwrap();
-                    } else {
+                    if !cached {
                         registry.insert_blob("ghcr.io", "example/foo", digest, Bytes::from(wire));
                     }
                     let result = pull_inner_with_registry(
@@ -1283,16 +1204,16 @@ mod tests {
                         &db,
                     )
                     .await;
-                    let valid = declared == Some(2);
+                    let valid = declared == Some(2) && tip == "correct";
                     assert_eq!(
                         result.is_ok(),
                         valid,
-                        "stale_tip={stale_tip}, declared={declared:?}, cached={cached}: {result:?}"
+                        "tip={tip}, declared={declared:?}, cached={cached}: {result:?}"
                     );
                     assert_eq!(
-                        db.resolve_tag(&target.to_string()).await.unwrap().is_some(),
-                        valid,
-                        "stale_tip={stale_tip}, declared={declared:?}, cached={cached}: unexpected tag state"
+                        db.resolve_tag(&target.to_string()).await.unwrap(),
+                        Some(if valid { expected } else { old }),
+                        "tip={tip}, declared={declared:?}, cached={cached}: unexpected tag state"
                     );
                 }
             }

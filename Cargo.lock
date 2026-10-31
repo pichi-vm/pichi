@@ -372,12 +372,13 @@ dependencies = [
 [[package]]
 name = "carapace"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/carapace?rev=cb2606184afa826001a6c17cac19ec62e4d4ea09#cb2606184afa826001a6c17cac19ec62e4d4ea09"
+source = "git+https://github.com/pichi-vm/carapace?rev=b2365ba4e1cd52ec7f8419c8553390dbe23507de#b2365ba4e1cd52ec7f8419c8553390dbe23507de"
 dependencies = [
- "devmap-core 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
- "devmap-linux 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
- "devmap-snapshot 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
- "devmap-verity 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
+ "devmap-core",
+ "devmap-linux",
+ "devmap-snapshot",
+ "devmap-verity",
+ "lodown",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
 ]
@@ -535,16 +536,18 @@ dependencies = [
 [[package]]
 name = "conglobate"
 version = "0.2.0"
-source = "git+https://github.com/pichi-vm/conglobate?rev=c9b48481a495410848bbb631e088359e2e84daff#c9b48481a495410848bbb631e088359e2e84daff"
+source = "git+https://github.com/pichi-vm/conglobate?rev=0dd3ed1ce9080d93ac3944bb4bbc7a8de543d8f3#0dd3ed1ce9080d93ac3944bb4bbc7a8de543d8f3"
 dependencies = [
  "anyhow",
+ "carapace",
  "ciborium",
  "clap",
- "devmap-core 0.1.0 (git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b)",
- "devmap-linux 0.1.0 (git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b)",
- "devmap-snapshot 0.1.0 (git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b)",
- "devmap-verity 0.1.0 (git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b)",
+ "devmap-core",
+ "devmap-linux",
+ "devmap-snapshot",
+ "devmap-verity",
  "devtree 0.1.0 (git+https://github.com/pichi-vm/devtree?rev=e90bafce9ee9e4f7f570f07c5c242b6398c64980)",
+ "getrandom 0.4.3",
  "gix",
  "goblin",
  "hex",
@@ -565,7 +568,6 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.18",
- "zstd",
 ]
 
 [[package]]
@@ -620,9 +622,11 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 [[package]]
 name = "corium"
 version = "0.2.0"
-source = "git+https://github.com/pichi-vm/corium?rev=0c6f5743263b1d7afb298521859b6679eb67f2af#0c6f5743263b1d7afb298521859b6679eb67f2af"
+source = "git+https://github.com/pichi-vm/corium?rev=81af93c28f5624b36e12227bb45442d477b07eb2#81af93c28f5624b36e12227bb45442d477b07eb2"
 dependencies = [
  "carapace",
+ "devmap-core",
+ "devmap-linux",
  "log",
  "rustix 1.1.4",
 ]
@@ -804,15 +808,7 @@ dependencies = [
 [[package]]
 name = "devmap-core"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd#2679426fa1d4508fc5c3bbdf643efbdbe64a3edd"
-dependencies = [
- "iocuddle 0.4.0",
-]
-
-[[package]]
-name = "devmap-core"
-version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b#3a2728f617e9272be5224bbf76ffc4deafdfe83b"
+source = "git+https://github.com/pichi-vm/devmap?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b#3a2728f617e9272be5224bbf76ffc4deafdfe83b"
 dependencies = [
  "iocuddle 0.4.0",
 ]
@@ -820,19 +816,9 @@ dependencies = [
 [[package]]
 name = "devmap-linux"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd#2679426fa1d4508fc5c3bbdf643efbdbe64a3edd"
+source = "git+https://github.com/pichi-vm/devmap?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b#3a2728f617e9272be5224bbf76ffc4deafdfe83b"
 dependencies = [
- "devmap-core 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
- "iocuddle 0.4.0",
- "zerocopy",
-]
-
-[[package]]
-name = "devmap-linux"
-version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b#3a2728f617e9272be5224bbf76ffc4deafdfe83b"
-dependencies = [
- "devmap-core 0.1.0 (git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b)",
+ "devmap-core",
  "iocuddle 0.4.0",
  "zerocopy",
 ]
@@ -840,39 +826,19 @@ dependencies = [
 [[package]]
 name = "devmap-snapshot"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd#2679426fa1d4508fc5c3bbdf643efbdbe64a3edd"
+source = "git+https://github.com/pichi-vm/devmap?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b#3a2728f617e9272be5224bbf76ffc4deafdfe83b"
 dependencies = [
- "devmap-core 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
- "devmap-linux 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
-]
-
-[[package]]
-name = "devmap-snapshot"
-version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b#3a2728f617e9272be5224bbf76ffc4deafdfe83b"
-dependencies = [
- "devmap-core 0.1.0 (git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b)",
- "devmap-linux 0.1.0 (git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b)",
+ "devmap-core",
+ "devmap-linux",
 ]
 
 [[package]]
 name = "devmap-verity"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd#2679426fa1d4508fc5c3bbdf643efbdbe64a3edd"
+source = "git+https://github.com/pichi-vm/devmap?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b#3a2728f617e9272be5224bbf76ffc4deafdfe83b"
 dependencies = [
- "devmap-core 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
- "devmap-linux 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
- "digest 0.10.7",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "devmap-verity"
-version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b#3a2728f617e9272be5224bbf76ffc4deafdfe83b"
-dependencies = [
- "devmap-core 0.1.0 (git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b)",
- "devmap-linux 0.1.0 (git+https://github.com/pichi-vm/devmap.git?rev=3a2728f617e9272be5224bbf76ffc4deafdfe83b)",
+ "devmap-core",
+ "devmap-linux",
  "digest 0.11.3",
  "sha2 0.11.1",
 ]
@@ -3076,8 +3042,8 @@ dependencies = [
  "clap",
  "conglobate",
  "corium",
- "devmap-core 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
- "devmap-verity 0.1.0 (git+https://github.com/pichi-vm/devmap?rev=2679426fa1d4508fc5c3bbdf643efbdbe64a3edd)",
+ "devmap-core",
+ "devmap-verity",
  "dillo",
  "dillo-config",
  "env_logger",
@@ -4970,31 +4936,3 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
-
-[[package]]
-name = "zstd"
-version = "0.14.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
-dependencies = [
- "zstd-safe",
-]
-
-[[package]]
-name = "zstd-safe"
-version = "8.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
-dependencies = [
- "zstd-sys",
-]
-
-[[package]]
-name = "zstd-sys"
-version = "2.1.2+zstd.1.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
-dependencies = [
- "cc",
- "pkg-config",
-]

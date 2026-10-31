@@ -20,6 +20,10 @@ fn chain_annotations() -> BTreeMap<String, String> {
         ("dev.pichi.carapace.verity.hash-block-size", "4096"),
         ("dev.pichi.carapace.verity.version", "1"),
         ("dev.pichi.carapace.verity.hash-type", "1"),
+        (
+            "dev.pichi.carapace.verity.hash",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -48,7 +52,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
                 size: 4096,
                 annotations: ScuteAnnotations {
                     data_blocks: 1u64.try_into().unwrap(),
-                    salt: "dead".into(),
+                    salt: "00".repeat(32),
                 },
             }),
             Layer::Pmi(PmiDescriptor {
@@ -113,7 +117,7 @@ async fn inspect_format_reaches_dotted_annotation() {
             size: 4096,
             annotations: ScuteAnnotations {
                 data_blocks: 1u64.try_into().unwrap(),
-                salt: "dead".into(),
+                salt: "00".repeat(32),
             },
         })],
         annotations: chain_annotations(),

@@ -20,6 +20,10 @@ fn chain_annotations() -> BTreeMap<String, String> {
         ("dev.pichi.carapace.verity.hash-block-size", "4096"),
         ("dev.pichi.carapace.verity.version", "1"),
         ("dev.pichi.carapace.verity.hash-type", "1"),
+        (
+            "dev.pichi.carapace.verity.hash",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        ),
         ("org.opencontainers.image.created", "2026-05-01T12:00:00Z"),
     ]
     .into_iter()
@@ -43,7 +47,7 @@ async fn populate(
         size: 4096,
         annotations: ScuteAnnotations {
             data_blocks: 1u64.try_into().unwrap(),
-            salt: "dead".into(),
+            salt: "00".repeat(32),
         },
     })];
     if with_pmi {

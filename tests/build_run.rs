@@ -90,9 +90,7 @@ async fn pichi_build_then_run_mounts_root_carapace() {
     let g = &xdg;
 
     // --- Build image (conglobate): the real official image from GHCR. ---
-    if !pull_build_image(g) {
-        return;
-    }
+    pull_build_image(g);
 
     // --- Source carapace: a marked ext4. ---
     let src = tmp.path().join("source.ext4");

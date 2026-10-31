@@ -66,12 +66,12 @@ dillo = { git = "https://github.com/pichi-vm/dillo", artifact = "bin", optional 
 # CLI dependencies follow the pinned appliance source.
 # Gated on `vm-tests`.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "c9b48481a495410848bbb631e088359e2e84daff", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "x86_64-unknown-linux-musl", optional = true }
-corium = { git = "https://github.com/pichi-vm/corium", rev = "0c6f5743263b1d7afb298521859b6679eb67f2af", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "0dd3ed1ce9080d93ac3944bb4bbc7a8de543d8f3", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "x86_64-unknown-linux-musl", optional = true }
+corium = { git = "https://github.com/pichi-vm/corium", rev = "81af93c28f5624b36e12227bb45442d477b07eb2", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "c9b48481a495410848bbb631e088359e2e84daff", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "aarch64-unknown-linux-musl", optional = true }
-corium = { git = "https://github.com/pichi-vm/corium", rev = "0c6f5743263b1d7afb298521859b6679eb67f2af", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "0dd3ed1ce9080d93ac3944bb4bbc7a8de543d8f3", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "aarch64-unknown-linux-musl", optional = true }
+corium = { git = "https://github.com/pichi-vm/corium", rev = "81af93c28f5624b36e12227bb45442d477b07eb2", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
@@ -136,9 +136,9 @@ uninlined_format_args = "allow"
 
 [workspace.dependencies]
 # Cross-product shared crates
-carapace = { git = "https://github.com/pichi-vm/carapace", rev = "cb2606184afa826001a6c17cac19ec62e4d4ea09", default-features = false, features = ["image"] }
-devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "2679426fa1d4508fc5c3bbdf643efbdbe64a3edd" }
-devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "2679426fa1d4508fc5c3bbdf643efbdbe64a3edd", features = ["sha2"] }
+carapace = { git = "https://github.com/pichi-vm/carapace", rev = "b2365ba4e1cd52ec7f8419c8553390dbe23507de", default-features = false, features = ["image"] }
+devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "3a2728f617e9272be5224bbf76ffc4deafdfe83b" }
+devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "3a2728f617e9272be5224bbf76ffc4deafdfe83b", features = ["sha2"] }
 pmi = { git = "https://github.com/pichi-vm/pmi" }
 devtree = { git = "https://github.com/pichi-vm/devtree" }
 # Dev-only caching URL downloader (shared by arma/dillo/e2e tests).
@@ -153,7 +153,7 @@ pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
 # Pin the library and boot binary to the same contract revision.
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "c9b48481a495410848bbb631e088359e2e84daff", default-features = false }
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "0dd3ed1ce9080d93ac3944bb4bbc7a8de543d8f3", default-features = false }
 # Error handling
 anyhow = "1"
 thiserror = "2"

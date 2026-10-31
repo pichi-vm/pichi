@@ -34,7 +34,7 @@ use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
 use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
 use crate::cmd::layer::ScuteFiles;
-use crate::cmd::manifest_ext::ManifestExt;
+use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 use crate::cmd::requirements;
 use crate::config::Config;
 
@@ -163,17 +163,18 @@ pub(crate) async fn build_gpt_spec(
     blob_store: &FilesystemBlobStore,
 ) -> Result<String> {
     let mut parts: Vec<String> = Vec::with_capacity(scutes.len() * 2);
+    let mut roots = ScuteRoots::default();
     for layer in scutes {
         let files = ScuteFiles::new(manifest, layer, blob_store)?;
         let v_path = files.verity;
         let cow_path = files.data;
 
         // Per-scute dm-verity root from the cached cow (PARTUUID / label prep).
-        // Launch never reads `dev.pichi.carapace.verity.hash`.
         let root: [u8; 32] = manifest
             .cached_scute_root(layer, blob_store)
             .await?
             .context("scute has no verity root")?;
+        roots.add(layer, root)?;
 
         // D-run-01: cow PARTUUID = root[0..16], verity PARTUUID = root[16..32].
         //
@@ -210,6 +211,7 @@ pub(crate) async fn build_gpt_spec(
             label_hex
         ));
     }
+    roots.verify(manifest)?;
     Ok(format!("partitions=[{}]", parts.join(",")))
 }
 
@@ -455,23 +457,33 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = FilesystemBlobStore::new(tmp.path());
         let mut scutes = Vec::new();
+        let mut tip = [0; 32];
+        let mut manifest = manifest_with(Vec::new());
+        manifest
+            .annotations
+            .insert("dev.pichi.carapace.verity.hash-type".into(), "0".into());
         for byte in [0x42, 0x73] {
             let data = vec![byte; 8193];
             let digest = sha256_digest(&data);
             store.put_blob(&digest, &data).await.unwrap();
-            scutes.push(ScuteDescriptor {
+            let scute = ScuteDescriptor {
                 digest: digest.to_string(),
                 size: data.len() as u64,
                 annotations: ScuteAnnotations {
                     data_blocks: 3u64.try_into().unwrap(),
-                    salt: "abcd".into(),
+                    salt: hex::encode(tip),
                 },
-            });
+            };
+            let header = manifest.verity_header(&scute, Some(scute.size)).unwrap();
+            tip = header
+                .format_padded(data.as_slice(), &mut std::io::Cursor::new(Vec::new()))
+                .unwrap();
+            scutes.push(scute);
         }
-        let mut manifest = manifest_with(scutes.iter().cloned().map(Layer::Scute).collect());
+        manifest.layers = scutes.iter().cloned().map(Layer::Scute).collect();
         manifest
             .annotations
-            .insert("dev.pichi.carapace.verity.hash-type".into(), "0".into());
+            .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(tip));
         let refs = manifest.scute_layers();
         let mut prepared = Vec::new();
         for layer in &refs {
@@ -519,10 +531,17 @@ mod tests {
             size: cow_bytes.len() as u64,
             annotations: ScuteAnnotations {
                 data_blocks: (cow_bytes.len() as u64).div_ceil(4096).try_into().unwrap(),
-                salt: "00".into(),
+                salt: hex::encode([0; 32]),
             },
         };
-        let m = manifest_with(vec![pmi_layer(), Layer::Scute(scute.clone())]);
+        let mut m = manifest_with(vec![pmi_layer(), Layer::Scute(scute.clone())]);
+        let root = m
+            .cached_scute_root(&m.layers[1], &blob_store)
+            .await
+            .unwrap()
+            .unwrap();
+        m.annotations
+            .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
 
         let spec = build_gpt_spec(&m, &m.scute_layers(), &blob_store)
             .await
@@ -581,7 +600,7 @@ mod tests {
                 } else {
                     Layer::Scute(scute)
                 };
-                let manifest = manifest_with(vec![pmi_layer(), layer]);
+                let mut manifest = manifest_with(vec![pmi_layer(), layer]);
                 assert!(
                     build_dillo_args(&manifest, &store, None, None, 0)
                         .await
@@ -606,6 +625,10 @@ mod tests {
                 .compute(&padded)
                 .unwrap()
                 .root_hash;
+                manifest.annotations.insert(
+                    "dev.pichi.carapace.verity.hash".into(),
+                    hex::encode(expected_root),
+                );
                 // Initial preparation and either missing sidecar use the same
                 // bounded preparation path before Dillo receives any files.
                 for missing in [
@@ -640,7 +663,8 @@ mod tests {
                     assert_eq!(std::fs::read(&expected_data).unwrap(), padded);
                     assert!(std::fs::metadata(files.verity.clone()).unwrap().len() > 0);
                 }
-                for invalid in [4096, 4097, 8191, 8193] {
+                // A valid extent with changed content must also fail before launch.
+                for invalid in [4096, 4097, 8191, 8192, 8193] {
                     std::fs::write(&expected_data, vec![0; invalid]).unwrap();
                     assert!(
                         build_dillo_args(&manifest, &store, None, None, 0)

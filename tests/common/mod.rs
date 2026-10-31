@@ -50,24 +50,14 @@ pub fn pichi(graphroot: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::pro
 /// into the test cache so the subsequent build resolves it. The image is
 /// public on GHCR, so the pull is anonymous.
 ///
-/// Returns `true` when the pull succeeded. Returns `false` (and prints a skip
-/// line naming the unpublished tag) when GHCR does not yet have
-/// `DEFAULT_BUILD_IMAGE` — callers that need the real appliance must early-
-/// return so CI stays green until Conglobate publishes the locked pin. Does **not**
-/// change the pin; when the digest exists the pull succeeds and the real smoke runs.
-pub fn pull_build_image(graphroot: &Path) -> bool {
+/// A missing image or any pull/validation error fails the test. The default
+/// must name an already-published appliance that satisfies the current contract.
+pub fn pull_build_image(graphroot: &Path) {
     let image = pichi::cmd::build::DEFAULT_BUILD_IMAGE;
-    let out = pichi(graphroot, &[], &["pull", image]);
-    if out.status.success() {
-        return true;
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    eprintln!(
-        "skip: official build image {image} not pullable yet ({}). Waiting on Conglobate GHCR publish of ghcr.io/pichi-vm/conglobate@sha256:b9e26efd9d81ecb5b1a950e3f4891e9a04fbc7d9d222444621bccc95fad3babd.\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        out.status,
+    assert_pichi_ok(
+        "pull official build image",
+        &pichi(graphroot, &[], &["pull", image]),
     );
-    false
 }
 
 /// Assert a `pichi` invocation succeeded, panicking with the labelled
@@ -303,7 +293,7 @@ pub const SMOKE_SOURCE_REF: &str = "qualification.local/fedora:43";
 
 /// Conglobate revision matching the published OCI-only appliance.
 /// Includes the locked context plan used by the real build smoke.
-pub const SMOKE_CONGLOBATE_REF: &str = "f88a7215ee93f85fe340991730e6e7a8046f02fc";
+pub const SMOKE_CONGLOBATE_REF: &str = "0dd3ed1ce9080d93ac3944bb4bbc7a8de543d8f3";
 
 /// Conglobate smoke context under the repo mount.
 pub const SMOKE_CONTEXT: &str = "tests/distro/context";

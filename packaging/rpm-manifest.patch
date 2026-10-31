@@ -29,12 +29,12 @@
  # CLI dependencies follow the pinned appliance source.
  # Gated on `vm-tests`.
 -[target.'cfg(target_arch = "x86_64")'.dependencies]
--conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "c9b48481a495410848bbb631e088359e2e84daff", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "x86_64-unknown-linux-musl", optional = true }
--corium = { git = "https://github.com/pichi-vm/corium", rev = "0c6f5743263b1d7afb298521859b6679eb67f2af", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
+-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "0dd3ed1ce9080d93ac3944bb4bbc7a8de543d8f3", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "x86_64-unknown-linux-musl", optional = true }
+-corium = { git = "https://github.com/pichi-vm/corium", rev = "81af93c28f5624b36e12227bb45442d477b07eb2", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 -
 -[target.'cfg(target_arch = "aarch64")'.dependencies]
--conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "c9b48481a495410848bbb631e088359e2e84daff", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "aarch64-unknown-linux-musl", optional = true }
--corium = { git = "https://github.com/pichi-vm/corium", rev = "0c6f5743263b1d7afb298521859b6679eb67f2af", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
+-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "0dd3ed1ce9080d93ac3944bb4bbc7a8de543d8f3", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "aarch64-unknown-linux-musl", optional = true }
+-corium = { git = "https://github.com/pichi-vm/corium", rev = "81af93c28f5624b36e12227bb45442d477b07eb2", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 -
  [target.'cfg(unix)'.dependencies]
  nix = { workspace = true }

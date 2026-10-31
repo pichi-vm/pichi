@@ -38,9 +38,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     let g = &graphroot;
 
     // Pull the digest-pinned official build image.
-    if !pull_build_image(g) {
-        return;
-    }
+    pull_build_image(g);
 
     // Seed an authenticated index and record its actual digest.
     let index = seed_smoke_source_carapace(g, tmp.path()).await;

@@ -587,6 +587,8 @@ pub(super) mod tests {
             self.blobs.push(wire);
             self.trees.push(output.blob);
             self.tip = output.root_hash;
+            self.manifest["annotations"]["dev.pichi.carapace.verity.hash"] =
+                hex::encode(self.tip).into();
         }
 
         pub(crate) fn write(&self, dir: &Path) -> Digest {
@@ -734,11 +736,7 @@ pub(super) mod tests {
                 manifest.carapace_top_root(&store).await.unwrap(),
                 fixture.tip
             );
-            assert!(
-                !manifest
-                    .annotations
-                    .contains_key("dev.pichi.carapace.verity.hash")
-            );
+            assert_eq!(manifest.carapace_root().unwrap(), Some(fixture.tip));
             for (blob, tree) in fixture.blobs.iter().zip(&fixture.trees) {
                 let path = store
                     .blob_path(&Digest::Sha256(
@@ -794,6 +792,10 @@ pub(super) mod tests {
             "manifest schema",
             "manifest type",
             "artifact type",
+            "missing root",
+            "zero root",
+            "malformed root",
+            "wrong root",
             "empty layers",
             "layer type",
             "layer digest",
@@ -841,6 +843,21 @@ pub(super) mod tests {
                 "manifest schema" => fixture.manifest["schemaVersion"] = 1.into(),
                 "manifest type" => fixture.manifest["mediaType"] = INDEX_TYPE.into(),
                 "artifact type" => fixture.manifest["artifactType"] = "text/plain".into(),
+                "missing root" => {
+                    fixture.manifest["annotations"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("dev.pichi.carapace.verity.hash");
+                }
+                "zero root" | "wrong root" | "malformed root" => {
+                    fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash"] =
+                        match case {
+                            "zero root" => hex::encode([0; 32]),
+                            "wrong root" => hex::encode([42; 32]),
+                            _ => "not a root".into(),
+                        }
+                        .into();
+                }
                 "empty layers" => {
                     fixture.manifest["layers"] = json!([]);
                     fixture.blobs.clear();
