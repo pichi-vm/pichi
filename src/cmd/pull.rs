@@ -153,6 +153,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
 
     // Download missing layers concurrently. Cached scutes need a bounded-memory
     // root recomputation; freshly downloaded scutes return their formatter root.
+    // Consume results in manifest order even when downloads finish out of order.
     let target_ref = &target;
     let manifest_ref = &manifest;
     let mut downloads = futures_stream::iter(&manifest.layers)
@@ -167,7 +168,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
             };
             Ok::<_, anyhow::Error>((layer, root))
         })
-        .buffer_unordered(PULL_CONCURRENCY);
+        .buffered(PULL_CONCURRENCY);
     let mut roots = ScuteRoots::default();
     while let Some(result) = downloads.next().await {
         let (layer, root) = result?;
@@ -992,10 +993,83 @@ mod tests {
             "<src>.verity bytes must equal verity::compute(layer_bytes, params).blob"
         );
     }
+    #[tokio::test(flavor = "current_thread")]
+    async fn pull_requires_manifest_chain_order_for_downloads_and_cache_hits() {
+        for order in [[0, 1, 2], [2, 1, 0], [0, 2, 1]] {
+            let (_tmp, graph) = graphroot();
+            let db = open_db(&graph);
+            let store = FilesystemBlobStore::new(&graph);
+            let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
+            let registry = MockRegistry::new();
+            let mut parent = [0; 32];
+            let mut layers = Vec::new();
+            let mut manifest = None;
+            // Unequal layers exercise concurrent preparation. Completion order
+            // is not the order in which the manifest's links must be checked.
+            for (index, size) in [256 * 1024, 4096, 8192].into_iter().enumerate() {
+                let data = vec![index as u8 + 1; size];
+                let compressed = index == 1;
+                let wire = if compressed {
+                    ruzstd::encoding::compress_to_vec(
+                        data.as_slice(),
+                        ruzstd::encoding::CompressionLevel::Fastest,
+                    )
+                } else {
+                    data.clone()
+                };
+                let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
+                let (bytes, _) =
+                    make_scute_manifest(&digest, wire.len() as u64, data.len() as u64, compressed);
+                let mut next: Manifest = serde_json::from_slice(&bytes).unwrap();
+                let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut next.layers[0] else {
+                    unreachable!()
+                };
+                scute.annotations.salt = hex::encode(parent);
+                let mut parameters = pull_side_verity_params();
+                parameters.salt = parent.to_vec();
+                parent = parameters.compute(&data).unwrap().root_hash;
+                layers.push(next.layers[0].clone());
+                manifest = Some(next);
+                registry.insert_blob("ghcr.io", "example/foo", digest, Bytes::from(wire));
+            }
+            let mut manifest = manifest.unwrap();
+            manifest.layers = order
+                .into_iter()
+                .map(|index| layers[index].clone())
+                .collect();
+            registry.insert_manifest(
+                "ghcr.io",
+                "example/foo",
+                "bar",
+                Bytes::from(serde_json::to_vec(&manifest).unwrap()),
+            );
+            for _ in 0..2 {
+                let result = pull_inner_with_registry(
+                    target.clone(),
+                    PullPolicy::Always,
+                    true,
+                    &registry,
+                    &store,
+                    &db,
+                )
+                .await;
+                let valid = order == [0, 1, 2];
+                assert_eq!(result.is_ok(), valid, "order={order:?}: {result:?}");
+                assert_eq!(
+                    db.resolve_tag(&target.to_string()).await.unwrap().is_some(),
+                    valid
+                );
+                if valid {
+                    assert_eq!(manifest.carapace_top_root(&store).await.unwrap(), parent);
+                }
+            }
+        }
+    }
+
     /// Pull ignores `dev.pichi.carapace.verity.hash`. Tagging succeeds for
     /// cached and uncached zstd inputs only with a valid block count, whether
     /// the tip annotation is absent or stale. Missing and zero counts fail
-    /// before publication. The tip still comes from the scute graph.
+    /// before publication. The tip is reconstructed in manifest order.
     #[tokio::test(flavor = "current_thread")]
     async fn pull_ignores_tip_hash_annotation() {
         for declared in [None, Some(0u64), Some(2)] {

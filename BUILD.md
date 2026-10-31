@@ -240,9 +240,10 @@ before any output tag changes, including when the blob is already cached.
 For **every scute**, including cache hits, the host rebuilds dm-verity from
 the cow bytes and the full manifest salt. Reconstruction uses SHA-256,
 format 1/hash type 1, 4,096-byte data/hash blocks, and a zero UUID. The host
-requires a complete salt chain from the zero-prefix base to exactly one tip;
-manifest layer order does not determine that chain. Only rebuilt sidecars
-enter the cache.
+requires scutes in base-to-tip manifest order: the base has a zero parent
+prefix, and each later prefix must match the preceding reconstructed root.
+PMI and DTB descriptors do not participate in scute order. Only rebuilt
+sidecars enter the cache.
 
 `pichi import raw` records the computed chain root in the manifest annotation
 `dev.pichi.carapace.verity.hash`. `pichi import pmi --carapace` preserves this
