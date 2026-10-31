@@ -10,6 +10,7 @@
 pub mod build;
 mod build_port;
 mod cache;
+mod dillo;
 pub mod images;
 pub mod import;
 pub mod inspect;
