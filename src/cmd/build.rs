@@ -29,9 +29,10 @@ use crate::cmd::build_port::{
     self, BuildInput, Response, ResponseExt as _, console_arg, create_build_port_pipes,
     serve_build_port,
 };
+use crate::cmd::dillo::Dillo;
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
-use crate::cmd::run::{build_gpt_spec, find_dillo, path_arg};
+use crate::cmd::run::{build_gpt_spec, path_arg};
 use crate::config::Config;
 
 /// virtio-fs mount tags the host and Conglobate agree on (BUILD.md §2.3).
@@ -172,7 +173,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow!("pichi build requires -t <tag> to name the result"))?;
 
-    let dillo = find_dillo();
+    let dillo = Dillo::locate();
     boot_serve_and_wait(&dillo, &argv, pipes, response).await?;
 
     // Successful guest exit is required before opening its OCI output.
@@ -361,12 +362,16 @@ pub(crate) async fn resolve_manifest(
 /// `dev.pichi.build`, and wait for power-off. Unlike `pichi run` (which
 /// `exec`s dillo), build spawns and waits so it can take the OCI output.
 async fn boot_serve_and_wait(
-    dillo: &Path,
+    dillo: &Dillo,
     args: &[String],
     pipes: build_port::BuildPortPipes,
     response: Vec<u8>,
 ) -> Result<()> {
-    log::info!("boot build VM: {} {}", dillo.display(), args.join(" "));
+    log::info!(
+        "boot build VM: {} {}",
+        dillo.as_ref().display(),
+        args.join(" ")
+    );
 
     let build_port::BuildPortPipes {
         host_tx,
@@ -377,7 +382,7 @@ async fn boot_serve_and_wait(
         device_tx,
     } = pipes;
 
-    let mut cmd = tokio::process::Command::new(dillo);
+    let mut cmd = tokio::process::Command::from(dillo.command());
     cmd.args(args);
     // Tear down dillo if the host drops the child (exchange/error paths).
     cmd.kill_on_drop(true);
@@ -406,9 +411,7 @@ async fn boot_serve_and_wait(
         cmd.as_std_mut().inherit_handles(true);
     }
 
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawning dillo at {}", dillo.display()))?;
+    let mut child = cmd.spawn().with_context(|| dillo.failure_context())?;
     // Child has inherited the device ends; drop our copies.
     drop(device_rx);
     drop(device_tx);

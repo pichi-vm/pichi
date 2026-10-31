@@ -8,6 +8,32 @@ artifacts in a local content-addressed cache — and delegates the actual VM
 launch to the [`dillo`](https://github.com/pichi-vm/dillo) VMM. `pichi run`
 derives the guest's device set from the cached artifact, then `exec()`s dillo.
 
+## Dillo location
+
+`pichi run` and `pichi build` look for the dillo VMM in this order:
+
+1. `PICHI_DILLO`, when set, is used verbatim. A failed override does not fall back.
+2. The packaged default: `/usr/libexec/pichi/dillo` on Fedora and Ubuntu.
+3. `dillo` beside the running pichi executable (`dillo.exe` on Windows).
+4. `dillo` on `PATH` (`dillo.exe` on Windows), using the native process search.
+
+The `dillo-vm` package provides the VMM separately from Fedora's unrelated
+`dillo` web browser. Pichi is the VMM's only user, so its packaged binary lives
+under libexec. Developers can keep using a sibling binary or `PATH`, or select
+one explicitly with `PICHI_DILLO=/path/to/dillo`. The packaged path has one
+source constant, `Dillo::LIBEXEC_PATH` in `src/cmd/dillo/mod.rs`. The `dillo-vm`
+package owns the confirmed default path on both Fedora and Ubuntu.
+
+Packagers can set another default at compile time:
+
+```sh
+PICHI_DILLO_DEFAULT=/custom/libexec/pichi/dillo cargo build --release
+```
+
+`PICHI_DILLO_DEFAULT` is read at compile time with `option_env!`; setting it at
+runtime has no effect. `PICHI_DILLO` still takes priority at runtime, followed
+by the compiled default, the executable sibling, and `PATH`.
+
 ## The artifact model
 
 A pichi artifact is an OCI image composed of:
