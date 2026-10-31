@@ -22,9 +22,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
@@ -33,6 +31,7 @@ use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
 use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
+use crate::cmd::dillo::Dillo;
 use crate::cmd::layer::ScuteFiles;
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 use crate::cmd::requirements;
@@ -85,8 +84,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
     let dillo_args = build_dillo_args(&manifest, &blob_store, cpus, memory, interfaces).await?;
 
     // Locate dillo and hand off.
-    let dillo = find_dillo();
-    exec_dillo(&dillo, &dillo_args)
+    Dillo::locate().exec(&dillo_args)
 }
 
 /// Fetch an artifact that isn't cached, mirroring `docker`/`podman run`'s
@@ -213,56 +211,6 @@ pub(crate) async fn build_gpt_spec(
     }
     roots.verify(manifest)?;
     Ok(format!("partitions=[{}]", parts.join(",")))
-}
-
-/// Locate the `dillo` binary: `PICHI_DILLO` env override, then a sibling of
-/// the running `pichi` binary, then bare `dillo` (resolved via `PATH`).
-pub(crate) fn find_dillo() -> PathBuf {
-    resolve_dillo(
-        std::env::var_os("PICHI_DILLO"),
-        std::env::current_exe().ok(),
-    )
-}
-
-/// Pure core of [`find_dillo`], split out so tests don't touch process state.
-fn resolve_dillo(override_path: Option<OsString>, current_exe: Option<PathBuf>) -> PathBuf {
-    if let Some(p) = override_path {
-        return PathBuf::from(p);
-    }
-    let exe_name = if cfg!(windows) { "dillo.exe" } else { "dillo" };
-    if let Some(exe) = current_exe {
-        if let Some(dir) = exe.parent() {
-            let cand = dir.join(exe_name);
-            if cand.is_file() {
-                return cand;
-            }
-        }
-    }
-    PathBuf::from(exe_name)
-}
-
-/// Hand the assembled invocation to `dillo`. On Unix this replaces the
-/// process image (clean signal/tty/exit-code semantics); elsewhere it spawns,
-/// waits, and propagates the child's exit code.
-fn exec_dillo(dillo: &Path, args: &[String]) -> Result<()> {
-    log::info!("exec dillo: {} {}", dillo.display(), args.join(" "));
-    let mut cmd = Command::new(dillo);
-    cmd.args(args);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        // `exec` only returns if the replacement failed.
-        let err = cmd.exec();
-        Err(err).with_context(|| format!("failed to exec dillo at {}", dillo.display()))
-    }
-    #[cfg(not(unix))]
-    {
-        let status = cmd
-            .status()
-            .with_context(|| format!("failed to spawn dillo at {}", dillo.display()))?;
-        std::process::exit(status.code().unwrap_or(1));
-    }
 }
 
 /// Render a path as a CLI argument string (lossy is acceptable — blob paths
@@ -700,28 +648,5 @@ mod tests {
             err.to_string().contains("does not match host"),
             "got: {err}"
         );
-    }
-
-    #[tokio::test]
-    async fn resolve_dillo_prefers_override() {
-        let got = resolve_dillo(Some(OsString::from("/opt/dillo")), None);
-        assert_eq!(got, PathBuf::from("/opt/dillo"));
-    }
-
-    #[tokio::test]
-    async fn resolve_dillo_finds_sibling() {
-        let tmp = TempDir::new().unwrap();
-        let name = if cfg!(windows) { "dillo.exe" } else { "dillo" };
-        std::fs::write(tmp.path().join(name), b"#!/bin/sh\n").unwrap();
-        let pichi_exe = tmp.path().join("pichi");
-        let got = resolve_dillo(None, Some(pichi_exe));
-        assert_eq!(got, tmp.path().join(name));
-    }
-
-    #[tokio::test]
-    async fn resolve_dillo_falls_back_to_path() {
-        let got = resolve_dillo(None, None);
-        let name = if cfg!(windows) { "dillo.exe" } else { "dillo" };
-        assert_eq!(got, PathBuf::from(name));
     }
 }
