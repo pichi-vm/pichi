@@ -51,7 +51,7 @@ pub trait ManifestExt {
         blob_store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>>;
     /// Reconstructed tip after verifying scutes in manifest order.
-    /// Host trust is the OCI digest. This root is not read from an annotation.
+    /// The reconstructed chain must match the authenticated manifest commitment.
     async fn carapace_top_root(&self, blob_store: &dyn BlobStore) -> Result<[u8; 32]>;
 }
 
@@ -180,7 +180,7 @@ impl ManifestExt for Manifest {
                 roots.add(layer, root)?;
             }
         }
-        roots.top()
+        roots.verify(self)?.context("artifact has no carapace")
     }
 }
 
@@ -208,15 +208,8 @@ impl ScuteRoots {
         Ok(())
     }
 
-    fn top(&self) -> Result<[u8; 32]> {
-        if self.count == 0 {
-            bail!("carapace chain has no top scute");
-        }
-        Ok(self.root)
-    }
-
-    /// Confirm that every scute was reconstructed in manifest order.
-    pub(super) fn verify(&self, manifest: &Manifest) -> Result<()> {
+    /// Bind the complete ordered reconstruction to the manifest commitment.
+    pub(super) fn verify(&self, manifest: &Manifest) -> Result<Option<[u8; 32]>> {
         let expected = manifest
             .layers
             .iter()
@@ -225,6 +218,10 @@ impl ScuteRoots {
         if self.count != expected {
             bail!("not every manifest scute was reconstructed");
         }
-        Ok(())
+        let root = (self.count > 0).then_some(self.root);
+        if root != manifest.carapace_root()? {
+            bail!("reconstructed carapace root does not match the manifest commitment");
+        }
+        Ok(root)
     }
 }

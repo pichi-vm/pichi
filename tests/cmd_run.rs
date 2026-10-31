@@ -16,6 +16,7 @@ use conglobate::artifact::{
     ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
     ScuteAnnotations, ScuteDescriptor,
 };
+use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
@@ -60,7 +61,7 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
     let pmi_digest = sha256_digest(&pmi_bytes);
     blob_store.put_blob(&pmi_digest, &pmi_bytes).await.unwrap();
 
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         schema_version: 2,
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
@@ -71,7 +72,7 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
                 size: cow_bytes.len() as u64,
                 annotations: ScuteAnnotations {
                     data_blocks: (cow_bytes.len() as u64).div_ceil(4096).try_into().unwrap(),
-                    salt: "00".into(),
+                    salt: "00".repeat(32),
                 },
             }),
             Layer::Pmi(PmiDescriptor {
@@ -81,6 +82,14 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
         ],
         annotations: chain_annotations(),
     };
+    let root = manifest
+        .cached_scute_root(&manifest.layers[0], &blob_store)
+        .await
+        .unwrap()
+        .unwrap();
+    manifest
+        .annotations
+        .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
     let bytes = serde_json::to_vec(&manifest).unwrap();
     let digest =
         conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
@@ -173,7 +182,6 @@ async fn run_execs_dillo_with_manifest_derived_devices() {
 
 #[tokio::test]
 async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
-    use pichi::cmd::manifest_ext::ManifestExt as _;
     use pichi_storage::BlobSidecarExt as _;
 
     for compressed in [false, true] {
@@ -212,6 +220,14 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             } else {
                 Layer::Scute(descriptor)
             };
+            let root = manifest
+                .cached_scute_root(&manifest.layers[0], &store)
+                .await
+                .unwrap()
+                .unwrap();
+            manifest
+                .annotations
+                .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
             let bytes = serde_json::to_vec(&manifest).unwrap();
             let manifest_digest = sha256_digest(&bytes);
             store.put_blob(&manifest_digest, &bytes).await.unwrap();

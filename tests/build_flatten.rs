@@ -32,9 +32,7 @@ async fn pichi_build_flattens_source_into_a_carapace() {
     let g = &graphroot;
 
     // The conglobate build image: the real official image, pulled from GHCR.
-    if !pull_build_image(g) {
-        return;
-    }
+    pull_build_image(g);
 
     // The source carapace conglobate will flatten. Opaque content — a few
     // non-zero bytes so the flatten is non-trivial. (import emits the

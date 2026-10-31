@@ -27,6 +27,8 @@ impl Fixture {
         let tags = FilesystemTagDb::open(&root).unwrap();
         let layer = Self::put(&store, &[42; 4096]).await;
         let config = Self::put(&store, b"{}").await;
+        // One data block has no tree levels: its root hashes the salt and block.
+        let root = Sha256::digest([&[0; 32][..], &[42; 4096][..]].concat());
         let bytes = serde_json::to_vec(&json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -48,7 +50,8 @@ impl Fixture {
                 "dev.pichi.carapace.verity.data-block-size": "4096",
                 "dev.pichi.carapace.verity.hash-block-size": "4096",
                 "dev.pichi.carapace.verity.version": "1",
-                "dev.pichi.carapace.verity.hash-type": "1"
+                "dev.pichi.carapace.verity.hash-type": "1",
+                "dev.pichi.carapace.verity.hash": hex::encode(root)
             }
         }))
         .unwrap();

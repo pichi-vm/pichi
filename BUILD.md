@@ -253,13 +253,20 @@ carapaces. If preparation is missing, Pichi recreates it from the retained blob
 through the same bounded preparation path. Incorrect prepared extents fail
 before Dillo starts. Dillo never receives compressed COW bytes.
 
-For **every scute**, including cache hits, the host rebuilds dm-verity from
-the cow bytes and the full manifest salt. Reconstruction uses SHA-256,
-format 1/hash type 1, 4,096-byte data/hash blocks, and a zero UUID. The host
-requires scutes in base-to-tip manifest order: the base has a zero parent
+Pichi constructs verity from the prepared data and full manifest salt using
+SHA-256, format 1/hash type 1, 4,096-byte data/hash blocks, and a zero UUID.
+Pull, run and build recompute data roots when reusing prepared files; they do
+not rewrite existing hash trees. Load snapshots the supplied OCI blobs and
+rebuilds every tree before importing it.
+
+Scutes must appear in base-to-tip manifest order: the base has a zero parent
 prefix, and each later prefix must match the preceding reconstructed root.
-PMI and DTB descriptors do not participate in scute order. Only rebuilt
-sidecars enter the cache.
+PMI and DTB descriptors do not participate in scute order. The reconstructed
+tip must equal the manifest's `dev.pichi.carapace.verity.hash`. Missing,
+malformed, zero or incorrect commitments fail before pull/load publish a tag
+or run/build launch Dillo. This single commitment covers the salt-linked
+ancestry; there are no per-scute root annotations. The guest verifies data
+blocks lazily against its trusted root. The v1 format identifiers are unchanged.
 
 `pichi import raw` records the computed chain root in the manifest annotation
 `dev.pichi.carapace.verity.hash`. Each import generates a fresh 32-byte salt
@@ -291,12 +298,10 @@ images:
     index: sha256:<digest>
 ```
 
-Smoke context (Conglobate `f88a7215`): seed the exact index blob for
-`qualification.local/fedora:43` →
-`sha256:4e335e141a3f950ed68c68f23c112930c51af5ec9658d1263353eb229a6429d1`
-(343 index bytes; placeholder inner manifest `sha256:` + 32×`0x11`) and
-supply a tiny imported carapace behind that descriptor. The default image is
-`ghcr.io/pichi-vm/conglobate@sha256:b9e26efd9d81ecb5b1a950e3f4891e9a04fbc7d9d222444621bccc95fad3babd`.
+The smoke test imports a small source filesystem, retains its actual platform
+index, and uses `pichi update` to produce the lock. It prunes the cache and
+builds from the committed lock using the published appliance. The default image is
+`ghcr.io/pichi-vm/conglobate@sha256:3d2d1c6cc4d2d3a34fdef26d017b66e736de9ce55805634c47faece6a9895314`.
 The smoke checks clean poweroff and import of an inspectable OCI output tag.
 Import rejects any retired output files. Source vGPT wiring remains an
 input compatibility measure; the guest manifest determines output layers.

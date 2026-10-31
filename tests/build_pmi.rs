@@ -70,9 +70,7 @@ async fn single_pichi_build_emits_bootable_artifact() {
     );
 
     // Build image (conglobate): the real official image, pulled from GHCR.
-    if !pull_build_image(g) {
-        return;
-    }
+    pull_build_image(g);
 
     // Project + build context: pmi.yaml's `run: arma build` references the
     // kernel / initrd / arma via the chroot-bound /context.
