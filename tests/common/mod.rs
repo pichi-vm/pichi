@@ -21,6 +21,9 @@ pub mod stages;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod submodules;
+
 pub const CORIUM_BIN: &str = env!("CARGO_BIN_FILE_CORIUM_corium");
 pub const DILLO_BIN: &str = env!("CARGO_BIN_FILE_DILLO_dillo");
 pub const PICHI_BIN: &str = env!("CARGO_BIN_EXE_pichi");
