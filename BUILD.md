@@ -301,7 +301,7 @@ images:
 The smoke test imports a small source filesystem, retains its actual platform
 index, and uses `pichi update` to produce the lock. It prunes the cache and
 builds from the committed lock using the published appliance. The default image is
-`ghcr.io/pichi-vm/conglobate@sha256:3d2d1c6cc4d2d3a34fdef26d017b66e736de9ce55805634c47faece6a9895314`.
+`ghcr.io/pichi-vm/conglobate@sha256:84f90e33632df27a3577d9890ba52251931b7e54d1b2e57b8d2f6f1ce866cb46`.
 The smoke checks clean poweroff and import of an inspectable OCI output tag.
 Import rejects any retired output files. Source vGPT wiring remains an
 input compatibility measure; the guest manifest determines output layers.

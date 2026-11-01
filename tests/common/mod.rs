@@ -292,7 +292,7 @@ pub fn read_combined(out: &Path, err: &Path) -> String {
 pub const SMOKE_SOURCE_REF: &str = "qualification.local/fedora:43";
 
 /// Conglobate revision supplying the locked context for the real build smoke.
-/// The default appliance must publish the same command contract before release.
+/// Matches the published appliance's source revision.
 pub const SMOKE_CONGLOBATE_REF: &str = "4a98699a48ac56ddea82b5143a4ccb0d733247dc";
 
 /// Conglobate smoke context under the repo mount.
