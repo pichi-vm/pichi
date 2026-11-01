@@ -6,8 +6,8 @@ Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-s
 
 **Build contract:** [`BUILD.md`](BUILD.md) is the source of truth for
 `pichi build` (thin launcher: same path as `pichi run`, virtiofs
-`repo`/`cache`/`output`, bidirectional named console `dev.pichi.build` v0
-CBOR request/response). Conglobate owns plans, OCI layout, and build identity
+`repo`/`cache`/`output`, bidirectional named console `dev.pichi.build`
+CBOR command request/response). Conglobate owns plans, OCI layout, and build identity
 annotations.
 Do not revive Conglobate-as-`/init`, virtiofs `$DIR`+manifests, guest
 `$DIR`→erofs, host OCI reassembly from scutes, or host one-shot CBOR push

@@ -142,13 +142,13 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     )?;
 
     let build_input = BuildInput {
-        git_ref,
+        r#ref: git_ref,
         plan,
         lock,
-        context: Some(context),
+        context,
         location: args.location.clone(),
     };
-    let response = Response::Success(build_input)
+    let response = Response::Ok(build_input)
         .encode_cbor()
         .context("encoding build-input success response")?;
 
@@ -356,7 +356,7 @@ pub(crate) async fn resolve_manifest(
     Ok((digest, manifest))
 }
 
-/// Boot the build VM, serve the v0 build-port request/response on
+/// Boot the build VM, serve the build-port request/response on
 /// `dev.pichi.build`, and wait for power-off. Unlike `pichi run` (which
 /// `exec`s dillo), build spawns and waits so it can take the OCI output.
 async fn boot_serve_and_wait(
@@ -717,13 +717,13 @@ mod tests {
         let fixture = LayoutFixture::new();
 
         let input = BuildInput {
-            git_ref: "main".into(),
+            r#ref: "main".into(),
             plan: DEFAULT_PLAN.into(),
             lock: DEFAULT_LOCK.into(),
-            context: Some("tests/distro/context".into()),
+            context: "tests/distro/context".into(),
             location: None,
         };
-        let response = Response::Success(input).encode_cbor().unwrap();
+        let response = Response::Ok(input).encode_cbor().unwrap();
 
         let pipes = create_build_port_pipes().unwrap();
         let mut device_tx = pipes.device_tx;
@@ -735,7 +735,11 @@ mod tests {
             // Hold-until-open: guest request arrives after host is waiting.
             thread::sleep(Duration::from_millis(50));
             let mut req = Vec::new();
-            ciborium::into_writer(&build_port::GuestRequest::default(), &mut req).unwrap();
+            ciborium::into_writer(
+                &conglobate::launch::Request(conglobate::launch::Build::default()),
+                &mut req,
+            )
+            .unwrap();
             device_tx.write_all(&req).unwrap();
             device_tx.flush().unwrap();
             let mut reply = Vec::new();
