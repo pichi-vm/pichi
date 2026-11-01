@@ -73,7 +73,7 @@ Explicitly **not** on the host:
 Tag names and guest mount points are convention. The CBOR does not carry
 mount tags or commit identities for those mounts.
 
-### 2.4 Named console `dev.pichi.build` (v0 build-port)
+### 2.4 Named console `dev.pichi.build` (build command V1)
 
 Port name: `dev.pichi.build` (dillo named-console convention). The port is
 **bidirectional**: launch dillo with both `rx=pipe:…` and `tx=pipe:…`
@@ -81,25 +81,25 @@ Port name: `dev.pichi.build` (dillo named-console convention). The port is
 model (`pipe:N` = inherited host FD/handle).
 
 Wire (self-delimiting CBOR, no length prefix; **one round trip**; no
-streaming or multiplexing in v0):
+streaming or multiplexing):
 
-1. **Guest → host** — one request map: `{"v":1,"op":"build-input"}`
-2. **Host → guest** — one response map:
-   - success: `{"v":1,"ok":true, …}` plus build-input fields below
-   - failure: `{"v":1,"ok":false,"error":"…"}`
+1. **Guest → host** — one request array: `["build", 1, null]`
+2. **Host → guest** — one response array:
+   - success: `[true, Input]`, with the build-input map below
+   - failure: `[false, "error message"]`
 
 The host prepares the build-input payload **before** launch, but writes
 the response only **after** the guest request arrives (hold-until-open /
 Linux discard of early console bytes).
 
-Build-input fields (success response body, in addition to `v` / `ok`):
+Build-input fields (the `Input` map in the success response):
 
 | Field      | Required | Notes |
 | ---------- | -------- | ----- |
 | `ref`      | yes      | git ref / commit identity the guest resolves in `repo` |
 | `plan`     | yes      | path relative to `context`; default `pichi.yaml` |
 | `lock`     | yes      | path relative to `context`; default `pichi.lock` |
-| `context`  | no       | default `"."` |
+| `context`  | yes      | `"."` explicitly selects the repository root |
 | `location` | no       | optional locator / provenance hint |
 
 Operator defaults are `pichi.yaml` and `pichi.lock`. `-p`/`--plan` and
@@ -180,7 +180,7 @@ pichi (thin launcher)
   │  named console dev.pichi.build (rx+tx pipes)
   ▼
 dillo  ──boots──►  Conglobate pichi image
-                      │  writes {"v":1,"op":"build-input"}
+                      │  writes ["build", 1, null]
                       │     ◄── host success/failure CBOR
                       │  builds from /run/pichi/{repo,cache}
                       │  writes annotated OCI to /run/pichi/output
@@ -311,47 +311,61 @@ input compatibility measure; the guest manifest determines output layers.
 
 ## 4. Build-port CBOR (logical shape)
 
-Encoding is self-delimiting CBOR (no length prefix). Field names are
-strings. One guest request, then one host response.
+Encoding is self-delimiting CBOR (no length prefix). One guest request, then
+one host response, each a single array. Command names and versions identify
+request/response contracts; the protocol has no global version field.
 
 ### 4.1 Guest request
 
-```yaml
-v: 1
-op: "build-input"
+```json
+["build", 1, null]
 ```
+
+The three elements are command name, `u16` command version, and request body.
+Build V1 has a unit body, encoded as null. The host decodes the shared
+`conglobate::launch::Requests` enum; unsupported command/version pairs,
+wrong bodies, and incorrect array lengths fail before success is sent.
 
 ### 4.2 Host success response
 
-```yaml
-v: 1
-ok: true
-# required build-input fields
-ref: <git-ref-or-full-commit-id>
-plan: pichi.yaml     # default; -p/--plan overrides, still relative to context
-lock: pichi.lock     # default; -l/--lock overrides, still relative to context
-# optional
-context: "."        # default when omitted
-location: <string>   # optional provenance / locator hint
+```json
+[true, {
+  "ref": "refs/heads/main",
+  "plan": "pichi.yaml",
+  "lock": "pichi.lock",
+  "context": "."
+}]
 ```
+
+`ref`, `plan`, `lock`, and `context` are required strings. Path and Git parsers
+validate their values when they are used. An optional `location` string carries
+provenance; omitted or null means absent, and serialization
+omits absent locations. Unknown and duplicate fields are rejected. Rust uses
+`Input.r#ref` for the `ref` key and `Response<Input>::Ok` for success.
 
 ### 4.3 Host failure response
 
-```yaml
-v: 1
-ok: false
-error: <string>
+```json
+[false, "error message"]
 ```
 
-`plan` and `lock` are relative to `context`. Defaults are `pichi.yaml`
-and `pichi.lock`. `-p`/`--plan` and `-l`/`--lock` supply different
-relative paths (absolute paths are rejected); the host sends those resolved strings. The guest
-resolves `ref` against the `repo` virtiofs git object store. This
-document locks the field set and the v0 request/response delivery;
-Conglobate owns guest consumption of the success payload.
+The error is a string. Rust uses `Response<Input>::Err`;
+conversions to and from standard `Result` are available. The boolean selects
+the payload type. The response array must have exactly two elements.
 
-Pichi uses capability-relative opens
+`plan` and `lock` are relative to `context`. Operator defaults remain
+`pichi.yaml` and `pichi.lock`; the host always sends an explicit context.
+`-p`/`--plan` and `-l`/`--lock` supply different relative paths. The guest
+resolves `ref` against the `repo` virtiofs Git object store, then resolves the
+selected paths in that committed tree. Context resolution must stay inside
+the repository, and plan/lock resolution inside the selected context, even
+through symlinks and parent components. Pichi uses capability-relative opens
 for its host-side lock read so context and lock symlinks cannot escape.
+
+The shared types live in `conglobate::launch`; locks and image-reference
+sets remain in `conglobate::build`. These array envelopes replace the old map
+format. The default appliance digest must identify an image with this command
+contract: updating the library/source pin alone does not update the guest.
 
 ---
 

@@ -536,7 +536,7 @@ dependencies = [
 [[package]]
 name = "conglobate"
 version = "0.2.0"
-source = "git+https://github.com/pichi-vm/conglobate?rev=0dd3ed1ce9080d93ac3944bb4bbc7a8de543d8f3#0dd3ed1ce9080d93ac3944bb4bbc7a8de543d8f3"
+source = "git+https://github.com/pichi-vm/conglobate?rev=4a98699a48ac56ddea82b5143a4ccb0d733247dc#4a98699a48ac56ddea82b5143a4ccb0d733247dc"
 dependencies = [
  "anyhow",
  "carapace",

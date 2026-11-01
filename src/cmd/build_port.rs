@@ -1,12 +1,11 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! v0 build-port protocol on named virtio-console `dev.pichi.build` (BUILD.md §2.4).
+//! Build-port protocol on named virtio-console `dev.pichi.build` (BUILD.md §2.4).
 //!
 //! Bidirectional, self-delimiting CBOR, one round trip:
-//! 1. Guest → host: `{"v":1,"op":"build-input"}`
-//! 2. Host → guest: success (`ok:true` + build-input fields) or failure
-//!    (`ok:false` + `error`).
+//! 1. Guest → host: `["build", 1, null]`
+//! 2. Host → guest: `[true, Input]` or `[false, message]`.
 //!
 //! The host prepares the build-input payload before launch, then waits for the
 //! guest request after dillo starts (hold-until-open / Linux discard).
@@ -16,14 +15,13 @@
 use anyhow::{Context, Result, bail};
 use std::io::{Read, Write};
 
-pub(crate) use conglobate::build::{
-    Input as BuildInput, PORT_NAME as BUILD_PORT_NAME, Request as GuestRequest, Response,
-};
+use conglobate::launch::Requests;
+pub(crate) use conglobate::launch::{Input as BuildInput, PORT_NAME as BUILD_PORT_NAME, Response};
 
 pub(crate) trait ResponseExt {
     fn encode_cbor(&self) -> Result<Vec<u8>>;
 }
-impl ResponseExt for Response {
+impl ResponseExt for Response<BuildInput> {
     fn encode_cbor(&self) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         ciborium::into_writer(self, &mut bytes).context("encoding build-port response")?;
@@ -32,20 +30,19 @@ impl ResponseExt for Response {
 }
 
 fn encode_failure(error: &str) -> Result<Vec<u8>> {
-    Response::Failure(error.to_owned()).encode_cbor()
+    Response::Err(error.to_owned()).encode_cbor()
 }
 
 /// Read one guest request, validate it, write the prepared response bytes.
 ///
-/// On a bad request (decode or validate failure), writes a v0 failure map
-/// (`ok:false` + `error`) before returning `Err`, so the guest still gets a
-/// self-delimiting reply.
+/// On a bad request, writes `[false, message]` before returning `Err`,
+/// so the guest still gets a self-delimiting reply.
 pub(crate) fn serve_build_port(
     mut host_rx: impl Read,
     mut host_tx: impl Write,
     response: &[u8],
 ) -> Result<()> {
-    let request: GuestRequest = match ciborium::from_reader(&mut host_rx) {
+    let Requests::Build(_) = match ciborium::from_reader(&mut host_rx) {
         Ok(request) => request,
         Err(err) => {
             let msg = format!("reading build-port guest request: {err}");
@@ -53,10 +50,6 @@ pub(crate) fn serve_build_port(
             bail!("{msg}");
         }
     };
-    if let Err(err) = request.validate() {
-        write_failure_response(&mut host_tx, &err.to_string())?;
-        return Err(err.into());
-    }
     host_tx
         .write_all(response)
         .context("writing build-port host response")?;
@@ -218,21 +211,62 @@ pub(crate) fn console_arg_names_build_port(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use conglobate::launch::{Build, Request};
     use std::io::Cursor;
 
     #[test]
     fn success_response_round_trips_required_fields() {
         let input = BuildInput {
-            git_ref: "abc".into(),
+            r#ref: "abc".into(),
             plan: "pichi.yaml".into(),
             lock: "pichi.lock".into(),
-            context: None,
+            context: ".".into(),
             location: None,
         };
-        let bytes = Response::Success(input).encode_cbor().unwrap();
+        let bytes = Response::Ok(input).encode_cbor().unwrap();
         let value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
-        let ciborium::Value::Map(entries) = value else {
-            panic!("expected map");
+        let ciborium::Value::Array(mut envelope) = value else {
+            panic!("response array");
+        };
+        assert_eq!(envelope.len(), 2);
+        assert_eq!(envelope[0], ciborium::Value::Bool(true));
+        let ciborium::Value::Map(entries) = envelope.pop().unwrap() else {
+            panic!("input map");
+        };
+        let mut got = std::collections::BTreeMap::new();
+        for (k, v) in entries {
+            let ciborium::Value::Text(key) = k else {
+                panic!("key");
+            };
+            got.insert(key, v);
+        }
+        assert_eq!(got.len(), 4);
+        assert_eq!(got["ref"], ciborium::Value::Text("abc".into()));
+        assert_eq!(got["plan"], ciborium::Value::Text("pichi.yaml".into()));
+        assert_eq!(got["lock"], ciborium::Value::Text("pichi.lock".into()));
+        assert_eq!(got["context"], ciborium::Value::Text(".".into()));
+        assert!(!got.contains_key("location"));
+        assert!(!got.contains_key("commit"));
+    }
+
+    #[test]
+    fn success_includes_optional_fields_when_set() {
+        let input = BuildInput {
+            r#ref: "main".into(),
+            plan: "r.yaml".into(),
+            lock: "l.lock".into(),
+            context: "crates/x".into(),
+            location: Some("https://example.test/x".into()),
+        };
+        let bytes = Response::Ok(input).encode_cbor().unwrap();
+        let value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let ciborium::Value::Array(mut envelope) = value else {
+            panic!("response array");
+        };
+        assert_eq!(envelope.len(), 2);
+        assert_eq!(envelope[0], ciborium::Value::Bool(true));
+        let ciborium::Value::Map(entries) = envelope.pop().unwrap() else {
+            panic!("input map");
         };
         let mut got = std::collections::BTreeMap::new();
         for (k, v) in entries {
@@ -242,38 +276,6 @@ mod tests {
             got.insert(key, v);
         }
         assert_eq!(got.len(), 5);
-        assert_eq!(got["v"], ciborium::Value::Integer(1.into()));
-        assert_eq!(got["ok"], ciborium::Value::Bool(true));
-        assert_eq!(got["ref"], ciborium::Value::Text("abc".into()));
-        assert_eq!(got["plan"], ciborium::Value::Text("pichi.yaml".into()));
-        assert_eq!(got["lock"], ciborium::Value::Text("pichi.lock".into()));
-        assert!(!got.contains_key("context"));
-        assert!(!got.contains_key("location"));
-        assert!(!got.contains_key("commit"));
-    }
-
-    #[test]
-    fn success_includes_optional_fields_when_set() {
-        let input = BuildInput {
-            git_ref: "main".into(),
-            plan: "r.yaml".into(),
-            lock: "l.lock".into(),
-            context: Some("crates/x".into()),
-            location: Some("https://example.test/x".into()),
-        };
-        let bytes = Response::Success(input).encode_cbor().unwrap();
-        let value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
-        let ciborium::Value::Map(entries) = value else {
-            panic!("map");
-        };
-        let mut got = std::collections::BTreeMap::new();
-        for (k, v) in entries {
-            let ciborium::Value::Text(key) = k else {
-                panic!("key");
-            };
-            got.insert(key, v);
-        }
-        assert_eq!(got.len(), 7);
         assert_eq!(got["plan"], ciborium::Value::Text("r.yaml".into()));
         assert_eq!(got["lock"], ciborium::Value::Text("l.lock".into()));
         assert_eq!(got["context"], ciborium::Value::Text("crates/x".into()));
@@ -287,26 +289,20 @@ mod tests {
     fn failure_response_shape() {
         let bytes = encode_failure("cache missing").unwrap();
         let value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
-        let ciborium::Value::Map(entries) = value else {
-            panic!("map");
-        };
-        let mut got = std::collections::BTreeMap::new();
-        for (k, v) in entries {
-            let ciborium::Value::Text(key) = k else {
-                panic!("key");
-            };
-            got.insert(key, v);
-        }
-        assert_eq!(got["v"], ciborium::Value::Integer(1.into()));
-        assert_eq!(got["ok"], ciborium::Value::Bool(false));
-        assert_eq!(got["error"], ciborium::Value::Text("cache missing".into()));
+        assert_eq!(
+            value,
+            ciborium::Value::Array(vec![
+                ciborium::Value::Bool(false),
+                ciborium::Value::Text("cache missing".into())
+            ])
+        );
     }
 
     #[test]
     fn serve_accepts_expected_request_and_writes_response() {
         let req = {
             let mut b = Vec::new();
-            ciborium::into_writer(&GuestRequest::default(), &mut b).unwrap();
+            ciborium::into_writer(&Request(Build::default()), &mut b).unwrap();
             b
         };
         let response = encode_failure("nope").unwrap();
@@ -317,21 +313,16 @@ mod tests {
     }
 
     #[test]
-    fn serve_rejects_wrong_op() {
-        let bad = GuestRequest {
-            v: 1,
-            op: "other".into(),
-        };
-        let mut b = Vec::new();
-        ciborium::into_writer(&bad, &mut b).unwrap();
-        let mut tx = Vec::new();
-        let err = serve_build_port(Cursor::new(b), &mut tx, b"x").unwrap_err();
-        assert!(
-            err.to_string().contains("unknown op"),
-            "unexpected error: {err}"
-        );
-        let expected = encode_failure(&err.to_string()).unwrap();
-        assert_eq!(tx, expected);
+    fn serve_rejects_unsupported_commands_and_versions() {
+        for bad in [("other", 1, ()), ("build", 2, ())] {
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&bad, &mut bytes).unwrap();
+            let mut tx = Vec::new();
+            let error =
+                serve_build_port(Cursor::new(bytes), &mut tx, b"must not be sent").unwrap_err();
+            let response: Response<BuildInput> = ciborium::from_reader(tx.as_slice()).unwrap();
+            assert_eq!(response, Response::Err(error.to_string()));
+        }
     }
 
     #[test]
@@ -343,20 +334,8 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(!tx.is_empty());
-        let value: ciborium::Value = ciborium::from_reader(tx.as_slice()).unwrap();
-        let ciborium::Value::Map(entries) = value else {
-            panic!("map");
-        };
-        let mut got = std::collections::BTreeMap::new();
-        for (k, v) in entries {
-            let ciborium::Value::Text(key) = k else {
-                panic!("key");
-            };
-            got.insert(key, v);
-        }
-        assert_eq!(got["v"], ciborium::Value::Integer(1.into()));
-        assert_eq!(got["ok"], ciborium::Value::Bool(false));
-        assert!(matches!(got.get("error"), Some(ciborium::Value::Text(_))));
+        let response: Response<BuildInput> = ciborium::from_reader(tx.as_slice()).unwrap();
+        assert_eq!(response, Response::Err(err.to_string()));
     }
 
     #[test]
