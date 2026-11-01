@@ -9,8 +9,8 @@
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 
+#[path = "../common/mod.rs"]
 mod common;
-#[path = "staged_images/disk.rs"]
 mod disk;
 
 use common::stages::{Builds, Image};
@@ -84,11 +84,7 @@ fn staged_images_create_extend_and_compose() {
     let builds = Builds::new("staged-images-");
     let host = builds.directory.join("host.txt");
     fs::write(&host, "host context\n").unwrap();
-    let base = builds.build(
-        "base",
-        include_str!("staged_images/base.yaml"),
-        &[("host.txt", &host)],
-    );
+    let base = builds.build("base", include_str!("base.yaml"), &[("host.txt", &host)]);
     assert_eq!(base.layers("scute").len(), 1);
     assert!(base.bytes("pmi").is_none());
     assert!(base.boot_config().is_none());
@@ -104,11 +100,7 @@ fn staged_images_create_extend_and_compose() {
     let arma = builds.guest_arma();
     let corium = builds.guest_binary("corium", Path::new(common::CORIUM_BIN));
     let firmware = [("arma", arma.as_path()), ("corium", corium.as_path())];
-    let bootable = builds.build(
-        "bootable",
-        include_str!("staged_images/firmware.yaml"),
-        &firmware,
-    );
+    let bootable = builds.build("bootable", include_str!("firmware.yaml"), &firmware);
     assert_eq!(
         bootable.layers("scute"),
         base.layers("scute"),
@@ -124,7 +116,7 @@ fn staged_images_create_extend_and_compose() {
 
     let extended = builds.build(
         "extended",
-        include_str!("staged_images/extend.yaml"),
+        include_str!("extend.yaml"),
         &[("host.txt", &host)],
     );
     assert_eq!(extended.bytes("pmi"), bootable.bytes("pmi"));
@@ -208,7 +200,7 @@ image:
         fs::read(&replacement_corium).unwrap(),
         "replacement must exercise different Corium executable bytes"
     );
-    let replacement_plan = include_str!("staged_images/firmware.yaml").replace(
+    let replacement_plan = include_str!("firmware.yaml").replace(
         "qualification.local/base:1",
         "qualification.local/extended:1",
     );

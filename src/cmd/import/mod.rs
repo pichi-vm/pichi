@@ -17,6 +17,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+mod manifest;
 pub(crate) mod raw;
 
 use std::collections::BTreeMap;
