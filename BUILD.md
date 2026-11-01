@@ -350,6 +350,9 @@ resolves `ref` against the `repo` virtiofs git object store. This
 document locks the field set and the v0 request/response delivery;
 Conglobate owns guest consumption of the success payload.
 
+Pichi uses capability-relative opens
+for its host-side lock read so context and lock symlinks cannot escape.
+
 ---
 
 ## 5. Responsibilities

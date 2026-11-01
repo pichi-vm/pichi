@@ -11,7 +11,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use conglobate::build::Lock as BuildLockFile;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -317,20 +317,19 @@ pub(crate) fn canonicalize_reference(s: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(format!("{}{}", &name[..abs], digest))
 }
 
-/// Resolve `rel` under `--context` inside the repo mount.
-fn path_under_context(repo: &Path, context: &str, rel: &str) -> PathBuf {
-    repo.join(context).join(rel)
-}
-
-/// Load the build lock (`pichi.lock` by default; `-l`/`--lock` overrides)
-/// without interpreting any plan on the host.
+/// Load the build lock without interpreting a plan on the host.
+/// Capability-relative opens resolve symlinks without allowing either the
+/// selected context or the lock to escape its containing directory.
 fn load_build_lock(repo: &Path, context: &str, lock_rel: &str) -> Result<BuildLockFile> {
-    let path = path_under_context(repo, context, lock_rel);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading build lock {}", path.display()))?;
-    let parsed: BuildLockFile = serde_yaml::from_str(&text)
-        .with_context(|| format!("parsing build lock {}", path.display()))?;
-    Ok(parsed)
+    let repo = cap_std::fs::Dir::open_ambient_dir(repo, cap_std::ambient_authority())
+        .context("opening build repository")?;
+    let context = repo
+        .open_dir(context)
+        .context("opening build context within repository")?;
+    let text = context
+        .read_to_string(lock_rel)
+        .with_context(|| format!("reading build lock {lock_rel} within context"))?;
+    serde_yaml::from_str(&text).with_context(|| format!("parsing build lock {lock_rel}"))
 }
 
 /// Resolve a cached reference to its parsed pichi manifest.
@@ -763,6 +762,70 @@ mod tests {
             .unwrap();
         let key = "smoke:oci".parse::<Reference>().unwrap().to_string();
         assert_eq!(db.resolve_tag(&key).await.unwrap(), Some(digest));
+    }
+
+    #[test]
+    fn load_build_lock_confines_context_and_lock_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(repo.join("context/dir")).unwrap();
+        for path in [
+            root.path().join("outside.lock"),
+            repo.join("outside.lock"),
+            repo.join("context/pichi.lock"),
+        ] {
+            std::fs::write(path, "version: 1\nimages: {}\n").unwrap();
+        }
+        assert!(load_build_lock(&repo, "context", "dir/../pichi.lock").is_ok());
+        for (context, lock) in [("..", "outside.lock"), ("context", "../outside.lock")] {
+            assert!(
+                load_build_lock(&repo, context, lock).is_err(),
+                "{context}: {lock}"
+            );
+        }
+        assert!(load_build_lock(&repo, root.path().to_str().unwrap(), "outside.lock").is_err());
+        assert!(
+            load_build_lock(
+                &repo,
+                "context",
+                root.path().join("outside.lock").to_str().unwrap()
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_build_lock_resolves_symlinks_within_their_roots() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(repo.join("context/dir")).unwrap();
+        std::fs::create_dir_all(root.path().join("outside")).unwrap();
+        for path in [
+            repo.join("context/pichi.lock"),
+            root.path().join("outside/pichi.lock"),
+            repo.join("outside.lock"),
+        ] {
+            std::fs::write(path, "version: 1\nimages: {}\n").unwrap();
+        }
+        symlink("context", repo.join("selected")).unwrap();
+        symlink("../outside", repo.join("escape")).unwrap();
+        symlink("../outside.lock", repo.join("context/escape.lock")).unwrap();
+        symlink("../../outside", repo.join("context/escape")).unwrap();
+        symlink("pichi.lock", repo.join("context/selected.lock")).unwrap();
+        assert!(load_build_lock(&repo, "selected", "selected.lock").is_ok());
+        for (context, lock) in [
+            ("escape", "pichi.lock"),
+            ("escape/../context", "pichi.lock"),
+            ("context", "escape.lock"),
+            ("context", "escape/../pichi.lock"),
+        ] {
+            assert!(
+                load_build_lock(&repo, context, lock).is_err(),
+                "{context}: {lock}"
+            );
+        }
     }
 
     #[test]
