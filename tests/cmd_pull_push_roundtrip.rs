@@ -236,6 +236,59 @@ async fn bit_identical_round_trip() {
     }
 }
 
+/// Native configuration and immutable firmware survive registry transport,
+/// including the original configuration's comments and whitespace.
+#[tokio::test]
+async fn bootconfig_and_pmi_are_byte_identical_after_registry_round_trip() {
+    let Some(base) = test_repo_base() else {
+        eprintln!("PICHI_TEST_REGISTRY unset; skipping bootconfig round-trip");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    let root = graphroot(&tmp);
+    let pmi = tmp.path().join("boot.pmi");
+    let config = tmp.path().join("bootconfig");
+    std::fs::write(&pmi, b"opaque PMI").unwrap();
+    std::fs::write(
+        &config,
+        b"# retain these bytes\nkernel { console = hvc0; quiet; }\n",
+    )
+    .unwrap();
+    let tag = format!("{base}/roundtrip:bootconfig");
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args([
+            "import",
+            "pmi",
+            pmi.to_str().unwrap(),
+            "--bootconfig",
+            config.to_str().unwrap(),
+            "-t",
+            &tag,
+        ])
+        .assert()
+        .success();
+    let before = snapshot_cache(&root);
+    let tags = FilesystemTagDb::open(&root).unwrap();
+    let digest = tags.resolve_tag(&tag).await.unwrap().unwrap();
+    drop(tags);
+    for operation in ["push", "rmi", "pull"] {
+        Command::cargo_bin("pichi")
+            .unwrap()
+            .env("XDG_DATA_HOME", tmp.path())
+            .args([operation, &tag])
+            .assert()
+            .success();
+        if operation == "rmi" {
+            assert!(snapshot_cache(&root).is_empty());
+        }
+    }
+    let tags = FilesystemTagDb::open(&root).unwrap();
+    assert_eq!(tags.resolve_tag(&tag).await.unwrap(), Some(digest));
+    assert_eq!(snapshot_cache(&root), before);
+}
+
 /// A registry pin remains fetchable after the tag moves, without fetching
 /// an unselected platform or changing the upstream index bytes.
 #[tokio::test]

@@ -123,16 +123,13 @@ async fn build_dillo_args(
     let pmi_path = blob_store.blob_path(&pmi_digest);
 
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(&pmi_path)];
-    // A detached-mode PMI carries its measured base DTB as a separate layer;
-    // hand it to the VMM out-of-band. The operator never specifies this — it
-    // rides in the artifact, like the PMI and scutes.
-    if let Some(dtb) = manifest.dtb_layer() {
-        let dtb_digest: Digest = dtb
-            .digest
-            .parse()
-            .with_context(|| format!("invalid DTB digest: {}", dtb.digest))?;
-        argv.push("--dtb".to_string());
-        argv.push(path_arg(&blob_store.blob_path(&dtb_digest)));
+    // Boot configuration accompanies the immutable PMI. Its native text is
+    // supplied to Dillo without changing firmware or the embedded command line.
+    if let Some(path) =
+        super::boot_config::BootConfigFile::prepare_image(manifest, blob_store).await?
+    {
+        argv.push("--bootconfig".to_string());
+        argv.push(path_arg(&path));
     }
     if let Some(c) = cpus {
         argv.push("--cpus".to_string());
@@ -409,34 +406,44 @@ mod tests {
         assert!(!argv.contains(&"--net".to_string()));
     }
 
-    fn dtb_layer_fixture() -> Layer {
-        Layer::Dtb(conglobate::artifact::DtbDescriptor {
-            digest: "sha256:4444444444444444444444444444444444444444444444444444444444444444"
-                .into(),
-            size: 8192,
-        })
-    }
-
     #[tokio::test]
-    async fn build_dillo_args_passes_dtb_when_present() {
+    async fn build_dillo_args_passes_bootconfig_when_present() {
+        use crate::cmd::boot_config::BootConfigFile;
+        use pichi_storage::BlobStore as _;
+        use sha2::Digest as _;
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
-        let m = manifest_with(vec![pmi_layer(), dtb_layer_fixture()]);
+        let pmi = b"opaque PMI".to_vec();
+        let digest = Digest::Sha256(sha2::Sha256::digest(&pmi).into());
+        blob_store.put_blob(&digest, &pmi).await.unwrap();
+        let config = BootConfigFile::try_from(ruzstd::encoding::compress_to_vec(
+            b"kernel.console = hvc0;\n".as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        ))
+        .unwrap();
+        config.store(&blob_store).await.unwrap();
+        let m = manifest_with(vec![
+            Layer::Pmi(conglobate::artifact::PmiDescriptor {
+                digest: digest.to_string(),
+                size: pmi.len() as u64,
+            }),
+            Layer::BootConfig(config.descriptor().unwrap()),
+        ]);
         let argv = build_dillo_args(&m, &blob_store, None, None, 0)
             .await
             .unwrap();
-        assert!(argv.contains(&"--dtb".to_string()), "argv: {argv:?}");
+        assert!(argv.contains(&"--bootconfig".to_string()), "argv: {argv:?}");
     }
 
     #[tokio::test]
-    async fn build_dillo_args_no_dtb_when_absent() {
+    async fn build_dillo_args_no_bootconfig_when_absent() {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
         let argv = build_dillo_args(&m, &blob_store, None, None, 0)
             .await
             .unwrap();
-        assert!(!argv.contains(&"--dtb".to_string()));
+        assert!(!argv.contains(&"--bootconfig".to_string()));
     }
 
     /// The user-net `--net` value we emit must parse back through dillo's own

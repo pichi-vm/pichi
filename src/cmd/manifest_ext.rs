@@ -15,7 +15,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 
 use crate::cmd::verity::{VerityFormat as _, VerityParams};
 use conglobate::artifact::{
-    Digest, DtbDescriptor, Layer, Manifest, PmiDescriptor, ScuteDescriptor,
+    BootConfigDescriptor, Digest, Layer, Manifest, PmiDescriptor, ScuteDescriptor,
 };
 use devmap_verity::{HashType, Header};
 use pichi_storage::BlobStore;
@@ -34,8 +34,8 @@ pub trait ManifestExt {
     fn decode_json(reader: impl std::io::Read) -> Result<Self>
     where
         Self: Sized;
-    /// The base-DTB layer, if the artifact carries one (detached-mode PMI).
-    fn dtb_layer(&self) -> Option<&DtbDescriptor>;
+    /// The native Linux boot configuration accompanying the PMI, if present.
+    fn bootconfig_layer(&self) -> Option<&BootConfigDescriptor>;
     /// Partition layers into the single PMI descriptor + scute layers.
     fn partition_layers(&self) -> Result<(&PmiDescriptor, Vec<&Layer>)>;
     /// Collect scute layers with no PMI requirement (build `from:` sources).
@@ -62,9 +62,9 @@ impl ManifestExt for Manifest {
         Ok(manifest)
     }
 
-    fn dtb_layer(&self) -> Option<&DtbDescriptor> {
+    fn bootconfig_layer(&self) -> Option<&BootConfigDescriptor> {
         self.layers.iter().find_map(|l| match l {
-            Layer::Dtb(d) => Some(d),
+            Layer::BootConfig(d) => Some(d),
             _ => None,
         })
     }

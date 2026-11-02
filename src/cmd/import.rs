@@ -7,17 +7,13 @@
 //! - `import raw <raw.img>` — a raw disk image becomes a base **carapace**
 //!   (rootfs; no PMI). `-t` is optional: omit it to cache an ephemeral carapace
 //!   (the index digest is printed).
-//! - `import pmi <boot.pmi> --dtb <d>` — a pre-built, detached PMI (+ base DTB,
-//!   + optional launch config) becomes a **bootable** artifact. With
-//!   `--carapace <ref>` the referenced carapace's scutes are combined in (a
-//!   rootfs appliance); without it the result is PMI-only (bootable, no rootfs).
-//!   The `--carapace` reference is READ-ONLY — its tag is never modified; the
-//!   bootable artifact is always its own `-t`.
+//! - `import pmi <boot.pmi> [--bootconfig <file>]` — immutable firmware with
+//!   optional native Linux configuration and launch requirements. With
+//!   `--carapace <ref>`, include that image's scutes without changing its tag.
 //!
-//! The chicken-and-egg (a bootable PMI must bake the carapace's dm-verity root
-//! into its measured cmdline, but that root only exists after import) is why
-//! these are two steps: `import raw` prints the root, the producer builds the
-//! PMI/DTB against it, then `import pmi --carapace` binds them on.
+//! The producer can import its disk first and use the resulting root hash in
+//! bootconfig. Composing a new image does not rewrite the PMI command line or
+//! its embedded platform device tree.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
@@ -29,12 +25,12 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow, bail};
 
 use conglobate::artifact::{
-    Config, ConfigDescriptor, Digest, DtbDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest,
-    PmiDescriptor, Reference,
+    Config, ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
+    Reference,
 };
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
-use super::cache::ImageStore as _;
+use super::{boot_config::BootConfigFile, cache::ImageStore as _};
 use crate::cli::{ImportPmiArgs, ImportRawArgs};
 use crate::cmd::manifest_ext::ManifestExt as _;
 use crate::config::Config as PichiConfig;
@@ -55,7 +51,7 @@ pub async fn run_raw(args: ImportRawArgs, config: &PichiConfig) -> Result<()> {
     lib_args.run(&layout.graphroot).await
 }
 
-/// `pichi import pmi` — import a pre-built PMI (+ DTB, + optional config) as a
+/// `pichi import pmi` — import PMI with optional native boot configuration as a
 /// bootable artifact, optionally combining a cached carapace's scutes.
 pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     let layout = config.resolve_layout()?;
@@ -80,10 +76,10 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         .with_context(|| format!("reading PMI file: {}", args.pmi.display()))?;
     let pmi_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes).into());
 
-    let dtb_bytes = tokio::fs::read(&args.dtb)
-        .await
-        .with_context(|| format!("reading DTB file: {}", args.dtb.display()))?;
-    let dtb_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&dtb_bytes).into());
+    let bootconfig = match &args.bootconfig {
+        Some(path) => Some(BootConfigFile::read(path).await?),
+        None => None,
+    };
 
     let config_blob = match &args.config {
         Some(p) => Some(read_launch_contract(p).await?),
@@ -115,10 +111,11 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         digest: pmi_digest.to_string(),
         size: pmi_bytes.len() as u64,
     }));
-    manifest.layers.push(Layer::Dtb(DtbDescriptor {
-        digest: dtb_digest.to_string(),
-        size: dtb_bytes.len() as u64,
-    }));
+    if let Some(config) = &bootconfig
+        && let Some(descriptor) = config.descriptor()
+    {
+        manifest.layers.push(Layer::BootConfig(descriptor));
+    }
     if let Some((digest, bytes)) = &config_blob {
         manifest.config = ConfigDescriptor::for_config(digest.to_string(), bytes.len() as u64);
     }
@@ -129,16 +126,21 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     let manifest_digest =
         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
 
-    // Commit blobs (PMI → DTB → config → manifest), then tag. Scute blobs (if
+    // Commit blobs (PMI → bootconfig → launch config → manifest), then tag. Scute blobs (if
     // any) are already present — content-addressed no-op if re-put.
     blob_store
         .put_blob(&pmi_digest, &pmi_bytes)
         .await
         .with_context(|| format!("put_blob pmi {pmi_digest}"))?;
-    blob_store
-        .put_blob(&dtb_digest, &dtb_bytes)
-        .await
-        .with_context(|| format!("put_blob dtb {dtb_digest}"))?;
+    let pmi_layer = manifest
+        .layers
+        .iter()
+        .find(|layer| matches!(layer, Layer::Pmi(_)))
+        .context("PMI descriptor missing")?;
+    super::layer::PreparedLayer::prepare_cached(&manifest, pmi_layer, &blob_store).await?;
+    if let Some(config) = &bootconfig {
+        config.store(&blob_store).await?;
+    }
     if let Some((digest, bytes)) = &config_blob {
         blob_store
             .put_blob(digest, bytes)
@@ -149,6 +151,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         .put_blob(&manifest_digest, &manifest_bytes)
         .await
         .with_context(|| format!("put_blob manifest {manifest_digest}"))?;
+    BootConfigFile::validate_image(&manifest, &blob_store).await?;
     let index = blob_store.local_index(&manifest_digest, None).await?;
 
     if let Some(dest_key) = &dest_key {
@@ -171,7 +174,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
 
 /// Load the cached carapace referenced by `carapace` (tag or digest; read-only)
 /// and return a manifest carrying only its scute layers and chain annotations,
-/// ready for PMI/DTB layers to be appended.
+/// ready for PMI/bootconfig layers to be appended.
 async fn carapace_scutes_manifest(
     blob_store: &FilesystemBlobStore,
     db: &FilesystemTagDb,
@@ -192,7 +195,7 @@ async fn carapace_scutes_manifest(
     if manifest.scute_layers().is_empty() {
         bail!("{carapace} is not a carapace (no scute layers)");
     }
-    // Keep only the carapace's scute layers (drop any prior PMI/DTB so a re-run
+    // Keep only the carapace's scute layers (drop any prior PMI/bootconfig so a re-run
     // replaces cleanly); its scute cows + `.verity` sidecars are already cached.
     manifest
         .layers
