@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+stages:
+  firmware:
+    extend: qualification.local/base:1
+    mounts:
+      /tmp: tmpfs
+    steps:
+      - copy: {path: arma, into: /tmp/arma}
+      - copy: {path: corium, into: /tmp/corium}
+      - exec:
+          command: |
+            set -- /usr/lib/modules/*
+            test "$#" -eq 1
+            modules=$1
+            kernel_version=$(basename "$modules")
+            mkdir -p /tmp/initrd /out
+            cp /tmp/corium /tmp/initrd/init
+            : > /tmp/module-list
+            for module in virtio_pci virtio_blk virtio_console dm_mod dm_zero dm_snapshot dm_verity ext4; do
+              modprobe --set-version "$kernel_version" --show-depends "$module" >> /tmp/module-list
+            done
+            while read -r action path extra; do
+              if test "$action" = insmod; then
+                path=$(readlink -f "$path")
+                install -D -m0644 "$path" "/tmp/initrd$path"
+              fi
+            done < /tmp/module-list
+            (cd /tmp/initrd && find . -print0 | cpio --null --create --format=newc --quiet) > /tmp/initrd.cpio
+            /tmp/arma build --kernel "$modules/vmlinuz" --config "$modules/config" --initrd /tmp/initrd.cpio --cmdline bootconfig --dtb attached /out/boot.pmi
+image:
+  root: qualification.local/base:1
+  boot:
+    extract: {from: firmware, path: /out/boot.pmi}
+    define:
+      corium.root: ""
+      corium.log: debug
+      kernel.ro: []
+      kernel.console: hvc0
+      kernel.systemd.volatile: state
+      kernel.systemd.unit: multi-user.target
+      kernel.systemd.show_status: "false"
+      example.keep: original
+      example.delete: present

@@ -16,10 +16,12 @@
 #![allow(dead_code, unreachable_pub)]
 
 mod root_disk;
+pub mod stages;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub const CORIUM_BIN: &str = env!("CARGO_BIN_FILE_CORIUM_corium");
 pub const DILLO_BIN: &str = env!("CARGO_BIN_FILE_DILLO_dillo");
 pub const CONGLOBATE_BIN: &str = env!("CARGO_BIN_FILE_CONGLOBATE_conglobate");
 pub const PICHI_BIN: &str = env!("CARGO_BIN_EXE_pichi");
