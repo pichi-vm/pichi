@@ -484,7 +484,10 @@ mod tests {
                 "mediaType": "application/vnd.pichi.scute.v1",
                 "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
                 "size": 1024,
-                "annotations": { "dev.pichi.scute.verity.salt": "00" }
+                "annotations": {
+                    "dev.pichi.scute.verity.salt": "00".repeat(64),
+                    "dev.pichi.scute.verity.data-blocks": "1"
+                }
             }]
             // NOTE: no top-level annotations → missing chain annotations.
         });

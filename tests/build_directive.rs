@@ -17,7 +17,7 @@
 
 mod common;
 
-use common::{assert_pichi_ok, kvm_available, make_ext4, pichi, pull_build_image};
+use common::{assert_pichi_ok, kvm_available, make_root_disk, pichi, prepare_build_image};
 
 #[tokio::test]
 #[ignore = "legacy pichi.build layout; re-enable after Conglobate Follow-up A / OCI-import"]
@@ -33,11 +33,11 @@ async fn pichi_build_applies_a_copy_directive() {
     let g = &graphroot;
 
     // Build image: the real official image, pulled from GHCR.
-    pull_build_image(g);
+    prepare_build_image(g);
 
     // Source carapace: a real ext4 rootfs.
     let src_img = tmp.path().join("source.ext4");
-    make_ext4(&src_img, &[("hello", "base rootfs content\n")]);
+    make_root_disk(&src_img, &[("hello", "base rootfs content\n")]);
     assert_pichi_ok(
         "import source",
         &pichi(

@@ -19,8 +19,8 @@ use pichi::cmd::manifest_ext::ManifestExt as _;
 use std::path::{Path, PathBuf};
 
 use common::{
-    CORIUM_BIN, DILLO_BIN, assemble_initrd_with, assert_pichi_ok, kvm_available, make_ext4, pichi,
-    pull_build_image, seal,
+    CORIUM_BIN, DILLO_BIN, assemble_initrd_with, assert_pichi_ok, kvm_available, make_root_disk,
+    pichi, prepare_build_image, seal,
 };
 use conglobate::artifact::{Digest, Layer, Manifest, PmiDescriptor, Reference};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
@@ -90,11 +90,11 @@ async fn pichi_build_then_run_mounts_root_carapace() {
     let g = &xdg;
 
     // --- Build image (conglobate): the real official image from GHCR. ---
-    pull_build_image(g);
+    prepare_build_image(g);
 
     // --- Source carapace: a marked ext4. ---
     let src = tmp.path().join("source.ext4");
-    make_ext4(&src, &[(MARKER, "hello from the root carapace\n")]);
+    make_root_disk(&src, &[(MARKER, "hello from the root carapace\n")]);
     assert_pichi_ok(
         "import source",
         &pichi(

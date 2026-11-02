@@ -89,8 +89,8 @@ pub struct TagArgs {
 
 /// Sub-subcommands for `pichi import <verb>` — bring external bytes into the
 /// local store, keyed by what is being imported (BUILD.md §15). Two artifact
-/// axes compose: a carapace (rootfs) via `raw`, and a boot payload (PMI + DTB)
-/// via `pmi`; `pmi --carapace <ref>` combines them.
+/// axes compose: a carapace (rootfs) via `raw`, and immutable firmware with
+/// optional boot configuration via `pmi`; `pmi --carapace <ref>` combines them.
 #[derive(Debug, Subcommand)]
 pub enum ImportCmd {
     /// Import a raw disk image as a base carapace (rootfs; no PMI).
@@ -106,13 +106,12 @@ pub struct ImportRawArgs {
     /// CONTEXT D-06 — no GPT parse, no CRC, no partition-table inspection).
     pub raw_image: std::path::PathBuf,
     /// Tag to assign (e.g. `myapp:base`). Optional: omit to cache the carapace
-    /// without a tag (ephemeral — the root hash is still printed). Validated
+    /// without a tag (the image index digest is still printed). Validated
     /// via `conglobate::artifact::Reference::from_str` before any I/O.
     #[arg(short = 't', long)]
     pub tag: Option<String>,
-    /// Suppress progress reporting. The carapace root hash is still printed to
-    /// stdout (docker `-q` style) — it is the value a detached PMI bakes into
-    /// its measured cmdline (`corium=`) before `pichi import pmi`.
+    /// Suppress progress reporting. The image index digest is still printed to
+    /// stdout (docker `-q` style). Inspect the root annotation for bootconfig.
     #[arg(long, default_value_t = false)]
     pub quiet: bool,
     /// Extra manifest annotations, `KEY=VALUE` (repeatable) — e.g.
@@ -122,21 +121,20 @@ pub struct ImportRawArgs {
     pub annotations: Vec<String>,
 }
 
-/// Args for `pichi import pmi <pmi> --dtb <file> [--carapace <ref>] -t <tag>` —
-/// import a pre-built, detached PMI (+ base DTB, + optional launch config) as a
+/// Args for `pichi import pmi <pmi> [--bootconfig <file>] [--carapace <ref>]`.
+/// Import immutable PMI with optional native boot and launch configuration as a
 /// bootable artifact. Without `--carapace` the result is PMI-only (bootable,
 /// no rootfs); with `--carapace <ref>` the referenced carapace's scutes are
 /// combined in. The carapace reference is read-only — its tag is never changed.
 #[derive(Debug, ClapArgs)]
 pub struct ImportPmiArgs {
-    /// Pre-built PMI file (opaque bytes — pichi does NOT validate PMI format
-    /// or measurement; the producer owns PMI validity).
+    /// Pre-built PMI file. Boot configuration requires compatible reservations
+    /// in every launch target. Import does not prove the guest will boot.
     pub pmi: std::path::PathBuf,
-    /// Base DTB file for the detached-mode PMI. Bundled as a
-    /// `vnd.pichi.dtb.v1` layer; `pichi run` supplies it to the VMM
-    /// out-of-band. Treated as opaque bytes.
+    /// Native Linux bootconfig text. Its syntax and the PMI reservation are
+    /// validated before import; empty configuration is omitted from the image.
     #[arg(long)]
-    pub dtb: std::path::PathBuf,
+    pub bootconfig: Option<std::path::PathBuf>,
     /// Optional launch-contract config (JSON or YAML with a `requirements`
     /// section; memory in bytes). Stored as the manifest config blob
     /// (`vnd.pichi.config.v1+json`) instead of the OCI empty config.

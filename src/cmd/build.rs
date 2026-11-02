@@ -61,7 +61,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     ensure_build_image(&build_image_ref, config, &db, &blob_store).await?;
 
     // The build image launches like `pichi run` (BUILD.md §2.6): --pmi,
-    // optional detached --dtb, and a vGPT for the appliance carapace scutes.
+    // optional --bootconfig, and a vGPT for the appliance carapace scutes.
     let (_, build_manifest) = resolve_manifest(&build_image_ref, &db, &blob_store)
         .await
         .with_context(|| format!("resolving build image {build_image_ref}"))?;
@@ -73,23 +73,16 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .parse()
         .context("invalid build-image PMI digest")?;
     let pmi_path = blob_store.blob_path(&pmi_digest);
-    let dtb_path = if let Some(dtb) = build_manifest.dtb_layer() {
-        let dtb_digest: Digest = dtb
-            .digest
-            .parse()
-            .with_context(|| format!("invalid build-image DTB digest: {}", dtb.digest))?;
-        Some(blob_store.blob_path(&dtb_digest))
-    } else {
-        None
-    };
+    let bootconfig_path =
+        super::boot_config::BootConfigFile::prepare_image(&build_manifest, &blob_store).await?;
 
     // Source preparation follows the current lock contract. Plans are parsed
     // only by Conglobate; legacy host plan parsing is no longer supported.
     let build_lock = load_build_lock(&args.dir, &context, &lock)?;
 
     let mut gpt_specs = Vec::new();
-    // Appliance root carapace first (corium discovers it by PARTUUID), then
-    // transitional source-carapace vGPTs for lock-pinned inputs.
+    // Only the appliance root is a VM disk. Conglobate opens locked image
+    // inputs through the read-only cache and assembles roots when needed.
     if !build_scutes.is_empty() {
         gpt_specs.push(
             build_gpt_spec(&build_manifest, &build_scutes, &blob_store)
@@ -106,15 +99,13 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         if digest != pin.index {
             bail!("cached {reference} does not match lock pin {}", pin.index);
         }
-        let scutes = manifest.scute_layers();
-        if scutes.is_empty() {
-            bail!("source carapace {reference} has no scute layers");
-        }
-        gpt_specs.push(
-            build_gpt_spec(&manifest, &scutes, &blob_store)
+        super::boot_config::BootConfigFile::validate_image(&manifest, &blob_store).await?;
+        if !manifest.scute_layers().is_empty() {
+            manifest
+                .carapace_top_root(&blob_store)
                 .await
-                .with_context(|| format!("building vGPT for {reference}"))?,
-        );
+                .with_context(|| format!("preparing cached source {reference}"))?;
+        }
     }
 
     // Thin-launcher mounts (BUILD.md §2.2–§2.3): empty RW output, RO cache,
@@ -157,7 +148,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     let argv = build_dillo_args(
         &pmi_path,
-        dtb_path.as_deref(),
+        bootconfig_path.as_deref(),
         &gpt_specs,
         &repo_dir,
         &cache_dir,
@@ -189,7 +180,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 /// excluded). The pure core, split out for testing without a boot.
 pub(crate) fn build_dillo_args(
     pmi_path: &Path,
-    dtb_path: Option<&Path>,
+    bootconfig_path: Option<&Path>,
     gpt_specs: &[String],
     repo_dir: &Path,
     cache_dir: &Path,
@@ -199,11 +190,10 @@ pub(crate) fn build_dillo_args(
     cpus: Option<u32>,
 ) -> Vec<String> {
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(pmi_path)];
-    // Detached-mode PMI (Conglobate 0.2.0+): measured base DTB rides as its
-    // own layer; pass it out-of-band like `pichi run` does.
-    if let Some(dtb) = dtb_path {
-        argv.push("--dtb".to_string());
-        argv.push(path_arg(dtb));
+    // Use the same native boot configuration as the image run path.
+    if let Some(bootconfig) = bootconfig_path {
+        argv.push("--bootconfig".to_string());
+        argv.push(path_arg(bootconfig));
     }
     if let Some(m) = memory_mib {
         argv.push("--memory".to_string());
@@ -230,8 +220,8 @@ pub(crate) fn build_dillo_args(
         argv.push("--console".to_string());
         argv.push(console.to_string());
     }
-    // Source-carapace vGPTs remain guest build inputs. The output OCI
-    // manifest owns inherited layers; host import never prepends them.
+    // Attach the appliance carapace. Locked build inputs remain in the
+    // cache; the guest output manifest owns their inherited layers.
     for spec in gpt_specs {
         argv.push("--gpt".to_string());
         argv.push(spec.clone());
@@ -247,9 +237,10 @@ pub(crate) fn build_dillo_args(
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
 /// Conglobate appliance pinned by content digest.
-/// Source and image pins share the manifest-root and salt-chain contract.
+/// Built from 29e4a1c707b84faff3b41967b707afb48545e64d for amd64 and arm64.
+/// It consumes staged plans and boots its GPT root with native bootconfig.
 /// Official-image smoke verifies guest output, poweroff, and host import.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:84f90e33632df27a3577d9890ba52251931b7e54d1b2e57b8d2f6f1ce866cb46";
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:94de2a48c9f4bc8d32a45c5d59e081b77540ff89d5c4fb054c4be19ebeb9b15f";
 
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
@@ -430,7 +421,7 @@ async fn boot_serve_and_wait(
             match serve_result.context("build-port task join")? {
                 Ok(()) => child.wait().await.context("waiting for build VM")?,
                 Err(err) => {
-                    // dillo often exits first (e.g. missing detached --dtb). The
+                    // dillo often exits first (e.g. invalid boot configuration). The
                     // failure-response write then hits Broken pipe — secondary.
                     // Prefer the guest/dillo exit so CI surfaces the real cause.
                     match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
@@ -589,10 +580,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn argv_passes_dtb_when_present() {
+    async fn argv_passes_bootconfig_when_present() {
         let argv = build_dillo_args(
             Path::new("/p.pmi"),
-            Some(Path::new("/cache/blobs/sha256/dtbdead")),
+            Some(Path::new("/cache/blobs/sha256/bootconfigdead")),
             &[],
             Path::new("/proj"),
             Path::new("/cache"),
@@ -601,8 +592,11 @@ mod tests {
             None,
             None,
         );
-        let i = argv.iter().position(|a| a == "--dtb").expect("--dtb");
-        assert_eq!(argv[i + 1], "/cache/blobs/sha256/dtbdead");
+        let i = argv
+            .iter()
+            .position(|a| a == "--bootconfig")
+            .expect("--bootconfig");
+        assert_eq!(argv[i + 1], "/cache/blobs/sha256/bootconfigdead");
     }
 
     #[test]
@@ -649,7 +643,7 @@ mod tests {
         let canon = canonicalize_reference(&pinned);
         assert_eq!(
             canon.as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:84f90e33632df27a3577d9890ba52251931b7e54d1b2e57b8d2f6f1ce866cb46"
+            "ghcr.io/pichi-vm/conglobate@sha256:94de2a48c9f4bc8d32a45c5d59e081b77540ff89d5c4fb054c4be19ebeb9b15f"
         );
         let parsed: Reference = canon.parse().unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
@@ -658,7 +652,7 @@ mod tests {
             ReferenceKind::Digest(d) => {
                 assert_eq!(
                     d.to_string(),
-                    "sha256:84f90e33632df27a3577d9890ba52251931b7e54d1b2e57b8d2f6f1ce866cb46"
+                    "sha256:94de2a48c9f4bc8d32a45c5d59e081b77540ff89d5c4fb054c4be19ebeb9b15f"
                 );
             }
             ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),
@@ -673,10 +667,10 @@ mod tests {
         );
         assert_eq!(
             canonicalize_reference(
-                "ghcr.io/pichi-vm/conglobate@sha256:84f90e33632df27a3577d9890ba52251931b7e54d1b2e57b8d2f6f1ce866cb46"
+                "ghcr.io/pichi-vm/conglobate@sha256:94de2a48c9f4bc8d32a45c5d59e081b77540ff89d5c4fb054c4be19ebeb9b15f"
             )
             .as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:84f90e33632df27a3577d9890ba52251931b7e54d1b2e57b8d2f6f1ce866cb46"
+            "ghcr.io/pichi-vm/conglobate@sha256:94de2a48c9f4bc8d32a45c5d59e081b77540ff89d5c4fb054c4be19ebeb9b15f"
         );
     }
 

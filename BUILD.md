@@ -247,10 +247,10 @@ scutes, the original blob is already the prepared data file. Compressed scutes
 and raw scutes with a partial final block have a separate prepared data file.
 The registry index and manifest retain their original bytes and descriptors.
 
-Run and build use the same file selection and pass only the prepared data and
-verity files to Dillo's GPT backend, including for build appliances and source
-carapaces. If preparation is missing, Pichi recreates it from the retained blob
-through the same bounded preparation path. Incorrect prepared extents fail
+Run and build use the same file selection and pass prepared data and verity
+files to Dillo's GPT backend. A build attaches only the appliance root. Source
+images are available through the read-only cache. If preparation is missing,
+Pichi recreates it from the retained blob through the same bounded path. Incorrect prepared extents fail
 before Dillo starts. Dillo never receives compressed COW bytes.
 
 Pichi constructs verity from the prepared data and full manifest salt using
@@ -261,8 +261,8 @@ rebuilds every tree before importing it.
 
 Scutes must appear in base-to-tip manifest order: the base has a zero parent
 prefix, and each later prefix must match the preceding reconstructed root.
-PMI and DTB descriptors do not participate in scute order. The reconstructed
-tip must equal the manifest's `dev.pichi.carapace.verity.hash`. Missing,
+PMI and native bootconfig descriptors do not participate in scute order. The
+reconstructed tip must equal the manifest's `dev.pichi.carapace.verity.hash`. Missing,
 malformed, zero or incorrect commitments fail before pull/load publish a tag
 or run/build launch Dillo. This single commitment covers the salt-linked
 ancestry; there are no per-scute root annotations. The guest verifies data
@@ -276,19 +276,32 @@ blob digest but produces a different salt, verity tree, root and manifest.
 Loading or reusing an existing layer preserves its recorded salt.
 `pichi import pmi --carapace` preserves this
 root when adding boot components. Caller annotations cannot replace it.
-PMI-only images carry no carapace root.
+PMI-only images carry no carapace root. Bootconfig is an optional accompanying
+component with media type `application/vnd.pichi.bootconfig.v1+zstd`. It cannot
+exist without PMI. Its compressed bytes are authenticated by the OCI descriptor.
+Decompression yields native Linux text, preserving imported comments and spelling.
+Empty configuration is omitted. Pichi does not interpret YAML overlays.
+
+Run and build prepare that text for Dillo's `--bootconfig`, without padding
+or a trailer. Dillo checks its reservation and applies native framing at launch.
+PMI bytes, embedded
+platform DTB and minimal command line remain immutable. Corium reads
+`corium.root` from bootconfig, assembles the whole opaque Carapace chain and
+mounts the discovered GPT root through its read-only partition view. Pichi's
+outer scute/verity disk remains unchanged.
 
 **Guest verity choice (#26):** guest verity is optional and never
 authoritative. If supplied as `blobs/sha256/<cow-digest>.verity`, it must
 match the rebuilt file byte for byte (header and tree); any mismatch fails
 the import.
 
-### Transitional `pichi.lock` host glue (Conglobate Follow-up A)
+### Locked build inputs
 
 The host reads the lock named by `-l`/`--lock` (default `pichi.lock`
-under `--context`) solely for **source-carapace reference keys + index
-digest pins** used to wire source-carapace vGPTs as guest build inputs.
-They do not select or prepend layers during output import. Plan parse of
+under `--context`) for image reference keys and index digest pins. Inputs may
+contain roots, boot components or both. Prepare any scutes in the cache without
+attaching source images as VM disks; component-only inputs need no root. The
+lock does not select or prepend layers during output import. Plan parse of
 `pichi.yaml` stays on the guest (§2.2). Shape:
 
 ```yaml
@@ -298,14 +311,22 @@ images:
     index: sha256:<digest>
 ```
 
-The smoke test imports a small source filesystem, retains its actual platform
-index, and uses `pichi update` to produce the lock. It prunes the cache and
-builds from the committed lock using the published appliance. The default image is
-`ghcr.io/pichi-vm/conglobate@sha256:84f90e33632df27a3577d9890ba52251931b7e54d1b2e57b8d2f6f1ce866cb46`.
+The smoke test imports a small GPT disk, retains its actual platform index,
+and uses `pichi update` to produce the lock. It prunes the cache and builds
+from the committed lock. `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a rebuilt
+OCI appliance layout for cross-project qualification; otherwise the smoke
+uses the shipping default. Staged plans require an appliance built with the
+matching Conglobate engine; `--build-image` selects it explicitly. The default image is
+`ghcr.io/pichi-vm/conglobate@sha256:94de2a48c9f4bc8d32a45c5d59e081b77540ff89d5c4fb054c4be19ebeb9b15f`.
+This amd64/arm64 index is built from Conglobate revision
+`50cdfadbb25c0d20b39399d351ceddc096fc509c` and uses the staged plan, GPT
+root, embedded-DTB PMI and native bootconfig contracts described here.
+The library revision in `Cargo.toml` implements the same plan and image contracts.
+The appliance also includes scute compaction, journal-free ext4 creation and
+command network isolation from the separate Conglobate integration branches.
 The smoke checks clean poweroff and import of an inspectable OCI output tag.
-Import rejects any retired output files. Source vGPT wiring remains an
-input compatibility measure; the guest manifest determines output layers.
-
+Import rejects any retired output files. The guest manifest determines the
+output layers; host-side input preparation never adds ancestry.
 
 ---
 

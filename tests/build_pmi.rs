@@ -17,7 +17,7 @@ mod common;
 
 use common::{
     ARMA_BIN, CORIUM_BIN, assemble_initrd_with, assert_pichi_ok, fedora_ext4, kvm_available,
-    make_ext4, pichi, pull_build_image,
+    make_root_disk, pichi, prepare_build_image,
 };
 
 const MARKER: &str = "corium-root-marker";
@@ -59,7 +59,7 @@ async fn single_pichi_build_emits_bootable_artifact() {
     // App root carapace: a small marked rootfs (no systemd → corium proves the
     // mount and powers off).
     let app = tmp.path().join("app.ext4");
-    make_ext4(&app, &[(MARKER, "hello from the root carapace\n")]);
+    make_root_disk(&app, &[(MARKER, "hello from the root carapace\n")]);
     assert_pichi_ok(
         "import app",
         &pichi(
@@ -70,7 +70,7 @@ async fn single_pichi_build_emits_bootable_artifact() {
     );
 
     // Build image (conglobate): the real official image, pulled from GHCR.
-    pull_build_image(g);
+    prepare_build_image(g);
 
     // Project + build context: pmi.yaml's `run: arma build` references the
     // kernel / initrd / arma via the chroot-bound /context.

@@ -3,7 +3,7 @@
 
 //! End-to-end smoke: `pichi build` against Conglobate's locked context inputs
 //! (`tests/distro/context` + `qualification.local/fedora:43`) with the real
-//! published build image (`ghcr.io/pichi-vm/conglobate@sha256:…`).
+//! appliance selected by `common::prepare_build_image`.
 //!
 //! Host duties under test:
 //! - import a tiny source carapace, retain its genuine platform index and
@@ -20,7 +20,7 @@ mod common;
 
 use common::{
     SMOKE_CONTEXT, SMOKE_LOCK, SMOKE_PLAN, SMOKE_SOURCE_REF, assert_pichi_ok, kvm_available, pichi,
-    prepare_smoke_repo, pull_build_image, seed_smoke_source_carapace,
+    prepare_build_image, prepare_smoke_repo, seed_smoke_source_carapace,
 };
 
 /// Bound so a missing guest poweroff cannot hang CI (safety after Conglobate #11).
@@ -37,13 +37,13 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     std::fs::create_dir_all(&graphroot).unwrap();
     let g = &graphroot;
 
-    // Pull the digest-pinned official build image.
-    pull_build_image(g);
+    // Import the selected appliance into this test's cache.
+    prepare_build_image(g);
 
     // Seed an authenticated index and record its actual digest.
     let index = seed_smoke_source_carapace(g, tmp.path()).await;
 
-    // Use the same Conglobate main revision as the pinned appliance.
+    // Use the same Conglobate revision as the engine dependency.
     // That tree stores `plan.yaml` / `lock.yaml`; the smoke passes
     // those paths with `-p` / `-l`.
     let (repo, git_ref) = prepare_smoke_repo(tmp.path(), &index);
@@ -127,6 +127,8 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             SMOKE_PLAN,
             "-l",
             SMOKE_LOCK,
+            "--build-image",
+            common::build_image(),
             "--memory",
             "2048",
             "--cpus",
@@ -145,7 +147,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             panic!(
                 "official Conglobate smoke: guest did not power off within {}s after launch. Build image: {}. Appliance logs go to the journal and hvc0 console.",
                 OFFICIAL_SMOKE_TIMEOUT.as_secs(),
-                pichi::cmd::build::DEFAULT_BUILD_IMAGE
+                common::build_image()
             );
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;

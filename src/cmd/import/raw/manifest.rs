@@ -16,8 +16,8 @@ use conglobate::artifact::{
 /// Build a `Manifest` for a base carapace import (one Scute, no PMI).
 ///
 /// `pichi import` produces base carapaces only; the bootable appliance form
-/// (Scute + PMI + DTB) is assembled later by `pichi import pmi`, which appends the
-/// PMI/DTB layers onto an already-imported carapace. See BUILD.md §15.
+/// (Scute + PMI + boot configuration) is assembled later by `pichi import pmi`, which appends the
+/// PMI/boot configuration layers onto an already-imported carapace. See BUILD.md §15.
 ///
 /// - One Scute layer carrying `cow_digest`, `cow_size`, and the
 ///   `dev.pichi.scute.verity.salt` annotation (hex-encoded full salt —
