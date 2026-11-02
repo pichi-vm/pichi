@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+stages:
+  rootfs:
+    use: qualification.local/tools:1
+    format:
+      fs: ext4
+      size: 4GiB
+      label: fedora
+      esp: 512MiB
+    mounts:
+      /boot/efi: esp
+      /run: tmpfs
+      /tmp: tmpfs
+    steps:
+      - exec:
+          command: |
+            dnf -y --installroot=/mnt --use-host-config --releasever=43 --setopt=install_weak_deps=False install filesystem systemd systemd-udev kernel-core bash coreutils dnf glibc-minimal-langpack ca-certificates cpio kmod device-mapper util-linux
+            mkdir -p /mnt/dev /mnt/proc /mnt/sys /mnt/run
+            printf 'base root\n' > /mnt/root-marker
+            printf 'created ESP\n' > /mnt/boot/efi/marker
+            mkdir -p /mnt/usr/lib/systemd/system/multi-user.target.wants
+            cat > /mnt/usr/lib/systemd/system/pichi-check.service <<'EOF'
+            [Unit]
+            After=local-fs.target systemd-udev-trigger.service
+            [Service]
+            Type=oneshot
+            StandardOutput=tty
+            StandardError=tty
+            TTYPath=/dev/hvc0
+            ExecStart=/bin/sh -ec 'test -s /root-marker; cat /root-marker; test ! -e /tmp/transient; echo PICHI_BOOTCONFIG_BEGIN; cat /proc/bootconfig; echo PICHI_BOOTCONFIG_END; dmsetup table corium-root; echo PICHI_ROOT_OK; systemctl --no-block poweroff'
+            EOF
+            ln -s ../pichi-check.service /mnt/usr/lib/systemd/system/multi-user.target.wants/pichi-check.service
+          network: true
+          timeout: 600s
+      - copy:
+          path: host.txt
+          into: /mnt/tmp/transient
+      - exec:
+          command: |
+            test "$(cat /mnt/tmp/transient)" = 'host context'
+            cp /mnt/tmp/transient /mnt/etc/from-host
+            test "$(cat /mnt/boot/efi/marker)" = 'created ESP'
+image: rootfs

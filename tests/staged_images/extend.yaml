@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+stages:
+  sibling:
+    extend: qualification.local/bootable:1
+    mounts:
+      tmp: tmpfs
+      /boot/efi: esp
+    steps:
+      - exec:
+          command: |
+            test ! -e /tmp/transient
+            test "$(cat /etc/from-host)" = 'host context'
+            test "$(cat /boot/efi/marker)" = 'created ESP'
+            printf 'sibling persisted\n' > /sibling-file
+            printf 'sibling temporary\n' > /tmp/transient
+      - exec:
+          command: test "$(cat /tmp/transient)" = 'sibling temporary'
+  modified:
+    extend: qualification.local/bootable:1
+    mounts:
+      /boot/efi: esp
+      tmp: tmpfs
+    steps:
+      - copy: {from: sibling, path: sibling-file, into: /tmp/copied}
+      - exec:
+          command: |
+            test "$(cat /tmp/copied)" = 'sibling persisted'
+            cp /tmp/copied /etc/from-sibling
+            printf 'extended root\n' >> /root-marker
+            printf 'extended ESP\n' >> /boot/efi/marker
+            printf 'temporary\n' > /tmp/transient
+      - copy: {path: host.txt, into: /tmp/host}
+      - exec:
+          command: |
+            test "$(cat /tmp/host)" = 'host context'
+            test "$(cat /tmp/transient)" = temporary
+  verified:
+    extend: modified
+    mounts: {/boot/efi: esp}
+    steps:
+      - exec:
+          command: |
+            test ! -e /tmp/transient
+            test ! -e /tmp/copied
+            test ! -e /tmp/host
+            test ! -e /sibling-file
+            test "$(cat /etc/from-sibling)" = 'sibling persisted'
+            test "$(cat /boot/efi/marker)" = "$(printf 'created ESP\nextended ESP')"
+            printf 'local stage\n' >> /root-marker
+image: verified

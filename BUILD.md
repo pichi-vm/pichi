@@ -328,6 +328,40 @@ The smoke checks clean poweroff and import of an inspectable OCI output tag.
 Import rejects any retired output files. The guest manifest determines the
 output layers; host-side input preparation never adds ancestry.
 
+### Staged-image acceptance
+
+The `staged_images` test runs the complete creation and composition path on
+Linux x86-64 and ARM64. It requires usable KVM, at least 1536 free 2 MiB
+hugepages for a 3 GiB build guest, Git, `strip`, and network access to Fedora's
+package repositories. Boots use 2 GiB. Builds retain both the original and
+packed scute during compaction. Missing prerequisites fail the test. No host block
+devices or mounts are created by the harness.
+
+Use a rebuilt appliance OCI layout, a static musl build of the pinned Arma,
+and a newly compiled static release Corium for qualification. Arma runs inside
+Fedora, so it must not depend on the host's dynamic loader. Corium's release
+binary replaces the test artifact's firmware while preserving the selected root.
+The platform CI workflow builds both guest tools for the native architecture:
+
+```sh
+PICHI_TEST_BUILD_IMAGE_LAYOUT=/path/to/appliance-oci \
+PICHI_TEST_GUEST_ARMA=/path/to/musl/release/arma \
+PICHI_TEST_REPLACEMENT_CORIUM=/path/to/release/corium \
+PICHI_TEST_EVIDENCE=/path/to/evidence \
+cargo +nightly-2026-07-06 test --locked --features vm-tests --test staged_images -- --nocapture
+```
+
+The suite installs a fresh Fedora root, generates its PMI inside a stage,
+and boots through Corium to systemd. It independently reads both GPT copies
+from the emitted scutes and compares their root geometry with the live
+device-mapper table. It checks extension, host/sibling copies, ESP and tmpfs
+lifetime, unchanged parents, firmware replacement, configuration overlay
+and replacement, all five component combinations, and failed builds without
+published output. Kernel bootconfig is compared with the selected artifact;
+Linux displays bare keys as empty strings in `/proc/bootconfig`, while the
+artifact checks retain the distinction. Logs, plans, locks and output
+manifests are retained under `PICHI_TEST_EVIDENCE` when it is set.
+
 ---
 
 ## 4. Build-port CBOR (logical shape)
