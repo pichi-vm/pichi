@@ -314,6 +314,12 @@ pub(super) trait ImageStore: BlobStore {
         })
         .await
         .context("all referenced platforms must be cached for export")?;
+        for image in &metadata {
+            if !image.is_index() {
+                super::boot_config::BootConfigFile::validate_image(&image.manifest()?, self)
+                    .await?;
+            }
+        }
         Ok(metadata)
     }
 }

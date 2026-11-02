@@ -187,7 +187,17 @@ impl PreparedLayer {
                     deflated: Some(data),
                 })
             }
-            Layer::Pmi(_) | Layer::Dtb(_) => {
+            Layer::BootConfig(_) => {
+                let mut bytes = Vec::new();
+                wire.read_to_end(&mut bytes)?;
+                let config = super::boot_config::BootConfigFile::try_from(bytes)?;
+                anyhow::ensure!(
+                    config.descriptor().is_some(),
+                    "empty bootconfig must be omitted"
+                );
+                None
+            }
+            Layer::Pmi(_) => {
                 io::copy(&mut wire, &mut io::sink())?;
                 None
             }

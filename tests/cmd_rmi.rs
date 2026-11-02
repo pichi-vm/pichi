@@ -239,10 +239,10 @@ async fn rmi_after_import_leaves_no_orphans() {
     );
 }
 
-/// CACHE-04: appliance rmi (base carapace + attached PMI/DTB). The PMI and
-/// DTB layers have no sidecars (Pitfall 6 — no verity tree). Import a base
-/// carapace, then `pichi attach -t` a PMI + DTB to fork an appliance tag.
-/// Pre-rmi: 6 entries (cow + .verity + carapace-manifest + pmi + dtb +
+/// CACHE-04: appliance rmi (base carapace + attached PMI/boot configuration). The PMI and
+/// boot configuration layers have no sidecars (Pitfall 6 — no verity tree). Import a base
+/// carapace, then `pichi attach -t` a PMI + boot configuration to fork an appliance tag.
+/// Pre-rmi: 6 entries (cow + .verity + carapace-manifest + pmi + bootconfig +
 /// appliance-manifest). Removing BOTH tags leaves ZERO files.
 #[tokio::test]
 async fn rmi_after_attach_leaves_no_orphans() {
@@ -251,12 +251,11 @@ async fn rmi_after_attach_leaves_no_orphans() {
     let raw = tmp.path().join("input.raw");
     write_raw_fixture(&raw);
 
-    // Synthetic PMI / DTB bytes — opaque per Phase 43 D-06; pichi never parses
-    // their formats.
+    // Structurally valid firmware and native configuration; no guest boot.
     let pmi = tmp.path().join("boot.pmi");
-    std::fs::write(&pmi, vec![0u8; 4096]).unwrap();
-    let dtb = tmp.path().join("base.dtb");
-    std::fs::write(&dtb, vec![0u8; 2048]).unwrap();
+    std::fs::write(&pmi, b"opaque PMI").unwrap();
+    let bootconfig = tmp.path().join("base.bootconfig");
+    std::fs::write(&bootconfig, b"kernel.console = \"hvc0\";\n").unwrap();
 
     Command::cargo_bin("pichi")
         .unwrap()
@@ -271,8 +270,8 @@ async fn rmi_after_attach_leaves_no_orphans() {
             "import",
             "pmi",
             pmi.to_str().unwrap(),
-            "--dtb",
-            dtb.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
             "--carapace",
             "myapp:base",
             "-t",
@@ -284,7 +283,7 @@ async fn rmi_after_attach_leaves_no_orphans() {
     let pre_count = count_blob_files(&g);
     assert_eq!(
         pre_count, 8,
-        "pre-rmi: expected 8 (cow + .verity + carapace-manifest + pmi + dtb + \
+        "pre-rmi: expected 8 (cow + .verity + carapace-manifest + pmi + bootconfig + \
          appliance-manifest + two indexes); got {pre_count}"
     );
 

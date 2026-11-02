@@ -35,7 +35,7 @@ pub(super) struct OciLayout {
     capacity: u64,
     staging: tempfile::TempDir,
     store: FilesystemBlobStore,
-    manifests: Vec<Manifest>,
+    manifests: Vec<(Digest, Manifest)>,
     roots: Vec<LayoutEntry>,
     blobs: HashMap<Digest, u64>,
     guest_verity: Vec<(PathBuf, PathBuf)>,
@@ -62,7 +62,8 @@ impl OciLayout {
         // The snapshot contains only OCI blobs. No pre-existing sidecars can
         // short-circuit rebuilding: every scute is rebuilt from cow + salt.
         let mut expanded_size = 0u64;
-        for manifest in &layout.manifests {
+        for (_, manifest) in &layout.manifests {
+            super::boot_config::BootConfigFile::validate_image(manifest, &layout.store).await?;
             let mut roots = ScuteRoots::default();
             for layer in &manifest.layers {
                 if let Some(root) =
@@ -154,6 +155,7 @@ impl OciLayout {
                 value["mediaType"] == entry.media_type && value["schemaVersion"] == 2,
                 "index entry type or schema mismatch"
             );
+
             if !seen.insert(digest.clone()) {
                 continue;
             }
@@ -233,7 +235,7 @@ impl OciLayout {
                     }
                 }
             }
-            layout.manifests.push(manifest);
+            layout.manifests.push((digest, manifest));
         }
         for path in files.keys() {
             ensure!(

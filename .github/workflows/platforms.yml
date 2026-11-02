@@ -50,7 +50,7 @@ jobs:
           rustup default "$NIGHTLY"
           # arma embeds native-arch tatu; snuffler is cross-built for the guest
           # musl triple matching this host's arch.
-          rustup target add x86_64-unknown-none aarch64-unknown-none "${{ matrix.guest_musl }}"
+          rustup target add x86_64-unknown-none aarch64-unknown-none-softfloat "${{ matrix.guest_musl }}"
 
       # The Nix-based ARM64 runner does not include xz in its service PATH.
       - name: Install Zig extraction tool (Linux arm64)

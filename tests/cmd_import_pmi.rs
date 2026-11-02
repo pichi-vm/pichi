@@ -3,7 +3,7 @@
 
 //! `pichi import pmi` integration tests (BUILD.md §15).
 //!
-//! `import pmi` turns a pre-built detached PMI (+ base DTB, + optional config)
+//! `import pmi` turns a pre-built PMI (+ optional boot configuration and launch config)
 //! into a bootable artifact. Without `--carapace` the result is PMI-only
 //! (bootable, no rootfs); with `--carapace <ref>` the referenced carapace's
 //! scutes are combined in. The carapace reference is read-only — its tag is
@@ -51,15 +51,15 @@ async fn resolve_manifest(g: &Path, key: &str) -> Manifest {
     Manifest::decode_json(bytes.as_slice()).unwrap()
 }
 
-/// Fixture: a raw image, a PMI, and a DTB in `tmp`.
+/// Fixture: a raw image, a PMI, and a boot configuration in `tmp`.
 fn fixtures(tmp: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
     let raw = tmp.path().join("input.raw");
     write_raw(&raw);
     let pmi = tmp.path().join("boot.pmi");
-    std::fs::write(&pmi, vec![0xC3u8; 8192]).unwrap();
-    let dtb = tmp.path().join("base.dtb");
-    std::fs::write(&dtb, vec![0xD7u8; 4096]).unwrap();
-    (raw, pmi, dtb)
+    std::fs::write(&pmi, b"opaque PMI").unwrap();
+    let bootconfig = tmp.path().join("base.bootconfig");
+    std::fs::write(&bootconfig, b"kernel.console = \"hvc0\";\n").unwrap();
+    (raw, pmi, bootconfig)
 }
 
 /// Kind 2: `import pmi --carapace` produces a bootable rootfs appliance under
@@ -68,7 +68,7 @@ fn fixtures(tmp: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
 async fn import_pmi_with_carapace_keeps_base_untouched() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (raw, pmi, dtb) = fixtures(&tmp);
+    let (raw, pmi, bootconfig) = fixtures(&tmp);
 
     pichi(&tmp)
         .args(["import", "raw", raw.to_str().unwrap(), "-t", "app:base"])
@@ -79,8 +79,8 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
             "import",
             "pmi",
             pmi.to_str().unwrap(),
-            "--dtb",
-            dtb.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
             "--carapace",
             "app:base",
             "-t",
@@ -99,12 +99,12 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
     );
     assert!(base.layers.iter().any(|l| matches!(l, Layer::Scute(_))));
 
-    // The appliance carries scute + pmi + dtb.
+    // The appliance carries scute + pmi + bootconfig.
     let app = resolve_manifest(&g, "docker.io/library/app:1").await;
-    assert_eq!(app.layers.len(), 3, "scute + pmi + dtb");
+    assert_eq!(app.layers.len(), 3, "scute + pmi + bootconfig");
     assert!(app.layers.iter().any(|l| matches!(l, Layer::Scute(_))));
     assert!(app.layers.iter().any(|l| matches!(l, Layer::Pmi(_))));
-    assert!(app.layers.iter().any(|l| matches!(l, Layer::Dtb(_))));
+    assert!(app.layers.iter().any(|l| matches!(l, Layer::BootConfig(_))));
     let root = base
         .annotations
         .get("dev.pichi.carapace.verity.hash")
@@ -119,18 +119,18 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
 /// Kind 3: `import pmi` without `--carapace` produces a PMI-only bootable
 /// artifact — no scute layers, no carapace verity annotations.
 #[tokio::test]
-async fn import_pmi_without_carapace_is_pmi_only() {
+async fn import_pmi_without_carapace_keeps_only_boot_components() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (_raw, pmi, dtb) = fixtures(&tmp);
+    let (_raw, pmi, bootconfig) = fixtures(&tmp);
 
     pichi(&tmp)
         .args([
             "import",
             "pmi",
             pmi.to_str().unwrap(),
-            "--dtb",
-            dtb.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
             "-t",
             "boot:1",
         ])
@@ -138,9 +138,9 @@ async fn import_pmi_without_carapace_is_pmi_only() {
         .success();
 
     let m = resolve_manifest(&g, "docker.io/library/boot:1").await;
-    assert_eq!(m.layers.len(), 2, "pmi + dtb only");
+    assert_eq!(m.layers.len(), 2, "pmi + bootconfig only");
     assert!(m.layers.iter().any(|l| matches!(l, Layer::Pmi(_))));
-    assert!(m.layers.iter().any(|l| matches!(l, Layer::Dtb(_))));
+    assert!(m.layers.iter().any(|l| matches!(l, Layer::BootConfig(_))));
     assert!(
         !m.layers.iter().any(|l| matches!(l, Layer::Scute(_))),
         "PMI-only artifact has no scutes"
@@ -160,9 +160,9 @@ async fn import_raw_without_tag_prints_digest_usable_as_carapace() {
     let raw = tmp.path().join("input.raw");
     write_raw(&raw);
     let pmi = tmp.path().join("boot.pmi");
-    std::fs::write(&pmi, vec![0xC3u8; 8192]).unwrap();
-    let dtb = tmp.path().join("base.dtb");
-    std::fs::write(&dtb, vec![0xD7u8; 4096]).unwrap();
+    std::fs::write(&pmi, b"opaque PMI").unwrap();
+    let bootconfig = tmp.path().join("base.bootconfig");
+    std::fs::write(&bootconfig, b"kernel.console = \"hvc0\";\n").unwrap();
 
     let out = pichi(&tmp)
         .args(["import", "raw", raw.to_str().unwrap()])
@@ -191,8 +191,8 @@ async fn import_raw_without_tag_prints_digest_usable_as_carapace() {
             "import",
             "pmi",
             pmi.to_str().unwrap(),
-            "--dtb",
-            dtb.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
             "--carapace",
             digest,
             "-t",
@@ -211,7 +211,7 @@ async fn import_raw_without_tag_prints_digest_usable_as_carapace() {
 async fn import_pmi_with_config_sets_config_blob() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (_raw, pmi, dtb) = fixtures(&tmp);
+    let (_raw, pmi, bootconfig) = fixtures(&tmp);
     let cfg = tmp.path().join("config.yaml");
     let mut configs = Vec::new();
     for text in [
@@ -226,8 +226,8 @@ async fn import_pmi_with_config_sets_config_blob() {
                 "import",
                 "pmi",
                 pmi.to_str().unwrap(),
-                "--dtb",
-                dtb.to_str().unwrap(),
+                "--bootconfig",
+                bootconfig.to_str().unwrap(),
                 "--config",
                 cfg.to_str().unwrap(),
                 "-t",
@@ -258,7 +258,7 @@ async fn import_pmi_with_config_sets_config_blob() {
 #[test]
 fn import_pmi_config_errors_include_path_and_location() {
     let tmp = TempDir::new().unwrap();
-    let (_raw, pmi, dtb) = fixtures(&tmp);
+    let (_raw, pmi, bootconfig) = fixtures(&tmp);
     let cfg = tmp.path().join("invalid.yaml");
     for text in [
         "version: 1\nrequirements: [\n",
@@ -269,8 +269,8 @@ fn import_pmi_config_errors_include_path_and_location() {
         let output = pichi(&tmp)
             .args(["import", "pmi"])
             .arg(&pmi)
-            .arg("--dtb")
-            .arg(&dtb)
+            .arg("--bootconfig")
+            .arg(&bootconfig)
             .arg("--config")
             .arg(&cfg)
             .assert()
@@ -291,15 +291,15 @@ fn import_pmi_config_errors_include_path_and_location() {
 async fn import_pmi_without_tag_prints_digest_and_leaves_no_tag() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (_raw, pmi, dtb) = fixtures(&tmp);
+    let (_raw, pmi, bootconfig) = fixtures(&tmp);
 
     let out = pichi(&tmp)
         .args([
             "import",
             "pmi",
             pmi.to_str().unwrap(),
-            "--dtb",
-            dtb.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
         ])
         .assert()
         .success()
@@ -324,15 +324,15 @@ async fn import_pmi_without_tag_prints_digest_and_leaves_no_tag() {
 async fn import_pmi_missing_file_errors() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let (_raw, _pmi, dtb) = fixtures(&tmp);
+    let (_raw, _pmi, bootconfig) = fixtures(&tmp);
 
     pichi(&tmp)
         .args([
             "import",
             "pmi",
             "/nonexistent/boot.pmi",
-            "--dtb",
-            dtb.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
             "-t",
             "boot:1",
         ])
@@ -351,15 +351,15 @@ async fn import_pmi_missing_file_errors() {
 async fn import_pmi_unknown_carapace_errors() {
     let tmp = TempDir::new().unwrap();
     let _g = graphroot(&tmp);
-    let (_raw, pmi, dtb) = fixtures(&tmp);
+    let (_raw, pmi, bootconfig) = fixtures(&tmp);
 
     pichi(&tmp)
         .args([
             "import",
             "pmi",
             pmi.to_str().unwrap(),
-            "--dtb",
-            dtb.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
             "--carapace",
             "nope:1",
             "-t",
@@ -367,4 +367,139 @@ async fn import_pmi_unknown_carapace_errors() {
         ])
         .assert()
         .failure();
+}
+
+#[tokio::test]
+async fn import_omits_absent_and_empty_bootconfig() {
+    for empty in [false, true] {
+        let tmp = TempDir::new().unwrap();
+        let g = graphroot(&tmp);
+        let (_, pmi, bootconfig) = fixtures(&tmp);
+        std::fs::write(&bootconfig, b"").unwrap();
+        let mut command = pichi(&tmp);
+        command.args(["import", "pmi", pmi.to_str().unwrap(), "-t", "boot:1"]);
+        if empty {
+            command.args(["--bootconfig", bootconfig.to_str().unwrap()]);
+        }
+        command.assert().success();
+        let image = resolve_manifest(&g, "docker.io/library/boot:1").await;
+        assert!(matches!(image.layers.as_slice(), [Layer::Pmi(_)]));
+    }
+}
+
+#[tokio::test]
+async fn native_boot_components_survive_save_and_load_exactly() {
+    let source = TempDir::new().unwrap();
+    let source_root = graphroot(&source);
+    let (_, pmi, bootconfig) = fixtures(&source);
+    pichi(&source)
+        .args([
+            "import",
+            "pmi",
+            pmi.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
+            "-t",
+            "boot:1",
+        ])
+        .assert()
+        .success();
+    let layout = source.path().join("saved");
+    pichi(&source)
+        .args(["save", "boot:1", "-o", layout.to_str().unwrap()])
+        .assert()
+        .success();
+    let destination = TempDir::new().unwrap();
+    let destination_root = graphroot(&destination);
+    pichi(&destination)
+        .args(["load", layout.to_str().unwrap(), "--tag", "boot:copy"])
+        .assert()
+        .success();
+    let before = resolve_manifest(&source_root, "docker.io/library/boot:1").await;
+    let after = resolve_manifest(&destination_root, "docker.io/library/boot:copy").await;
+    assert_eq!(before, after);
+    for layer in &after.layers {
+        let digest = layer.digest_str().parse().unwrap();
+        assert_eq!(
+            std::fs::read(FilesystemBlobStore::new(&source_root).blob_path(&digest)).unwrap(),
+            std::fs::read(FilesystemBlobStore::new(&destination_root).blob_path(&digest)).unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+async fn publication_rechecks_cached_bootconfig_bytes() {
+    let source = TempDir::new().unwrap();
+    let g = graphroot(&source);
+    let (_, pmi, bootconfig) = fixtures(&source);
+    pichi(&source)
+        .args([
+            "import",
+            "pmi",
+            pmi.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
+            "-t",
+            "boot:1",
+        ])
+        .assert()
+        .success();
+    let manifest = resolve_manifest(&g, "docker.io/library/boot:1").await;
+    let layer = manifest
+        .layers
+        .iter()
+        .find(|layer| matches!(layer, Layer::BootConfig(_)))
+        .unwrap();
+    std::fs::write(
+        FilesystemBlobStore::new(&g).blob_path(&layer.digest_str().parse().unwrap()),
+        vec![b'x'; layer.size() as usize],
+    )
+    .unwrap();
+    let output = source.path().join("invalid-export");
+    let failed = pichi(&source)
+        .args(["save", "boot:1", "-o", output.to_str().unwrap()])
+        .assert()
+        .failure();
+    assert!(String::from_utf8_lossy(&failed.get_output().stderr).contains("digest mismatch"));
+    assert!(!output.exists());
+}
+
+#[tokio::test]
+async fn empty_bootconfig_request_rechecks_the_cached_pmi() {
+    let source = TempDir::new().unwrap();
+    let root = graphroot(&source);
+    let (_, pmi, config) = fixtures(&source);
+    pichi(&source)
+        .args(["import", "pmi", pmi.to_str().unwrap(), "-t", "boot:1"])
+        .assert()
+        .success();
+    let manifest = resolve_manifest(&root, "docker.io/library/boot:1").await;
+    let layer = &manifest.layers[0];
+    std::fs::write(
+        FilesystemBlobStore::new(&root).blob_path(&layer.digest_str().parse().unwrap()),
+        vec![b'x'; layer.size() as usize],
+    )
+    .unwrap();
+    std::fs::write(&config, b"").unwrap();
+    let failed = pichi(&source)
+        .args([
+            "import",
+            "pmi",
+            pmi.to_str().unwrap(),
+            "--bootconfig",
+            config.to_str().unwrap(),
+            "-t",
+            "boot:bad",
+        ])
+        .assert()
+        .failure();
+    assert!(String::from_utf8_lossy(&failed.get_output().stderr).contains("digest mismatch"));
+    assert!(
+        FilesystemTagDb::open(&root)
+            .unwrap()
+            .resolve_tag("docker.io/library/boot:bad")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

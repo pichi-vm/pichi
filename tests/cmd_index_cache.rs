@@ -494,9 +494,7 @@ async fn publishers_wait_for_collection_before_writing_blobs() {
         }
         let fixture = Fixture::new().await;
         let raw = fixture.directory.path().join("input.raw");
-        let dtb = fixture.directory.path().join("input.dtb");
         std::fs::write(&raw, [71; 8192]).unwrap();
-        std::fs::write(&dtb, [72; 4096]).unwrap();
         let saved = fixture.directory.path().join("saved");
         let tag = registry
             .filter(|_| kind == "pull")
@@ -539,9 +537,6 @@ async fn publishers_wait_for_collection_before_writing_blobs() {
             }
             _ => {
                 command.args(["import", kind, raw.to_str().unwrap(), "-t", &tag]);
-                if kind == "pmi" {
-                    command.args(["--dtb", dtb.to_str().unwrap()]);
-                }
             }
         }
         let mut child = command.spawn().unwrap();

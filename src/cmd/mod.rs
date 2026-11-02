@@ -7,6 +7,7 @@
 //! Each submodule exposes `pub fn run(args, &Config) -> anyhow::Result<()>`
 //! mirroring the pattern set by `crate::system::run`.
 
+mod boot_config;
 pub mod build;
 mod build_port;
 mod cache;

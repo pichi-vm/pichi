@@ -181,6 +181,8 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         .verify(&manifest)
         .with_context(|| format!("verifying carapace root for {final_digest}"))?;
 
+    super::boot_config::BootConfigFile::validate_image(&manifest, blob_store).await?;
+
     // Publish the root only after every layer has been prepared. The index
     // lock covers shared-cache writes and this final tag update, so collection
     // cannot delete an in-progress image before it becomes reachable.
@@ -238,6 +240,90 @@ mod tests {
 
     fn open_db(graphroot: &Path) -> FilesystemTagDb {
         FilesystemTagDb::open(graphroot).unwrap()
+    }
+
+    #[tokio::test]
+    async fn native_bootconfig_is_verified_before_pull_publishes_a_tag() {
+        use conglobate::artifact::BootConfigDescriptor;
+        for (text, corrupt_cache, accepted) in [
+            ("kernel.console = hvc0;\n", false, true),
+            ("bad..key = value;\n", false, true),
+            ("kernel.console = hvc0;\n", true, false),
+        ] {
+            let (_tmp, g) = graphroot();
+            let db = open_db(&g);
+            let store = FilesystemBlobStore::new(&g);
+            let target: Reference = "ghcr.io/example/boot:1".parse().unwrap();
+            let registry = MockRegistry::new();
+            let firmware = b"opaque PMI".to_vec();
+            let compressed = ruzstd::encoding::compress_to_vec(
+                text.as_bytes(),
+                ruzstd::encoding::CompressionLevel::Fastest,
+            );
+            let digest =
+                |bytes: &[u8]| Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(bytes).into());
+            let pmi_digest = digest(&firmware);
+            let config_digest = digest(&compressed);
+            let manifest = Manifest {
+                schema_version: 2,
+                media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
+                artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+                config: ConfigDescriptor::canonical(),
+                layers: vec![
+                    Layer::Pmi(PmiDescriptor {
+                        digest: pmi_digest.to_string(),
+                        size: firmware.len() as u64,
+                    }),
+                    Layer::BootConfig(BootConfigDescriptor {
+                        digest: config_digest.to_string(),
+                        size: compressed.len() as u64,
+                    }),
+                ],
+                annotations: BTreeMap::new(),
+            };
+            registry.insert_manifest(
+                "ghcr.io",
+                "example/boot",
+                "1",
+                Bytes::from(serde_json::to_vec(&manifest).unwrap()),
+            );
+            registry.insert_blob(
+                "ghcr.io",
+                "example/boot",
+                pmi_digest.clone(),
+                Bytes::from(firmware.clone()),
+            );
+            registry.insert_blob(
+                "ghcr.io",
+                "example/boot",
+                config_digest.clone(),
+                Bytes::copy_from_slice(&compressed),
+            );
+            if corrupt_cache {
+                store
+                    .put_blob(&config_digest, &vec![b'x'; compressed.len()])
+                    .await
+                    .unwrap();
+            }
+            let result = pull_inner_with_registry(
+                target.clone(),
+                PullPolicy::Always,
+                true,
+                &registry,
+                &store,
+                &db,
+            )
+            .await;
+            assert_eq!(result.is_ok(), accepted, "{result:?}");
+            assert_eq!(
+                db.resolve_tag(&target.to_string()).await.unwrap().is_some(),
+                accepted
+            );
+            if accepted {
+                assert_eq!(store.get_blob(&pmi_digest).await.unwrap(), firmware);
+                assert_eq!(store.get_blob(&config_digest).await.unwrap(), compressed);
+            }
+        }
     }
 
     /// REGISTRY-03: --pull=missing skips network when cached. Drives

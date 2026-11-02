@@ -1,17 +1,21 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared helpers for the build smoke test.
+//! Shared helpers for the build/boot end-to-end tests.
 //!
-//! The build image is pulled from GHCR — the real, published official build
-//! image ([`pull_build_image`]); `pichi build` then resolves it as its default
-//! `--build-image`. x86_64 + KVM only.
+//! The build image is the shipping default, or an explicitly rebuilt OCI
+//! layout supplied with `PICHI_TEST_BUILD_IMAGE_LAYOUT` for qualification.
+//! [`prepare_build_image`] imports it into the isolated test cache. The
+//! Source roots are partitioned GPT fixtures; firmware production and runtime
+//! boot verification use the same stage and image paths as user builds.
 
 #![cfg(feature = "vm-tests")]
 // Each integration test binary that `mod common;`s this file uses a subset of
 // the helpers; the rest are legitimately dead (and their `pub` unreachable)
 // in that binary.
 #![allow(dead_code, unreachable_pub)]
+
+mod root_disk;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,24 +33,46 @@ pub fn pichi(graphroot: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::pro
     cmd.env("XDG_DATA_HOME", graphroot)
         .env("PICHI_DILLO", DILLO_BIN)
         .args(args);
+    if args.first() == Some(&"build") {
+        cmd.args(["--build-image", build_image()]);
+    }
     for (k, v) in envs {
         cmd.env(k, v);
     }
     cmd.output().expect("spawn pichi")
 }
 
-/// Pull the official build image (`pichi build`'s default `--build-image`)
-/// into the test cache so the subsequent build resolves it. The image is
-/// public on GHCR, so the pull is anonymous.
-///
-/// A missing image or any pull/validation error fails the test. The default
-/// must name an already-published appliance that satisfies the current contract.
-pub fn pull_build_image(graphroot: &Path) {
-    let image = pichi::cmd::build::DEFAULT_BUILD_IMAGE;
-    assert_pichi_ok(
-        "pull official build image",
-        &pichi(graphroot, &[], &["pull", image]),
-    );
+/// Select an explicitly rebuilt appliance during cross-project qualification.
+/// With no fixture override, exercise the shipping default.
+pub fn build_image() -> &'static str {
+    if std::env::var_os("PICHI_TEST_BUILD_IMAGE_LAYOUT").is_some() {
+        "qualification.local/builder:staged"
+    } else {
+        pichi::cmd::build::DEFAULT_BUILD_IMAGE
+    }
+}
+
+pub fn prepare_build_image(graphroot: &Path) {
+    if let Some(layout) = std::env::var_os("PICHI_TEST_BUILD_IMAGE_LAYOUT") {
+        assert_pichi_ok(
+            "load rebuilt appliance",
+            &pichi(
+                graphroot,
+                &[],
+                &[
+                    "load",
+                    Path::new(&layout).to_str().unwrap(),
+                    "--tag",
+                    build_image(),
+                ],
+            ),
+        );
+    } else {
+        assert_pichi_ok(
+            "pull official build image",
+            &pichi(graphroot, &[], &["pull", build_image()]),
+        );
+    }
 }
 
 /// Assert a `pichi` invocation succeeded, panicking with the labelled
@@ -70,9 +96,9 @@ pub fn kvm_available() -> bool {
         .is_ok()
 }
 
-/// Build a tiny ext4 image (16 MiB, 4096-byte blocks) populated from `files`
-/// (name → contents). Used as a source carapace's bare filesystem.
-pub fn make_ext4(path: &Path, files: &[(&str, &str)]) {
+/// Build a GPT disk containing a tiny ext4 root populated from `files`.
+pub fn make_root_disk(path: &Path, files: &[(&str, &str)]) {
+    let filesystem = path.with_extension("filesystem");
     let dir = path.with_extension("src");
     std::fs::create_dir_all(&dir).unwrap();
     for (name, body) in files {
@@ -82,19 +108,20 @@ pub fn make_ext4(path: &Path, files: &[(&str, &str)]) {
         .args(["-q", "-F", "-b", "4096"])
         .arg("-d")
         .arg(&dir)
-        .arg(path)
+        .arg(&filesystem)
         .arg("16M")
         .status()
         .expect("run mkfs.ext4");
     assert!(status.success(), "mkfs.ext4 failed");
+    root_disk::RootDisk::write(&filesystem, path);
 }
 
-/// Locked Conglobate smoke reference (must match plan `from:` and lock key).
+/// Locked Conglobate smoke reference (must match stage input and lock key).
 pub const SMOKE_SOURCE_REF: &str = "qualification.local/fedora:43";
 
 /// Conglobate revision supplying the locked context for the real build smoke.
 /// Matches the published appliance's source revision.
-pub const SMOKE_CONGLOBATE_REF: &str = "4a98699a48ac56ddea82b5143a4ccb0d733247dc";
+pub const SMOKE_CONGLOBATE_REF: &str = "88471e2cf69b43685a901eb888487d41af9458c5";
 
 /// Conglobate smoke context under the repo mount.
 pub const SMOKE_CONTEXT: &str = "tests/distro/context";
@@ -120,8 +147,8 @@ pub fn tag_digest(graphroot: &Path, reference: &str) -> String {
 /// Import a tiny source carapace and retain its authentic platform index.
 /// Returns the index digest to record in the smoke repository's lock.
 pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) -> String {
-    let src = tmp.join("qualification-fedora43.ext4");
-    make_ext4(&src, &[("os-release", "ID=fedora\nVERSION_ID=43\n")]);
+    let src = tmp.join("qualification-fedora43.raw");
+    make_root_disk(&src, &[("os-release", "ID=fedora\nVERSION_ID=43\n")]);
     assert_pichi_ok(
         "import smoke source carapace",
         &pichi(
@@ -201,13 +228,13 @@ pub fn prepare_smoke_repo(tmp: &Path, index: &str) -> (PathBuf, String) {
     )
     .unwrap();
     // The tiny seed has no shell. Retain the upstream COPY, omitting its
-    // Fedora-specific RUN assertions, and commit those exact fixture inputs.
+    // Fedora-specific exec assertions, and commit those exact fixture inputs.
     let plan = std::fs::read_to_string(context.join(SMOKE_PLAN)).unwrap();
     std::fs::write(
         context.join(SMOKE_PLAN),
         format!(
             "{}image: rootfs\n",
-            plan.split("    - run:").next().unwrap()
+            plan.split("    - exec:").next().unwrap()
         ),
     )
     .unwrap();
