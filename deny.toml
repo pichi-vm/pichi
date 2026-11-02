@@ -12,6 +12,7 @@ allow = [
     "Unicode-3.0",   # required by the `unicode-ident` family (AND expression)
     "ISC",           # ring / rustls-webpki and friends
     "BSD-3-Clause",  # some transitive HTTP/TLS deps
+    "0BSD",          # managed / smoltcp
     "Zlib",          # e.g. the compression stack
     "CDLA-Permissive-2.0",  # webpki-roots' bundled Mozilla CA set (data license)
 ]
