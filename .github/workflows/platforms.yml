@@ -82,8 +82,7 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features
 
       - name: Enable KVM (Linux)
-        # Backend tests and boot fixtures may touch /dev/kvm during the plain
-        # workspace test run, so access must be granted before it.
+        # The x86_64 workspace tests and boot fixtures may use /dev/kvm.
         if: runner.os == 'Linux'
         run: ls -l /dev/kvm && sudo chmod 666 /dev/kvm || true
 
@@ -94,12 +93,9 @@ jobs:
       # (Registry deps are cap-lints'd, so only our crates can fail it.) It is set
       # per-step, never globally, so it can't reach the patched-cargo build above.
 
-      # All platforms run the full workspace unit tests. The only members are
-      # pichi and its nested deps/* crates (the products live in their own
-      # repos, consumed as git deps), so a plain `cargo test --workspace` works
-      # on every OS in the matrix.
-      - name: Test (Linux, full workspace)
-        if: runner.os == 'Linux'
+      # ARM64 workspace tests run on hosted runners in the workspace job.
+      - name: Test (Linux x86_64, full workspace)
+        if: matrix.os == 'ubuntu-24.04'
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
@@ -108,14 +104,6 @@ jobs:
 
       - name: Test (Windows, full workspace)
         if: runner.os == 'Windows'
-        shell: bash
-        env:
-          CARGO_BUILD_RUSTFLAGS: "-D warnings"
-        run: |
-          cargo test --workspace
-
-      - name: Test (macOS, full workspace)
-        if: runner.os == 'macOS'
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
@@ -194,3 +182,25 @@ jobs:
             ${{ runner.temp }}/staged-image-evidence/**/pichi.yaml
             ${{ runner.temp }}/staged-image-evidence/**/pichi.lock
             ${{ runner.temp }}/staged-image-evidence/**/PASS
+
+  workspace:
+    name: workspace tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+          rustup default "$NIGHTLY"
+          rustup target add x86_64-unknown-none aarch64-unknown-none-softfloat aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Test full workspace
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+        run: cargo test --workspace
