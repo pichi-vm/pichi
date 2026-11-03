@@ -12,8 +12,7 @@ use std::collections::BTreeMap;
 
 use assert_cmd::Command;
 use conglobate::artifact::{
-    ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
-    ScuteDescriptor,
+    Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations, ScuteDescriptor,
 };
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
@@ -49,7 +48,17 @@ async fn insert_manifest(
         schema_version: 2,
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-        config: ConfigDescriptor::canonical(),
+        config: oci_spec::image::DescriptorBuilder::default()
+            .media_type(oci_spec::image::MediaType::EmptyJSON)
+            .digest(
+                "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("empty config digest"),
+            )
+            .size(2u64)
+            .data("e30=")
+            .build()
+            .expect("empty config descriptor"),
         layers: vec![Layer::Scute(ScuteDescriptor {
             digest: scute_digest.clone(),
             size: 1024,

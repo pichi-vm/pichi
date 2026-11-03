@@ -324,7 +324,7 @@ pub(super) trait ImageStore: BlobStore {
                 }
             } else {
                 let manifest: Manifest = serde_json::from_slice(&metadata.bytes)?;
-                live.insert(manifest.config.digest.parse()?);
+                live.insert(manifest.config.digest().clone());
                 for layer in &manifest.layers {
                     live.insert(layer.digest_str().parse()?);
                 }

@@ -127,26 +127,22 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     // 4a. Pull the config blob when it is a real `vnd.pichi.config.v1+json`
     //     (the OCI empty config rides inline in the manifest — nothing to
     //     fetch). It is small; pull it into memory and commit.
-    if !manifest.config.is_empty() {
-        let config_digest: Digest = manifest
-            .config
-            .digest
-            .parse()
-            .with_context(|| format!("parse config digest {}", manifest.config.digest))?;
-        if !blob_store.blob_exists(&config_digest).await {
+    if manifest.config.media_type() != &oci_spec::image::MediaType::EmptyJSON {
+        let config_digest = manifest.config.digest();
+        if !blob_store.blob_exists(config_digest).await {
             let mut buf: Vec<u8> = Vec::new();
             registry
                 .pull_blob(
                     target.registry(),
                     target.repository(),
-                    &config_digest,
-                    manifest.config.size,
+                    config_digest,
+                    manifest.config.size(),
                     &mut buf,
                 )
                 .await
                 .map_err(|e| anyhow!("pull config blob {config_digest}: {e}"))?;
             blob_store
-                .put_blob(&config_digest, &buf)
+                .put_blob(config_digest, &buf)
                 .await
                 .with_context(|| format!("put config blob {config_digest}"))?;
         }
@@ -220,9 +216,7 @@ mod tests {
     use crate::cmd::platform::PlatformExt as _;
     use bytes::Bytes;
     use conglobate::artifact::Layer;
-    use conglobate::artifact::{
-        ConfigDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
-    };
+    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor};
     use oci_spec::image::Platform;
     use pichi_registry::MockRegistry;
     use std::collections::BTreeMap;
@@ -274,7 +268,17 @@ mod tests {
                 schema_version: 2,
                 media_type: oci_spec::image::MediaType::ImageManifest.to_string(),
                 artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-                config: ConfigDescriptor::canonical(),
+                config: oci_spec::image::DescriptorBuilder::default()
+                    .media_type(oci_spec::image::MediaType::EmptyJSON)
+                    .digest(
+                        "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                            .parse::<oci_spec::image::Digest>()
+                            .expect("empty config digest"),
+                    )
+                    .size(2u64)
+                    .data("e30=")
+                    .build()
+                    .expect("empty config descriptor"),
                 layers: vec![
                     Layer::Pmi(PmiDescriptor {
                         digest: pmi_digest.to_string(),
@@ -767,7 +771,17 @@ mod tests {
             schema_version: 2,
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: ConfigDescriptor::canonical(),
+            config: oci_spec::image::DescriptorBuilder::default()
+                .media_type(oci_spec::image::MediaType::EmptyJSON)
+                .digest(
+                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("empty config digest"),
+                )
+                .size(2u64)
+                .data("e30=")
+                .build()
+                .expect("empty config descriptor"),
             layers: vec![layer],
             annotations,
         };

@@ -401,7 +401,7 @@ mod tests {
                 "schemaVersion": 2,
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-                "config": conglobate::artifact::ConfigDescriptor::canonical(),
+                "config": oci_spec::image::DescriptorBuilder::default().media_type(oci_spec::image::MediaType::EmptyJSON).digest("sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a".parse::<oci_spec::image::Digest>().expect("empty config digest")).size(2u64).data("e30=").build().expect("empty config descriptor"),
                 "layers": [{
                     "mediaType": if compressed { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
                     "digest": format!("sha256:{}", hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&wire))).parse::<Digest>().expect("SHA-256 digest").to_string(),
@@ -668,7 +668,7 @@ mod tests {
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "config": conglobate::artifact::ConfigDescriptor::canonical(),
+            "config": oci_spec::image::DescriptorBuilder::default().media_type(oci_spec::image::MediaType::EmptyJSON).digest("sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a".parse::<oci_spec::image::Digest>().expect("empty config digest")).size(2u64).data("e30=").build().expect("empty config descriptor"),
             "layers": [{
                 "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD,
                 "digest": digest.to_string(),

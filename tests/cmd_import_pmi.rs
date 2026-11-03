@@ -238,12 +238,15 @@ async fn import_pmi_with_config_sets_config_blob() {
 
         let m = resolve_manifest(&g, "docker.io/library/boot:1").await;
         assert!(
-            !m.config.is_empty(),
+            m.config.media_type() != &oci_spec::image::MediaType::EmptyJSON,
             "config blob must be a real vnd.pichi.config.v1+json, not the empty config"
         );
-        assert_eq!(m.config.media_type, "application/vnd.pichi.config.v1+json");
+        assert_eq!(
+            m.config.media_type().as_ref(),
+            "application/vnd.pichi.config.v1+json"
+        );
         let bytes = FilesystemBlobStore::new(&g)
-            .get_blob(&m.config.digest.parse().unwrap())
+            .get_blob(m.config.digest())
             .await
             .unwrap();
         let config: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

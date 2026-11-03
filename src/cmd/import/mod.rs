@@ -24,9 +24,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use conglobate::artifact::{
-    ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-};
+use conglobate::artifact::{Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor};
 use conglobate::resources::Config;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
@@ -124,7 +122,11 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         manifest.layers.push(Layer::BootConfig(descriptor));
     }
     if let Some((digest, bytes)) = &config_blob {
-        manifest.config = ConfigDescriptor::for_config(digest.to_string(), bytes.len() as u64);
+        manifest.config = oci_spec::image::Descriptor::new(
+            conglobate::resources::MEDIA_TYPE_PICHI_CONFIG_V1.into(),
+            bytes.len() as u64,
+            digest.clone(),
+        );
     }
     manifest
         .validate()
@@ -226,7 +228,17 @@ fn scuteless_manifest() -> Manifest {
         schema_version: 2,
         media_type: oci_spec::image::MediaType::ImageManifest.to_string(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-        config: ConfigDescriptor::canonical(),
+        config: oci_spec::image::DescriptorBuilder::default()
+            .media_type(oci_spec::image::MediaType::EmptyJSON)
+            .digest(
+                "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("empty config digest"),
+            )
+            .size(2u64)
+            .data("e30=")
+            .build()
+            .expect("empty config descriptor"),
         layers: Vec::new(),
         annotations,
     }

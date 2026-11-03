@@ -189,14 +189,17 @@ impl OciLayout {
             );
             ensure!(!manifest.layers.is_empty(), "OCI artifact has no layers");
             let config = &manifest.config;
-            ensure!(config.size <= METADATA_CAP, "config exceeds metadata cap");
-            if !config.is_empty() || files.contains_key(&Self::blob_name(&config.digest)?) {
-                ensure!(
-                    config.is_empty() || config.data.is_none(),
-                    "inline pichi config is unsupported"
-                );
-                let digest = layout.copy_blob(&root, &config.digest, config.size, &mut expected)?;
-                if !config.is_empty() {
+            ensure!(config.size() <= METADATA_CAP, "config exceeds metadata cap");
+            if config.media_type() != &oci_spec::image::MediaType::EmptyJSON
+                || files.contains_key(&Self::blob_name(&config.digest().to_string())?)
+            {
+                let digest = layout.copy_blob(
+                    &root,
+                    &config.digest().to_string(),
+                    config.size(),
+                    &mut expected,
+                )?;
+                if config.media_type() != &oci_spec::image::MediaType::EmptyJSON {
                     let config: conglobate::resources::Config =
                         serde_json::from_slice(&std::fs::read(layout.store.blob_path(&digest)?)?)
                             .context("invalid launch config")?;
@@ -565,7 +568,7 @@ pub(super) mod tests {
                     "schemaVersion": 2,
                     "mediaType": oci_spec::image::MediaType::ImageManifest,
                     "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-                    "config": conglobate::artifact::ConfigDescriptor::canonical(),
+                    "config": oci_spec::image::DescriptorBuilder::default().media_type(oci_spec::image::MediaType::EmptyJSON).digest("sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a".parse::<oci_spec::image::Digest>().expect("empty config digest")).size(2u64).data("e30=").build().expect("empty config descriptor"),
                     "layers": [],
                     "annotations": {
                         "dev.pichi.carapace.verity.algo": "sha256",
@@ -863,7 +866,7 @@ pub(super) mod tests {
             "config type",
             "missing config",
             "bad config",
-            "inline config",
+            "bad inline config",
             "salt",
             "disconnected salt",
             "reversed chain",
@@ -933,7 +936,7 @@ pub(super) mod tests {
                 }
                 "layer size" => fixture.manifest["layers"][0]["size"] = 1.into(),
                 "config type" => fixture.manifest["config"]["mediaType"] = "text/plain".into(),
-                "missing config" | "bad config" | "inline config" => {
+                "missing config" | "bad config" | "bad inline config" => {
                     fixture.manifest["config"] = json!({
                         "mediaType": conglobate::resources::MEDIA_TYPE_PICHI_CONFIG_V1,
                         "digest": format!("sha256:{}", hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"bad config"))).parse::<Digest>().expect("SHA-256 digest").to_string(),
@@ -942,7 +945,7 @@ pub(super) mod tests {
                     if case != "missing config" {
                         fixture.blobs.push(b"bad config".to_vec());
                     }
-                    if case == "inline config" {
+                    if case == "bad inline config" {
                         fixture.manifest["config"]["data"] = "e30=".into();
                     }
                 }
@@ -1229,6 +1232,27 @@ pub(super) mod tests {
         }
     }
     #[cfg(unix)]
+    #[test]
+    fn config_descriptor_data_does_not_prevent_loading_its_blob() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut fixture = LayoutFixture::new();
+        let config = br#"{"version":1}"#;
+        fixture.manifest["config"] = json!({
+            "mediaType": conglobate::resources::MEDIA_TYPE_PICHI_CONFIG_V1,
+            "digest": format!("sha256:{}", hex::encode(<sha2::Sha256 as sha2::Digest>::digest(config))),
+            "size": config.len(),
+            "data": "eyJ2ZXJzaW9uIjoxfQ=="
+        });
+        fixture.blobs.push(config.to_vec());
+        fixture.write(directory.path());
+        OciLayout::snapshot(
+            directory.path(),
+            tempfile::tempdir().unwrap(),
+            TEST_CAPACITY,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn scan_capacity_is_independent_of_the_old_image_limit() {
         let dir = tempfile::tempdir().unwrap();

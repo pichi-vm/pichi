@@ -9,8 +9,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context as _, Result};
 
 use conglobate::artifact::{
-    ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
-    ScuteDescriptor,
+    Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations, ScuteDescriptor,
 };
 use oci_spec::image::Digest;
 
@@ -98,7 +97,17 @@ impl BaseManifest for Manifest {
             schema_version: 2,
             media_type: oci_spec::image::MediaType::ImageManifest.to_string(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-            config: ConfigDescriptor::canonical(),
+            config: oci_spec::image::DescriptorBuilder::default()
+                .media_type(oci_spec::image::MediaType::EmptyJSON)
+                .digest(
+                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("empty config digest"),
+                )
+                .size(2u64)
+                .data("e30=")
+                .build()
+                .expect("empty config descriptor"),
             layers,
             annotations,
         };
@@ -277,7 +286,10 @@ mod tests {
             !m.layers.iter().any(|l| matches!(l, Layer::Pmi(_))),
             "base carapace carries no PMI layer"
         );
-        assert!(m.config.is_empty(), "base carapace uses the empty config");
+        assert!(
+            m.config.media_type() == &oci_spec::image::MediaType::EmptyJSON,
+            "base carapace uses the empty config"
+        );
     }
 
     /// Caller annotations merge in, but structural verity keys can't be spoofed

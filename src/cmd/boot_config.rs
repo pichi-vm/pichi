@@ -194,7 +194,17 @@ mod tests {
             schema_version: 2,
             media_type: oci_spec::image::MediaType::ImageManifest.to_string(),
             artifact_type: conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: conglobate::artifact::ConfigDescriptor::canonical(),
+            config: oci_spec::image::DescriptorBuilder::default()
+                .media_type(oci_spec::image::MediaType::EmptyJSON)
+                .digest(
+                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("empty config digest"),
+                )
+                .size(2u64)
+                .data("e30=")
+                .build()
+                .expect("empty config descriptor"),
             layers: vec![
                 Layer::Pmi(conglobate::artifact::PmiDescriptor {
                     digest: format!("sha256:{}", hex::encode(Sha256::digest(b"opaque PMI")))
