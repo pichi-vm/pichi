@@ -362,7 +362,7 @@ impl OciLayout {
         );
         let mut hash = Sha256::new();
         let mut count = 0u64;
-        let mut buffer = [0; 64 * 1024];
+        let mut buffer = vec![0; 64 * 1024].into_boxed_slice();
         loop {
             let length = input.read(&mut buffer)?;
             if length == 0 {
@@ -407,8 +407,8 @@ impl OciLayout {
                 guest.metadata()?.len() == rebuilt.metadata()?.len(),
                 "guest verity size mismatch"
             );
-            let mut a = [0; 64 * 1024];
-            let mut b = [0; 64 * 1024];
+            let mut a = vec![0; 64 * 1024].into_boxed_slice();
+            let mut b = vec![0; 64 * 1024].into_boxed_slice();
             loop {
                 let count = guest.read(&mut a)?;
                 if count == 0 {
