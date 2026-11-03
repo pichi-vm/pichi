@@ -46,7 +46,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     // Use the same Conglobate revision as the engine dependency.
     // That tree stores `plan.yaml` / `lock.yaml`; the smoke passes
     // those paths with `-p` / `-l`.
-    let (repo, git_ref) = prepare_smoke_repo(tmp.path(), &index);
+    let (repo, _) = prepare_smoke_repo(tmp.path(), &index);
     assert_pichi_ok(
         "update",
         &pichi(
@@ -54,17 +54,12 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             &[],
             &[
                 "update",
-                repo.to_str().unwrap(),
-                "--ref",
-                &git_ref,
-                "--context",
-                SMOKE_CONTEXT,
+                repo.join(SMOKE_CONTEXT).to_str().unwrap(),
                 "-p",
                 SMOKE_PLAN,
                 "-l",
                 SMOKE_LOCK,
-                "--conglobate",
-                common::CONGLOBATE_BIN,
+                "--pull=never",
             ],
         ),
     );

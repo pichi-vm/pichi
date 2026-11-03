@@ -14,11 +14,11 @@ workspace = true
 
 [features]
 # Gates the KVM/boot integration tests (build_*.rs). The default `cargo test`
-# does not pull in the boot deps (arma/dillo/conglobate/corium artifacts); CI
+# does not pull in the boot deps (arma/dillo/corium artifacts); CI
 # runs them explicitly: `cargo test -p pichi --features vm-tests`. The product
 # artifacts are optional [dependencies] so non-vm builds never resolve them
 # (the registry/workspace jobs would otherwise drag in cross-target binaries).
-vm-tests = ["dep:arma", "dep:dillo", "dep:conglobate", "dep:corium"]
+vm-tests = ["dep:arma", "dep:dillo", "dep:corium"]
 
 [dependencies]
 anyhow.workspace = true
@@ -56,21 +56,12 @@ ruzstd = "0.9.1"
 arma = { git = "https://github.com/pichi-vm/arma", rev = "3297920b46122689fb13ca41acd61cbe94ac1de7", artifact = "bin", optional = true }
 dillo = { git = "https://github.com/pichi-vm/dillo", rev = "a6285a051164241cabb5160d9759b4f3bf2e7200", artifact = "bin", optional = true }
 
-# Optional guest musl binaries for `vm-tests` only. Production `pichi build`
-# launches Conglobate's shipped pichi image (see BUILD.md); it does not treat
-# conglobate as build-image `/init`. Corium and the host importer use the
-# same Carapace origin geometry. Guest artifacts set lib = false.
-# Conglobate's lib (types only) is the host
-# `conglobate` dep above — this entry shares that name to add only the
-# cross-built `bin` artifact (lib = false), so cargo unifies them. Conglobate's
-# CLI dependencies follow the pinned appliance source.
-# Gated on `vm-tests`.
+# Optional guest Corium binaries for `vm-tests` only. Production builds launch
+# Conglobate's shipped appliance; the host consumes its types-only library.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "88471e2cf69b43685a901eb888487d41af9458c5", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "x86_64-unknown-linux-musl", optional = true }
 corium = { git = "https://github.com/pichi-vm/corium", rev = "c33ae0e01d58b657f8f62cb91672885326a903b9", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "88471e2cf69b43685a901eb888487d41af9458c5", artifact = "bin:conglobate", lib = false, default-features = false, features = ["cli"], target = "aarch64-unknown-linux-musl", optional = true }
 corium = { git = "https://github.com/pichi-vm/corium", rev = "c33ae0e01d58b657f8f62cb91672885326a903b9", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -153,7 +144,7 @@ dillo-config = { git = "https://github.com/pichi-vm/dillo", rev = "a6285a0511642
 pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
-# Pin the library and boot binary to the same contract revision.
+# Match the contract revision used by the pinned appliance.
 conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "88471e2cf69b43685a901eb888487d41af9458c5", default-features = false }
 # Error handling
 anyhow = "1"

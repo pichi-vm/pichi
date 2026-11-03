@@ -61,7 +61,7 @@ enum Command {
         #[command(subcommand)]
         cmd: cli::ManifestCmd,
     },
-    /// Resolve a committed plan's remote images into its build lock.
+    /// Update the lock for a working-tree plan.
     Update(cli::UpdateArgs),
     /// Boot a cached artifact by preparing the environment and exec'ing dillo.
     Run(cli::RunArgs),

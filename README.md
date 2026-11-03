@@ -34,7 +34,7 @@ is still a valid image — a base others derive from.
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
 | `pichi run` | Boot a cached artifact (prepares the environment, execs dillo) |
-| `pichi update` | Resolve committed plan inputs into a build lock |
+| `pichi update` | Update a working-tree plan’s image lock |
 | `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |
 | `pichi system` | System-level inspection and maintenance |
 
@@ -53,23 +53,36 @@ are `pichi.yaml` and `pichi.lock`. `-p`/`--plan` and `-l`/`--lock` override
 them. The build-port response carries those resolved relative paths as
 `plan` and `lock`, alongside the selected `context`.
 
-Create a lock with the matching Conglobate CLI installed:
+Update the lock from the plan currently on disk, then commit both files:
 
 ```sh
-pichi update . --ref HEAD --conglobate /path/to/conglobate
+pichi update .
+git add pichi.yaml pichi.lock
+git commit -m "Update image inputs"
 ```
 
-Conglobate reads the committed plan and reports its selected remote inputs.
-Pichi resolves those references from the local cache into `pichi.lock`; pull
-missing inputs first. Bare imported manifests receive a cached index wrapper
-without changing their tags. Existing index inputs retain their exact digest.
-Commit the generated lock before selecting that commit for `pichi build`.
-Working-tree plan edits do not affect inspection. `--context`, `--plan`, and
-`--lock` select alternative paths; the legacy `pichi.build` layout is retired.
+`pichi update [DIR]` defaults to the current directory. `-p`/`--plan` and
+`-l`/`--lock` select paths within DIR, defaulting to `pichi.yaml` and
+`pichi.lock`. It reads working-tree edits directly; Git, the Conglobate CLI,
+and a VM are unnecessary. Stage commands are never executed during update.
 
-The `conglobate` library supplies shared artifact, lock, and build-port types.
-Its default feature set has no builder runtime dependencies. Build the matching
-executable with `cargo build --features cli --bin conglobate` in that repository.
+Update resolves only the selected image's remote dependencies, including
+stage-copy and boot sources, and replaces the complete version-1 lock with
+exact OCI index pins. Unused entries are removed. An error preserves the
+existing lock. The summary reports added, changed, and removed pins; an
+unreadable or malformed previous lock can be replaced, with comparison
+reported as unavailable. Plan reads and lock writes stay within DIR.
+
+The default `--pull=always` refreshes references from the registry. The
+existing pull policies also apply: `missing` uses cached references and
+fetches absent ones, `never` uses only the local cache, and `newer` checks
+upstream and refreshes changed images. For locally imported inputs or
+cached-only operation, use `pichi update --pull=never`. Inputs must resolve
+to OCI indexes; bare manifest references are rejected.
+
+The `conglobate` library supplies shared plan, artifact, lock, and build-port
+types. `pichi update` maintains locks on the host; `pichi build` remains a
+thin launcher and consumes a committed plan and lock in the appliance.
 
 `-b`/`--build-image` selects the build appliance image. When it is omitted,
 pichi uses the digest-pinned default. If that image is not already cached,
