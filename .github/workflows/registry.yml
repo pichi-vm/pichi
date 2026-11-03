@@ -23,6 +23,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
 
       - name: Install toolchain
         shell: bash
@@ -76,6 +78,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
 
       - name: Install toolchain
         shell: bash

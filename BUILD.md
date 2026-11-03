@@ -330,8 +330,8 @@ matching Conglobate engine; `--build-image` selects it explicitly. The default i
 This amd64/arm64 index is built from Conglobate revision
 `d3f395acecdfd95c75ed545d2bc03ba409a99298` and uses the staged plan, GPT
 root, embedded-DTB PMI and native bootconfig contracts described here.
-The appliance and library revision in `Cargo.toml` both require `version: 1`
-in plans and the flat digest lock shown above.
+The default appliance and the library in `deps/conglobate` both require
+`version: 1` in plans and the flat digest lock shown above.
 The appliance also includes scute compaction, journal-free ext4 creation and
 command network isolation from the separate Conglobate integration branches.
 The smoke checks clean poweroff and import of an inspectable OCI output tag.

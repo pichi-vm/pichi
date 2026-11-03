@@ -93,3 +93,15 @@ the first build pulls it and continues. Full contract: [BUILD.md](BUILD.md).
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+## Source checkout
+
+Initialize the pinned Conglobate source before building:
+
+```sh
+git submodule update --init --recursive
+```
+
+The host consumes its types-only library. The build appliance compiles its
+engine from the same submodule revision. Update the gitlink to change that
+shared dependency; ordinary host builds do not enable the engine's CLI.

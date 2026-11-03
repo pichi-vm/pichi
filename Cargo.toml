@@ -89,6 +89,7 @@ burrow = { workspace = true }
 
 [workspace]
 resolver = "2"
+exclude = ["deps/conglobate"]
 members = [
     # pichi-owned library crates (nested by their sole consumer, the root
     # `pichi` crate).
@@ -148,8 +149,8 @@ pichi-launch = { path = "deps/pichi-launch" }
 pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
-# Match the contract revision used by the pinned appliance.
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "d3f395acecdfd95c75ed545d2bc03ba409a99298", default-features = false }
+# The submodule pins both this library and the appliance engine.
+conglobate = { path = "deps/conglobate", default-features = false }
 # Error handling
 anyhow = "1"
 thiserror = "2"
