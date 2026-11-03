@@ -33,7 +33,51 @@ impl TryFrom<&Path> for BuildRepository {
                 repo.path.display()
             );
         }
+        repo.check_metadata_path(&git)?;
+        repo.check_metadata_path(&git.join("modules"))?;
+        let alternates = git.join("objects/info/alternates");
+        match std::fs::read(&alternates) {
+            Ok(bytes) => {
+                if bytes
+                    .split(|&b| b == b'\n')
+                    .any(|line| !line.is_empty() && !line.starts_with(b"#"))
+                {
+                    bail!(
+                        "{} lists Git alternates (borrowed object stores), which Conglobate refuses; run git repack -a -d in the main checkout and remove the alternates file, or use a full clone",
+                        alternates.display()
+                    );
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err).with_context(|| format!("reading {}", alternates.display()));
+            }
+        }
         Ok(repo)
+    }
+}
+
+impl BuildRepository {
+    fn check_metadata_path(&self, path: &Path) -> Result<()> {
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err).with_context(|| format!("inspecting {}", path.display())),
+        };
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("resolving build metadata {}", path.display()))?;
+        // Even an absolute link into this checkout names a host path, not the
+        // guest's /run/pichi/repo path. Relative links within the mount work.
+        if !canonical.starts_with(&self.path)
+            || (metadata.is_symlink() && std::fs::read_link(path)?.is_absolute())
+        {
+            bail!(
+                "{} must resolve inside the repo mount using relative links; build from the main checkout with its Git metadata inside <dir>",
+                path.display()
+            );
+        }
+        Ok(())
     }
 }
 
@@ -98,6 +142,79 @@ mod tests {
             let error = BuildRepository::try_from(path).unwrap_err().to_string();
             assert!(error.contains("not the top of a git checkout"), "{error}");
             assert!(error.contains("--context"), "{error}");
+        }
+    }
+
+    #[test]
+    fn preflight_allows_empty_alternates_but_rejects_entries() {
+        let fixture = Fixture::new();
+        for bytes in [b"".as_slice(), b"\n# no borrowed objects\n"] {
+            fixture.write(".git/objects/info/alternates", bytes);
+            fixture.open().unwrap();
+        }
+        for bytes in [b"/outside/objects\n".as_slice(), b"../borrowed\n", b" \n"] {
+            fixture.write(".git/objects/info/alternates", bytes);
+            let error = fixture.open().unwrap_err().to_string();
+            for expected in ["alternates", "git repack -a -d", "remove", "full clone"] {
+                assert!(error.contains(expected), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn preflight_reports_unreadable_alternates() {
+        let fixture = Fixture::new();
+        std::fs::create_dir(fixture.0.path().join(".git/objects/info/alternates")).unwrap();
+        assert!(fixture.open().unwrap_err().to_string().contains("reading"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_confines_metadata_links_to_mount() {
+        use std::os::unix::fs::symlink;
+
+        for metadata in [".git", ".git/modules"] {
+            let fixture = Fixture::new();
+            let original = fixture.0.path().join(metadata);
+            let target = fixture.0.path().join("metadata");
+            if original.exists() {
+                std::fs::rename(&original, &target).unwrap();
+            } else {
+                std::fs::create_dir(&target).unwrap();
+            }
+            let relative = if metadata == ".git" {
+                "metadata"
+            } else {
+                "../metadata"
+            };
+            symlink(relative, &original).unwrap();
+            fixture.open().unwrap();
+            std::fs::remove_file(&original).unwrap();
+            // Absolute host paths also cannot be followed from the guest.
+            symlink(&target, &original).unwrap();
+            assert!(
+                fixture
+                    .open()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("repo mount")
+            );
+            std::fs::remove_file(&original).unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            let relative_outside = Path::new("..").join(outside.path().file_name().unwrap());
+            let relative_outside = if metadata == ".git" {
+                relative_outside
+            } else {
+                Path::new("..").join(relative_outside)
+            };
+            symlink(relative_outside, &original).unwrap();
+            assert!(
+                fixture
+                    .open()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("repo mount")
+            );
         }
     }
 }
