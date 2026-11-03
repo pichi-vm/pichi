@@ -314,8 +314,7 @@ lock does not select or prepend layers during output import. Plan parse of
 ```yaml
 version: 1
 images:
-  qualification.local/fedora:43:
-    index: sha256:<digest>
+  qualification.local/fedora:43: sha256:<digest>
 ```
 
 The smoke test imports a small GPT disk, retains its actual platform index,
@@ -328,7 +327,10 @@ matching Conglobate engine; `--build-image` selects it explicitly. The default i
 This amd64/arm64 index is built from Conglobate revision
 `0b1e0ad7721d38315a4495076c010429c40bdebf` and uses the staged plan, GPT
 root, embedded-DTB PMI and native bootconfig contracts described here.
-The library revision in `Cargo.toml` implements the same plan and image contracts.
+The library revision in `Cargo.toml` requires `version: 1` in plans and the
+flat digest lock shown above. The shipping default predates this format; select
+an appliance built from the matching library revision with `--build-image`
+before using these documents.
 The appliance also includes scute compaction, journal-free ext4 creation and
 command network isolation from the separate Conglobate integration branches.
 The smoke checks clean poweroff and import of an inspectable OCI output tag.

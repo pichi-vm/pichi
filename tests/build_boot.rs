@@ -68,9 +68,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     )
     .unwrap();
     assert_eq!(
-        lock.images[&conglobate::plan::Remote::new(SMOKE_SOURCE_REF.into()).unwrap()]
-            .index
-            .to_string(),
+        lock.images[&conglobate::plan::Remote::new(SMOKE_SOURCE_REF.into()).unwrap()].to_string(),
         index
     );
     assert_pichi_ok("prune after update", &pichi(g, &[], &["system", "prune"]));
