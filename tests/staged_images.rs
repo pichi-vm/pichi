@@ -408,12 +408,7 @@ image: target
         let output = common::pichi(
             &builds.cache,
             &[],
-            &[
-                "update",
-                repo.to_str().unwrap(),
-                "--conglobate",
-                common::CONGLOBATE_BIN,
-            ],
+            &["update", repo.to_str().unwrap(), "--pull=never"],
         );
         fs::write(
             repo.join("update.log"),

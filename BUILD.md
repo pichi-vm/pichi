@@ -28,6 +28,13 @@ for a finished OCI layout (the standard folder format for container images) in t
 Building is launching. The host does not check out Conglobate sources, does
 not parse Conglobate plans, and does not run Conglobate as `/init`.
 
+These restrictions apply to `pichi build`. The separate `pichi update [DIR]`
+command reads the working-tree plan through shared `conglobate::plan` types
+and maintains its lock on the host. It uses `--plan` and `--lock` relative to
+DIR, defaults to refreshing images with `--pull=always`, and supports the
+other existing pull policies. It needs neither Git nor a Conglobate process
+or appliance. Commit the plan and generated lock together before building.
+
 ---
 
 ## 2. Locked contract

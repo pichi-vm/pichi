@@ -318,23 +318,21 @@ pub struct BuildArgs {
     pub cpus: Option<u32>,
 }
 
-/// Resolve a committed plan's remote inputs into an OCI index lock.
+/// Update the lock for a working-tree plan.
 #[derive(Debug, ClapArgs)]
 pub struct UpdateArgs {
-    /// Project repository (default: current directory).
-    pub dir: Option<std::path::PathBuf>,
-    /// Git ref to inspect; commit the generated lock before building it.
-    #[arg(long = "ref", default_value = "HEAD")]
-    pub git_ref: String,
-    #[arg(short = 'p', long, default_value = DEFAULT_PLAN, value_parser = parse_plan_path)]
+    /// Project directory.
+    #[arg(default_value = ".")]
+    pub dir: std::path::PathBuf,
+    /// Plan path relative to DIR.
+    #[arg(short = 'p', long, value_name = "PATH", default_value = DEFAULT_PLAN, value_parser = parse_plan_path)]
     pub plan: String,
-    #[arg(short = 'l', long, default_value = DEFAULT_LOCK, value_parser = parse_lock_path)]
+    /// Lock path relative to DIR.
+    #[arg(short = 'l', long, value_name = "PATH", default_value = DEFAULT_LOCK, value_parser = parse_lock_path)]
     pub lock: String,
-    #[arg(long, default_value = ".")]
-    pub context: String,
-    /// Conglobate executable used to inspect the committed plan.
-    #[arg(long, default_value = "conglobate")]
-    pub conglobate: std::path::PathBuf,
+    /// Image resolution policy.
+    #[arg(long, value_enum, value_name = "POLICY", default_value = "always")]
+    pub pull: PullPolicy,
 }
 
 /// Args for `pichi run <ref>` — boot an artifact (auto-pulling if not cached).
@@ -365,12 +363,12 @@ impl TryFrom<ImportRawArgs> for crate::cmd::import::raw::ImportArgs {
     }
 }
 
-/// Reject rooted paths: `-p`/`--plan` must stay relative to `--context`.
+/// Reject rooted paths: `-p`/`--plan` is relative to the selected directory.
 fn parse_plan_path(s: &str) -> Result<String, String> {
     parse_relative_path("plan", s)
 }
 
-/// Reject rooted paths: `-l`/`--lock` must stay relative to `--context`.
+/// Reject rooted paths: `-l`/`--lock` is relative to the selected directory.
 fn parse_lock_path(s: &str) -> Result<String, String> {
     parse_relative_path("lock", s)
 }
@@ -378,7 +376,7 @@ fn parse_lock_path(s: &str) -> Result<String, String> {
 fn parse_relative_path(what: &str, s: &str) -> Result<String, String> {
     let path = std::path::Path::new(s);
     // `is_absolute` is false for a leading `/` on Windows (`/etc/...` has a
-    // root and no disk prefix). Either form escapes `--context`.
+    // root and no disk prefix). Either form escapes the selected directory.
     if path.has_root() || path.is_absolute() {
         return Err(format!("{what} path must be relative: {s}"));
     }

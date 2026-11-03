@@ -23,7 +23,6 @@ use std::process::Command;
 
 pub const CORIUM_BIN: &str = env!("CARGO_BIN_FILE_CORIUM_corium");
 pub const DILLO_BIN: &str = env!("CARGO_BIN_FILE_DILLO_dillo");
-pub const CONGLOBATE_BIN: &str = env!("CARGO_BIN_FILE_CONGLOBATE_conglobate");
 pub const PICHI_BIN: &str = env!("CARGO_BIN_EXE_pichi");
 
 /// Run the `pichi` binary against an isolated cache (`graphroot` via

@@ -101,12 +101,7 @@ impl Builds {
 
     pub fn plan(&self, name: &str, yaml: &str, files: &[(&str, &Path)]) -> PathBuf {
         let repo = self.capture(name, yaml, files);
-        self.cli(&[
-            "update",
-            repo.to_str().unwrap(),
-            "--conglobate",
-            super::CONGLOBATE_BIN,
-        ]);
+        self.cli(&["update", repo.to_str().unwrap(), "--pull=never"]);
         Self::commit(&repo);
         repo
     }
