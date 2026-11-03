@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0
 
+version: 1
 stages:
   rootfs:
     use: qualification.local/tools:1

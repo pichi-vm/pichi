@@ -149,6 +149,7 @@ fn staged_images_create_extend_and_compose() {
     let overlay = builds.build(
         "overlay",
         r#"
+version: 1
 image:
   root: qualification.local/extended:1
   boot:
@@ -174,6 +175,7 @@ image:
     let replacement = builds.build(
         "replacement",
         r#"
+version: 1
 image:
   root: qualification.local/extended:1
   boot:
@@ -225,27 +227,27 @@ image:
     for (name, yaml, counts) in [
         (
             "root-only",
-            "image: {root: qualification.local/base:1}\n",
+            "version: 1\nimage: {root: qualification.local/base:1}\n",
             (1, 0, 0),
         ),
         (
             "boot-only",
-            "image: {boot: {inherit: qualification.local/bootable:1, define: {}}}\n",
+            "version: 1\nimage: {boot: {inherit: qualification.local/bootable:1, define: {}}}\n",
             (0, 1, 0),
         ),
         (
             "root-boot",
-            "image: {root: qualification.local/base:1, boot: {inherit: qualification.local/bootable:1, define: {}}}\n",
+            "version: 1\nimage: {root: qualification.local/base:1, boot: {inherit: qualification.local/bootable:1, define: {}}}\n",
             (1, 1, 0),
         ),
         (
             "boot-config",
-            "image: {boot: qualification.local/bootable:1}\n",
+            "version: 1\nimage: {boot: qualification.local/bootable:1}\n",
             (0, 1, 1),
         ),
         (
             "shortcut",
-            "image: qualification.local/bootable:1\n",
+            "version: 1\nimage: qualification.local/bootable:1\n",
             (1, 1, 1),
         ),
     ] {
@@ -270,6 +272,7 @@ image:
     let joined = builds.build(
         "joined",
         r#"
+version: 1
 image:
   root: qualification.local/root-only:1
   boot:
@@ -290,6 +293,7 @@ image:
     let deleted = builds.build(
         "deleted-root",
         r#"
+version: 1
 stages:
   changed:
     extend: qualification.local/overlay:1
@@ -314,6 +318,7 @@ image:
     let unchanged = builds.build(
         "unchanged-root",
         r#"
+version: 1
 image:
   root: qualification.local/bootable:1
   boot:
@@ -333,6 +338,7 @@ image:
     builds.build(
         "unchanged-parent",
         r#"
+version: 1
 stages:
   checked:
     extend: qualification.local/bootable:1
@@ -351,6 +357,7 @@ image: checked
     let hidden = builds.plan(
         "hidden-copy",
         r#"
+version: 1
 stages:
   source:
     extend: qualification.local/base:1
@@ -376,7 +383,7 @@ image: target
 
     for (name, command) in [("failed-command", "exit 23"), ("timeout", "sleep 30")] {
         let yaml = format!(
-            "stages:\n  failed:\n    extend: qualification.local/base:1\n    steps: [{{exec: {{command: '{command}', timeout: 1s}}}}]\nimage: failed\n"
+            "version: 1\nstages:\n  failed:\n    extend: qualification.local/base:1\n    steps: [{{exec: {{command: '{command}', timeout: 1s}}}}]\nimage: failed\n"
         );
         let repo = builds.plan(name, &yaml, &[]);
         let tag = format!("qualification.local/{name}:1");
@@ -389,20 +396,20 @@ image: target
     }
 
     for (name, yaml) in [
-        ("unknown-stage", "image: missing\n"),
+        ("unknown-stage", "version: 1\nimage: missing\n"),
         (
             "extension-format",
-            "stages: {a: {extend: qualification.local/tools:1, format: {}}}\nimage: a\n",
+            "version: 1\nstages: {a: {extend: qualification.local/tools:1, format: {}}}\nimage: a\n",
         ),
         (
             "cycle",
-            "stages: {a: {extend: b, steps: [{exec: {command: ':'}}]}, b: {extend: a, steps: [{exec: {command: ':'}}]}}\nimage: a\n",
+            "version: 1\nstages: {a: {extend: b, steps: [{exec: {command: ':'}}]}, b: {extend: a, steps: [{exec: {command: ':'}}]}}\nimage: a\n",
         ),
         (
             "config-without-pmi",
-            "image: {bootconfig: {values: {example: value}}}\n",
+            "version: 1\nimage: {bootconfig: {values: {example: value}}}\n",
         ),
-        ("empty-image", "image: {}\n"),
+        ("empty-image", "version: 1\nimage: {}\n"),
     ] {
         let repo = builds.capture(name, yaml, &[]);
         let output = common::pichi(
