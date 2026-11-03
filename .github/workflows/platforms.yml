@@ -127,8 +127,10 @@ jobs:
           # have seen ~132). Free the page cache + compact memory and retry a
           # few times so enough 2 MiB-contiguous regions become available before
           # giving up. This is allocation flakiness, not a capability gap.
-          # VM tests run sequentially: 3 GiB for builds, 2 GiB for boots.
-          want=1536
+          # VM tests run sequentially: 3.5 GiB for builds, 2 GiB for boots.
+          # Build snapshots and verity trees share the guest's RAM workspace.
+          # Leave room below Dillo's current 4 GiB placement ceiling.
+          want=1792
           pages=$(sysctl -n vm.nr_hugepages)
           for attempt in 1 2 3 4 5 6; do
             if [ "$pages" -ge "$want" ]; then break; fi
