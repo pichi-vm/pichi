@@ -16,7 +16,7 @@ use crate::cli::InfoArgs;
 use crate::config::Config;
 
 /// Dispatch entry point for `pichi system <verb>`.
-pub async fn run(args: InfoArgs, config: &Config) -> Result<()> {
+pub fn run(args: InfoArgs, config: &Config) -> Result<()> {
     let layout = CacheLayout::resolve()?;
 
     // Apply config overrides for graphroot / runroot (visibility only —
