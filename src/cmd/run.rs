@@ -28,12 +28,13 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use conglobate::artifact::{Digest, Layer, Manifest, Reference};
+use conglobate::artifact::{Digest, Layer, Manifest};
 use conglobate::resources::Requirements;
+use oci_spec::distribution::Reference;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
-use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
+use crate::cmd::build::{image_cached, resolve_manifest};
 use crate::cmd::layer::ScuteFiles;
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 use crate::cmd::requirements;
@@ -53,14 +54,14 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
 
     // Resolve indexes through the same path as build, including informational
     // tags on digest-pinned references.
-    let canonical = canonicalize_reference(&args.reference);
-    let target_ref: Reference = canonical
+    let target_ref: Reference = args
+        .reference
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
-    if !image_cached(&canonical, &db, &blob_store).await? {
+    if !image_cached(&args.reference, &db, &blob_store).await? {
         auto_pull(&target_ref, config).await?;
     }
-    let (_, manifest) = resolve_manifest(&canonical, &db, &blob_store).await?;
+    let (_, manifest) = resolve_manifest(&args.reference, &db, &blob_store).await?;
 
     // Architecture-mismatch fail-closed check (accept if absent).
     manifest.check_architecture()?;

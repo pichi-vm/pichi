@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use crate::cmd::verity::VerityFormat as _;
 use anyhow::{Context as _, Result, bail};
-use conglobate::artifact::{Digest, Layer, Manifest, Reference};
+use conglobate::artifact::{Digest, Layer, Manifest};
+use oci_spec::distribution::Reference;
 use pichi_registry::Registry;
 use pichi_storage::{BlobSidecarExt, BlobStore};
 use sha2::{Digest as _, Sha256};
@@ -79,7 +80,12 @@ impl PreparedLayer {
         let digest: Digest = layer.digest_str().parse()?;
         let scratch = store.scratch_dir().await?;
         let stream = registry
-            .pull_blob_stream(&target.registry, &target.repo, &digest, layer.size())
+            .pull_blob_stream(
+                target.registry(),
+                target.repository(),
+                &digest,
+                layer.size(),
+            )
             .await?;
         // Capture the runtime handle before entering the blocking pool. Each
         // read polls the network only when the formatter needs more bytes.

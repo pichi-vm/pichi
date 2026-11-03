@@ -10,8 +10,6 @@
 //                          (the one that runs the internal platform-resolver) —
 //                          the literal name is intentionally not written here
 //                          so the CI negative-grep gate stays clean.
-// Pitfall 6: conglobate::artifact::Reference vs oci_client::Reference are different
-//            types — convert at the boundary via to_oci_ref helper.
 // Pitfall 10: Default Client uses HTTPS; insecure registries need explicit
 //            ClientProtocol::HttpsExcept(vec!["host:port"]) per-registry.
 // Pitfall 14: OciDistributionError::UnauthorizedError MUST be mapped to a
@@ -31,15 +29,16 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bytes::Bytes;
-use conglobate::artifact::{Digest, Reference as PichiRef};
+use conglobate::artifact::Digest;
 use futures_util::stream::{Stream, StreamExt as _};
 use oci_client::{
-    Client, Reference as OciRef, RegistryOperation,
+    Client, RegistryOperation,
     client::{ClientConfig, ClientProtocol},
     errors::OciDistributionError,
     manifest::OciDescriptor,
     secrets::RegistryAuth,
 };
+use oci_spec::distribution::Reference;
 use tokio::io::AsyncWrite;
 
 use crate::auth::{AuthEnv, AuthHint};
@@ -66,7 +65,7 @@ const ACCEPTED_MANIFEST_TYPES: &[&str] = &[
 #[derive(Debug)]
 pub struct RegistryEntry {
     /// Registry hostname (e.g. `"ghcr.io"`). MUST match the
-    /// `PichiRef::registry` field exactly for the entry to apply.
+    /// `Reference::registry()` value exactly for the entry to apply.
     pub prefix: String,
     /// `true` → use plain HTTP for THIS registry (Pitfall 10 escape hatch);
     /// other registries continue to use HTTPS.
@@ -171,29 +170,10 @@ impl HttpRegistry {
     }
 }
 
-/// Convert pichi's [`PichiRef`] to oci-client's [`OciRef`] at the boundary
-/// (Pitfall 6). Both types are foreign to this crate, so this is a local
-/// extension trait rather than a `From` impl (orphan rule). Pichi's `Display`
-/// canonicalises to `"host/repo:tag"` / `"host/repo@digest"`; oci-client parses
-/// the same form.
-trait ToOciRef {
-    fn to_oci_ref(&self) -> Result<OciRef>;
-}
-
-impl ToOciRef for PichiRef {
-    fn to_oci_ref(&self) -> Result<OciRef> {
-        self.to_string()
-            .parse()
-            .map_err(|e: oci_client::ParseError| {
-                RegistryError::Transport(format!("oci ref parse: {e}"))
-            })
-    }
-}
-
-/// Build an [`OciRef`] from raw `(registry, repo, tag-or-digest)` parts. Used
+/// Build a [`Reference`] from raw `(registry, repo, tag-or-digest)` parts. Used
 /// by the trait methods that take `(&str, &str, &Digest)` rather than a full
-/// [`PichiRef`].
-fn build_oci_ref(registry: &str, repo: &str, tag_or_digest: Option<&str>) -> Result<OciRef> {
+/// [`Reference`].
+fn build_oci_ref(registry: &str, repo: &str, tag_or_digest: Option<&str>) -> Result<Reference> {
     let s = match tag_or_digest {
         Some(td) if td.starts_with("sha256:") => format!("{registry}/{repo}@{td}"),
         Some(td) => format!("{registry}/{repo}:{td}"),
@@ -286,15 +266,14 @@ impl From<OciDistributionError> for RegistryError {
 }
 
 impl Registry for HttpRegistry {
-    async fn pull_manifest_by_tag(&self, reference: &PichiRef) -> Result<(Bytes, Digest)> {
-        let oci_ref = reference.to_oci_ref()?;
-        let auth = self.auth_for(&reference.registry).await?;
-        let client = self.client_for(&reference.registry);
+    async fn pull_manifest_by_tag(&self, reference: &Reference) -> Result<(Bytes, Digest)> {
+        let auth = self.auth_for(reference.registry()).await?;
+        let client = self.client_for(reference.registry());
         // REGISTRY-05 / Pitfall 1: pull_manifest_raw — NOT the auto-resolving
         // variant that runs oci-client's internal platform-resolver. Index
         // discrimination is pichi's job (see `crate::index_walk`).
         let (raw, digest_str) = client
-            .pull_manifest_raw(&oci_ref, &auth, ACCEPTED_MANIFEST_TYPES)
+            .pull_manifest_raw(reference, &auth, ACCEPTED_MANIFEST_TYPES)
             .await
             .map_err(RegistryError::from)?;
         let digest: Digest = digest_str
@@ -408,16 +387,15 @@ impl Registry for HttpRegistry {
 
     async fn push_manifest(
         &self,
-        reference: &PichiRef,
+        reference: &Reference,
         media_type: &str,
         bytes: Bytes,
     ) -> Result<Digest> {
-        let oci_ref = reference.to_oci_ref()?;
-        let auth = self.auth_for(&reference.registry).await?;
-        let client = self.client_for(&reference.registry);
+        let auth = self.auth_for(reference.registry()).await?;
+        let client = self.client_for(reference.registry());
         // Pre-auth: manifest push needs write-scope bearer token before the PUT.
         client
-            .auth(&oci_ref, &auth, RegistryOperation::Push)
+            .auth(reference, &auth, RegistryOperation::Push)
             .await
             .map_err(RegistryError::from)?;
         // The Content-Type MUST match the payload: an image manifest and an
@@ -433,7 +411,7 @@ impl Registry for HttpRegistry {
         // return value (D-11: CVM-friendly local validation).
         let computed = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
         let _location_url = client
-            .push_manifest_raw(&oci_ref, bytes, ct)
+            .push_manifest_raw(reference, bytes, ct)
             .await
             .map_err(RegistryError::from)?;
         Ok(computed)

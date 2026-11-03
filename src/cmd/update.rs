@@ -11,10 +11,8 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use cap_std::fs::{Dir, OpenOptions};
-use conglobate::{
-    artifact::Reference,
-    plan::{Boot, Directive, Image, ImageRef, Lock, Plan, Remote, Stage},
-};
+use conglobate::plan::{Boot, Directive, Image, ImageRef, Lock, Plan, Remote, Stage};
+use oci_spec::distribution::Reference;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 use std::{
     collections::BTreeSet,

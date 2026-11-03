@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use carapace::image::{Plan as _, Planned};
-use conglobate::artifact::{Digest, Manifest, Reference};
+use conglobate::artifact::{Digest, Manifest};
+use oci_spec::distribution::Reference;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use sha2::{Digest as _, Sha256};
 use tempfile::NamedTempFile;

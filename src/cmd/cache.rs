@@ -5,9 +5,8 @@
 
 use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context, Result, anyhow, ensure};
-use conglobate::artifact::{
-    Digest, Index, IndexDescriptor, Manifest, Platform, Reference, ReferenceKind,
-};
+use conglobate::artifact::{Digest, Index, IndexDescriptor, Manifest, Platform};
+use oci_spec::distribution::Reference;
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
 use pichi_storage::{BlobStore, TagDb};
 use serde_json::Value;
@@ -152,22 +151,21 @@ pub(super) trait ImageStore: BlobStore {
     }
 
     async fn resolve(&self, reference: &Reference, tags: &dyn TagDb) -> Result<Digest> {
-        match &reference.kind {
-            ReferenceKind::Digest(digest) => Ok(digest.clone()),
-            ReferenceKind::Tag(_) => {
-                tags.resolve_tag(&reference.to_string())
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow!("ref not in cache: {reference}\n  hint: pichi pull {reference}")
-                    })
-            }
+        match reference.digest() {
+            Some(digest) => Ok(digest.parse()?),
+            None => tags
+                .resolve_tag(&reference.to_string())
+                .await?
+                .ok_or_else(|| {
+                    anyhow!("ref not in cache: {reference}\n  hint: pichi pull {reference}")
+                }),
         }
     }
 
     async fn cached(&self, reference: &Reference, tags: &dyn TagDb) -> Result<bool> {
-        let digest = match &reference.kind {
-            ReferenceKind::Digest(digest) => Some(digest.clone()),
-            ReferenceKind::Tag(_) => tags.resolve_tag(&reference.to_string()).await?,
+        let digest = match reference.digest() {
+            Some(digest) => Some(digest.parse()?),
+            None => tags.resolve_tag(&reference.to_string()).await?,
         };
         let Some(digest) = digest else {
             return Ok(false);

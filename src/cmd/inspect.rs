@@ -22,7 +22,8 @@ use minijinja::Environment;
 use serde::Serialize;
 use serde_json::Value;
 
-use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest};
+use oci_spec::distribution::Reference;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::InspectArgs;
@@ -69,7 +70,8 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
-    let target_ref: Reference = super::build::canonicalize_reference(&args.reference)
+    let target_ref: Reference = args
+        .reference
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
 

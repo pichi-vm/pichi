@@ -26,9 +26,9 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use conglobate::artifact::{
     ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-    Reference,
 };
 use conglobate::resources::Config;
+use oci_spec::distribution::Reference;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use super::{boot_config::BootConfigFile, cache::ImageStore as _};

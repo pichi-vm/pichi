@@ -12,7 +12,7 @@
 
 use anyhow::{Context, Result, anyhow};
 
-use conglobate::artifact::Reference;
+use oci_spec::distribution::Reference;
 use pichi_storage::{FilesystemTagDb, TagDb};
 
 use crate::cli::TagArgs;

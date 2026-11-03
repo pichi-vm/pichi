@@ -8,9 +8,10 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use anyhow::{Context, Result, anyhow, ensure};
+use conglobate::artifact::Digest;
 #[cfg(test)]
 use conglobate::artifact::Manifest;
-use conglobate::artifact::{Digest, Reference};
+use oci_spec::distribution::Reference;
 
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 
@@ -30,9 +31,8 @@ const PULL_CONCURRENCY: usize = 3;
 pub async fn run(args: PullArgs, config: &Config) -> Result<()> {
     // Defense-in-depth: parse + canonicalise BEFORE any I/O (BL-02 / T-43-02).
     // Also strip informational `:tag` from Conglobate `tag@digest` pins so
-    // `conglobate::artifact::Reference` keeps a clean repo (see canonicalize_reference).
-    let canonical = crate::cmd::build::canonicalize_reference(&args.reference);
-    let target_ref: Reference = canonical
+    let target_ref: Reference = args
+        .reference
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
     let policy = args.pull.unwrap_or(PullPolicy::Always); // D-05 default.
@@ -91,9 +91,9 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         .await
         .map_err(|e| anyhow!("pull_manifest_by_tag {target}: {e}"))?;
 
-    if let conglobate::artifact::ReferenceKind::Digest(expected) = &target.kind {
+    if let Some(expected) = target.digest() {
         ensure!(
-            &digest_str == expected,
+            digest_str.to_string() == expected,
             "registry returned a different image digest"
         );
     }
@@ -105,7 +105,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
             .context("index entry has no digest")?
             .parse()?;
         let bytes = registry
-            .pull_manifest_by_digest(&target.registry, &target.repo, &picked)
+            .pull_manifest_by_digest(target.registry(), target.repository(), &picked)
             .await
             .map_err(|e| anyhow!("pull_manifest_by_digest {picked}: {e}"))?;
         let selected = ImageMetadata::try_from((picked, bytes.to_vec()))?;
@@ -137,8 +137,8 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
             let mut buf: Vec<u8> = Vec::new();
             registry
                 .pull_blob(
-                    &target.registry,
-                    &target.repo,
+                    target.registry(),
+                    target.repository(),
                     &config_digest,
                     manifest.config.size,
                     &mut buf,

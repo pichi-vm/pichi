@@ -32,7 +32,8 @@ use std::collections::HashSet;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use conglobate::artifact::{Digest, Reference};
+use conglobate::artifact::Digest;
+use oci_spec::distribution::Reference;
 use pichi_storage::{
     BlobSidecarExt, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry,
 };

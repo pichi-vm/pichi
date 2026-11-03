@@ -41,8 +41,9 @@
 //! the feature flag and only inside this crate.
 
 use bytes::Bytes;
-use conglobate::artifact::{Digest, Reference};
+use conglobate::artifact::Digest;
 use futures_util::stream::Stream;
+use oci_spec::distribution::Reference;
 use thiserror::Error;
 use tokio::io::AsyncWrite;
 

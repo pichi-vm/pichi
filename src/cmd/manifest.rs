@@ -26,7 +26,8 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
-use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference, ReferenceKind};
+use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1};
+use oci_spec::distribution::Reference;
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
@@ -153,11 +154,7 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
     let registry = &registry;
     let blob_store = &blob_store;
     let mut pushes = futures_util::stream::iter(arches.iter().map(|(digest, raw)| {
-        let arch_ref = Reference {
-            registry: dest.registry.clone(),
-            repo: dest.repo.clone(),
-            kind: ReferenceKind::Digest(digest.clone()),
-        };
+        let arch_ref = dest.clone_with_digest(digest.to_string());
         async move {
             push_manifest_and_blobs(
                 registry,

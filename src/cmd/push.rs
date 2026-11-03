@@ -12,8 +12,9 @@ use super::cache::ImageStore as _;
 use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
-use conglobate::artifact::{Digest, Manifest, Reference, ReferenceKind};
+use conglobate::artifact::{Digest, Manifest};
 use futures_util::stream;
+use oci_spec::distribution::Reference;
 use pichi_registry::Registry;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
@@ -64,11 +65,7 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
         let destination = if image.digest == root {
             target.clone()
         } else {
-            Reference {
-                registry: target.registry.clone(),
-                repo: target.repo.clone(),
-                kind: ReferenceKind::Digest(image.digest.clone()),
-            }
+            target.clone_with_digest(image.digest.to_string())
         };
         if image.is_index() {
             registry
@@ -94,7 +91,7 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
 }
 
 /// Push one image manifest and all its blobs (config + layers) to `target`,
-/// HEAD-skipping blobs already present. Blobs go to `target.registry`/`repo`;
+/// HEAD-skipping blobs already present. Blobs go to `target.registry()`/`repo`;
 /// the manifest is PUT at `target` (a tag or a digest). Shared by `pichi push`
 /// (single image) and `pichi manifest push` (each referenced arch image).
 pub(crate) async fn push_manifest_and_blobs<R: Registry>(
@@ -124,7 +121,7 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
         .parse()
         .with_context(|| format!("invalid config digest: {}", manifest.config.digest))?;
     if !registry
-        .head_blob(&target.registry, &target.repo, &config_digest)
+        .head_blob(target.registry(), target.repository(), &config_digest)
         .await
         .map_err(|e| anyhow!("head_blob config {config_digest}: {e}"))?
     {
@@ -143,8 +140,8 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
         let one_chunk = stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) });
         registry
             .push_blob_stream(
-                &target.registry,
-                &target.repo,
+                target.registry(),
+                target.repository(),
                 &config_digest,
                 size,
                 one_chunk,
@@ -169,11 +166,14 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
         //     with concurrent push is benign per OCI semantics: PUT of a
         //     digest already present returns 201.
         if registry
-            .head_blob(&target.registry, &target.repo, &layer_digest)
+            .head_blob(target.registry(), target.repository(), &layer_digest)
             .await
             .map_err(|e| anyhow!("head_blob {layer_digest}: {e}"))?
         {
-            log::debug!("blob {layer_digest} already in {} — skip", target.registry);
+            log::debug!(
+                "blob {layer_digest} already in {} — skip",
+                target.registry()
+            );
             continue;
         }
 
@@ -181,8 +181,8 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
         let stream_chunks = blob_to_stream(blob_store, &layer_digest).await?;
         registry
             .push_blob_stream(
-                &target.registry,
-                &target.repo,
+                target.registry(),
+                target.repository(),
                 &layer_digest,
                 layer.size(),
                 stream_chunks,
@@ -330,8 +330,8 @@ mod tests {
         let mock = MockRegistry::new();
         // Pre-load the registry with the layer blob → HEAD returns true.
         mock.insert_blob(
-            &target.registry,
-            &target.repo,
+            target.registry(),
+            target.repository(),
             layer_digest.clone(),
             Bytes::copy_from_slice(layer_data),
         );

@@ -17,8 +17,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bytes::Bytes;
-use conglobate::artifact::{Digest, Reference};
+use conglobate::artifact::Digest;
 use futures_util::stream::{Stream, StreamExt};
+use oci_spec::distribution::Reference;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::{Registry, RegistryError, Result};
@@ -129,13 +130,16 @@ impl MockRegistry {
 
 impl Registry for MockRegistry {
     async fn pull_manifest_by_tag(&self, reference: &Reference) -> Result<(Bytes, Digest)> {
-        let key_tag = match &reference.kind {
-            conglobate::artifact::ReferenceKind::Tag(t) => t.clone(),
-            conglobate::artifact::ReferenceKind::Digest(d) => {
+        let key_tag = match reference.digest() {
+            None => reference.tag().unwrap_or("latest").to_owned(),
+            Some(text) => {
+                let d: Digest = text
+                    .parse()
+                    .map_err(|e| RegistryError::Transport(format!("invalid digest: {e}")))?;
                 // Digest-form refs go straight to manifests by digest.
                 let mkey = (
-                    reference.registry.clone(),
-                    reference.repo.clone(),
+                    reference.registry().to_owned(),
+                    reference.repository().to_owned(),
                     d.clone(),
                 );
                 let bytes = self
@@ -148,7 +152,11 @@ impl Registry for MockRegistry {
                 return Ok((bytes, d.clone()));
             }
         };
-        let tag_key = (reference.registry.clone(), reference.repo.clone(), key_tag);
+        let tag_key = (
+            reference.registry().to_owned(),
+            reference.repository().to_owned(),
+            key_tag,
+        );
         let digest = self
             .tags
             .lock()
@@ -157,8 +165,8 @@ impl Registry for MockRegistry {
             .cloned()
             .ok_or_else(|| RegistryError::NotFound(format!("tag {reference}")))?;
         let mkey = (
-            reference.registry.clone(),
-            reference.repo.clone(),
+            reference.registry().to_owned(),
+            reference.repository().to_owned(),
             digest.clone(),
         );
         let bytes = self
@@ -267,19 +275,19 @@ impl Registry for MockRegistry {
     ) -> Result<Digest> {
         let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
         let mkey = (
-            reference.registry.clone(),
-            reference.repo.clone(),
+            reference.registry().to_owned(),
+            reference.repository().to_owned(),
             digest.clone(),
         );
         self.manifests
             .lock()
             .expect("manifests mutex poisoned")
             .insert(mkey, bytes);
-        if let conglobate::artifact::ReferenceKind::Tag(t) = &reference.kind {
+        if let Some(t) = reference.tag() {
             let tag_key = (
-                reference.registry.clone(),
-                reference.repo.clone(),
-                t.clone(),
+                reference.registry().to_owned(),
+                reference.repository().to_owned(),
+                t.to_owned(),
             );
             self.tags
                 .lock()

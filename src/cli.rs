@@ -107,7 +107,7 @@ pub struct ImportRawArgs {
     pub raw_image: std::path::PathBuf,
     /// Tag to assign (e.g. `myapp:base`). Optional: omit to cache the carapace
     /// without a tag (the image index digest is still printed). Validated
-    /// via `conglobate::artifact::Reference::from_str` before any I/O.
+    /// via `oci_spec::distribution::Reference::from_str` before any I/O.
     #[arg(short = 't', long)]
     pub tag: Option<String>,
     /// Suppress progress reporting. The image index digest is still printed to

@@ -7,7 +7,7 @@
 //! [OCI Image Layout][1] `index.json` file at the cache root, with one
 //! `manifests` entry per tag. Each entry's
 //! `annotations["org.opencontainers.image.ref.name"]` carries the canonical
-//! tag string (per CONTEXT D-02: `conglobate::artifact::Reference::Display` form).
+//! tag string (per CONTEXT D-02: `oci_spec::distribution::Reference::Display` form).
 //!
 //! Concurrency model: `set_tag` and `delete_tag` perform read-modify-write
 //! under an advisory `flock(2)` on a sibling lockfile (`index.json.lock`).

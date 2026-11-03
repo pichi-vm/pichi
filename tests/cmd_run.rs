@@ -96,7 +96,7 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     // Store under the normalized reference key (`myapp:1` →
     // `docker.io/library/myapp:1`), matching how `pichi run` resolves it.
-    let key: conglobate::artifact::Reference = tag.parse().unwrap();
+    let key: oci_spec::distribution::Reference = tag.parse().unwrap();
     FilesystemTagDb::open(graphroot)
         .unwrap()
         .set_tag(&key.to_string(), &digest)

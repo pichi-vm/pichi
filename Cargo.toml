@@ -29,6 +29,7 @@ carapace.workspace = true
 devmap-core.workspace = true
 devmap-verity.workspace = true
 conglobate.workspace = true
+oci-spec.workspace = true
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true
 bytes.workspace = true
@@ -146,7 +147,7 @@ pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
 # Match the contract revision used by the pinned appliance.
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "093e3c8f9762a910bef600759e236fe5083d7fae", default-features = false }
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "9a716fa36db7fcd4de8502d7eea7eaf20e0f5755", default-features = false }
 # Error handling
 anyhow = "1"
 thiserror = "2"
@@ -226,6 +227,7 @@ async-trait = "0.1"
 # Pure-Rust, rustix-based (matches pichi-storage's existing rustix dep).
 fs4 = { version = "1", default-features = false, features = ["tokio"] }
 bytes = "1"
+oci-spec = { version = "0.9", default-features = false, features = ["image", "distribution"] }
 oci-client = { version = "0.16", default-features = false, features = ["rustls-tls"] }
 http = { version = "1", default-features = false }
 base64 = { version = "0.22", default-features = false, features = ["std"] }

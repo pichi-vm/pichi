@@ -16,8 +16,9 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use conglobate::artifact::{
-    Digest, Index, IndexDescriptor, LayoutMarker, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference,
+    Digest, Index, IndexDescriptor, LayoutMarker, MEDIA_TYPE_PICHI_ARTIFACT_V1,
 };
+use oci_spec::distribution::Reference;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::SaveArgs;
