@@ -18,7 +18,9 @@ trap 'rm -rf "$workdir"' EXIT
 tree="$workdir/pichi-$version"
 mkdir -p "$tree"
 tar -C "$root" --exclude-vcs --exclude='target' --exclude='./vendor' \
-    --exclude='./.pc' --exclude='./.codex' -cf - . |
+    --exclude='./.pc' --exclude='./.codex' --exclude='__pycache__' \
+    --exclude='./appliance/image/.build' --exclude='./appliance/image/mkosi.extra' \
+    -cf - . |
     tar -C "$tree" -xf -
 cd "$tree"
 cp Cargo.toml "$workdir/Cargo.toml"

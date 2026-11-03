@@ -50,7 +50,7 @@ enum Command {
     Save(cli::SaveArgs),
     /// Import an OCI image layout directory into the local cache.
     Load(cli::LoadArgs),
-    /// Build an artifact with the Conglobate appliance.
+    /// Build an artifact with the Pichi build appliance.
     Build(cli::BuildArgs),
     /// Pull a pichi artifact from an OCI registry.
     Pull(cli::PullArgs),

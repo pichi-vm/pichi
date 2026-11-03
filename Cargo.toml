@@ -58,7 +58,7 @@ arma = { git = "https://github.com/pichi-vm/arma", rev = "3297920b46122689fb13ca
 dillo = { git = "https://github.com/pichi-vm/dillo", rev = "a6285a051164241cabb5160d9759b4f3bf2e7200", artifact = "bin", optional = true }
 
 # Optional guest Corium binaries for `vm-tests` only. Production builds launch
-# Conglobate's shipped appliance; the host consumes its types-only library.
+# Pichi's build appliance; the host consumes Conglobate's types-only library.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 corium = { git = "https://github.com/pichi-vm/corium", rev = "c33ae0e01d58b657f8f62cb91672885326a903b9", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 

@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# systemd is PID 1; Conglobate is a normal oneshot unit (not /init).
+# Image hardcodes (uid/gid maps) are supplied by the
+# appliance binary constants, not by this unit's argv.
+#
+# RemainAfterExit=no is required for SuccessAction=: a oneshot that stays
+# active never reaches inactive, so the action would not run when the process
+# exits. poweroff-force (systemctl poweroff -f) syncs and unmounts, including
+# the output virtiofs, then powers off without waiting on getty.
+# poweroff-immediate would skip that unmount. An ExecStopPost poweroff can
+# deadlock the stop job, so it is not used.
+
+[Unit]
+Description=Pichi build appliance (build-port CBOR on dev.pichi.build)
+Documentation=file:../README.md
+Requires=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount
+Requires=systemd-resolved.service
+Wants=network-online.target
+After=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount
+After=network-online.target systemd-resolved.service
+ConditionPathExists=/usr/bin/conglobate
+ConditionPathExists=/usr/libexec/pichi-build
+SuccessAction=poweroff-force
+FailureAction=poweroff-force
+
+[Service]
+Type=oneshot
+BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf
+ExecStartPre=/usr/libexec/conglobate-lsm /sys/fs/bpf/conglobate-label-policy
+ExecStart=/usr/libexec/pichi-build
+# Fail the boot target if the build fails; do not linger as active.
+RemainAfterExit=no
+# Image cmdline is console=hvc0, so the console copy is the build console.
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

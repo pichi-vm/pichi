@@ -35,6 +35,9 @@ srpm:
 		--exclude-vcs \
 		--exclude target \
 		--exclude vendor \
+		--exclude ./appliance/image/.build \
+		--exclude ./appliance/image/mkosi.extra \
+		--exclude __pycache__ \
 		. | tar -C "$$workdir/src" -xf -; \
 	cd "$$workdir/src"; \
 	if [[ -f packaging/host-manifest.patch ]]; then patch -p1 -i packaging/host-manifest.patch; fi; \

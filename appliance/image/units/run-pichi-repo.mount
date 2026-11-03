@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Static virtiofs mount: tag `repo` → `/run/pichi/repo`.
+# Tags are image/unit config only — never parsed from appliance CBOR.
+
+[Unit]
+Description=Pichi build virtiofs (repo → /run/pichi/repo)
+DefaultDependencies=no
+Conflicts=umount.target
+Before=local-fs.target conglobate-build.service
+After=systemd-remount-fs.service systemd-modules-load.service
+
+[Mount]
+What=repo
+Where=/run/pichi/repo
+Type=virtiofs
+Options=ro
+
+[Install]
+WantedBy=local-fs.target

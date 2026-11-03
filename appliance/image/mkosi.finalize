@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Runs against the built rootfs tree before mkosi.repart/ packs it into ext4.
+# Four jobs (mkosi runs this privileged in its own user namespace):
+#
+#   1. copy the kernel image + config out to $OUTPUTDIR for the PMI (arma reads
+#      them via --kernel / --config); record the kver for build.sh;
+#   2. export the modules the initramfs needs — the carapace-boot pivot set
+#      (virtio transport + disk + console, the dm-snapshot/verity stack, ext4)
+#      filtered to what is a *module* (not builtin) for THIS kernel, plus their
+#      dependency closure — into $OUTPUTDIR/initrd-mods/. build.sh cpios these
+#      alongside the static Corium `init`. For a stock Fedora kernel almost
+#      all of the set is builtin, so this is typically just dm-verity (+deps);
+#      the set is distro-agnostic — a kernel with modular virtio/ext4 ships more.
+#      virtiofs is not in this set: systemd mounts it after pivot from the
+#      rootfs module tree;
+#   3. strip /boot and the in-tree vmlinuz/System.map — boot payload is the
+#      PMI's domain; the carapace keeps only its .ko module tree;
+#   4. require virtiofs + fuse in that module tree, /usr/bin/conglobate, the
+#      mount/network units, and image-resident ext4/FAT formatters.
+
+import glob
+import os
+import shutil
+import subprocess
+
+buildroot = os.environ["BUILDROOT"]
+outdir = os.environ["OUTPUTDIR"]
+kernels = glob.glob(f"{buildroot}/usr/lib/modules/*/")
+if len(kernels) != 1:
+    raise SystemExit("Corium requires exactly one kernel module tree")
+kd = kernels[0].rstrip("/")
+kver = os.path.basename(kd)
+if not kver.split(".")[0].isdigit() or int(kver.split(".")[0]) < 7:
+    raise SystemExit(f"Corium requires Linux 7.0+ for initramfs pivot_root, got {kver}")
+
+with open(f"{kd}/config") as f:
+    config = dict(line.strip().split("=", 1) for line in f if line.startswith("CONFIG_") and "=" in line)
+
+# GPT parsing and the API filesystems must be available before module loading.
+for option in ("BLOCK", "BLK_DEV_INITRD", "BOOT_CONFIG", "DEVTMPFS", "PROC_FS", "SYSFS", "EFI_PARTITION",
+               "USER_NS", "PID_NS", "NET_NS"):
+    if config.get(f"CONFIG_{option}") != "y":
+        raise SystemExit(f"Corium requires CONFIG_{option}=y")
+
+for option in ("BPF_LSM", "DEBUG_INFO_BTF"):
+    if config.get(f"CONFIG_{option}") != "y":
+        raise SystemExit(f"the label policy requires CONFIG_{option}=y")
+if "bpf" not in config.get("CONFIG_LSM", "").strip('"').split(","):
+    raise SystemExit("the label policy requires bpf in CONFIG_LSM")
+
+# Corium does not prepare mountpoints in the read-only root. systemd mounts its
+# own API filesystems and /run after the handoff; provide the directories now.
+for directory in ("dev", "proc", "sys", "run"):
+    os.makedirs(f"{buildroot}/{directory}", exist_ok=True)
+# Fedora uses /sbin -> usr/sbin and /sbin/init -> ../lib/systemd/systemd.
+# chroot-free resolution must also handle absolute symlink targets.
+def in_root(path):
+    pending = path.strip("/").split("/")
+    resolved = []
+    for _ in range(128):
+        if not pending:
+            return os.path.join(buildroot, *resolved)
+        part = pending.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if resolved:
+                resolved.pop()
+            continue
+        candidate = os.path.join(buildroot, *resolved, part)
+        if os.path.islink(candidate):
+            target = os.readlink(candidate)
+            if target.startswith("/"):
+                resolved = []
+            pending = target.strip("/").split("/") + pending
+        else:
+            resolved.append(part)
+    raise SystemExit("too many symlinks resolving /sbin/init")
+
+init = in_root("/sbin/init")
+if not os.path.isfile(init) or not os.access(init, os.X_OK):
+    raise SystemExit("Corium requires an executable /sbin/init in the rootfs")
+
+# ---- 1. kernel image + config + kver -------------------------------------
+shutil.copy2(f"{kd}/vmlinuz", f"{outdir}/vmlinuz")
+shutil.copy2(f"{kd}/config", f"{outdir}/kernel.config")
+with open(f"{outdir}/kver", "w") as f:
+    f.write(kver + "\n")
+
+# ---- 2. export the initramfs module set (pivot set + dep closure) --------
+# Only what Corium needs to reach and mount the root carapace: the
+# virtio transport + disk + console, the dm stack, and ext4. Members the kernel
+# builds in are absent from modules.dep and skipped. No networking — nothing
+# before the real-init handoff uses it, and virtio_net would drag in net_failover/failover
+# and cost failed-then-retried module loads; the running OS still loads
+# virtio_net from its own (unstripped) rootfs module tree.
+PIVOT = {
+    "virtio_pci": "VIRTIO_PCI", "virtio_blk": "VIRTIO_BLK",
+    "virtio_console": "VIRTIO_CONSOLE", "dm_mod": "BLK_DEV_DM",
+    "dm_zero": "DM_ZERO",
+    "dm_snapshot": "DM_SNAPSHOT", "dm_verity": "DM_VERITY", "ext4": "EXT4_FS",
+}
+
+deps, byname = {}, {}
+with open(f"{kd}/modules.dep") as f:
+    for line in f:
+        mod, _, rest = line.partition(":")
+        mod = mod.strip()
+        deps[mod] = rest.split()
+        byname[os.path.basename(mod).split(".ko")[0].replace("-", "_")] = mod
+
+stack = []
+for name, option in PIVOT.items():
+    value = config.get(f"CONFIG_{option}")
+    if value == "m":
+        if name not in byname:
+            raise SystemExit(f"missing Corium pivot module {name} (CONFIG_{option}=m)")
+        stack.append(byname[name])
+    elif value != "y":
+        raise SystemExit(f"Corium requires CONFIG_{option}=y or m")
+keep = set()
+while stack:
+    m = stack.pop()
+    if m in keep:
+        continue
+    keep.add(m)
+    stack.extend(deps.get(m, []))
+
+modsroot = f"{outdir}/initrd-mods/usr/lib/modules/{kver}"
+os.makedirs(modsroot, exist_ok=True)
+for rel in sorted(keep):
+    # Corium passes compressed files directly to finit_module; no userspace
+    # decompressor is shipped. Fail at build time if the kernel cannot load it.
+    compression = {".xz": "XZ", ".gz": "GZIP", ".zst": "ZSTD"}.get(os.path.splitext(rel)[1])
+    if compression:
+        for option in ("MODULE_DECOMPRESS", f"MODULE_COMPRESS_{compression}"):
+            if config.get(f"CONFIG_{option}") != "y":
+                raise SystemExit(f"Corium compressed module {rel} requires CONFIG_{option}=y")
+    src = f"{kd}/{rel}"
+    dst = f"{modsroot}/{rel}"
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(src, dst)
+print(f">>> initrd module set: {len(keep)} .ko exported (from {len(PIVOT)} pivot roots)")
+
+# ---- 3. strip boot payload from the carapace rootfs ----------------------
+shutil.rmtree(f"{buildroot}/boot", ignore_errors=True)
+for f in (f"{kd}/vmlinuz", f"{kd}/System.map"):
+    try:
+        os.remove(f)
+    except FileNotFoundError:
+        pass
+
+# ---- 4. appliance contract (post-pivot virtiofs, binary, formatters) ------
+# virtiofs is loaded by systemd from the rootfs module tree, not by the
+# initramfs. Builtin (=y) and modular (=m) both satisfy the guest; a missing
+# option or a modular build whose .ko was stripped does not.
+
+
+def require_fs_module(name, option):
+    value = config.get(f"CONFIG_{option}")
+    hits = glob.glob(f"{kd}/kernel/**/{name}.ko*", recursive=True)
+    if value == "y":
+        print(f">>> {name} is builtin (CONFIG_{option}=y)")
+        return
+    if value == "m" and hits:
+        print(f">>> kept {name}: {hits[0]}")
+        return
+    raise SystemExit(
+        f"appliance requires {name} (CONFIG_{option}=y or m with {name}.ko in the "
+        f"rootfs); got {value!r}, files={hits}"
+    )
+
+
+require_fs_module("fuse", "FUSE_FS")
+require_fs_module("virtiofs", "VIRTIO_FS")
+require_fs_module("loop", "BLK_DEV_LOOP")
+require_fs_module("vfat", "VFAT_FS")
+require_fs_module("nls_cp437", "NLS_CODEPAGE_437")
+require_fs_module("nls_iso8859-1", "NLS_ISO8859_1")
+require_fs_module("virtio_net", "VIRTIO_NET")
+
+adapter = f"{buildroot}/usr/libexec/pichi-build"
+if not os.path.isfile(adapter) or not os.access(adapter, os.X_OK):
+    raise SystemExit("appliance rootfs is missing executable pichi-build")
+
+binary = f"{buildroot}/usr/bin/conglobate"
+if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
+    raise SystemExit("appliance rootfs is missing executable /usr/bin/conglobate")
+
+for unit in (
+    "run-pichi-repo.mount",
+    "run-pichi-cache.mount",
+    "run-pichi-output.mount",
+    "pichi-build.service",
+):
+    path = f"{buildroot}/usr/lib/systemd/system/{unit}"
+    if not os.path.isfile(path):
+        raise SystemExit(f"appliance rootfs is missing {unit}")
+
+for tag in ("repo", "cache", "output"):
+    link = f"{buildroot}/usr/lib/systemd/system/local-fs.target.wants/run-pichi-{tag}.mount"
+    if not os.path.islink(link):
+        raise SystemExit(f"mount unit is not enabled: {link}")
+service_link = (
+    f"{buildroot}/usr/lib/systemd/system/multi-user.target.wants/pichi-build.service"
+)
+if not os.path.islink(service_link):
+    raise SystemExit(f"build service is not enabled: {service_link}")
+
+modules_load = f"{buildroot}/usr/lib/modules-load.d/pichi-virtiofs.conf"
+if not os.path.isfile(modules_load):
+    raise SystemExit("missing modules-load.d/pichi-virtiofs.conf")
+with open(modules_load) as handle:
+    loaded = {line.strip() for line in handle if line.strip() and not line.startswith("#")}
+for name in ("fuse", "virtiofs", "loop", "vfat", "nls_cp437", "nls_iso8859-1", "virtio_net"):
+    if name not in loaded:
+        raise SystemExit(f"modules-load.d must list {name}")
+
+for binary, package in (("mke2fs", "e2fsprogs"), ("mkfs.fat", "dosfstools")):
+    paths = (in_root(f"/usr/sbin/{binary}"), in_root(f"/sbin/{binary}"))
+    if not any(os.path.isfile(path) and os.access(path, os.X_OK) for path in paths):
+        raise SystemExit(f"{package} {binary} is not executable in the appliance rootfs")
+
+network = f"{buildroot}/usr/lib/systemd/network/10-build.network"
+if not os.path.isfile(network):
+    raise SystemExit("missing DHCP configuration for the build network")
+for service, target in (("systemd-networkd", "multi-user"),
+                        ("systemd-resolved", "multi-user"),
+                        ("systemd-networkd-wait-online", "network-online")):
+    link = f"{buildroot}/usr/lib/systemd/system/{target}.target.wants/{service}.service"
+    if not os.path.islink(link):
+        raise SystemExit(f"network service is not enabled: {link}")
+
+ldd = subprocess.run(
+    ["chroot", buildroot, "ldd", "/usr/bin/conglobate"],
+    check=False,
+    capture_output=True,
+    text=True,
+)
+ldd_text = ldd.stdout + ldd.stderr
+if ldd.returncode != 0 or "not found" in ldd_text:
+    raise SystemExit("conglobate is not runnable in the appliance rootfs:\n" + ldd_text)
