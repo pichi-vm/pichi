@@ -14,7 +14,7 @@ env:
 
 # Cheap / fail-fast tier (parallel). The platform matrix and registry
 # round-trips wait on this whole workflow via ci.yml, so a red fmt,
-# header, or commit-message check skips that expensive work.
+# header, commit-message, or Clippy check skips that expensive work.
 jobs:
   license-headers:
     name: license headers
@@ -48,3 +48,20 @@ jobs:
         shell: bash
         run: |
           cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --component clippy,rust-src
+          rustup default "$NIGHTLY"
+          rustup target add x86_64-unknown-none aarch64-unknown-none x86_64-unknown-linux-musl
+
+      - name: Check workspace
+        shell: bash
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
