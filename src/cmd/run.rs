@@ -28,7 +28,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use conglobate::artifact::{Digest, Layer, Manifest, Reference, Requirements};
+use conglobate::artifact::{Digest, Layer, Manifest, Reference};
+use conglobate::resources::Requirements;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};

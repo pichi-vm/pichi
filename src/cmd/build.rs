@@ -17,7 +17,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::cache::ImageStore as _;
-use conglobate::artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements};
+use conglobate::artifact::{Digest, Manifest, Reference, ReferenceKind};
+use conglobate::resources::Requirements;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{BuildArgs, PullArgs, PullPolicy};

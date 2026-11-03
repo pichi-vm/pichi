@@ -25,9 +25,10 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow, bail};
 
 use conglobate::artifact::{
-    Config, ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
+    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
     Reference,
 };
+use conglobate::resources::Config;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use super::{boot_config::BootConfigFile, cache::ImageStore as _};

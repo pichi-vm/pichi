@@ -181,7 +181,7 @@ impl OciLayout {
                 );
                 let digest = layout.copy_blob(&root, &config.digest, config.size, &mut expected)?;
                 if !config.is_empty() {
-                    let config: conglobate::artifact::Config =
+                    let config: conglobate::resources::Config =
                         serde_json::from_slice(&std::fs::read(layout.store.blob_path(&digest))?)
                             .context("invalid launch config")?;
                     config.validate().context("invalid launch config")?;
@@ -872,7 +872,7 @@ pub(super) mod tests {
                 "config type" => fixture.manifest["config"]["mediaType"] = "text/plain".into(),
                 "missing config" | "bad config" | "inline config" => {
                     fixture.manifest["config"] = json!({
-                        "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_CONFIG_V1,
+                        "mediaType": conglobate::resources::MEDIA_TYPE_PICHI_CONFIG_V1,
                         "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"bad config").into()).to_string(),
                         "size": 10,
                     });
