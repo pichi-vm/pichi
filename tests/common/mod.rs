@@ -122,7 +122,7 @@ pub const SMOKE_SOURCE_REF: &str = "qualification.local/fedora:43";
 
 /// Conglobate revision supplying the locked context for the real build smoke.
 /// Matches the published appliance's source revision.
-pub const SMOKE_CONGLOBATE_REF: &str = "88471e2cf69b43685a901eb888487d41af9458c5";
+pub const SMOKE_CONGLOBATE_REF: &str = "d3f395acecdfd95c75ed545d2bc03ba409a99298";
 
 /// Conglobate smoke context under the repo mount.
 pub const SMOKE_CONTEXT: &str = "tests/distro/context";
@@ -234,7 +234,7 @@ pub fn prepare_smoke_repo(tmp: &Path, index: &str) -> (PathBuf, String) {
     std::fs::write(
         context.join(SMOKE_PLAN),
         format!(
-            "version: 1\n{}image: rootfs\n",
+            "{}image: rootfs\n",
             plan.split("    - exec:").next().unwrap()
         ),
     )
