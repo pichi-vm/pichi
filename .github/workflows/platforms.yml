@@ -2,6 +2,11 @@ name: platforms
 
 on:
   workflow_call:
+    inputs:
+      appliance-artifacts:
+        description: Test the appliance images built by this workflow run
+        type: boolean
+        default: false
   workflow_dispatch:
 
 permissions:
@@ -25,10 +30,12 @@ jobs:
             os: ubuntu-24.04
             runs_on: '["ubuntu-24.04"]'
             guest_musl: x86_64-unknown-linux-musl
+            appliance_arch: amd64
           - name: linux-arm64       # Linux arm64 - full workspace + real KVM boot
             os: linux-arm64
             runs_on: '["self-hosted","Linux","ARM64","bare-metal","aarch64","kvm"]'
             guest_musl: aarch64-unknown-linux-musl
+            appliance_arch: arm64
           - name: windows-2025      # Windows x86_64 - build + real WHP boot
             os: windows-2025
             runs_on: '["windows-2025"]'
@@ -172,6 +179,18 @@ jobs:
           echo "PICHI_TEST_GUEST_ARMA=$RUNNER_TEMP/arma-guest/bin/arma" >> "$GITHUB_ENV"
           echo "PICHI_TEST_REPLACEMENT_CORIUM=$RUNNER_TEMP/corium-release/bin/corium" >> "$GITHUB_ENV"
           echo "PICHI_TEST_EVIDENCE=$RUNNER_TEMP/staged-image-evidence" >> "$GITHUB_ENV"
+
+      - name: Download the rebuilt appliance
+        if: inputs.appliance-artifacts && runner.os == 'Linux'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: oci-${{ matrix.appliance_arch }}
+          path: ${{ runner.temp }}/appliance-layout
+
+      - name: Use the rebuilt appliance for VM tests
+        if: inputs.appliance-artifacts && runner.os == 'Linux'
+        shell: bash
+        run: echo "PICHI_TEST_BUILD_IMAGE_LAYOUT=$RUNNER_TEMP/appliance-layout" >> "$GITHUB_ENV"
 
       # Real guest boot on every platform. dillo builds its per-OS backend
       # (KVM on Linux, WHP on Windows, HVF on macOS) and boots an Alpine

@@ -18,8 +18,8 @@ concurrency:
 #
 #   Tier 1 — checks (parallel): cargo fmt, license headers, commit messages
 #   Tier 2 — after Tier 1 succeeds (parallel with each other):
-#            platform matrix (ubuntu / linux-arm64 / windows / macos),
-#            registry round-trips (zot / ghcr)
+#            native appliance builds and registry round-trips
+#   Tier 3 — platform matrix qualifies the rebuilt appliances
 #
 # A red Tier-1 job skips the expensive Tier-2 work.
 # cargo-deny is not in Tier 1 yet: advisories are still red on main.
@@ -97,8 +97,10 @@ jobs:
 
   ci:
     name: platforms
-    needs: [checks]
+    needs: [checks, appliance]
     uses: ./.github/workflows/platforms.yml
+    with:
+      appliance-artifacts: true
     permissions:
       contents: read
 
