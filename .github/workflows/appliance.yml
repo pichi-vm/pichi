@@ -1,0 +1,124 @@
+name: appliance
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  # Pichi version. The image builder verifies it against Cargo.toml.
+  PICHI_BUILD_VERSION: "0.1.0"
+  # arma and pichi are nightly-only (artifact deps / `-Z bindeps`); arma
+  # cross-compiles the tatu firmware to bare-metal targets. Pin the toolchain
+  # to the same nightly the fedora image builds with. Conglobate itself is
+  # built with 1.94.0, matching the rootless checks.
+  NIGHTLY: "nightly-2026-07-06"
+  ARMA_REV: "3297920b46122689fb13ca41acd61cbe94ac1de7"
+
+jobs:
+  # Build each arch natively (no QEMU). Each build exports an OCI layout and
+  # uploads it for the platform tests and subsequent publication.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    container:
+      image: fedora:43
+      # --privileged: mkosi + `unshare -r` (the rootfs strip / mkfs) need
+      # user namespaces and full device access.
+      options: --privileged
+    permissions:
+      contents: read
+    steps:
+      - name: Install system tooling
+        run: >-
+          dnf install -y
+          mkosi systemd-standalone-repart e2fsprogs util-linux coreutils cpio
+          git gcc curl openssl-devel pkgconf-pkg-config perl python3
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Rust (${{ env.NIGHTLY }} + 1.94.0)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
+            -y --profile minimal --default-toolchain "$NIGHTLY" \
+            --target x86_64-unknown-none --target aarch64-unknown-none-softfloat
+          "$HOME/.cargo/bin/rustup" toolchain install 1.94.0 --profile minimal
+          "$HOME/.cargo/bin/rustup" toolchain install stable --profile minimal
+          "$HOME/.cargo/bin/rustup" component add rustfmt clippy --toolchain "$NIGHTLY"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install the BPF linker
+        working-directory: appliance/lsm
+        run: |
+          # Reuse LLVM from the selected Rust toolchain.
+          linker_llvm="$(printf '%s' "$(rustc --print sysroot)"/lib/libLLVM.so.*)"
+          linker_llvm_version="${linker_llvm##*/libLLVM.so.}"
+          RUSTFLAGS="-C link-arg=$linker_llvm -C link-arg=-Wl,-rpath,${linker_llvm%/*}" \
+            cargo install --locked --version '=0.13.0' \
+              --no-default-features --features "llvm-${linker_llvm_version%%.*},no-llvm-linking" bpf-linker
+
+      - name: Check the Rust LSM
+        working-directory: appliance/lsm
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --release --all-targets -- -D warnings
+          cargo clippy --locked --release -p conglobate-label-policy \
+            --target bpfel-unknown-none -Z build-std=core -- -D warnings
+          # The rebuilt guest loads/verifies the policy during VM qualification.
+          cargo test --locked --release
+
+      - name: Check the guest adapter
+        working-directory: appliance/guest
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+      - name: Check guest dependency policy
+        run: |
+          cargo +1.94.0 install --locked --version 0.19.9 cargo-deny
+          cargo +1.94.0 install --locked --version 0.22.2 cargo-audit
+          cargo deny --manifest-path appliance/lsm/Cargo.toml --locked --all-features check --config deny.toml licenses sources bans
+          cargo audit --file appliance/lsm/Cargo.lock
+          cargo deny --manifest-path appliance/guest/Cargo.toml --locked check --config deny.toml licenses sources bans
+          cargo audit --file appliance/guest/Cargo.lock
+
+      - name: Build Arma and this Pichi revision
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/pichi-vm/arma /tmp/arma
+          git -C /tmp/arma checkout --detach "$ARMA_REV"
+          (cd /tmp/arma && cargo build --locked --release --bin arma)
+          echo "ARMA=/tmp/arma/target/release/arma" >> "$GITHUB_ENV"
+          cargo build --locked --release --bin pichi
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+
+      - name: Build appliance image (native ${{ matrix.arch }})
+        # REVISION reaches build.sh's provenance stamp: git rev-parse is not
+        # reliable in this checkout, so pass the SHA explicitly.
+        env:
+          REVISION: ${{ github.sha }}
+        run: ./appliance/image/build.sh
+
+      - name: Check image scripts
+        run: |
+          bash -n appliance/image/build.sh
+          python3 -m py_compile appliance/image/mkosi.finalize
+
+      - name: Export image as an OCI layout directory
+        run: pichi save "pichi-build:${PICHI_BUILD_VERSION}" -o "oci-${{ matrix.arch }}"
+
+      - name: Upload OCI layout artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oci-${{ matrix.arch }}
+          path: oci-${{ matrix.arch }}

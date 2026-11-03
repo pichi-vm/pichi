@@ -22,6 +22,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: korandoru/hawkeye@v6
+      - name: Check the kernel policy license headers
+        run: hawkeye check --config appliance/lsm/program/licenserc.toml
 
   commit-messages:
     name: commit messages
