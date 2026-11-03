@@ -111,6 +111,8 @@ impl WorkloadFixture {
     }
 
     fn build_command(&self, request: &impl serde::Serialize) -> Command {
+        // The fake guest does not read Git objects, but the host validates the checkout.
+        std::fs::create_dir_all(self.root.path().join(".git")).unwrap();
         let mut encoded = Vec::new();
         ciborium::into_writer(request, &mut encoded).unwrap();
         let mut response = Vec::new();

@@ -132,3 +132,13 @@ fn context_directory_fails_early() {
     std::fs::create_dir(&context_dir).unwrap();
     repo.fails_before_pull(&context_dir, &["not the top", "--context"]);
 }
+
+#[test]
+fn alternates_fail_early() {
+    let repo = Repository::new();
+    repo.write(".git/objects/info/alternates", b"/unavailable/objects\n");
+    repo.fails_before_pull(
+        repo.0.path(),
+        &["alternates", "git repack -a -d", "full clone"],
+    );
+}
