@@ -92,12 +92,12 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     }
     for (reference, pin) in &build_lock.images {
         let mut target: Reference = reference.to_string().parse()?;
-        target.kind = ReferenceKind::Digest(pin.index.clone());
+        target.kind = ReferenceKind::Digest(pin.clone());
         let (digest, manifest) = resolve_manifest(&target.to_string(), &db, &blob_store)
             .await
             .with_context(|| format!("resolving pinned source {reference}"))?;
-        if digest != pin.index {
-            bail!("cached {reference} does not match lock pin {}", pin.index);
+        if digest != *pin {
+            bail!("cached {reference} does not match lock pin {pin}");
         }
         super::boot_config::BootConfigFile::validate_image(&manifest, &blob_store).await?;
         if !manifest.scute_layers().is_empty() {
@@ -843,7 +843,7 @@ mod tests {
         std::fs::create_dir_all(&ctx).unwrap();
         std::fs::write(
             ctx.join("pichi.lock"),
-            "version: 1\nimages:\n  qualification.local/fedora:43:\n    index: sha256:abababababababababababababababababababababababababababababababab\n",
+            "version: 1\nimages:\n  qualification.local/fedora:43: sha256:abababababababababababababababababababababababababababababababab\n",
         )
         .unwrap();
         let parsed = load_build_lock(tmp.path(), "tests/distro/context", "pichi.lock").unwrap();
@@ -851,7 +851,6 @@ mod tests {
         assert_eq!(
             parsed.images
                 [&conglobate::plan::Remote::new("qualification.local/fedora:43".into()).unwrap()]
-                .index
                 .to_string(),
             "sha256:abababababababababababababababababababababababababababababababab"
         );
@@ -887,7 +886,7 @@ mod tests {
         for text in [
             "version: 1\nversion: 2\nimages: {}\n",
             "version: 1\nimages: {}\n---\nversion: 2\nimages: {}\n",
-            "version: 1\nimages: {registry.test/base:1: {index: sha256:invalid}}\n",
+            "version: 1\nimages: {registry.test/base:1: sha256:invalid}\n",
         ] {
             std::fs::write(&path, text).unwrap();
             assert!(load_build_lock(tmp.path(), ".", "pichi.lock").is_err());

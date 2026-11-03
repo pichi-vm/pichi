@@ -225,7 +225,7 @@ pub fn prepare_smoke_repo(tmp: &Path, index: &str) -> (PathBuf, String) {
     }
     std::fs::write(
         context.join(SMOKE_LOCK),
-        format!("version: 1\nimages:\n  {SMOKE_SOURCE_REF}:\n    index: {index}\n"),
+        format!("version: 1\nimages:\n  {SMOKE_SOURCE_REF}: {index}\n"),
     )
     .unwrap();
     // The tiny seed has no shell. Retain the upstream COPY, omitting its

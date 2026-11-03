@@ -85,9 +85,7 @@ fn working_files_regenerate_the_lock_without_git_or_other_executables() {
         "{summary}"
     );
     assert_eq!(
-        project.lock().images[&Remote::new(a.into()).unwrap()]
-            .index
-            .to_string(),
+        project.lock().images[&Remote::new(a.into()).unwrap()].to_string(),
         first
     );
     assert!(!project.0.path().join("executed").exists());
@@ -101,9 +99,7 @@ fn working_files_regenerate_the_lock_without_git_or_other_executables() {
     );
     assert_eq!(project.lock().images.len(), 1);
     assert_eq!(
-        project.lock().images[&Remote::new(a.into()).unwrap()]
-            .index
-            .to_string(),
+        project.lock().images[&Remote::new(a.into()).unwrap()].to_string(),
         second
     );
     let summary = Project::success(project.run(&["update", "--pull=never"]));
@@ -117,9 +113,7 @@ fn working_files_regenerate_the_lock_without_git_or_other_executables() {
     let summary = Project::success(project.run(&["update", "--pull=never"]));
     assert!(summary.contains("unavailable for comparison"), "{summary}");
     assert_eq!(
-        project.lock().images[&Remote::new(a.into()).unwrap()]
-            .index
-            .to_string(),
+        project.lock().images[&Remote::new(a.into()).unwrap()].to_string(),
         second
     );
 
@@ -400,9 +394,7 @@ fn pull_policies_refresh_exact_index_pins_and_preserve_locks_on_failure() {
     Project::success(registry.update(&project, None));
     assert!(registry.requests() > 0, "default must contact registry");
     assert_eq!(
-        project.lock().images[&Remote::new(reference.clone()).unwrap()]
-            .index
-            .to_string(),
+        project.lock().images[&Remote::new(reference.clone()).unwrap()].to_string(),
         second
     );
     registry.publish(&project.cache(), &first);
@@ -411,18 +403,14 @@ fn pull_policies_refresh_exact_index_pins_and_preserve_locks_on_failure() {
         Project::success(registry.update(&project, Some(policy)));
         assert_eq!(registry.requests(), requests);
         assert_eq!(
-            project.lock().images[&Remote::new(reference.clone()).unwrap()]
-                .index
-                .to_string(),
+            project.lock().images[&Remote::new(reference.clone()).unwrap()].to_string(),
             second
         );
     }
     Project::success(registry.update(&project, Some("newer")));
     assert!(registry.requests() > requests);
     assert_eq!(
-        project.lock().images[&Remote::new(reference.clone()).unwrap()]
-            .index
-            .to_string(),
+        project.lock().images[&Remote::new(reference.clone()).unwrap()].to_string(),
         first
     );
     let requests = registry.requests();
@@ -441,9 +429,7 @@ fn pull_policies_refresh_exact_index_pins_and_preserve_locks_on_failure() {
     Project::success(registry.update(&project, Some("missing")));
     assert!(registry.requests() > requests);
     assert_eq!(
-        project.lock().images[&Remote::new(reference.clone()).unwrap()]
-            .index
-            .to_string(),
+        project.lock().images[&Remote::new(reference.clone()).unwrap()].to_string(),
         first
     );
 
