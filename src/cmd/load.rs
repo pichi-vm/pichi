@@ -156,12 +156,7 @@ impl OciLayout {
                 entry.size() <= METADATA_CAP,
                 "manifest exceeds metadata cap"
             );
-            let digest = layout.copy_blob(
-                &root,
-                &entry.digest().to_string(),
-                entry.size(),
-                &mut expected,
-            )?;
+            let digest = layout.copy_blob(&root, entry.digest(), entry.size(), &mut expected)?;
             let bytes = std::fs::read(layout.store.blob_path(&digest)?)?;
             let value: serde_json::Value = serde_json::from_slice(&bytes)?;
             ensure!(
@@ -191,14 +186,10 @@ impl OciLayout {
             let config = &manifest.config;
             ensure!(config.size() <= METADATA_CAP, "config exceeds metadata cap");
             if config.media_type() != &oci_spec::image::MediaType::EmptyJSON
-                || files.contains_key(&Self::blob_name(&config.digest().to_string())?)
+                || files.contains_key(&Self::blob_name(config.digest())?)
             {
-                let digest = layout.copy_blob(
-                    &root,
-                    &config.digest().to_string(),
-                    config.size(),
-                    &mut expected,
-                )?;
+                let digest =
+                    layout.copy_blob(&root, config.digest(), config.size(), &mut expected)?;
                 if config.media_type() != &oci_spec::image::MediaType::EmptyJSON {
                     let config: conglobate::resources::Config =
                         serde_json::from_slice(&std::fs::read(layout.store.blob_path(&digest)?)?)
@@ -208,9 +199,9 @@ impl OciLayout {
             }
             if manifest.layers.iter().any(|l| {
                 matches!(
-                    l,
-                    conglobate::artifact::Layer::Scute(_)
-                        | conglobate::artifact::Layer::ScuteZstd(_)
+                    l.media_type().as_ref(),
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+                        | conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD
                 )
             }) {
                 for key in [
@@ -225,12 +216,12 @@ impl OciLayout {
             }
             let mut layers = HashSet::new();
             for layer in &manifest.layers {
-                ensure!(layers.insert(layer.digest_str()), "duplicate OCI layer");
-                layout.copy_blob(&root, layer.digest_str(), layer.size(), &mut expected)?;
+                ensure!(layers.insert(layer.digest()), "duplicate OCI layer");
+                layout.copy_blob(&root, layer.digest(), layer.size(), &mut expected)?;
                 if matches!(
-                    layer,
-                    conglobate::artifact::Layer::Scute(_)
-                        | conglobate::artifact::Layer::ScuteZstd(_)
+                    layer.media_type().as_ref(),
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+                        | conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD
                 ) {
                     ensure!(
                         manifest
@@ -242,7 +233,7 @@ impl OciLayout {
                     );
                     // Optional guest sidecars have only digest-derived names.
                     // They are compared with the fresh tree, never imported.
-                    let sidecar = Self::blob_name(layer.digest_str())?.with_extension("verity");
+                    let sidecar = Self::blob_name(layer.digest())?.with_extension("verity");
                     if let Some(size) = files.get(&sidecar) {
                         layout.copy_guest_verity(
                             &root,
@@ -332,12 +323,7 @@ impl OciLayout {
         Ok(bytes)
     }
 
-    fn blob_name(value: &str) -> Result<PathBuf> {
-        let digest: Digest = value.parse().context("invalid OCI digest")?;
-        ensure!(
-            value == digest.to_string(),
-            "OCI digest must use lowercase sha256 hex"
-        );
+    fn blob_name(digest: &Digest) -> Result<PathBuf> {
         ensure!(
             digest.algorithm() == &oci_spec::image::DigestAlgorithm::Sha256,
             "unsupported digest algorithm: {}",
@@ -349,25 +335,24 @@ impl OciLayout {
     fn copy_blob(
         &mut self,
         root: &Dir,
-        value: &str,
+        digest: &Digest,
         size: u64,
         expected: &mut HashSet<PathBuf>,
     ) -> Result<Digest> {
         ensure!(size <= self.capacity, "OCI blob exceeds scratch capacity");
-        let path = Self::blob_name(value)?;
-        let digest: Digest = value.parse()?;
+        let path = Self::blob_name(digest)?;
         expected.insert(path.clone());
-        if let Some(previous) = self.blobs.get(&digest) {
+        if let Some(previous) = self.blobs.get(digest) {
             ensure!(*previous == size, "conflicting OCI descriptor sizes");
-            return Ok(digest);
+            return Ok(digest.clone());
         }
-        let output = File::create(self.store.blob_path(&digest)?)?;
+        let output = File::create(self.store.blob_path(digest)?)?;
         ensure!(
-            Self::copy_content(root, &path, size, output)? == digest,
+            &Self::copy_content(root, &path, size, output)? == digest,
             "OCI blob digest mismatch: {digest}"
         );
         self.blobs.insert(digest.clone(), size);
-        Ok(digest)
+        Ok(digest.clone())
     }
 
     fn copy_content(
@@ -548,7 +533,7 @@ pub(super) mod tests {
     use super::*;
     use crate::cmd::test_support::ScuteFixture as _;
     use crate::cmd::verity::VerityParams;
-    use conglobate::artifact::Layer;
+
     use pichi_storage::TagDb as _;
     use serde_json::{Value, json};
 
@@ -706,11 +691,14 @@ pub(super) mod tests {
                 hex::encode(fixture.tip).into();
             let manifest: Manifest = serde_json::from_value(fixture.manifest.clone()).unwrap();
             let layer = manifest.layers.last().unwrap();
-            assert_eq!(layer.digest_str(), digest.to_string());
-            let Layer::Scute(scute) = layer else {
-                panic!("uncompressed fixture");
-            };
-            assert_eq!(scute.annotations.salt, hex::encode(parent));
+            assert_eq!(layer.digest(), &digest);
+            let scute = layer;
+            assert_eq!(
+                conglobate::artifact::ScuteAnnotations::try_from(scute)
+                    .unwrap()
+                    .salt,
+                hex::encode(parent)
+            );
             let files = ScuteFiles::new(&manifest, layer, &store).unwrap();
             let layout = dir.path().join(chains.len().to_string());
             fixture.write(&layout);

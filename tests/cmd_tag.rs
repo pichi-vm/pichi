@@ -6,9 +6,7 @@
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
-use conglobate::artifact::{
-    Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations, ScuteDescriptor,
-};
+use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
@@ -47,15 +45,22 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> oci_spec::ima
             .data("e30=")
             .build()
             .expect("empty config descriptor"),
-        layers: vec![Layer::Scute(ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
-            size: 1024,
-            annotations: ScuteAnnotations {
-                data_blocks: 1u64.try_into().unwrap(),
-                salt: "00ff".into(),
-            },
-        })],
+        layers: vec![{
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                1024u64,
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("layer digest"),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: 1u64.try_into().unwrap(),
+                    salt: "00ff".into(),
+                },
+            )));
+            descriptor
+        }],
         annotations: chain_annotations(),
     };
     let bytes = serde_json::to_vec(&m).unwrap();

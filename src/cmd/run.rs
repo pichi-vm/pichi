@@ -28,10 +28,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use conglobate::artifact::{Layer, Manifest};
+use conglobate::artifact::Manifest;
 use conglobate::resources::Requirements;
 use oci_spec::distribution::Reference;
-use oci_spec::image::Digest;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
@@ -119,11 +118,8 @@ async fn build_dillo_args(
     interfaces: usize,
 ) -> Result<Vec<String>> {
     let (pmi, scutes) = manifest.partition_layers()?;
-    let pmi_digest: Digest = pmi
-        .digest
-        .parse()
-        .with_context(|| format!("invalid PMI digest: {}", pmi.digest))?;
-    let pmi_path = blob_store.blob_path(&pmi_digest)?;
+    let pmi_digest = pmi.digest();
+    let pmi_path = blob_store.blob_path(pmi_digest)?;
 
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(&pmi_path)];
     // Boot configuration accompanies the immutable PMI. Its native text is
@@ -159,7 +155,7 @@ async fn build_dillo_args(
 /// uses uncompressed, block-aligned bytes prepared by Pichi.
 pub(crate) async fn build_gpt_spec(
     manifest: &Manifest,
-    scutes: &[&Layer],
+    scutes: &[&oci_spec::image::Descriptor],
     blob_store: &FilesystemBlobStore,
 ) -> Result<String> {
     let mut parts: Vec<String> = Vec::with_capacity(scutes.len() * 2);
@@ -274,14 +270,12 @@ pub(crate) fn path_arg(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oci_spec::image::Digest;
     use std::collections::BTreeMap;
 
     const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
-    use conglobate::artifact::{
-        Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor, ScuteAnnotations,
-        ScuteDescriptor,
-    };
+    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations};
     use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore};
     use tempfile::TempDir;
 
@@ -304,15 +298,17 @@ mod tests {
         format!("sha256:{}", hex::encode(h)).parse().unwrap()
     }
 
-    fn pmi_layer() -> Layer {
-        Layer::Pmi(PmiDescriptor {
-            digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                .into(),
-            size: 8192,
-        })
+    fn pmi_layer() -> oci_spec::image::Descriptor {
+        oci_spec::image::Descriptor::new(
+            conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
+            8192u64,
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                .parse::<oci_spec::image::Digest>()
+                .expect("layer digest"),
+        )
     }
 
-    fn manifest_with(layers: Vec<Layer>) -> Manifest {
+    fn manifest_with(layers: Vec<oci_spec::image::Descriptor>) -> Manifest {
         Manifest {
             schema_version: 2,
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
@@ -335,52 +331,73 @@ mod tests {
 
     #[tokio::test]
     async fn partition_layers_splits_pmi_and_scutes() {
-        let scute = ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
-            size: 4096,
-            annotations: ScuteAnnotations {
-                data_blocks: 1u64.try_into().unwrap(),
-                salt: "00".into(),
-            },
+        let scute = {
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                4096u64,
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("layer digest"),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: 1u64.try_into().unwrap(),
+                    salt: "00".into(),
+                },
+            )));
+            descriptor
         };
-        let m = manifest_with(vec![pmi_layer(), Layer::Scute(scute)]);
+        let m = manifest_with(vec![pmi_layer(), scute]);
         let (_pmi, scutes) = m.partition_layers().unwrap();
         assert_eq!(scutes.len(), 1);
     }
 
     #[tokio::test]
     async fn partition_layers_errors_without_pmi() {
-        let scute = ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
-            size: 4096,
-            annotations: ScuteAnnotations {
-                data_blocks: 1u64.try_into().unwrap(),
-                salt: "00".into(),
-            },
+        let scute = {
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                4096u64,
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("layer digest"),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: 1u64.try_into().unwrap(),
+                    salt: "00".into(),
+                },
+            )));
+            descriptor
         };
-        let m = manifest_with(vec![Layer::Scute(scute)]);
+        let m = manifest_with(vec![scute]);
         let err = m.partition_layers().unwrap_err();
         assert!(err.to_string().contains("not bootable"), "got: {err}");
     }
 
     #[tokio::test]
     async fn partition_layers_preserves_scute_encoding() {
-        let scute = ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
-            size: 4096,
-            annotations: ScuteAnnotations {
-                data_blocks: 1u64.try_into().unwrap(),
-                salt: "00".into(),
-            },
+        let scute = {
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                4096u64,
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("layer digest"),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: 1u64.try_into().unwrap(),
+                    salt: "00".into(),
+                },
+            )));
+            descriptor
         };
-        let m = manifest_with(vec![
-            Layer::Scute(scute.clone()),
-            pmi_layer(),
-            Layer::ScuteZstd(scute),
-        ]);
+        let m = manifest_with(vec![scute.clone(), pmi_layer(), {
+            let mut descriptor = scute;
+            descriptor.set_media_type(conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD.into());
+            descriptor
+        }]);
         let (_, scutes) = m.partition_layers().unwrap();
         assert_eq!(scutes, vec![&m.layers[0], &m.layers[2]]);
         assert_eq!(m.scute_layers(), scutes);
@@ -438,11 +455,12 @@ mod tests {
         .unwrap();
         config.store(&blob_store).await.unwrap();
         let m = manifest_with(vec![
-            Layer::Pmi(conglobate::artifact::PmiDescriptor {
-                digest: digest.to_string(),
-                size: pmi.len() as u64,
-            }),
-            Layer::BootConfig(config.descriptor().unwrap()),
+            oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
+                pmi.len() as u64,
+                digest.clone(),
+            ),
+            config.descriptor().unwrap(),
         ]);
         let argv = build_dillo_args(&m, &blob_store, None, None, 0)
             .await
@@ -488,21 +506,27 @@ mod tests {
             let data = vec![byte; 8193];
             let digest = sha256_digest(&data);
             store.put_blob(&digest, &data).await.unwrap();
-            let scute = ScuteDescriptor {
-                digest: digest.to_string(),
-                size: data.len() as u64,
-                annotations: ScuteAnnotations {
-                    data_blocks: 3u64.try_into().unwrap(),
-                    salt: hex::encode(tip),
-                },
+            let scute = {
+                let mut descriptor = oci_spec::image::Descriptor::new(
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                    data.len() as u64,
+                    digest.clone(),
+                );
+                descriptor.set_annotations(Some(
+                    std::collections::HashMap::<String, String>::from(ScuteAnnotations {
+                        data_blocks: 3u64.try_into().unwrap(),
+                        salt: hex::encode(tip),
+                    }),
+                ));
+                descriptor
             };
-            let header = manifest.verity_header(&scute, Some(scute.size)).unwrap();
+            let header = manifest.verity_header(&scute, Some(scute.size())).unwrap();
             tip = header
                 .format_padded(data.as_slice(), &mut std::io::Cursor::new(Vec::new()))
                 .unwrap();
             scutes.push(scute);
         }
-        manifest.layers = scutes.iter().cloned().map(Layer::Scute).collect();
+        manifest.layers = scutes.clone();
         manifest
             .annotations
             .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(tip));
@@ -518,10 +542,10 @@ mod tests {
         let spec = build_gpt_spec(&manifest, &refs, &store).await.unwrap();
         let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(&spec).unwrap();
         for (index, scute) in scutes.iter().enumerate() {
-            let digest = scute.digest.parse().unwrap();
+            let digest = scute.digest().clone();
             let path = store.blob_path(&digest).unwrap();
             let data = std::fs::read(&path).unwrap();
-            let header = manifest.verity_header(scute, Some(scute.size)).unwrap();
+            let header = manifest.verity_header(scute, Some(scute.size())).unwrap();
             let mut output = std::io::Cursor::new(Vec::new());
             let root = header.format_padded(data.as_slice(), &mut output).unwrap();
             assert_eq!(
@@ -548,15 +572,21 @@ mod tests {
         let cow_digest = sha256_digest(&cow_bytes);
         blob_store.put_blob(&cow_digest, &cow_bytes).await.unwrap();
 
-        let scute = ScuteDescriptor {
-            digest: cow_digest.to_string(),
-            size: cow_bytes.len() as u64,
-            annotations: ScuteAnnotations {
-                data_blocks: (cow_bytes.len() as u64).div_ceil(4096).try_into().unwrap(),
-                salt: hex::encode([0; 32]),
-            },
+        let scute = {
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                cow_bytes.len() as u64,
+                cow_digest.clone(),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: (cow_bytes.len() as u64).div_ceil(4096).try_into().unwrap(),
+                    salt: hex::encode([0; 32]),
+                },
+            )));
+            descriptor
         };
-        let mut m = manifest_with(vec![pmi_layer(), Layer::Scute(scute.clone())]);
+        let mut m = manifest_with(vec![pmi_layer(), scute.clone()]);
         let root = m
             .cached_scute_root(&m.layers[1], &blob_store)
             .await
@@ -612,18 +642,30 @@ mod tests {
                     data.clone()
                 };
                 let digest = sha256_digest(&wire);
-                let scute = ScuteDescriptor {
-                    digest: digest.to_string(),
-                    size: wire.len() as u64,
-                    annotations: ScuteAnnotations {
-                        data_blocks: 2u64.try_into().unwrap(),
-                        salt: hex::encode([0; 32]),
-                    },
+                let scute = {
+                    let mut descriptor = oci_spec::image::Descriptor::new(
+                        conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                        wire.len() as u64,
+                        digest.clone(),
+                    );
+                    descriptor.set_annotations(Some(
+                        std::collections::HashMap::<String, String>::from(ScuteAnnotations {
+                            data_blocks: 2u64.try_into().unwrap(),
+                            salt: hex::encode([0; 32]),
+                        }),
+                    ));
+                    descriptor
                 };
                 let layer = if compressed {
-                    Layer::ScuteZstd(scute)
+                    {
+                        let mut descriptor = scute;
+                        descriptor.set_media_type(
+                            conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD.into(),
+                        );
+                        descriptor
+                    }
                 } else {
-                    Layer::Scute(scute)
+                    scute
                 };
                 let mut manifest = manifest_with(vec![pmi_layer(), layer]);
                 assert!(

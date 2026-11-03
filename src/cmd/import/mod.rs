@@ -24,7 +24,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use conglobate::artifact::{Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor};
+use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest};
 use conglobate::resources::Config;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
@@ -112,14 +112,15 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         }
         manifest.annotations.insert(k, v);
     }
-    manifest.layers.push(Layer::Pmi(PmiDescriptor {
-        digest: pmi_digest.to_string(),
-        size: pmi_bytes.len() as u64,
-    }));
+    manifest.layers.push(oci_spec::image::Descriptor::new(
+        conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
+        pmi_bytes.len() as u64,
+        pmi_digest.clone(),
+    ));
     if let Some(config) = &bootconfig
         && let Some(descriptor) = config.descriptor()
     {
-        manifest.layers.push(Layer::BootConfig(descriptor));
+        manifest.layers.push(descriptor);
     }
     if let Some((digest, bytes)) = &config_blob {
         manifest.config = oci_spec::image::Descriptor::new(
@@ -131,7 +132,9 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     manifest
         .validate()
         .context("assembled bootable manifest failed self-validation (bug)")?;
-    let manifest_bytes = serde_json::to_vec(&manifest).context("serialising bootable manifest")?;
+    let mut value = serde_json::to_value(&manifest)?;
+    value.sort_all_objects();
+    let manifest_bytes = serde_json::to_vec(&value).context("serialising bootable manifest")?;
     let manifest_digest = format!(
         "sha256:{}",
         hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes))
@@ -148,7 +151,12 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     let pmi_layer = manifest
         .layers
         .iter()
-        .find(|layer| matches!(layer, Layer::Pmi(_)))
+        .find(|layer| {
+            matches!(
+                layer.media_type().as_ref(),
+                conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+            )
+        })
         .context("PMI descriptor missing")?;
     super::layer::PreparedLayer::prepare_cached(&manifest, pmi_layer, &blob_store).await?;
     if let Some(config) = &bootconfig {
@@ -210,9 +218,13 @@ async fn carapace_scutes_manifest(
     }
     // Keep only the carapace's scute layers (drop any prior PMI/bootconfig so a re-run
     // replaces cleanly); its scute cows + `.verity` sidecars are already cached.
-    manifest
-        .layers
-        .retain(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)));
+    manifest.layers.retain(|l| {
+        matches!(
+            l.media_type().as_ref(),
+            conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+                | conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD
+        )
+    });
     Ok(manifest)
 }
 

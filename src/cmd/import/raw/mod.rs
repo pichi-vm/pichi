@@ -151,7 +151,9 @@ impl StagedImport {
             &args.created_rfc3339,
             &args.annotations,
         )?;
-        let manifest_bytes = serde_json::to_vec(&manifest)?;
+        let mut value = serde_json::to_value(&manifest)?;
+        value.sort_all_objects();
+        let manifest_bytes = serde_json::to_vec(&value)?;
         let manifest_digest = format!(
             "sha256:{}",
             hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes))
@@ -342,10 +344,14 @@ mod tests {
                 staged.cow_digest
             );
             let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
-            let conglobate::artifact::Layer::Scute(scute) = &manifest.layers[0] else {
-                panic!("expected scute")
-            };
-            assert_eq!(scute.annotations.data_blocks.get(), size / 4096);
+            let scute = &manifest.layers[0];
+            assert_eq!(
+                conglobate::artifact::ScuteAnnotations::try_from(scute)
+                    .unwrap()
+                    .data_blocks
+                    .get(),
+                size / 4096
+            );
             let formatted = VerityParams {
                 data_block_size: 4096,
                 hash_block_size: 4096,
@@ -355,7 +361,12 @@ mod tests {
             .compute(&bytes)
             .unwrap();
             assert_eq!(hex::encode(formatted.root_hash), root);
-            let salt = hex::decode(&scute.annotations.salt).unwrap();
+            let salt = hex::decode(
+                &conglobate::artifact::ScuteAnnotations::try_from(scute)
+                    .unwrap()
+                    .salt,
+            )
+            .unwrap();
             assert_eq!(salt.len(), 64);
             assert_eq!(&salt[..32], &[0; 32]);
             assert_eq!(staged.header.parameters.salt.as_ref(), salt);

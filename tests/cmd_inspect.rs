@@ -6,9 +6,7 @@
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
-use conglobate::artifact::{
-    Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor, ScuteAnnotations, ScuteDescriptor,
-};
+use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
@@ -55,20 +53,29 @@ async fn inspect_bare_manifest_returns_full_schema() {
             .build()
             .expect("empty config descriptor"),
         layers: vec![
-            Layer::Scute(ScuteDescriptor {
-                digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                    .into(),
-                size: 4096,
-                annotations: ScuteAnnotations {
-                    data_blocks: 1u64.try_into().unwrap(),
-                    salt: "00".repeat(32),
-                },
-            }),
-            Layer::Pmi(PmiDescriptor {
-                digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                    .into(),
-                size: 8192,
-            }),
+            {
+                let mut descriptor = oci_spec::image::Descriptor::new(
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                    4096u64,
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("layer digest"),
+                );
+                descriptor.set_annotations(Some(
+                    std::collections::HashMap::<String, String>::from(ScuteAnnotations {
+                        data_blocks: 1u64.try_into().unwrap(),
+                        salt: "00".repeat(32),
+                    }),
+                ));
+                descriptor
+            },
+            oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
+                8192u64,
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("layer digest"),
+            ),
         ],
         annotations: chain_annotations(),
     };
@@ -134,15 +141,22 @@ async fn inspect_format_reaches_dotted_annotation() {
             .data("e30=")
             .build()
             .expect("empty config descriptor"),
-        layers: vec![Layer::Scute(ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
-            size: 4096,
-            annotations: ScuteAnnotations {
-                data_blocks: 1u64.try_into().unwrap(),
-                salt: "00".repeat(32),
-            },
-        })],
+        layers: vec![{
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                4096u64,
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("layer digest"),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: 1u64.try_into().unwrap(),
+                    salt: "00".repeat(32),
+                },
+            )));
+            descriptor
+        }],
         annotations: chain_annotations(),
     };
     let bytes = serde_json::to_vec(&m).unwrap();

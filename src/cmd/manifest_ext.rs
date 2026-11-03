@@ -14,9 +14,8 @@ use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context as _, Result, anyhow, bail};
 
 use crate::cmd::verity::{VerityFormat as _, VerityParams};
-use conglobate::artifact::{BootConfigDescriptor, Layer, Manifest, PmiDescriptor, ScuteDescriptor};
+use conglobate::artifact::Manifest;
 use devmap_verity::{HashType, Header};
-use oci_spec::image::Digest;
 use pichi_storage::BlobStore;
 
 /// Chain-wide verity annotation keys.
@@ -34,19 +33,28 @@ pub trait ManifestExt {
     where
         Self: Sized;
     /// The native Linux boot configuration accompanying the PMI, if present.
-    fn bootconfig_layer(&self) -> Option<&BootConfigDescriptor>;
+    fn bootconfig_layer(&self) -> Option<&oci_spec::image::Descriptor>;
     /// Partition layers into the single PMI descriptor + scute layers.
-    fn partition_layers(&self) -> Result<(&PmiDescriptor, Vec<&Layer>)>;
+    fn partition_layers(
+        &self,
+    ) -> Result<(
+        &oci_spec::image::Descriptor,
+        Vec<&oci_spec::image::Descriptor>,
+    )>;
     /// Collect scute layers with no PMI requirement (build `from:` sources).
-    fn scute_layers(&self) -> Vec<&Layer>;
+    fn scute_layers(&self) -> Vec<&oci_spec::image::Descriptor>;
     /// Fail closed when the artifact's declared architecture ≠ the host.
     fn check_architecture(&self) -> Result<()>;
     /// Header for a scute using the manifest's reconstruction parameters.
-    fn verity_header(&self, scute: &ScuteDescriptor, size: Option<u64>) -> Result<Header>;
+    fn verity_header(
+        &self,
+        scute: &oci_spec::image::Descriptor,
+        size: Option<u64>,
+    ) -> Result<Header>;
     /// Recompute a cached layer's root with bounded memory; metadata layers have no root.
     async fn cached_scute_root(
         &self,
-        layer: &Layer,
+        layer: &oci_spec::image::Descriptor,
         blob_store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>>;
     /// Reconstructed tip after verifying scutes in manifest order.
@@ -61,17 +69,20 @@ impl ManifestExt for Manifest {
         Ok(manifest)
     }
 
-    fn bootconfig_layer(&self) -> Option<&BootConfigDescriptor> {
-        self.layers.iter().find_map(|l| match l {
-            Layer::BootConfig(d) => Some(d),
-            _ => None,
+    fn bootconfig_layer(&self) -> Option<&oci_spec::image::Descriptor> {
+        self.layers.iter().find(|layer| {
+            layer.media_type().as_ref() == conglobate::artifact::MEDIA_TYPE_PICHI_BOOTCONFIG_V1_ZSTD
         })
     }
 
-    fn partition_layers(&self) -> Result<(&PmiDescriptor, Vec<&Layer>)> {
-        let pmi = self.layers.iter().find_map(|layer| match layer {
-            Layer::Pmi(descriptor) => Some(descriptor),
-            _ => None,
+    fn partition_layers(
+        &self,
+    ) -> Result<(
+        &oci_spec::image::Descriptor,
+        Vec<&oci_spec::image::Descriptor>,
+    )> {
+        let pmi = self.layers.iter().find(|layer| {
+            layer.media_type().as_ref() == conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
         });
         let pmi = pmi.ok_or_else(|| {
             anyhow!("artifact is not bootable (no PMI layer); usable as a `from:` source only")
@@ -79,10 +90,16 @@ impl ManifestExt for Manifest {
         Ok((pmi, self.scute_layers()))
     }
 
-    fn scute_layers(&self) -> Vec<&Layer> {
+    fn scute_layers(&self) -> Vec<&oci_spec::image::Descriptor> {
         self.layers
             .iter()
-            .filter(|layer| matches!(layer, Layer::Scute(_) | Layer::ScuteZstd(_)))
+            .filter(|layer| {
+                matches!(
+                    layer.media_type().as_ref(),
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+                        | conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD
+                )
+            })
             .collect()
     }
 
@@ -102,7 +119,11 @@ impl ManifestExt for Manifest {
         Ok(())
     }
 
-    fn verity_header(&self, scute: &ScuteDescriptor, size: Option<u64>) -> Result<Header> {
+    fn verity_header(
+        &self,
+        scute: &oci_spec::image::Descriptor,
+        size: Option<u64>,
+    ) -> Result<Header> {
         let annotation = |key: &str| {
             self.annotations
                 .get(key)
@@ -115,13 +136,14 @@ impl ManifestExt for Manifest {
         if annotation("dev.pichi.carapace.verity.algo")? != "sha256" {
             bail!("unsupported carapace verity algorithm");
         }
+        let scute_annotations = conglobate::artifact::ScuteAnnotations::try_from(scute)?;
         let params = VerityParams {
             data_block_size: annotation(ANN_DATA_BLOCK_SIZE)?.parse()?,
             hash_block_size: annotation(ANN_HASH_BLOCK_SIZE)?.parse()?,
-            salt: hex::decode(&scute.annotations.salt)?,
+            salt: hex::decode(&scute_annotations.salt)?,
             uuid: [0; 16],
         };
-        let mut header = params.header_for_blocks(scute.annotations.data_blocks.get())?;
+        let mut header = params.header_for_blocks(scute_annotations.data_blocks.get())?;
         if size.is_some_and(|size| {
             size.div_ceil(u64::from(header.parameters.data.size.bytes().get()))
                 != header.parameters.data.count.get()
@@ -139,15 +161,16 @@ impl ManifestExt for Manifest {
 
     async fn cached_scute_root(
         &self,
-        layer: &Layer,
+        layer: &oci_spec::image::Descriptor,
         blob_store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>> {
-        let (scute, compressed) = match layer {
-            Layer::Scute(d) => (d, false),
-            Layer::ScuteZstd(d) => (d, true),
+        let scute = layer;
+        let compressed = match layer.media_type().as_ref() {
+            conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 => false,
+            conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD => true,
             _ => return Ok(None),
         };
-        let digest: Digest = scute.digest.parse()?;
+        let digest = scute.digest();
         let files = ScuteFiles::new(self, layer, blob_store)?;
         if !tokio::fs::try_exists(&files.data).await?
             || !tokio::fs::try_exists(&files.verity).await?
@@ -159,7 +182,7 @@ impl ManifestExt for Manifest {
             .await
             .with_context(|| format!("reading cached scute {}", path.display()))?
             .len();
-        let header = self.verity_header(scute, (!compressed).then_some(scute.size))?;
+        let header = self.verity_header(scute, (!compressed).then_some(scute.size()))?;
         if size != header.parameters.data_size()? {
             bail!("prepared scute extent mismatch: {digest}");
         }
@@ -191,11 +214,21 @@ pub(super) struct ScuteRoots {
 }
 
 impl ScuteRoots {
-    pub(super) fn add(&mut self, layer: &Layer, root: [u8; 32]) -> Result<()> {
-        let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = layer else {
-            bail!("non-scute layer supplied a verity root");
-        };
-        let salt = hex::decode(&scute.annotations.salt)?;
+    pub(super) fn add(
+        &mut self,
+        layer: &oci_spec::image::Descriptor,
+        root: [u8; 32],
+    ) -> Result<()> {
+        anyhow::ensure!(
+            matches!(
+                layer.media_type().as_ref(),
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+                    | conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD
+            ),
+            "non-scute layer supplied a verity root"
+        );
+        let scute = layer;
+        let salt = hex::decode(&conglobate::artifact::ScuteAnnotations::try_from(scute)?.salt)?;
         let parent = salt
             .get(..32)
             .context("scute salt is shorter than its parent root")?;
@@ -212,7 +245,13 @@ impl ScuteRoots {
         let expected = manifest
             .layers
             .iter()
-            .filter(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)))
+            .filter(|l| {
+                matches!(
+                    l.media_type().as_ref(),
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+                        | conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD
+                )
+            })
             .count();
         if self.count != expected {
             bail!("not every manifest scute was reconstructed");

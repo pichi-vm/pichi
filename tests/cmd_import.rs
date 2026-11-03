@@ -13,7 +13,7 @@ mod index;
 use std::path::PathBuf;
 
 use assert_cmd::Command;
-use conglobate::artifact::{Layer, Manifest};
+use conglobate::artifact::Manifest;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
@@ -170,10 +170,9 @@ async fn bottom_scute_salt_is_zero_prefix_e2e() {
     let blob_store = FilesystemBlobStore::new(&g);
     let (_, bytes) = index::manifest(&blob_store, &manifest_digest).await;
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
-    let salt = match &manifest.layers[0] {
-        Layer::Scute(s) => s.annotations.salt.clone(),
-        _ => panic!("expected scute layer"),
-    };
+    let salt = conglobate::artifact::ScuteAnnotations::try_from(&manifest.layers[0])
+        .unwrap()
+        .salt;
     let salt = hex::decode(salt).unwrap();
     assert_eq!(salt.len(), 64);
     assert_eq!(&salt[..32], &[0; 32]);

@@ -222,9 +222,7 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use conglobate::artifact::{
-        Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations, ScuteDescriptor,
-    };
+    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations};
     use pichi_storage::{FilesystemTagDb, TagDb};
     use tempfile::TempDir;
 
@@ -367,14 +365,23 @@ mod tests {
                 .data("e30=")
                 .build()
                 .expect("empty config descriptor"),
-            layers: vec![Layer::Scute(ScuteDescriptor {
-                digest: scute_digest_str.clone(),
-                size: 1024,
-                annotations: ScuteAnnotations {
-                    data_blocks: 1u64.try_into().unwrap(),
-                    salt: "00000000".into(),
-                },
-            })],
+            layers: vec![{
+                let mut descriptor = oci_spec::image::Descriptor::new(
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                    1024u64,
+                    scute_digest_str
+                        .clone()
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("layer digest"),
+                );
+                descriptor.set_annotations(Some(
+                    std::collections::HashMap::<String, String>::from(ScuteAnnotations {
+                        data_blocks: 1u64.try_into().unwrap(),
+                        salt: "00000000".into(),
+                    }),
+                ));
+                descriptor
+            }],
             annotations: chain_annotations(),
         };
         let mbytes = serde_json::to_vec(&m).unwrap();

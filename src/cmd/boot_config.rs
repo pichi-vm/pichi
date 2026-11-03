@@ -3,7 +3,7 @@
 
 //! Native configuration is image data. YAML plans remain inside Conglobate.
 use anyhow::{Context as _, Result, ensure};
-use conglobate::artifact::{BootConfigDescriptor, Layer, Manifest};
+use conglobate::artifact::Manifest;
 use oci_spec::image::Digest;
 use pichi_storage::{BlobSidecarExt as _, BlobStore};
 use sha2::{Digest as _, Sha256};
@@ -47,21 +47,21 @@ impl BootConfigFile {
         .try_into()
     }
 
-    pub(super) fn descriptor(&self) -> Option<BootConfigDescriptor> {
-        (!self.text.is_empty()).then(|| BootConfigDescriptor {
-            digest: format!("sha256:{}", hex::encode(Sha256::digest(&self.bytes)))
-                .parse::<Digest>()
-                .expect("SHA-256 digest")
-                .to_string(),
-            size: self.bytes.len() as u64,
+    pub(super) fn descriptor(&self) -> Option<oci_spec::image::Descriptor> {
+        (!self.text.is_empty()).then(|| {
+            oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_BOOTCONFIG_V1_ZSTD.into(),
+                self.bytes.len() as u64,
+                format!("sha256:{}", hex::encode(Sha256::digest(&self.bytes)))
+                    .parse::<Digest>()
+                    .expect("SHA-256 digest"),
+            )
         })
     }
 
     pub(super) async fn store(&self, store: &(impl BlobStore + ?Sized)) -> Result<()> {
         if let Some(descriptor) = self.descriptor() {
-            store
-                .put_blob(&descriptor.digest.parse()?, &self.bytes)
-                .await?;
+            store.put_blob(descriptor.digest(), &self.bytes).await?;
         }
         Ok(())
     }
@@ -78,13 +78,12 @@ impl BootConfigFile {
         manifest: &Manifest,
         store: &(impl BlobStore + ?Sized),
     ) -> Result<Option<Self>> {
-        let Some(descriptor) = manifest.layers.iter().find_map(|layer| match layer {
-            Layer::BootConfig(descriptor) => Some(descriptor),
-            _ => None,
+        let Some(descriptor) = manifest.layers.iter().find(|layer| {
+            layer.media_type().as_ref() == conglobate::artifact::MEDIA_TYPE_PICHI_BOOTCONFIG_V1_ZSTD
         }) else {
             return Ok(None);
         };
-        let bytes = Self::verified(store, &descriptor.digest.parse()?, descriptor.size).await?;
+        let bytes = Self::verified(store, descriptor.digest(), descriptor.size()).await?;
         let config = Self::try_from(bytes)?;
         ensure!(!config.text.is_empty(), "empty bootconfig must be omitted");
         Ok(Some(config))
@@ -99,7 +98,7 @@ impl BootConfigFile {
             return Ok(None);
         };
         let descriptor = config.descriptor().context("empty bootconfig")?;
-        let directory = store.blob_path(&descriptor.digest.parse()?)?.prepared_dir();
+        let directory = store.blob_path(descriptor.digest())?.prepared_dir();
         tokio::fs::create_dir_all(&directory).await?;
         let path = directory.join("bootconfig");
         pichi_storage::write_sidecar_atomic(
@@ -154,7 +153,7 @@ mod tests {
         let config = BootConfigFile::try_from(bytes.clone()).unwrap();
         assert_eq!(config.text, text);
         assert_eq!(config.bytes, bytes);
-        assert_eq!(config.descriptor().unwrap().size, bytes.len() as u64);
+        assert_eq!(config.descriptor().unwrap().size(), bytes.len() as u64);
         let empty = ruzstd::encoding::compress_to_vec(
             b"".as_slice(),
             ruzstd::encoding::CompressionLevel::Fastest,
@@ -206,14 +205,14 @@ mod tests {
                 .build()
                 .expect("empty config descriptor"),
             layers: vec![
-                Layer::Pmi(conglobate::artifact::PmiDescriptor {
-                    digest: format!("sha256:{}", hex::encode(Sha256::digest(b"opaque PMI")))
+                oci_spec::image::Descriptor::new(
+                    conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
+                    10u64,
+                    format!("sha256:{}", hex::encode(Sha256::digest(b"opaque PMI")))
                         .parse::<Digest>()
-                        .expect("SHA-256 digest")
-                        .to_string(),
-                    size: 10,
-                }),
-                Layer::BootConfig(config.descriptor().unwrap()),
+                        .expect("SHA-256 digest"),
+                ),
+                config.descriptor().unwrap(),
             ],
             annotations: std::collections::BTreeMap::default(),
         };

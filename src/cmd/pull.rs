@@ -155,7 +155,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     let manifest_ref = &manifest;
     let mut downloads = futures_stream::iter(&manifest.layers)
         .map(|layer| async move {
-            let digest: Digest = layer.digest_str().parse()?;
+            let digest: Digest = layer.digest().clone();
             let root = if blob_store.blob_exists(&digest).await {
                 manifest_ref.cached_scute_root(layer, blob_store).await?
             } else {
@@ -215,8 +215,8 @@ mod tests {
     use super::*;
     use crate::cmd::platform::PlatformExt as _;
     use bytes::Bytes;
-    use conglobate::artifact::Layer;
-    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor};
+
+    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations};
     use oci_spec::image::Platform;
     use pichi_registry::MockRegistry;
     use std::collections::BTreeMap;
@@ -238,7 +238,6 @@ mod tests {
 
     #[tokio::test]
     async fn native_bootconfig_is_verified_before_pull_publishes_a_tag() {
-        use conglobate::artifact::BootConfigDescriptor;
         for (text, corrupt_cache, accepted) in [
             ("kernel.console = hvc0;\n", false, true),
             ("bad..key = value;\n", false, true),
@@ -280,14 +279,16 @@ mod tests {
                     .build()
                     .expect("empty config descriptor"),
                 layers: vec![
-                    Layer::Pmi(PmiDescriptor {
-                        digest: pmi_digest.to_string(),
-                        size: firmware.len() as u64,
-                    }),
-                    Layer::BootConfig(BootConfigDescriptor {
-                        digest: config_digest.to_string(),
-                        size: compressed.len() as u64,
-                    }),
+                    oci_spec::image::Descriptor::new(
+                        conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
+                        firmware.len() as u64,
+                        pmi_digest.clone(),
+                    ),
+                    oci_spec::image::Descriptor::new(
+                        conglobate::artifact::MEDIA_TYPE_PICHI_BOOTCONFIG_V1_ZSTD.into(),
+                        compressed.len() as u64,
+                        config_digest.clone(),
+                    ),
                 ],
                 annotations: BTreeMap::new(),
             };
@@ -590,7 +591,7 @@ mod tests {
         .await
         .expect("pull_inner should succeed");
 
-        // Layer blob present in BlobStore.
+        // oci_spec::image::Descriptor blob present in BlobStore.
         assert!(
             blob_store.blob_exists(&layer_digest).await,
             "layer blob must be present after pull"
@@ -727,7 +728,6 @@ mod tests {
     // Phase 46 Plan 02 Task 1 — sidecar derivation tests (CACHE-01, CACHE-02)
     // ====================================================================
 
-    use conglobate::artifact::PmiDescriptor;
     use pichi_storage::BlobSidecarExt;
 
     /// Plan 02 helper: build a 1-Scute or 1-ScuteZstd manifest with a
@@ -754,18 +754,29 @@ mod tests {
             "dev.pichi.carapace.verity.hash".into(),
             hex::encode(pull_side_verity_params().compute(data).unwrap().root_hash),
         );
-        let scute_desc = ScuteDescriptor {
-            digest: scute_digest.to_string(),
-            size: scute_size,
-            annotations: ScuteAnnotations {
-                data_blocks: (data.len() as u64).div_ceil(4096).try_into().unwrap(),
-                salt: hex::encode([0u8; 32]),
-            },
+        let scute_desc = {
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                scute_size,
+                scute_digest.clone(),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: (data.len() as u64).div_ceil(4096).try_into().unwrap(),
+                    salt: hex::encode([0u8; 32]),
+                },
+            )));
+            descriptor
         };
         let layer = if is_zstd {
-            Layer::ScuteZstd(scute_desc)
+            {
+                let mut descriptor = scute_desc;
+                descriptor
+                    .set_media_type(conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD.into());
+                descriptor
+            }
         } else {
-            Layer::Scute(scute_desc)
+            scute_desc
         };
         let manifest = Manifest {
             schema_version: 2,
@@ -1051,10 +1062,11 @@ mod tests {
         let (bytes, _) =
             make_scute_manifest(&scute_digest, scute_data.len() as u64, &scute_data, false);
         let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
-        manifest.layers.push(Layer::Pmi(PmiDescriptor {
-            digest: pmi_digest.to_string(),
-            size: pmi_bytes.len() as u64,
-        }));
+        manifest.layers.push(oci_spec::image::Descriptor::new(
+            conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
+            pmi_bytes.len() as u64,
+            pmi_digest.clone(),
+        ));
         let manifest_bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
         let files =
             crate::cmd::layer::ScuteFiles::new(&manifest, manifest.scute_layers()[0], &blob_store)
@@ -1173,10 +1185,11 @@ mod tests {
                 .expect("SHA-256 digest");
                 let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, &data, compressed);
                 let mut next: Manifest = serde_json::from_slice(&bytes).unwrap();
-                let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut next.layers[0] else {
-                    unreachable!()
-                };
-                scute.annotations.salt = hex::encode(parent);
+                let scute = &mut next.layers[0];
+                let mut annotations =
+                    conglobate::artifact::ScuteAnnotations::try_from(&*scute).unwrap();
+                annotations.salt = hex::encode(parent);
+                scute.set_annotations(Some(annotations.into()));
                 let mut parameters = pull_side_verity_params();
                 parameters.salt = parent.to_vec();
                 parent = parameters.compute(&data).unwrap().root_hash;
@@ -1248,11 +1261,11 @@ mod tests {
             for suffix in [0xaa, 0xbb] {
                 let mut params = pull_side_verity_params();
                 params.salt.push(suffix);
-                let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut manifest.layers[0]
-                else {
-                    unreachable!()
-                };
-                scute.annotations.salt = hex::encode(&params.salt);
+                let scute = &mut manifest.layers[0];
+                let mut annotations =
+                    conglobate::artifact::ScuteAnnotations::try_from(&*scute).unwrap();
+                annotations.salt = hex::encode(&params.salt);
+                scute.set_annotations(Some(annotations.into()));
                 manifest.annotations.insert(
                     "dev.pichi.carapace.verity.hash".into(),
                     hex::encode(params.compute(&data).unwrap().root_hash),

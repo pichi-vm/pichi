@@ -16,7 +16,7 @@ use pichi::cmd::manifest_ext::ManifestExt as _;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use conglobate::artifact::{Layer, Manifest};
+use conglobate::artifact::Manifest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
@@ -94,17 +94,32 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
     // The carapace tag is unchanged — still a non-bootable carapace.
     let base = resolve_manifest(&g, "docker.io/library/app:base").await;
     assert!(
-        !base.layers.iter().any(|l| matches!(l, Layer::Pmi(_))),
+        !base.layers.iter().any(|l| matches!(
+            l.media_type().as_ref(),
+            conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+        )),
         "--carapace must not modify the carapace tag"
     );
-    assert!(base.layers.iter().any(|l| matches!(l, Layer::Scute(_))));
+    assert!(base.layers.iter().any(|l| matches!(
+        l.media_type().as_ref(),
+        conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+    )));
 
     // The appliance carries scute + pmi + bootconfig.
     let app = resolve_manifest(&g, "docker.io/library/app:1").await;
     assert_eq!(app.layers.len(), 3, "scute + pmi + bootconfig");
-    assert!(app.layers.iter().any(|l| matches!(l, Layer::Scute(_))));
-    assert!(app.layers.iter().any(|l| matches!(l, Layer::Pmi(_))));
-    assert!(app.layers.iter().any(|l| matches!(l, Layer::BootConfig(_))));
+    assert!(app.layers.iter().any(|l| matches!(
+        l.media_type().as_ref(),
+        conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+    )));
+    assert!(app.layers.iter().any(|l| matches!(
+        l.media_type().as_ref(),
+        conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+    )));
+    assert!(app.layers.iter().any(|l| matches!(
+        l.media_type().as_ref(),
+        conglobate::artifact::MEDIA_TYPE_PICHI_BOOTCONFIG_V1_ZSTD
+    )));
     let root = base
         .annotations
         .get("dev.pichi.carapace.verity.hash")
@@ -139,10 +154,19 @@ async fn import_pmi_without_carapace_keeps_only_boot_components() {
 
     let m = resolve_manifest(&g, "docker.io/library/boot:1").await;
     assert_eq!(m.layers.len(), 2, "pmi + bootconfig only");
-    assert!(m.layers.iter().any(|l| matches!(l, Layer::Pmi(_))));
-    assert!(m.layers.iter().any(|l| matches!(l, Layer::BootConfig(_))));
+    assert!(m.layers.iter().any(|l| matches!(
+        l.media_type().as_ref(),
+        conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+    )));
+    assert!(m.layers.iter().any(|l| matches!(
+        l.media_type().as_ref(),
+        conglobate::artifact::MEDIA_TYPE_PICHI_BOOTCONFIG_V1_ZSTD
+    )));
     assert!(
-        !m.layers.iter().any(|l| matches!(l, Layer::Scute(_))),
+        !m.layers.iter().any(|l| matches!(
+            l.media_type().as_ref(),
+            conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+        )),
         "PMI-only artifact has no scutes"
     );
     assert!(
@@ -201,8 +225,14 @@ async fn import_raw_without_tag_prints_digest_usable_as_carapace() {
         .assert()
         .success();
     let app = resolve_manifest(&g, "docker.io/library/app:1").await;
-    assert!(app.layers.iter().any(|l| matches!(l, Layer::Scute(_))));
-    assert!(app.layers.iter().any(|l| matches!(l, Layer::Pmi(_))));
+    assert!(app.layers.iter().any(|l| matches!(
+        l.media_type().as_ref(),
+        conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+    )));
+    assert!(app.layers.iter().any(|l| matches!(
+        l.media_type().as_ref(),
+        conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+    )));
 }
 
 /// `--config` stores the launch contract as the manifest config blob
@@ -386,7 +416,10 @@ async fn import_omits_absent_and_empty_bootconfig() {
         }
         command.assert().success();
         let image = resolve_manifest(&g, "docker.io/library/boot:1").await;
-        assert!(matches!(image.layers.as_slice(), [Layer::Pmi(_)]));
+        assert!(matches!(
+            image.layers.as_slice(),
+            [descriptor] if descriptor.media_type().as_ref() == conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+        ));
     }
 }
 
@@ -422,7 +455,7 @@ async fn native_boot_components_survive_save_and_load_exactly() {
     let after = resolve_manifest(&destination_root, "docker.io/library/boot:copy").await;
     assert_eq!(before, after);
     for layer in &after.layers {
-        let digest = layer.digest_str().parse().unwrap();
+        let digest = layer.digest().clone();
         assert_eq!(
             std::fs::read(
                 FilesystemBlobStore::new(&source_root)
@@ -461,11 +494,16 @@ async fn publication_rechecks_cached_bootconfig_bytes() {
     let layer = manifest
         .layers
         .iter()
-        .find(|layer| matches!(layer, Layer::BootConfig(_)))
+        .find(|layer| {
+            matches!(
+                layer.media_type().as_ref(),
+                conglobate::artifact::MEDIA_TYPE_PICHI_BOOTCONFIG_V1_ZSTD
+            )
+        })
         .unwrap();
     std::fs::write(
         FilesystemBlobStore::new(&g)
-            .blob_path(&layer.digest_str().parse().unwrap())
+            .blob_path(&layer.digest().clone())
             .unwrap(),
         vec![b'x'; layer.size() as usize],
     )
@@ -492,7 +530,7 @@ async fn empty_bootconfig_request_rechecks_the_cached_pmi() {
     let layer = &manifest.layers[0];
     std::fs::write(
         FilesystemBlobStore::new(&root)
-            .blob_path(&layer.digest_str().parse().unwrap())
+            .blob_path(&layer.digest().clone())
             .unwrap(),
         vec![b'x'; layer.size() as usize],
     )

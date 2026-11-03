@@ -150,7 +150,7 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     //    a wasted round-trip (registry would refuse). When v0.9 adds the
     //    config surface this becomes a one-line attempt before push_stream.
     for layer in &manifest.layers {
-        let digest_str = layer.digest_str();
+        let digest_str = layer.digest().to_string();
         let layer_digest: Digest = digest_str
             .parse()
             .with_context(|| format!("parse layer digest {digest_str}"))?;
@@ -220,9 +220,7 @@ async fn blob_to_stream(
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use conglobate::artifact::{
-        Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
-    };
+    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations};
     use pichi_registry::MockRegistry;
     use pichi_storage::TagDb as _;
     use std::collections::BTreeMap;
@@ -283,14 +281,20 @@ mod tests {
                 .data("e30=")
                 .build()
                 .expect("empty config descriptor"),
-            layers: vec![Layer::Scute(ScuteDescriptor {
-                digest: scute_digest.to_string(),
-                size: data.len() as u64,
-                annotations: ScuteAnnotations {
-                    data_blocks: (data.len() as u64).div_ceil(4096).try_into().unwrap(),
-                    salt: hex::encode([0u8; 32]),
-                },
-            })],
+            layers: vec![{
+                let mut descriptor = oci_spec::image::Descriptor::new(
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                    data.len() as u64,
+                    scute_digest.clone(),
+                );
+                descriptor.set_annotations(Some(
+                    std::collections::HashMap::<String, String>::from(ScuteAnnotations {
+                        data_blocks: (data.len() as u64).div_ceil(4096).try_into().unwrap(),
+                        salt: hex::encode([0u8; 32]),
+                    }),
+                ));
+                descriptor
+            }],
             annotations,
         };
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());

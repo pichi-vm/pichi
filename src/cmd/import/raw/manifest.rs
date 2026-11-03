@@ -8,9 +8,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
 
-use conglobate::artifact::{
-    Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations, ScuteDescriptor,
-};
+use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations};
 use oci_spec::image::Digest;
 
 /// Build a `Manifest` for a base carapace import (one Scute, no PMI).
@@ -84,14 +82,20 @@ impl BaseManifest for Manifest {
             .entry("org.opencontainers.image.created".to_string())
             .or_insert_with(|| created_rfc3339.to_string());
 
-        let layers = vec![Layer::Scute(ScuteDescriptor {
-            digest: cow_digest.to_string(),
-            size: cow_size,
-            annotations: ScuteAnnotations {
-                data_blocks: cow_size.div_ceil(4096).try_into().context("empty COW")?,
-                salt: hex::encode(full_salt),
-            },
-        })];
+        let layers = vec![{
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                cow_size,
+                cow_digest.clone(),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: cow_size.div_ceil(4096).try_into().context("empty COW")?,
+                    salt: hex::encode(full_salt),
+                },
+            )));
+            descriptor
+        }];
 
         let manifest = Manifest {
             schema_version: 2,
@@ -195,12 +199,18 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        let Layer::Scute(scute) = &m.layers[0] else {
-            panic!("expected scute layer");
-        };
-        assert_eq!(scute.annotations.data_blocks.get(), 4);
+        let scute = &m.layers[0];
         assert_eq!(
-            scute.annotations.salt,
+            conglobate::artifact::ScuteAnnotations::try_from(scute)
+                .unwrap()
+                .data_blocks
+                .get(),
+            4
+        );
+        assert_eq!(
+            conglobate::artifact::ScuteAnnotations::try_from(scute)
+                .unwrap()
+                .salt,
             "0".repeat(64),
             "salt annotation = 32 zero bytes hex-encoded = 64 hex zeros"
         );
@@ -226,11 +236,11 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        let Layer::Scute(scute) = &m.layers[0] else {
-            panic!("expected scute layer");
-        };
+        let scute = &m.layers[0];
         assert_eq!(
-            scute.annotations.salt,
+            conglobate::artifact::ScuteAnnotations::try_from(scute)
+                .unwrap()
+                .salt,
             format!("{}{}", "0".repeat(64), "ab".repeat(32))
         );
     }
@@ -281,9 +291,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m.layers.len(), 1, "expected exactly 1 layer (Scute)");
-        assert!(matches!(m.layers[0], Layer::Scute(_)), "layer[0] is Scute");
         assert!(
-            !m.layers.iter().any(|l| matches!(l, Layer::Pmi(_))),
+            m.layers[0].media_type().as_ref() == conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1,
+            "layer[0] is Scute"
+        );
+        assert!(
+            !m.layers.iter().any(|l| matches!(
+                l.media_type().as_ref(),
+                conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+            )),
             "base carapace carries no PMI layer"
         );
         assert!(

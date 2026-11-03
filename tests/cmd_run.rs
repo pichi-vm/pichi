@@ -12,9 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use conglobate::artifact::{
-    Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor, ScuteAnnotations, ScuteDescriptor,
-};
+use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations};
 use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
@@ -76,18 +74,25 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
             .build()
             .expect("empty config descriptor"),
         layers: vec![
-            Layer::Scute(ScuteDescriptor {
-                digest: cow_digest.to_string(),
-                size: cow_bytes.len() as u64,
-                annotations: ScuteAnnotations {
-                    data_blocks: (cow_bytes.len() as u64).div_ceil(4096).try_into().unwrap(),
-                    salt: "00".repeat(32),
-                },
-            }),
-            Layer::Pmi(PmiDescriptor {
-                digest: pmi_digest.to_string(),
-                size: pmi_bytes.len() as u64,
-            }),
+            {
+                let mut descriptor = oci_spec::image::Descriptor::new(
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                    cow_bytes.len() as u64,
+                    cow_digest.clone(),
+                );
+                descriptor.set_annotations(Some(
+                    std::collections::HashMap::<String, String>::from(ScuteAnnotations {
+                        data_blocks: (cow_bytes.len() as u64).div_ceil(4096).try_into().unwrap(),
+                        salt: "00".repeat(32),
+                    }),
+                ));
+                descriptor
+            },
+            oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
+                pmi_bytes.len() as u64,
+                pmi_digest.clone(),
+            ),
         ],
         annotations: chain_annotations(),
     };
@@ -220,18 +225,30 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             let digest = sha256_digest(&wire);
             store.put_blob(&digest, &wire).await.unwrap();
             store.put_blob(&sha256_digest(b"{}"), b"{}").await.unwrap();
-            let descriptor = ScuteDescriptor {
-                digest: digest.to_string(),
-                size: wire.len() as u64,
-                annotations: ScuteAnnotations {
-                    data_blocks: 2u64.try_into().unwrap(),
-                    salt: "00".repeat(32),
-                },
+            let descriptor = {
+                let mut descriptor = oci_spec::image::Descriptor::new(
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                    wire.len() as u64,
+                    digest.clone(),
+                );
+                descriptor.set_annotations(Some(
+                    std::collections::HashMap::<String, String>::from(ScuteAnnotations {
+                        data_blocks: 2u64.try_into().unwrap(),
+                        salt: "00".repeat(32),
+                    }),
+                ));
+                descriptor
             };
             manifest.layers[0] = if compressed {
-                Layer::ScuteZstd(descriptor)
+                {
+                    let mut descriptor = descriptor;
+                    descriptor.set_media_type(
+                        conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD.into(),
+                    );
+                    descriptor
+                }
             } else {
-                Layer::Scute(descriptor)
+                descriptor
             };
             let root = manifest
                 .cached_scute_root(&manifest.layers[0], &store)
@@ -268,9 +285,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             let prepared = FilesystemBlobStore::new(&graphroot(&destination));
             assert_eq!(prepared.get_blob(&manifest_digest).await.unwrap(), bytes);
             let blob = prepared.blob_path(&digest).unwrap();
-            let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &manifest.layers[0] else {
-                unreachable!()
-            };
+            let scute = &manifest.layers[0];
             let header = manifest.verity_header(scute, None).unwrap();
             let verity_path = blob.verity_path(&sha256_digest(&header.encode())).unwrap();
             let data_path = if compressed || length != 8192 {
