@@ -10,7 +10,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use conglobate::build::Lock as BuildLockFile;
+use conglobate::plan::Lock as BuildLockFile;
 use std::path::Path;
 use std::time::Duration;
 

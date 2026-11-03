@@ -426,8 +426,8 @@ the repository, and plan/lock resolution inside the selected context, even
 through symlinks and parent components. Pichi uses capability-relative opens
 for its host-side lock read so context and lock symlinks cannot escape.
 
-The shared types live in `conglobate::launch`; locks and image-reference
-sets remain in `conglobate::build`. These array envelopes replace the old map
+The command types live in `conglobate::launch`; plans, locks and remote
+references live in `conglobate::plan`. These array envelopes replace the old map
 format. The default appliance digest must identify an image with this command
 contract: updating the library/source pin alone does not update the guest.
 

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use conglobate::{build::Lock, plan::Remote};
+use conglobate::plan::{Lock, Remote};
 use std::{
     collections::BTreeMap,
     fs,

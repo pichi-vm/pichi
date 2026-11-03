@@ -63,7 +63,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             ],
         ),
     );
-    let lock: conglobate::build::Lock = serde_saphyr::from_slice(
+    let lock: conglobate::plan::Lock = serde_saphyr::from_slice(
         &std::fs::read(repo.join(SMOKE_CONTEXT).join(SMOKE_LOCK)).unwrap(),
     )
     .unwrap();
