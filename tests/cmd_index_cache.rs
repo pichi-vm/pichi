@@ -3,7 +3,7 @@
 
 //! Cache lifetime follows OCI indexes, including shared and partially cached images.
 
-use conglobate::artifact::Digest;
+use oci_spec::image::Digest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -67,7 +67,9 @@ impl Fixture {
     }
 
     async fn put(store: &FilesystemBlobStore, bytes: &[u8]) -> Digest {
-        let digest = Digest::Sha256(Sha256::digest(bytes).into());
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         store.put_blob(&digest, bytes).await.unwrap();
         digest
     }
@@ -177,7 +179,7 @@ async fn corrupt_live_metadata_stops_collection_before_any_deletion() {
         } else {
             &fixture.manifest
         };
-        std::fs::write(fixture.store.blob_path(digest), b"{}").unwrap();
+        std::fs::write(fixture.store.blob_path(digest).unwrap(), b"{}").unwrap();
         let orphan = Fixture::put(&fixture.store, b"unreferenced").await;
         for args in [["system", "prune"], ["rmi", "registry.example/image:one"]] {
             let output = fixture.run(&args);
@@ -232,7 +234,7 @@ async fn index_export_and_import_preserve_original_bytes() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        std::fs::read(layout.join("blobs/sha256").join(index.hex())).unwrap(),
+        std::fs::read(layout.join("blobs/sha256").join(index.digest())).unwrap(),
         bytes
     );
     let destination = TempDir::new().unwrap();
@@ -384,7 +386,9 @@ async fn manifest_create_rejects_ambiguous_or_invalid_sources_before_writing() {
                 value["manifests"][0]["mediaType"] =
                     json!("application/vnd.oci.image.index.v1+json")
             }
-            "digest" => std::fs::write(fixture.store.blob_path(&fixture.manifest), b"{}").unwrap(),
+            "digest" => {
+                std::fs::write(fixture.store.blob_path(&fixture.manifest).unwrap(), b"{}").unwrap();
+            }
             _ => unreachable!(),
         }
         let index = Fixture::put(&fixture.store, &serde_json::to_vec(&value).unwrap()).await;
@@ -412,7 +416,7 @@ async fn cached_index_requires_the_selected_platform() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_file(fixture.store.blob_path(&fixture.manifest)).unwrap();
+    std::fs::remove_file(fixture.store.blob_path(&fixture.manifest).unwrap()).unwrap();
     let output = fixture.run(&["pull", "--pull=never", tag]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("ref not in cache"));

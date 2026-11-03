@@ -5,8 +5,9 @@
 
 use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context, Result, anyhow, ensure};
-use conglobate::artifact::{Digest, Index, IndexDescriptor, Manifest, Platform};
+use conglobate::artifact::{Index, IndexDescriptor, Manifest, Platform};
 use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
 use pichi_storage::{BlobStore, TagDb};
 use serde_json::Value;
@@ -31,10 +32,17 @@ impl TryFrom<(Digest, Vec<u8>)> for ImageMetadata {
 
     fn try_from((digest, bytes): (Digest, Vec<u8>)) -> Result<Self> {
         ensure!(
+            digest.algorithm() == &oci_spec::image::DigestAlgorithm::Sha256,
+            "unsupported digest algorithm: {}",
+            digest.algorithm()
+        );
+        ensure!(
             bytes.len() as u64 <= METADATA_CAP,
             "image metadata exceeds size limit"
         );
-        let actual = Digest::Sha256(Sha256::digest(&bytes).into());
+        let actual = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         ensure!(actual == digest, "image metadata digest mismatch: {digest}");
         let value: Value = serde_json::from_slice(&bytes)?;
         ensure!(
@@ -135,7 +143,9 @@ pub(super) trait ImageStore: BlobStore {
             ..Index::default()
         };
         let bytes = serde_json::to_vec(&index)?;
-        let digest = Digest::Sha256(Sha256::digest(&bytes).into());
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         self.put_blob(&digest, &bytes).await?;
         Ok(digest)
     }

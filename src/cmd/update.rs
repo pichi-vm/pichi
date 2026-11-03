@@ -343,7 +343,7 @@ mod tests {
                 .to_string()
                 .contains("bare manifest")
         );
-        std::fs::write(blobs.blob_path(pin), b"tampered").unwrap();
+        std::fs::write(blobs.blob_path(pin).unwrap(), b"tampered").unwrap();
         assert!(args.resolve(&pinned_inputs, &config).await.is_err());
     }
 

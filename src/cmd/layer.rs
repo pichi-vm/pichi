@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 
 use crate::cmd::verity::VerityFormat as _;
 use anyhow::{Context as _, Result, bail};
-use conglobate::artifact::{Digest, Layer, Manifest};
+use conglobate::artifact::{Layer, Manifest};
 use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use pichi_registry::Registry;
 use pichi_storage::{BlobSidecarExt, BlobStore};
 use sha2::{Digest as _, Sha256};
@@ -33,7 +34,7 @@ impl ScuteFiles {
         };
         let header = manifest.verity_header(scute, (!compressed).then_some(scute.size))?;
         Self::from_header(
-            &store.blob_path(&scute.digest.parse()?),
+            &store.blob_path(&scute.digest.parse()?)?,
             compressed || scute.size != header.parameters.data_size()?,
             &header,
         )
@@ -44,7 +45,9 @@ impl ScuteFiles {
         materialized: bool,
         header: &devmap_verity::Header,
     ) -> Result<Self> {
-        let key = Digest::Sha256(Sha256::digest(header.encode()).into());
+        let key = format!("sha256:{}", hex::encode(Sha256::digest(header.encode())))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         let data = if materialized {
             source.deflated_path(header.parameters.data_size()?)
         } else {
@@ -52,7 +55,7 @@ impl ScuteFiles {
         };
         Ok(Self {
             data,
-            verity: source.verity_path(&key),
+            verity: source.verity_path(&key)?,
         })
     }
 }
@@ -78,6 +81,11 @@ impl PreparedLayer {
         store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>> {
         let digest: Digest = layer.digest_str().parse()?;
+        anyhow::ensure!(
+            digest.algorithm() == &oci_spec::image::DigestAlgorithm::Sha256,
+            "unsupported digest algorithm: {}",
+            digest.algorithm()
+        );
         let scratch = store.scratch_dir().await?;
         let stream = registry
             .pull_blob_stream(
@@ -106,7 +114,7 @@ impl PreparedLayer {
         store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>> {
         let digest: Digest = layer.digest_str().parse()?;
-        let path = store.blob_path(&digest);
+        let path = store.blob_path(&digest)?;
         let scratch = store.scratch_dir().await?;
         let manifest = manifest.clone();
         let layer = layer.clone();
@@ -140,6 +148,12 @@ impl PreparedLayer {
         layer: &Layer,
         scratch: &Path,
     ) -> Result<Self> {
+        let digest: Digest = layer.digest_str().parse()?;
+        anyhow::ensure!(
+            digest.algorithm() == &oci_spec::image::DigestAlgorithm::Sha256,
+            "unsupported digest algorithm: {}",
+            digest.algorithm()
+        );
         let mut wire = WireReader {
             input,
             output,
@@ -250,7 +264,7 @@ impl PreparedLayer {
     }
 
     async fn commit(self, store: &dyn BlobStore, digest: &Digest) -> Result<Option<[u8; 32]>> {
-        let path = store.blob_path(digest);
+        let path = store.blob_path(digest)?;
         tokio::fs::create_dir_all(path.parent().context("blob path has no parent")?).await?;
         // Publish preparation first: the source blob marks cache presence.
         if let Some(scute) = &self.scute {
@@ -306,7 +320,9 @@ impl<R: Read, W: Write> WireReader<R, W> {
         if self.count != self.expected {
             bail!("layer size mismatch");
         }
-        let actual = Digest::Sha256(self.hash.finalize().into());
+        let actual = format!("sha256:{}", hex::encode(self.hash.finalize()))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         if &actual != digest {
             bail!("layer digest mismatch: expected {digest}, got {actual}");
         }
@@ -388,7 +404,7 @@ mod tests {
                 "config": conglobate::artifact::ConfigDescriptor::canonical(),
                 "layers": [{
                     "mediaType": if compressed { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
-                    "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
+                    "digest": format!("sha256:{}", hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&wire))).parse::<Digest>().expect("SHA-256 digest").to_string(),
                     "size": wire.len(), "annotations": annotations,
                 }],
                 "annotations": {
@@ -475,7 +491,7 @@ mod tests {
             let layer = &fixture.manifest.layers[0];
             let digest = layer.digest_str().parse().unwrap();
             store.put_blob(&digest, &fixture.wire).await.unwrap();
-            let path = store.blob_path(&digest);
+            let path = store.blob_path(&digest).unwrap();
             let expected = fixture.prepare(dir.path()).unwrap().scute.unwrap();
             let files = ScuteFiles::new(&fixture.manifest, layer, &store).unwrap();
             for _ in 0..2 {
@@ -560,7 +576,15 @@ mod tests {
                 std::fs::read(expected.deflated.unwrap().path()).unwrap()
             );
         }
-        assert_eq!(store.blob_path(&digest).prepared_files().unwrap().len(), 7);
+        assert_eq!(
+            store
+                .blob_path(&digest)
+                .unwrap()
+                .prepared_files()
+                .unwrap()
+                .len(),
+            7
+        );
     }
 
     #[test]
@@ -579,8 +603,13 @@ mod tests {
             let (Layer::Scute(d) | Layer::ScuteZstd(d)) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
-            d.digest =
-                Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"wrong").into()).to_string();
+            d.digest = format!(
+                "sha256:{}",
+                hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"wrong"))
+            )
+            .parse::<Digest>()
+            .expect("SHA-256 digest")
+            .to_string();
             assert!(fixture.prepare(scratch.path()).is_err());
         }
         let mut fixture = Fixture::new(true, 2);
@@ -589,8 +618,13 @@ mod tests {
             unreachable!()
         };
         d.size = fixture.wire.len() as u64;
-        d.digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&fixture.wire).into())
-            .to_string();
+        d.digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&fixture.wire))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest")
+        .to_string();
         let error = fixture.prepare(scratch.path()).err().unwrap();
         assert!(error.to_string().contains("trailing bytes"), "{error:#}");
         assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
@@ -624,7 +658,12 @@ mod tests {
         ];
         assert_eq!(DEFAULT_MAX_WINDOW_SIZE, 128 * 1024 * 1024);
 
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(WIRE).into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(WIRE))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let manifest = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",

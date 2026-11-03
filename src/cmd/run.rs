@@ -28,9 +28,10 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use conglobate::artifact::{Digest, Layer, Manifest};
+use conglobate::artifact::{Layer, Manifest};
 use conglobate::resources::Requirements;
 use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
@@ -122,7 +123,7 @@ async fn build_dillo_args(
         .digest
         .parse()
         .with_context(|| format!("invalid PMI digest: {}", pmi.digest))?;
-    let pmi_path = blob_store.blob_path(&pmi_digest);
+    let pmi_path = blob_store.blob_path(&pmi_digest)?;
 
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(&pmi_path)];
     // Boot configuration accompanies the immutable PMI. Its native text is
@@ -416,7 +417,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let pmi = b"opaque PMI".to_vec();
-        let digest = Digest::Sha256(sha2::Sha256::digest(&pmi).into());
+        let digest = format!("sha256:{}", hex::encode(sha2::Sha256::digest(&pmi)))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         blob_store.put_blob(&digest, &pmi).await.unwrap();
         let config = BootConfigFile::try_from(ruzstd::encoding::compress_to_vec(
             b"kernel.console = hvc0;\n".as_slice(),
@@ -506,7 +509,7 @@ mod tests {
         let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(&spec).unwrap();
         for (index, scute) in scutes.iter().enumerate() {
             let digest = scute.digest.parse().unwrap();
-            let path = store.blob_path(&digest);
+            let path = store.blob_path(&digest).unwrap();
             let data = std::fs::read(&path).unwrap();
             let header = manifest.verity_header(scute, Some(scute.size)).unwrap();
             let mut output = std::io::Cursor::new(Vec::new());
@@ -569,7 +572,10 @@ mod tests {
         assert_eq!(gpt.partitions[1].typeguid, ver_tg);
         assert!(gpt.partitions[0].label.starts_with("c:"));
         assert!(gpt.partitions[1].label.starts_with("v:"));
-        assert_eq!(gpt.partitions[0].path, blob_store.blob_path(&cow_digest));
+        assert_eq!(
+            gpt.partitions[0].path,
+            blob_store.blob_path(&cow_digest).unwrap()
+        );
         assert_eq!(
             gpt.partitions[1].path,
             ScuteFiles::new(&m, &m.layers[1], &blob_store)
@@ -616,7 +622,7 @@ mod tests {
                         .is_err()
                 );
                 store.put_blob(&digest, &wire).await.unwrap();
-                let source = store.blob_path(&digest);
+                let source = store.blob_path(&digest).unwrap();
                 let files = ScuteFiles::new(&manifest, &manifest.layers[1], &store).unwrap();
                 let expected_data = if compressed || length != 8192 {
                     source.deflated_path(8192)

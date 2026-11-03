@@ -102,7 +102,7 @@ async fn with_index_lock_creates_graphroot_if_absent() {
 async fn with_index_lock_path_matches_filesystem_tag_db_lock_path() {
     // CRITICAL invariant: the helper MUST lock the SAME path that
     // FilesystemTagDb::set_tag locks against (`<graphroot>/index.json.lock`).
-    use conglobate::artifact::Digest;
+    use oci_spec::image::Digest;
 
     let tmp = tempfile::TempDir::new().unwrap();
     let layout_arc = Arc::new(layout(tmp.path()));
@@ -128,7 +128,12 @@ async fn with_index_lock_path_matches_filesystem_tag_db_lock_path() {
     let setter = tokio::spawn(async move {
         let db = FilesystemTagDb::open(&layout_for_db.graphroot).unwrap();
         b2.wait().await;
-        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"x").into());
+        let d = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"x"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         db.set_tag("test:tag", &d).await.unwrap();
     });
 

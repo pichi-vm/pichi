@@ -14,10 +14,9 @@ use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context as _, Result, anyhow, bail};
 
 use crate::cmd::verity::{VerityFormat as _, VerityParams};
-use conglobate::artifact::{
-    BootConfigDescriptor, Digest, Layer, Manifest, PmiDescriptor, ScuteDescriptor,
-};
+use conglobate::artifact::{BootConfigDescriptor, Layer, Manifest, PmiDescriptor, ScuteDescriptor};
 use devmap_verity::{HashType, Header};
+use oci_spec::image::Digest;
 use pichi_storage::BlobStore;
 
 /// Chain-wide verity annotation keys.

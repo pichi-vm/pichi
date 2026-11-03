@@ -148,7 +148,7 @@ impl Row {
             .map(|dt| dt.with_timezone(&Utc))
             .or_else(|| {
                 // Fallback: manifest blob mtime (per D-15).
-                std::fs::metadata(layout.blob_path(&entry.digest))
+                std::fs::metadata(layout.blob_path(&entry.digest).ok()?)
                     .and_then(|m| m.modified())
                     .ok()
                     .map(DateTime::<Utc>::from)

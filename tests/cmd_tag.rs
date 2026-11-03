@@ -32,7 +32,7 @@ fn graphroot(tmp: &TempDir) -> std::path::PathBuf {
     p
 }
 
-async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::artifact::Digest {
+async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> oci_spec::image::Digest {
     let m = Manifest {
         schema_version: 2,
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
@@ -50,8 +50,12 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::a
         annotations: chain_annotations(),
     };
     let bytes = serde_json::to_vec(&m).unwrap();
-    let digest =
-        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let blob_store = FilesystemBlobStore::new(graphroot);
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(graphroot).unwrap();

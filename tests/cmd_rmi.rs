@@ -37,7 +37,7 @@ async fn insert_manifest(
     graphroot: &std::path::Path,
     tag: &str,
     salt_seed: &str,
-) -> (conglobate::artifact::Digest, conglobate::artifact::Digest) {
+) -> (oci_spec::image::Digest, oci_spec::image::Digest) {
     let scute_digest = format!("sha256:{:0<64}", salt_seed);
     let m = Manifest {
         schema_version: 2,
@@ -55,13 +55,16 @@ async fn insert_manifest(
         annotations: chain_annotations(),
     };
     let mbytes = serde_json::to_vec(&m).unwrap();
-    let mdigest = conglobate::artifact::Digest::Sha256(
-        <sha2::Sha256 as sha2::Digest>::digest(&mbytes).into(),
-    );
+    let mdigest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&mbytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let bs = FilesystemBlobStore::new(graphroot);
     bs.put_blob(&mdigest, &mbytes).await.unwrap();
     // Insert a fake scute blob too so `delete_blob` actually finds something.
-    let parsed_scute: conglobate::artifact::Digest = scute_digest.parse().unwrap();
+    let parsed_scute: oci_spec::image::Digest = scute_digest.parse().unwrap();
     bs.put_blob(&parsed_scute, b"fake-scute-bytes")
         .await
         .unwrap();
@@ -377,7 +380,7 @@ async fn rmi_tolerates_source_blob_without_sidecars() {
 
     // Sanity check: NO sidecars exist for the fixture-inserted blobs.
     let bs = FilesystemBlobStore::new(&g);
-    let scute_path = bs.blob_path(&sdigest);
+    let scute_path = bs.blob_path(&sdigest).unwrap();
     assert!(
         !scute_path.with_extension("verity").exists(),
         "fixture must NOT have a .verity sidecar (legacy shape)"

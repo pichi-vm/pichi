@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use carapace::image::{Plan as _, Planned};
-use conglobate::artifact::{Digest, Manifest};
+use conglobate::artifact::Manifest;
 use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use sha2::{Digest as _, Sha256};
 use tempfile::NamedTempFile;
@@ -53,7 +54,7 @@ impl ImportArgs {
 
         let db = FilesystemTagDb::open(graphroot)?;
         let _guard = db.lock_index().await?;
-        let path = store.blob_path(&staged.cow_digest);
+        let path = store.blob_path(&staged.cow_digest)?;
         let files = ScuteFiles::from_header(&path, false, &staged.header)?;
         tokio::fs::create_dir_all(path.prepared_dir()).await?;
         tokio::fs::rename(staged.verity.path(), files.verity).await?;
@@ -151,8 +152,12 @@ impl StagedImport {
             &args.annotations,
         )?;
         let manifest_bytes = serde_json::to_vec(&manifest)?;
-        let manifest_digest =
-            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
+        let manifest_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         Ok(Self {
             cow,
             cow_digest,
@@ -175,7 +180,9 @@ struct StoredScute<R, W> {
 impl<R, W: Write> StoredScute<R, W> {
     fn finish(mut self) -> io::Result<Digest> {
         self.output.flush()?;
-        Ok(Digest::Sha256(self.hash.finalize().into()))
+        Ok(format!("sha256:{}", hex::encode(self.hash.finalize()))
+            .parse::<Digest>()
+            .expect("SHA-256 digest"))
     }
 }
 
@@ -326,7 +333,12 @@ mod tests {
             assert_eq!(staged.cow.as_file().metadata().unwrap().len(), size);
             let bytes = std::fs::read(staged.cow.path()).unwrap();
             assert_eq!(
-                Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into()),
+                format!(
+                    "sha256:{}",
+                    hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+                )
+                .parse::<Digest>()
+                .expect("SHA-256 digest"),
                 staged.cow_digest
             );
             let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();

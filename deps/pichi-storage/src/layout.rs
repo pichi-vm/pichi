@@ -204,8 +204,8 @@ impl CacheLayout {
     }
 
     /// Path of a single blob file: `<graphroot>/blobs/sha256/<hex>`.
-    pub fn blob_path(&self, digest: &conglobate::artifact::Digest) -> PathBuf {
-        self.blob_dir().join(digest.hex())
+    pub fn blob_path(&self, digest: &oci_spec::image::Digest) -> anyhow::Result<PathBuf> {
+        crate::FilesystemBlobStore::new(&self.graphroot).blob_path(digest)
     }
 
     /// Path of the OCI Image Layout index file: `<graphroot>/index.json`.

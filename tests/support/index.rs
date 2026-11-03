@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use conglobate::artifact::Digest;
+use oci_spec::image::Digest;
 use pichi_storage::{BlobStore, FilesystemBlobStore};
 
 /// Read a local import's single manifest while asserting its index descriptor.

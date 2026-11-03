@@ -9,9 +9,10 @@ use std::collections::BTreeMap;
 use anyhow::{Context as _, Result};
 
 use conglobate::artifact::{
-    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
+    ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
     ScuteDescriptor,
 };
+use oci_spec::image::Digest;
 
 /// Build a `Manifest` for a base carapace import (one Scute, no PMI).
 ///
@@ -118,7 +119,12 @@ mod tests {
     /// chain annotations carry the Phase 42 D-06 locked values.
     #[test]
     fn manifest_has_locked_chain_annotations() {
-        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
+        let cow_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let salt = vec![0u8; 32];
         let m = Manifest::base(
             &cow_digest,
@@ -164,7 +170,12 @@ mod tests {
     /// of zeros for a default-flag import).
     #[test]
     fn bottom_scute_salt_is_zero_prefix() {
-        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
+        let cow_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let salt = vec![0u8; 32]; // Existing layers may have no suffix.
         let m = Manifest::base(
             &cow_digest,
@@ -189,7 +200,12 @@ mod tests {
     /// Preserve the producer's full salt, including its random suffix.
     #[test]
     fn preserves_full_salt() {
-        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
+        let cow_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let mut salt = vec![0u8; 32];
         salt.extend_from_slice(&[0xAB; 32]);
         let m = Manifest::base(
@@ -213,7 +229,12 @@ mod tests {
     /// Manifest passes `validate()` (Phase 42 D-07 rules).
     #[test]
     fn build_passes_validate() {
-        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
+        let cow_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let salt = vec![0u8; 32];
         let m = Manifest::base(
             &cow_digest,
@@ -234,7 +255,12 @@ mod tests {
     /// by `pichi import pmi`).
     #[test]
     fn build_is_carapace_only() {
-        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
+        let cow_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let salt = vec![0u8; 32];
         let m = Manifest::base(
             &cow_digest,
@@ -276,7 +302,12 @@ mod tests {
             "cd".repeat(32),
         );
         let m = Manifest::base(
-            &Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into()),
+            &format!(
+                "sha256:{}",
+                hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+            )
+            .parse::<Digest>()
+            .expect("SHA-256 digest"),
             16384,
             &[0u8; 32],
             &[0xab; 32],

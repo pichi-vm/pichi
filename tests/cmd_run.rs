@@ -39,7 +39,7 @@ fn chain_annotations() -> std::collections::BTreeMap<String, String> {
     .collect()
 }
 
-fn sha256_digest(bytes: &[u8]) -> conglobate::artifact::Digest {
+fn sha256_digest(bytes: &[u8]) -> oci_spec::image::Digest {
     use sha2::{Digest as _, Sha256};
     let h = Sha256::digest(bytes);
     format!("sha256:{}", hex::encode(h)).parse().unwrap()
@@ -91,8 +91,12 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
         .annotations
         .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
     let bytes = serde_json::to_vec(&manifest).unwrap();
-    let digest =
-        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     // Store under the normalized reference key (`myapp:1` →
     // `docker.io/library/myapp:1`), matching how `pichi run` resolves it.
@@ -104,8 +108,8 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
         .unwrap();
 
     (
-        blob_store.blob_path(&pmi_digest),
-        blob_store.blob_path(&cow_digest),
+        blob_store.blob_path(&pmi_digest).unwrap(),
+        blob_store.blob_path(&cow_digest).unwrap(),
     )
 }
 
@@ -254,12 +258,12 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 .success();
             let prepared = FilesystemBlobStore::new(&graphroot(&destination));
             assert_eq!(prepared.get_blob(&manifest_digest).await.unwrap(), bytes);
-            let blob = prepared.blob_path(&digest);
+            let blob = prepared.blob_path(&digest).unwrap();
             let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &manifest.layers[0] else {
                 unreachable!()
             };
             let header = manifest.verity_header(scute, None).unwrap();
-            let verity_path = blob.verity_path(&sha256_digest(&header.encode()));
+            let verity_path = blob.verity_path(&sha256_digest(&header.encode())).unwrap();
             let data_path = if compressed || length != 8192 {
                 blob.deflated_path(8192)
             } else {

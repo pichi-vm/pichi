@@ -3,7 +3,8 @@
 
 //! Native configuration is image data. YAML plans remain inside Conglobate.
 use anyhow::{Context as _, Result, ensure};
-use conglobate::artifact::{BootConfigDescriptor, Digest, Layer, Manifest};
+use conglobate::artifact::{BootConfigDescriptor, Layer, Manifest};
+use oci_spec::image::Digest;
 use pichi_storage::{BlobSidecarExt as _, BlobStore};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -48,7 +49,10 @@ impl BootConfigFile {
 
     pub(super) fn descriptor(&self) -> Option<BootConfigDescriptor> {
         (!self.text.is_empty()).then(|| BootConfigDescriptor {
-            digest: Digest::Sha256(Sha256::digest(&self.bytes).into()).to_string(),
+            digest: format!("sha256:{}", hex::encode(Sha256::digest(&self.bytes)))
+                .parse::<Digest>()
+                .expect("SHA-256 digest")
+                .to_string(),
             size: self.bytes.len() as u64,
         })
     }
@@ -95,7 +99,7 @@ impl BootConfigFile {
             return Ok(None);
         };
         let descriptor = config.descriptor().context("empty bootconfig")?;
-        let directory = store.blob_path(&descriptor.digest.parse()?).prepared_dir();
+        let directory = store.blob_path(&descriptor.digest.parse()?)?.prepared_dir();
         tokio::fs::create_dir_all(&directory).await?;
         let path = directory.join("bootconfig");
         pichi_storage::write_sidecar_atomic(
@@ -126,7 +130,10 @@ impl BootConfigFile {
             "boot payload size mismatch: {digest}"
         );
         ensure!(
-            Digest::Sha256(Sha256::digest(&bytes).into()) == *digest,
+            format!("sha256:{}", hex::encode(Sha256::digest(&bytes)))
+                .parse::<Digest>()
+                .expect("SHA-256 digest")
+                == *digest,
             "boot payload digest mismatch: {digest}"
         );
         Ok(bytes)
@@ -190,7 +197,10 @@ mod tests {
             config: conglobate::artifact::ConfigDescriptor::canonical(),
             layers: vec![
                 Layer::Pmi(conglobate::artifact::PmiDescriptor {
-                    digest: Digest::Sha256(Sha256::digest(b"opaque PMI").into()).to_string(),
+                    digest: format!("sha256:{}", hex::encode(Sha256::digest(b"opaque PMI")))
+                        .parse::<Digest>()
+                        .expect("SHA-256 digest")
+                        .to_string(),
                     size: 10,
                 }),
                 Layer::BootConfig(config.descriptor().unwrap()),

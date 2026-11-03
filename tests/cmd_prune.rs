@@ -43,7 +43,7 @@ async fn insert_manifest(
     graphroot: &std::path::Path,
     tag: &str,
     salt_seed: &str,
-) -> (conglobate::artifact::Digest, conglobate::artifact::Digest) {
+) -> (oci_spec::image::Digest, oci_spec::image::Digest) {
     let scute_digest = format!("sha256:{:0<64}", salt_seed);
     let m = Manifest {
         schema_version: 2,
@@ -61,13 +61,16 @@ async fn insert_manifest(
         annotations: chain_annotations(),
     };
     let mbytes = serde_json::to_vec(&m).unwrap();
-    let mdigest = conglobate::artifact::Digest::Sha256(
-        <sha2::Sha256 as sha2::Digest>::digest(&mbytes).into(),
-    );
+    let mdigest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&mbytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let bs = FilesystemBlobStore::new(graphroot);
     use pichi_storage::BlobStore;
     bs.put_blob(&mdigest, &mbytes).await.unwrap();
-    let parsed_scute: conglobate::artifact::Digest = scute_digest.parse().unwrap();
+    let parsed_scute: oci_spec::image::Digest = scute_digest.parse().unwrap();
     bs.put_blob(&parsed_scute, b"fake-scute-bytes")
         .await
         .unwrap();
@@ -415,7 +418,13 @@ fn prune_counts_all_variants_and_headless_files_once() {
         std::fs::write(source.deflated_path(8192), [0; 20]).unwrap();
         for key in [1, 2] {
             std::fs::write(
-                source.verity_path(&conglobate::artifact::Digest::Sha256([key; 32])),
+                source
+                    .verity_path(
+                        &format!("sha256:{}", hex::encode([key; 32]))
+                            .parse::<oci_spec::image::Digest>()
+                            .expect("SHA-256 digest"),
+                    )
+                    .unwrap(),
                 [0; 30],
             )
             .unwrap();

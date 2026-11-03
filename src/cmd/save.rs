@@ -15,10 +15,9 @@ use crate::cmd::cache::ImageStore as _;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use conglobate::artifact::{
-    Digest, Index, IndexDescriptor, LayoutMarker, MEDIA_TYPE_PICHI_ARTIFACT_V1,
-};
+use conglobate::artifact::{Index, IndexDescriptor, LayoutMarker, MEDIA_TYPE_PICHI_ARTIFACT_V1};
 use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::SaveArgs;
@@ -54,7 +53,7 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
 
     let mut to_copy = std::collections::HashSet::new();
     for image in &images {
-        tokio::fs::write(blobs_dir.join(image.digest.hex()), &image.bytes).await?;
+        tokio::fs::write(blobs_dir.join(image.digest.digest()), &image.bytes).await?;
         if !image.is_index() {
             let manifest = image.manifest()?;
             if !manifest.config.is_empty() {
@@ -103,8 +102,8 @@ async fn copy_blob(
     digest: &Digest,
     blobs_dir: &Path,
 ) -> Result<()> {
-    let src = blob_store.blob_path(digest);
-    let dst = blobs_dir.join(digest.hex());
+    let src = blob_store.blob_path(digest)?;
+    let dst = blobs_dir.join(digest.digest());
     tokio::fs::copy(&src, &dst).await.with_context(|| {
         format!(
             "copy blob {digest} ({} -> {})",

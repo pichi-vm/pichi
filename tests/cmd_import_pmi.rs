@@ -421,8 +421,18 @@ async fn native_boot_components_survive_save_and_load_exactly() {
     for layer in &after.layers {
         let digest = layer.digest_str().parse().unwrap();
         assert_eq!(
-            std::fs::read(FilesystemBlobStore::new(&source_root).blob_path(&digest)).unwrap(),
-            std::fs::read(FilesystemBlobStore::new(&destination_root).blob_path(&digest)).unwrap()
+            std::fs::read(
+                FilesystemBlobStore::new(&source_root)
+                    .blob_path(&digest)
+                    .unwrap()
+            )
+            .unwrap(),
+            std::fs::read(
+                FilesystemBlobStore::new(&destination_root)
+                    .blob_path(&digest)
+                    .unwrap()
+            )
+            .unwrap()
         );
     }
 }
@@ -451,7 +461,9 @@ async fn publication_rechecks_cached_bootconfig_bytes() {
         .find(|layer| matches!(layer, Layer::BootConfig(_)))
         .unwrap();
     std::fs::write(
-        FilesystemBlobStore::new(&g).blob_path(&layer.digest_str().parse().unwrap()),
+        FilesystemBlobStore::new(&g)
+            .blob_path(&layer.digest_str().parse().unwrap())
+            .unwrap(),
         vec![b'x'; layer.size() as usize],
     )
     .unwrap();
@@ -476,7 +488,9 @@ async fn empty_bootconfig_request_rechecks_the_cached_pmi() {
     let manifest = resolve_manifest(&root, "docker.io/library/boot:1").await;
     let layer = &manifest.layers[0];
     std::fs::write(
-        FilesystemBlobStore::new(&root).blob_path(&layer.digest_str().parse().unwrap()),
+        FilesystemBlobStore::new(&root)
+            .blob_path(&layer.digest_str().parse().unwrap())
+            .unwrap(),
         vec![b'x'; layer.size() as usize],
     )
     .unwrap();

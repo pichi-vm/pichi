@@ -521,7 +521,7 @@ dependencies = [
 [[package]]
 name = "conglobate"
 version = "0.2.0"
-source = "git+https://github.com/pichi-vm/conglobate?rev=9a716fa36db7fcd4de8502d7eea7eaf20e0f5755#9a716fa36db7fcd4de8502d7eea7eaf20e0f5755"
+source = "git+https://github.com/pichi-vm/conglobate?rev=f3f683a2695471487e9c0e470db01fddcb6c2f6f#f3f683a2695471487e9c0e470db01fddcb6c2f6f"
 dependencies = [
  "hex",
  "humantime-serde",
@@ -2304,6 +2304,7 @@ dependencies = [
  "bytes",
  "conglobate",
  "futures-util",
+ "hex",
  "http",
  "oci-client",
  "oci-spec",
@@ -2326,6 +2327,7 @@ dependencies = [
  "async-trait",
  "conglobate",
  "fs4",
+ "hex",
  "oci-spec",
  "rustix",
  "serde",

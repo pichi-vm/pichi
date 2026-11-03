@@ -26,8 +26,9 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
-use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1};
+use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
 use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 

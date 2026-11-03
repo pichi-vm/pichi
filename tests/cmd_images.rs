@@ -41,7 +41,7 @@ async fn populate(
     graphroot: &std::path::Path,
     tag: &str,
     with_pmi: bool,
-) -> conglobate::artifact::Digest {
+) -> oci_spec::image::Digest {
     let mut layers = vec![Layer::Scute(ScuteDescriptor {
         digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111".into(),
         size: 4096,
@@ -66,8 +66,12 @@ async fn populate(
         annotations: chain_annotations(),
     };
     let bytes = serde_json::to_vec(&m).unwrap();
-    let digest =
-        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let blob_store = FilesystemBlobStore::new(graphroot);
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(graphroot).unwrap();

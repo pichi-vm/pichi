@@ -17,9 +17,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::cache::ImageStore as _;
-use conglobate::artifact::{Digest, Manifest};
+use conglobate::artifact::Manifest;
 use conglobate::resources::Requirements;
 use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{BuildArgs, PullArgs, PullPolicy};
@@ -74,7 +75,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .digest
         .parse()
         .context("invalid build-image PMI digest")?;
-    let pmi_path = blob_store.blob_path(&pmi_digest);
+    let pmi_path = blob_store.blob_path(&pmi_digest)?;
     let bootconfig_path =
         super::boot_config::BootConfigFile::prepare_image(&build_manifest, &blob_store).await?;
 
@@ -861,8 +862,12 @@ mod tests {
         // Compact JSON so digest is stable-ish; recompute after parse round-trip.
         let platform_val: serde_json::Value = serde_json::from_slice(platform_bytes).unwrap();
         let platform = serde_json::to_vec(&platform_val).unwrap();
-        let platform_digest =
-            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&platform).into());
+        let platform_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&platform))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         blob_store
             .put_blob(&platform_digest, &platform)
             .await

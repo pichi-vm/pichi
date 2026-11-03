@@ -5,7 +5,8 @@
 mod index;
 
 use assert_cmd::Command;
-use conglobate::artifact::{Digest, Manifest};
+use conglobate::artifact::Manifest;
+use oci_spec::image::Digest;
 use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
@@ -49,6 +50,7 @@ async fn save_load_preserves_manifest_and_rebuilds_verity_on_cache_hits() {
     let tree = std::fs::read(
         source_store
             .blob_path(&cow)
+            .unwrap()
             .prepared_files()
             .unwrap()
             .into_iter()
@@ -79,6 +81,7 @@ async fn save_load_preserves_manifest_and_rebuilds_verity_on_cache_hits() {
         );
         let sidecar = store
             .blob_path(&cow)
+            .unwrap()
             .prepared_files()
             .unwrap()
             .into_iter()
@@ -126,6 +129,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
         let cow: Digest = manifest.layers[0].digest_str().parse().unwrap();
         let tree = source_store
             .blob_path(&cow)
+            .unwrap()
             .prepared_files()
             .unwrap()
             .into_iter()
@@ -184,7 +188,14 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
     let cow: Digest = manifests[0].1.layers[0].digest_str().parse().unwrap();
     for (name, bytes) in &expected_trees {
         assert_eq!(
-            std::fs::read(source_store.blob_path(&cow).prepared_dir().join(name)).unwrap(),
+            std::fs::read(
+                source_store
+                    .blob_path(&cow)
+                    .unwrap()
+                    .prepared_dir()
+                    .join(name)
+            )
+            .unwrap(),
             *bytes
         );
     }
@@ -201,7 +212,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
         }
         for (name, bytes) in &expected_trees {
             assert_eq!(
-                std::fs::read(store.blob_path(&cow).prepared_dir().join(name)).unwrap(),
+                std::fs::read(store.blob_path(&cow).unwrap().prepared_dir().join(name)).unwrap(),
                 *bytes
             );
         }
@@ -210,7 +221,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
     // uses it. A tree valid for only one salt must reject the whole layout.
     let guest_tree = combined
         .join("blobs/sha256")
-        .join(cow.hex())
+        .join(cow.digest())
         .with_extension("verity");
     std::fs::write(&guest_tree, &expected_trees[0].1).unwrap();
     Command::cargo_bin("pichi")
@@ -228,8 +239,16 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
         .args(["rmi", "fixture.local/salt:aa"])
         .assert()
         .success();
-    assert!(store.blob_path(&cow).exists());
-    assert_eq!(store.blob_path(&cow).prepared_files().unwrap().len(), 2);
+    assert!(store.blob_path(&cow).unwrap().exists());
+    assert_eq!(
+        store
+            .blob_path(&cow)
+            .unwrap()
+            .prepared_files()
+            .unwrap()
+            .len(),
+        2
+    );
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", &destination_home)

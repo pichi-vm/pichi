@@ -26,6 +26,7 @@ fs4 = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
+hex.workspace = true
 sha2.workspace = true
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["fs", "rt", "rt-multi-thread", "io-util", "macros", "time", "sync"] }

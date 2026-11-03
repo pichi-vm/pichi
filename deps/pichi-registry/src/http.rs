@@ -29,7 +29,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bytes::Bytes;
-use conglobate::artifact::Digest;
 use futures_util::stream::{Stream, StreamExt as _};
 use oci_client::{
     Client, RegistryOperation,
@@ -39,6 +38,7 @@ use oci_client::{
     secrets::RegistryAuth,
 };
 use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use tokio::io::AsyncWrite;
 
 use crate::auth::{AuthEnv, AuthHint};
@@ -175,7 +175,7 @@ impl HttpRegistry {
 /// [`Reference`].
 fn build_oci_ref(registry: &str, repo: &str, tag_or_digest: Option<&str>) -> Result<Reference> {
     let s = match tag_or_digest {
-        Some(td) if td.starts_with("sha256:") => format!("{registry}/{repo}@{td}"),
+        Some(td) if td.contains(':') => format!("{registry}/{repo}@{td}"),
         Some(td) => format!("{registry}/{repo}:{td}"),
         None => format!("{registry}/{repo}"),
     };
@@ -288,7 +288,7 @@ impl Registry for HttpRegistry {
         repo: &str,
         digest: &Digest,
     ) -> Result<Bytes> {
-        let oci_ref = build_oci_ref(registry, repo, Some(&digest.to_string()))?;
+        let oci_ref = build_oci_ref(registry, repo, Some(digest.as_ref()))?;
         let auth = self.auth_for(registry).await?;
         let client = self.client_for(registry);
         let (raw, _digest_str) = client
@@ -380,7 +380,7 @@ impl Registry for HttpRegistry {
             .await
             .map_err(RegistryError::from)?;
         client
-            .blob_exists(&oci_ref, &digest.to_string())
+            .blob_exists(&oci_ref, digest.as_ref())
             .await
             .map_err(RegistryError::from)
     }
@@ -409,7 +409,12 @@ impl Registry for HttpRegistry {
         // (push consumes the bytes). The registry's location-header URL also
         // contains the assigned digest, but we trust local sha256 for the
         // return value (D-11: CVM-friendly local validation).
-        let computed = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+        let computed = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let _location_url = client
             .push_manifest_raw(reference, bytes, ct)
             .await
@@ -523,10 +528,7 @@ impl Registry for HttpRegistry {
             .auth(&target, &auth, RegistryOperation::Push)
             .await
             .map_err(RegistryError::from)?;
-        match client
-            .mount_blob(&target, &source, &digest.to_string())
-            .await
-        {
+        match client.mount_blob(&target, &source, digest.as_ref()).await {
             Ok(()) => Ok(true),
             // Mount unsupported (405), source blob absent, or registry simply
             // refuses — treat as fall-back signal per the trait contract.
@@ -583,7 +585,7 @@ mod tests {
     async fn blob_stream_keeps_eof_and_reports_digest_errors() {
         use super::{HttpRegistry, RegistryEntry};
         use crate::{Registry as _, auth::AuthEnv};
-        use conglobate::artifact::Digest;
+        use oci_spec::image::Digest;
         use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
         use tokio::net::TcpListener;
         use tokio_util::io::StreamReader;
@@ -630,14 +632,16 @@ mod tests {
                 }],
                 AuthEnv::default(),
             );
-            let digest = Digest::Sha256(
-                <sha2::Sha256 as sha2::Digest>::digest(if valid {
+            let digest = format!(
+                "sha256:{}",
+                hex::encode(<sha2::Sha256 as sha2::Digest>::digest(if valid {
                     b"scute bytes"
                 } else {
                     b"wrong bytes"
-                })
-                .into(),
-            );
+                }))
+            )
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 let stream = registry
                     .pull_blob_stream(&address, "test/scute", &digest, 11)

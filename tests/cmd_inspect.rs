@@ -64,8 +64,12 @@ async fn inspect_bare_manifest_returns_full_schema() {
         annotations: chain_annotations(),
     };
     let bytes = serde_json::to_vec(&m).unwrap();
-    let digest =
-        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();
@@ -123,8 +127,12 @@ async fn inspect_format_reaches_dotted_annotation() {
         annotations: chain_annotations(),
     };
     let bytes = serde_json::to_vec(&m).unwrap();
-    let digest =
-        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();
@@ -175,8 +183,12 @@ async fn inspect_image_index_lists_entries() {
         ]
     });
     let bytes = serde_json::to_vec(&index).unwrap();
-    let digest =
-        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();

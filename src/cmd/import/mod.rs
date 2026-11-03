@@ -25,10 +25,11 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow, bail};
 
 use conglobate::artifact::{
-    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
+    ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
 };
 use conglobate::resources::Config;
 use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use super::{boot_config::BootConfigFile, cache::ImageStore as _};
@@ -75,7 +76,12 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     let pmi_bytes = tokio::fs::read(&args.pmi)
         .await
         .with_context(|| format!("reading PMI file: {}", args.pmi.display()))?;
-    let pmi_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes).into());
+    let pmi_digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes))
+    )
+    .parse::<Digest>()
+    .expect("SHA-256 digest");
 
     let bootconfig = match &args.bootconfig {
         Some(path) => Some(BootConfigFile::read(path).await?),
@@ -124,8 +130,12 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         .validate()
         .context("assembled bootable manifest failed self-validation (bug)")?;
     let manifest_bytes = serde_json::to_vec(&manifest).context("serialising bootable manifest")?;
-    let manifest_digest =
-        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
+    let manifest_digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes))
+    )
+    .parse::<Digest>()
+    .expect("SHA-256 digest");
 
     // Commit blobs (PMI → bootconfig → launch config → manifest), then tag. Scute blobs (if
     // any) are already present — content-addressed no-op if re-put.
@@ -184,8 +194,8 @@ async fn carapace_scutes_manifest(
     // Accept a bare `sha256:<hex>` image digest directly — that is exactly
     // what `pichi import raw` prints, so an untagged carapace is referenceable
     // without inventing a repo. Otherwise parse as a tag / `repo@sha256:…` ref.
-    let src_digest = if let Ok(digest) = carapace.parse::<Digest>() {
-        digest
+    let src_digest = if carapace.starts_with("sha256:") {
+        carapace.parse::<Digest>()?
     } else {
         let carapace_ref: Reference = carapace
             .parse()
@@ -257,7 +267,12 @@ async fn read_launch_contract(path: &Path) -> Result<(Digest, Vec<u8>)> {
     cfg.validate().context("invalid --config")?;
     let bytes = serde_json::to_vec(&cfg).context("serialise config blob")?;
     Ok((
-        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into()),
+        format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest"),
         bytes,
     ))
 }
