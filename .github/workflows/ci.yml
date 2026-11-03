@@ -14,15 +14,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# Fail-fast DAG (one push/PR entrypoint):
-#
-#   Tier 1 — checks (parallel): cargo fmt, license headers, commit messages
-#   Tier 2 — after Tier 1 succeeds (parallel with each other):
-#            platform matrix (ubuntu / linux-arm64 / windows / macos),
-#            registry round-trips (zot / ghcr)
-#
-# A red Tier-1 job skips the expensive Tier-2 work.
-# cargo-deny is not in Tier 1 yet: advisories are still red on main.
 jobs:
   checks:
     name: checks
@@ -95,14 +86,12 @@ jobs:
 
   ci:
     name: platforms
-    needs: [checks]
     uses: ./.github/workflows/platforms.yml
     permissions:
       contents: read
 
   registry:
     name: registry
-    needs: [checks]
     uses: ./.github/workflows/registry.yml
     permissions:
       contents: read
