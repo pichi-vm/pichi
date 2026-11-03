@@ -13,8 +13,7 @@ use anyhow::{Context, Result, ensure};
 use cap_std::fs::{Dir, OpenOptions};
 use conglobate::{
     artifact::Reference,
-    build::Lock,
-    plan::{Boot, Directive, Image, ImageRef, Plan, Remote, Stage},
+    plan::{Boot, Directive, Image, ImageRef, Lock, Plan, Remote, Stage},
 };
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 use std::{
