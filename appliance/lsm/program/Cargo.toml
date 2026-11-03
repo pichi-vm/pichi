@@ -1,0 +1,12 @@
+[package]
+name = "conglobate-label-policy"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only OR BSD-2-Clause"
+publish = false
+
+[dependencies]
+aya-ebpf = "0.2.1"
+
+[lints.clippy]
+self_named_module_files = "deny"

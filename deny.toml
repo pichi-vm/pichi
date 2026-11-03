@@ -23,6 +23,11 @@ confidence-threshold = 0.8
 name = "winx"
 allow = ["Apache-2.0 WITH LLVM-exception"]
 
+# The appliance kernel policy retains its dual kernel/BSD license.
+[[licenses.exceptions]]
+name = "conglobate-label-policy"
+allow = ["BSD-2-Clause"]
+
 [advisories]
 version = 2
 ignore = []

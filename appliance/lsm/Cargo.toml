@@ -1,0 +1,22 @@
+[package]
+name = "conglobate-lsm"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+members = ["program"]
+resolver = "3"
+
+[dependencies]
+aya = "0.14"
+
+[build-dependencies]
+aya-build = "0.2"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+self_named_module_files = "deny"
