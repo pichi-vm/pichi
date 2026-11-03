@@ -30,18 +30,16 @@
 //!
 //! [1]: https://github.com/opencontainers/image-spec/blob/main/image-layout.md
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
-use conglobate::artifact::{Index as ImageIndex, IndexDescriptor as ManifestDescriptor};
+use oci_spec::image::{Descriptor, ImageIndex, MediaType, OciLayoutBuilder};
 
 use crate::atomic::write_atomic;
 use crate::lock::lock_exclusive_async;
 use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
-use oci_spec::image::{Digest, OciLayoutBuilder};
+use oci_spec::image::Digest;
 
 /// OCI annotation key for the human-readable image reference (tag).
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
@@ -123,7 +121,11 @@ impl FilesystemTagDb {
         match tokio::fs::read(&path).await {
             Ok(bytes) => serde_json::from_slice::<ImageIndex>(&bytes)
                 .with_context(|| format!("failed to parse index.json at {}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ImageIndex::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut index = ImageIndex::default();
+                index.set_media_type(Some(MediaType::ImageIndex));
+                Ok(index)
+            }
             Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
         }
     }
@@ -136,7 +138,9 @@ impl FilesystemTagDb {
             .parent()
             .expect("index_path always has a parent (cache root)");
         // Pretty-print for human readability and skopeo/oras compatibility.
-        let bytes = serde_json::to_vec_pretty(index).context("failed to serialise index.json")?;
+        let mut value = serde_json::to_value(index)?;
+        value.sort_all_objects();
+        let bytes = serde_json::to_vec_pretty(&value).context("failed to serialise index.json")?;
         write_atomic(parent, &path, &bytes)
             .await
             .context("failed to write index.json")
@@ -177,21 +181,19 @@ impl FilesystemTagDb {
         let mut index = self.read_index().await?;
 
         // Overwrite semantics: drop any existing entry for this tag first.
-        index
-            .manifests
-            .retain(|m| m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag));
-        index.manifests.push(ManifestDescriptor {
-            artifact_type: None,
-            platform: None,
-            media_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-            digest: digest.to_string(),
-            size: 0,
-            annotations: {
-                let mut a = BTreeMap::new();
-                a.insert(REF_NAME_ANNOTATION.to_string(), tag.to_string());
-                a
-            },
+        let mut manifests = index.manifests().clone();
+        manifests.retain(|m| {
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get(REF_NAME_ANNOTATION))
+                .map(String::as_str)
+                != Some(tag)
         });
+        let mut descriptor =
+            Descriptor::new(MEDIA_TYPE_PICHI_ARTIFACT_V1.into(), 0, digest.clone());
+        descriptor.set_annotations(Some([(REF_NAME_ANNOTATION.into(), tag.into())].into()));
+        manifests.push(descriptor);
+        index.set_manifests(manifests);
         self.write_index_atomic(&index).await
     }
 
@@ -207,11 +209,17 @@ impl FilesystemTagDb {
     /// otherwise.
     pub async fn delete_tag_locked(&self, tag: &str) -> Result<bool> {
         let mut index = self.read_index().await?;
-        let before = index.manifests.len();
-        index
-            .manifests
-            .retain(|m| m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag));
-        let existed = index.manifests.len() != before;
+        let before = index.manifests().len();
+        let mut manifests = index.manifests().clone();
+        manifests.retain(|m| {
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get(REF_NAME_ANNOTATION))
+                .map(String::as_str)
+                != Some(tag)
+        });
+        let existed = manifests.len() != before;
+        index.set_manifests(manifests);
         if existed {
             self.ensure_oci_layout_marker().await?;
             self.write_index_atomic(&index).await?;
@@ -231,12 +239,14 @@ impl TagDb for FilesystemTagDb {
 
     async fn resolve_tag(&self, tag: &str) -> Result<Option<Digest>> {
         let index = self.read_index().await?;
-        for m in &index.manifests {
-            if m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) == Some(tag) {
-                let d = Digest::from_str(&m.digest).with_context(|| {
-                    format!("corrupt digest for tag {tag} in index.json: {}", m.digest)
-                })?;
-                return Ok(Some(d));
+        for m in index.manifests() {
+            if m.annotations()
+                .as_ref()
+                .and_then(|a| a.get(REF_NAME_ANNOTATION))
+                .map(String::as_str)
+                == Some(tag)
+            {
+                return Ok(Some(m.digest().clone()));
             }
         }
         Ok(None)
@@ -244,14 +254,16 @@ impl TagDb for FilesystemTagDb {
 
     async fn list_tags(&self) -> Result<Vec<TagEntry>> {
         let index = self.read_index().await?;
-        let mut out = Vec::with_capacity(index.manifests.len());
-        for m in &index.manifests {
-            let Some(tag) = m.annotations.get(REF_NAME_ANNOTATION) else {
+        let mut out = Vec::with_capacity(index.manifests().len());
+        for m in index.manifests() {
+            let Some(tag) = m
+                .annotations()
+                .as_ref()
+                .and_then(|a| a.get(REF_NAME_ANNOTATION))
+            else {
                 continue; // skip manifests without a ref name annotation
             };
-            let digest = Digest::from_str(&m.digest).with_context(|| {
-                format!("corrupt digest for tag {tag} in index.json: {}", m.digest)
-            })?;
+            let digest = m.digest().clone();
             out.push(TagEntry {
                 tag: tag.clone(),
                 digest,

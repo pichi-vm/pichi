@@ -13,9 +13,9 @@ use super::cache::ImageStore as _;
 use anyhow::{Context, Result, bail, ensure};
 use cap_std::fs::Dir;
 use conglobate::artifact::Manifest;
-use conglobate::artifact::{Index as LayoutIndex, IndexDescriptor as LayoutEntry};
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
+use oci_spec::image::{Descriptor, ImageIndex, MediaType};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use sha2::{Digest as _, Sha256};
 
@@ -25,9 +25,6 @@ use crate::cmd::layer::{PreparedLayer, ScuteFiles};
 use crate::cmd::manifest_ext::{ManifestExt as _, ScuteRoots};
 use crate::config::Config;
 
-use conglobate::artifact::{
-    MEDIA_TYPE_OCI_INDEX_V1 as INDEX_TYPE, MEDIA_TYPE_OCI_MANIFEST_V1 as MANIFEST_TYPE,
-};
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 const FILE_CAP: usize = 4096;
 
@@ -38,7 +35,7 @@ pub(super) struct OciLayout {
     staging: tempfile::TempDir,
     store: FilesystemBlobStore,
     manifests: Vec<(Digest, Manifest)>,
-    roots: Vec<LayoutEntry>,
+    roots: Vec<Descriptor>,
     blobs: HashMap<Digest, u64>,
     guest_verity: Vec<(PathBuf, PathBuf)>,
 }
@@ -103,13 +100,17 @@ impl OciLayout {
             marker.image_layout_version() == "1.0.0",
             "unsupported OCI layout version"
         );
-        let index: LayoutIndex =
+        let index: ImageIndex =
             serde_json::from_slice(&Self::small(&root, Path::new("index.json"), METADATA_CAP)?)?;
         ensure!(
-            index.schema_version == 2 && index.media_type == INDEX_TYPE,
+            index.schema_version() == 2
+                && index
+                    .media_type()
+                    .as_ref()
+                    .is_none_or(|m| m == &MediaType::ImageIndex),
             "invalid OCI index schema or media type"
         );
-        ensure!(!index.manifests.is_empty(), "OCI index has no manifests");
+        ensure!(!index.manifests().is_empty(), "OCI index has no manifests");
         let store = FilesystemBlobStore::new(staging.path());
         std::fs::create_dir_all(staging.path().join("blobs/sha256"))?;
         let mut layout = Self {
@@ -117,7 +118,7 @@ impl OciLayout {
             staging,
             store,
             manifests: Vec::new(),
-            roots: index.manifests.clone(),
+            roots: index.manifests().clone(),
             blobs: HashMap::new(),
             guest_verity: Vec::new(),
         };
@@ -130,47 +131,60 @@ impl OciLayout {
             layout
                 .roots
                 .iter()
-                .map(|entry| &entry.digest)
+                .map(Descriptor::digest)
                 .collect::<HashSet<_>>()
                 .len()
                 == layout.roots.len(),
             "duplicate OCI manifest"
         );
-        let mut pending = index.manifests;
+        let mut pending = index.manifests().clone();
         while let Some(entry) = pending.pop() {
             ensure!(
-                entry.media_type == MANIFEST_TYPE || entry.media_type == INDEX_TYPE,
+                entry.media_type() == &oci_spec::image::MediaType::ImageManifest
+                    || entry.media_type() == &oci_spec::image::MediaType::ImageIndex,
                 "unsupported index entry media type"
             );
             ensure!(
                 entry
-                    .artifact_type
-                    .as_deref()
+                    .artifact_type()
+                    .as_ref()
+                    .map(AsRef::as_ref)
                     .is_none_or(|t| t == conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1),
                 "invalid index artifact type"
             );
-            ensure!(entry.size <= METADATA_CAP, "manifest exceeds metadata cap");
-            let digest = layout.copy_blob(&root, &entry.digest, entry.size, &mut expected)?;
+            ensure!(
+                entry.size() <= METADATA_CAP,
+                "manifest exceeds metadata cap"
+            );
+            let digest = layout.copy_blob(
+                &root,
+                &entry.digest().to_string(),
+                entry.size(),
+                &mut expected,
+            )?;
             let bytes = std::fs::read(layout.store.blob_path(&digest)?)?;
             let value: serde_json::Value = serde_json::from_slice(&bytes)?;
             ensure!(
-                value["mediaType"] == entry.media_type && value["schemaVersion"] == 2,
+                (value["mediaType"].is_null()
+                    || value["mediaType"] == entry.media_type().to_string())
+                    && value["schemaVersion"] == 2,
                 "index entry type or schema mismatch"
             );
 
             if !seen.insert(digest.clone()) {
                 continue;
             }
-            if entry.media_type == INDEX_TYPE {
-                let nested: LayoutIndex = serde_json::from_slice(&bytes)?;
-                ensure!(!nested.manifests.is_empty(), "OCI index has no manifests");
-                pending.extend(nested.manifests);
+            if entry.media_type() == &oci_spec::image::MediaType::ImageIndex {
+                let nested: ImageIndex = serde_json::from_slice(&bytes)?;
+                ensure!(!nested.manifests().is_empty(), "OCI index has no manifests");
+                pending.extend(nested.manifests().iter().cloned());
                 continue;
             }
             let manifest =
                 Manifest::decode_json(bytes.as_slice()).context("invalid OCI manifest")?;
             ensure!(
-                manifest.schema_version == 2 && manifest.media_type == MANIFEST_TYPE,
+                manifest.schema_version == 2
+                    && manifest.media_type == MediaType::ImageManifest.to_string(),
                 "invalid manifest schema or media type"
             );
             ensure!(!manifest.layers.is_empty(), "OCI artifact has no layers");
@@ -479,7 +493,7 @@ impl OciLayout {
         for root in &self.roots {
             indexes.push(
                 store
-                    .local_index(&root.digest.parse()?, root.platform.clone())
+                    .local_index(root.digest(), root.platform().clone())
                     .await?,
             );
         }
@@ -494,10 +508,10 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
     let imported = OciLayout::read(&args.input, &store).await?;
     let mut tags = BTreeMap::new();
     for (position, entry) in imported.roots.iter().enumerate() {
-        if let Some(tag) = args
-            .tag
+        if let Some(tag) = args.tag.as_ref().or(entry
+            .annotations()
             .as_ref()
-            .or(entry.annotations.get(REF_NAME_ANNOTATION))
+            .and_then(|a| a.get(REF_NAME_ANNOTATION)))
         {
             let tag = tag
                 .parse::<Reference>()
@@ -509,7 +523,12 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
     let _guard = db.lock_index().await?;
     let indexes = imported.commit(&store).await?;
     for (digest, entry) in indexes.iter().zip(&imported.roots) {
-        if args.tag.is_none() && !entry.annotations.contains_key(REF_NAME_ANNOTATION) {
+        if args.tag.is_none()
+            && entry
+                .annotations()
+                .as_ref()
+                .is_none_or(|a| !a.contains_key(REF_NAME_ANNOTATION))
+        {
             println!("loaded {digest} (untagged)");
         }
     }
@@ -544,7 +563,7 @@ pub(super) mod tests {
             let mut fixture = Self {
                 manifest: json!({
                     "schemaVersion": 2,
-                    "mediaType": MANIFEST_TYPE,
+                    "mediaType": oci_spec::image::MediaType::ImageManifest,
                     "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
                     "config": conglobate::artifact::ConfigDescriptor::canonical(),
                     "layers": [],
@@ -631,9 +650,9 @@ pub(super) mod tests {
             std::fs::write(
                 dir.join("index.json"),
                 serde_json::to_vec(&json!({
-                    "schemaVersion": 2, "mediaType": INDEX_TYPE,
+                    "schemaVersion": 2, "mediaType": oci_spec::image::MediaType::ImageIndex,
                     "manifests": [{
-                        "mediaType": MANIFEST_TYPE,
+                        "mediaType": oci_spec::image::MediaType::ImageManifest,
                         "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
                         "digest": digest.to_string(), "size": bytes.len(),
                         "annotations": { REF_NAME_ANNOTATION: "guest:ignored" },
@@ -884,7 +903,10 @@ pub(super) mod tests {
             let mut fixture = LayoutFixture::new();
             match case {
                 "manifest schema" => fixture.manifest["schemaVersion"] = 1.into(),
-                "manifest type" => fixture.manifest["mediaType"] = INDEX_TYPE.into(),
+                "manifest type" => {
+                    fixture.manifest["mediaType"] =
+                        oci_spec::image::MediaType::ImageIndex.to_string().into();
+                }
                 "artifact type" => fixture.manifest["artifactType"] = "text/plain".into(),
                 "missing root" => {
                     fixture.manifest["annotations"]
@@ -1007,7 +1029,10 @@ pub(super) mod tests {
                 "empty index" => index["manifests"] = json!([]),
                 "index schema" => index["schemaVersion"] = 1.into(),
                 "index type" => index["mediaType"] = "text/plain".into(),
-                "entry type" => index["manifests"][0]["mediaType"] = INDEX_TYPE.into(),
+                "entry type" => {
+                    index["manifests"][0]["mediaType"] =
+                        oci_spec::image::MediaType::ImageIndex.to_string().into();
+                }
                 "entry artifact" => index["manifests"][0]["artifactType"] = "text/plain".into(),
                 "entry digest" => index["manifests"][0]["digest"] = "sha256:../../escape".into(),
                 "entry size" => index["manifests"][0]["size"] = 1.into(),
@@ -1138,7 +1163,7 @@ pub(super) mod tests {
         let mut index: Value =
             serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
         index["manifests"].as_array_mut().unwrap().push(json!({
-            "mediaType": MANIFEST_TYPE, "digest": other.to_string(), "size": bytes.len(),
+            "mediaType": oci_spec::image::MediaType::ImageManifest, "digest": other.to_string(), "size": bytes.len(),
         }));
         std::fs::write(index_path, serde_json::to_vec(&index).unwrap()).unwrap();
         let layout = OciLayout::read(&output, &store).await.unwrap();

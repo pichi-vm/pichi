@@ -30,8 +30,6 @@ use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use crate::cli::InspectArgs;
 use crate::config::Config;
 
-use conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1 as OCI_IMAGE_INDEX_MEDIA_TYPE;
-
 /// `pichi inspect` output: the manifest verbatim (the artifact of record) plus
 /// the resolved content digest — the one datum a content-addressed manifest
 /// cannot carry about itself. Everything else callers might want (layer counts,
@@ -159,7 +157,7 @@ fn inspect_index(
     };
     let output = IndexInspectOutput {
         digest: digest.to_string(),
-        media_type: OCI_IMAGE_INDEX_MEDIA_TYPE.to_string(),
+        media_type: oci_spec::image::MediaType::ImageIndex.to_string(),
         entries,
         note,
         manifest_digest: selected.as_ref().map(|image| image.digest.to_string()),

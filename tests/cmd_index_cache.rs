@@ -222,37 +222,50 @@ async fn inconsistent_index_descriptors_abort_collection() {
 
 #[tokio::test]
 async fn index_export_and_import_preserve_original_bytes() {
-    let fixture = Fixture::new().await;
-    let tag = "registry.example/image:one";
-    let index = fixture.index(tag, false).await;
-    let bytes = fixture.store.get_blob(&index).await.unwrap();
-    let layout = fixture.directory.path().join("export");
-    let output = fixture.run(&["save", tag, "-o", layout.to_str().unwrap()]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        std::fs::read(layout.join("blobs/sha256").join(index.digest())).unwrap(),
-        bytes
-    );
-    let destination = TempDir::new().unwrap();
-    let output = Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
-        .env("XDG_DATA_HOME", destination.path())
-        .args(["load", layout.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let store = FilesystemBlobStore::new(destination.path().join("pichi/storage"));
-    let tags = FilesystemTagDb::open(destination.path().join("pichi/storage")).unwrap();
-    assert_eq!(tags.resolve_tag(tag).await.unwrap(), Some(index.clone()));
-    assert_eq!(store.get_blob(&index).await.unwrap(), bytes);
-    assert!(store.blob_exists(&fixture.layer).await);
+    for null_media_type in [false, true] {
+        let fixture = Fixture::new().await;
+        let tag = "registry.example/image:one";
+        let index = fixture.index(tag, false).await;
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fixture.store.get_blob(&index).await.unwrap()).unwrap();
+        if null_media_type {
+            value["mediaType"] = serde_json::Value::Null;
+        } else {
+            value.as_object_mut().unwrap().remove("mediaType");
+        }
+        value["manifests"][0]["platform"]["os.version"] = "ecosystem-version".into();
+        value["manifests"][0]["annotations"] = json!({"org.example.note": "retained"});
+        let bytes = serde_json::to_vec_pretty(&value).unwrap();
+        let index = Fixture::put(&fixture.store, &bytes).await;
+        fixture.tags.set_tag(tag, &index).await.unwrap();
+        let layout = fixture.directory.path().join("export");
+        let output = fixture.run(&["save", tag, "-o", layout.to_str().unwrap()]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read(layout.join("blobs/sha256").join(index.digest())).unwrap(),
+            bytes
+        );
+        let destination = TempDir::new().unwrap();
+        let output = Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
+            .env("XDG_DATA_HOME", destination.path())
+            .args(["load", layout.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let store = FilesystemBlobStore::new(destination.path().join("pichi/storage"));
+        let tags = FilesystemTagDb::open(destination.path().join("pichi/storage")).unwrap();
+        assert_eq!(tags.resolve_tag(tag).await.unwrap(), Some(index.clone()));
+        assert_eq!(store.get_blob(&index).await.unwrap(), bytes);
+        assert!(store.blob_exists(&fixture.layer).await);
+    }
 }
 
 #[tokio::test]

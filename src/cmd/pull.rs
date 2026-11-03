@@ -220,10 +220,10 @@ mod tests {
     use crate::cmd::platform::PlatformExt as _;
     use bytes::Bytes;
     use conglobate::artifact::Layer;
-    use conglobate::artifact::Platform;
     use conglobate::artifact::{
         ConfigDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
     };
+    use oci_spec::image::Platform;
     use pichi_registry::MockRegistry;
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -272,7 +272,7 @@ mod tests {
             let config_digest = digest(&compressed);
             let manifest = Manifest {
                 schema_version: 2,
-                media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
+                media_type: oci_spec::image::MediaType::ImageManifest.to_string(),
                 artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
                 config: ConfigDescriptor::canonical(),
                 layers: vec![

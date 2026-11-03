@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use conglobate::artifact::Platform;
+use oci_spec::image::Platform;
 
 /// Pichi runs the native guest architecture without CPU emulation.
 pub(crate) trait PlatformExt {

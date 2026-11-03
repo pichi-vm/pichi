@@ -44,19 +44,6 @@ use tokio::io::AsyncWrite;
 use crate::auth::{AuthEnv, AuthHint};
 use crate::{Registry, RegistryError, Result};
 
-/// Manifest media types the pichi client will accept from `pull_manifest_raw`.
-/// Includes both OCI image manifest + index AND legacy Docker v2 manifest +
-/// list shapes, since real-world registries (ghcr.io, quay.io, mirror.gcr.io)
-/// still serve Docker types for older tags. The discrimination between
-/// "single-manifest" and "multi-arch index" happens at the call site
-/// (Plan 04 `cmd::pull`) by inspecting the returned bytes' `mediaType` field.
-const ACCEPTED_MANIFEST_TYPES: &[&str] = &[
-    conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1,
-    conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1,
-    "application/vnd.docker.distribution.manifest.v2+json",
-    "application/vnd.docker.distribution.manifest.list.v2+json",
-];
-
 /// Per-registry credential hint shipped from the pichi binary's config.
 ///
 /// pichi-registry deliberately does NOT depend on the pichi binary — the
@@ -273,7 +260,16 @@ impl Registry for HttpRegistry {
         // variant that runs oci-client's internal platform-resolver. Index
         // discrimination is pichi's job (see `crate::index_walk`).
         let (raw, digest_str) = client
-            .pull_manifest_raw(reference, &auth, ACCEPTED_MANIFEST_TYPES)
+            .pull_manifest_raw(
+                reference,
+                &auth,
+                &[
+                    oci_spec::image::MediaType::ImageManifest.as_ref(),
+                    oci_spec::image::MediaType::ImageIndex.as_ref(),
+                    "application/vnd.docker.distribution.manifest.v2+json",
+                    "application/vnd.docker.distribution.manifest.list.v2+json",
+                ],
+            )
             .await
             .map_err(RegistryError::from)?;
         let digest: Digest = digest_str
@@ -292,7 +288,16 @@ impl Registry for HttpRegistry {
         let auth = self.auth_for(registry).await?;
         let client = self.client_for(registry);
         let (raw, _digest_str) = client
-            .pull_manifest_raw(&oci_ref, &auth, ACCEPTED_MANIFEST_TYPES)
+            .pull_manifest_raw(
+                &oci_ref,
+                &auth,
+                &[
+                    oci_spec::image::MediaType::ImageManifest.as_ref(),
+                    oci_spec::image::MediaType::ImageIndex.as_ref(),
+                    "application/vnd.docker.distribution.manifest.v2+json",
+                    "application/vnd.docker.distribution.manifest.list.v2+json",
+                ],
+            )
             .await
             .map_err(RegistryError::from)?;
         Ok(raw)

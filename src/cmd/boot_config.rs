@@ -192,7 +192,7 @@ mod tests {
         config.store(&store).await.unwrap();
         let manifest = Manifest {
             schema_version: 2,
-            media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
+            media_type: oci_spec::image::MediaType::ImageManifest.to_string(),
             artifact_type: conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: conglobate::artifact::ConfigDescriptor::canonical(),
             layers: vec![

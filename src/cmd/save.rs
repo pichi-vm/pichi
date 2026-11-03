@@ -15,9 +15,10 @@ use crate::cmd::cache::ImageStore as _;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use conglobate::artifact::{Index, IndexDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1};
+use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
 use oci_spec::distribution::Reference;
-use oci_spec::image::{Digest, OciLayoutBuilder};
+use oci_spec::image::Digest;
+use oci_spec::image::{Descriptor, ImageIndex, MediaType, OciLayoutBuilder};
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::SaveArgs;
@@ -75,23 +76,25 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
     )
     .await?;
 
-    let index = Index {
-        manifests: vec![IndexDescriptor {
-            media_type: root.value["mediaType"]
-                .as_str()
-                .context("image has no media type")?
-                .into(),
-            artifact_type: Some(MEDIA_TYPE_PICHI_ARTIFACT_V1.into()),
-            digest: digest.to_string(),
-            size: root.bytes.len() as u64,
-            platform: None,
-            annotations: [(REF_NAME_ANNOTATION.into(), tag.clone())].into(),
-        }],
-        ..Index::default()
-    };
+    let mut descriptor = Descriptor::new(
+        if root.is_index() {
+            MediaType::ImageIndex
+        } else {
+            MediaType::ImageManifest
+        },
+        root.bytes.len() as u64,
+        digest,
+    );
+    descriptor.set_artifact_type(Some(MEDIA_TYPE_PICHI_ARTIFACT_V1.into()));
+    descriptor.set_annotations(Some([(REF_NAME_ANNOTATION.into(), tag.clone())].into()));
+    let mut index = ImageIndex::default();
+    index.set_media_type(Some(MediaType::ImageIndex));
+    index.set_manifests(vec![descriptor]);
+    let mut value = serde_json::to_value(&index)?;
+    value.sort_all_objects();
     tokio::fs::write(
         out.join("index.json"),
-        serde_json::to_vec_pretty(&index).context("serialise index.json")?,
+        serde_json::to_vec_pretty(&value).context("serialise index.json")?,
     )
     .await?;
 

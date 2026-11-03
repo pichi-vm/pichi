@@ -60,7 +60,7 @@ pub use auth::{AuthEnv, AuthHint};
 #[cfg(feature = "http-client")]
 pub use http::{HttpRegistry, RegistryEntry};
 #[cfg(feature = "http-client")]
-pub use index_walk::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
+pub use index_walk::pick_pichi_entry_from_index;
 pub use mock::MockRegistry;
 
 /// Registry I/O failures. Variants are deliberately coarse — Phase 44's

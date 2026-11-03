@@ -96,7 +96,7 @@ impl BaseManifest for Manifest {
 
         let manifest = Manifest {
             schema_version: 2,
-            media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
+            media_type: oci_spec::image::MediaType::ImageManifest.to_string(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
             config: ConfigDescriptor::canonical(),
             layers,

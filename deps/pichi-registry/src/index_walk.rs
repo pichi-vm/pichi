@@ -30,12 +30,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
-use serde_json::Value;
-
-/// OCI Image Index media type (per OCI Image Spec 1.1). Re-exported so callers
-/// have a single canonical constant; the value is also accepted by
-/// `pull_manifest_raw`'s `accepted_media_types` array in `http.rs`.
-pub use conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1 as OCI_IMAGE_INDEX_MEDIA_TYPE;
+use oci_spec::image::ImageIndex;
 
 /// Walk an OCI Image Index `manifests[]` array; return the digest string of
 /// the entry matching `(artifactType=MEDIA_TYPE_PICHI_ARTIFACT_V1,
@@ -58,38 +53,27 @@ pub fn pick_pichi_entry_from_index(
     target_os: &str,
     target_arch: &str,
 ) -> Result<String> {
-    let v: Value = serde_json::from_slice(index_json).context("parse OCI Image Index")?;
-    let manifests = v
-        .get("manifests")
-        .and_then(|m| m.as_array())
-        .ok_or_else(|| anyhow!("OCI image index missing `manifests` array"))?;
-
+    let index: ImageIndex = serde_json::from_slice(index_json).context("parse OCI Image Index")?;
     let mut candidates = Vec::new();
-    let mut summary = Vec::with_capacity(manifests.len());
-    for m in manifests {
-        let artifact_type = m.get("artifactType").and_then(|v| v.as_str());
-        let digest = m
-            .get("digest")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?")
-            .to_string();
-        let platform = m.get("platform");
-        let pl_os = platform.and_then(|p| p.get("os")).and_then(|v| v.as_str());
-        let pl_arch = platform
-            .and_then(|p| p.get("architecture"))
-            .and_then(|v| v.as_str());
+    let mut summary = Vec::with_capacity(index.manifests().len());
+    for descriptor in index.manifests() {
+        let artifact_type = descriptor.artifact_type().as_ref().map(AsRef::as_ref);
+        let digest = descriptor.digest().to_string();
+        let platform = descriptor.platform().as_ref();
+        let pl_os = platform.map(|p| p.os().to_string());
+        let pl_arch = platform.map(|p| p.architecture().to_string());
 
         summary.push(format!(
             "  - {} (artifactType={:?}, platform={}/{})",
             digest,
             artifact_type.unwrap_or("<none>"),
-            pl_os.unwrap_or("<none>"),
-            pl_arch.unwrap_or("<none>"),
+            pl_os.as_deref().unwrap_or("<none>"),
+            pl_arch.as_deref().unwrap_or("<none>"),
         ));
 
         if artifact_type == Some(MEDIA_TYPE_PICHI_ARTIFACT_V1)
-            && pl_os == Some(target_os)
-            && pl_arch == Some(target_arch)
+            && pl_os.as_deref() == Some(target_os)
+            && pl_arch.as_deref() == Some(target_arch)
         {
             candidates.push(digest);
         }
@@ -115,12 +99,13 @@ pub fn pick_pichi_entry_from_index(
 
 #[cfg(test)]
 mod tests {
-    use super::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
+    use super::pick_pichi_entry_from_index;
     use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
 
     fn idx(entries: &str) -> Vec<u8> {
         format!(
-            r#"{{ "schemaVersion": 2, "mediaType": "{OCI_IMAGE_INDEX_MEDIA_TYPE}", "manifests": [{entries}] }}"#
+            r#"{{ "schemaVersion": 2, "mediaType": "{}", "manifests": [{entries}] }}"#,
+            oci_spec::image::MediaType::ImageIndex
         )
         .into_bytes()
     }
@@ -129,14 +114,14 @@ mod tests {
     fn pick_pichi_entry_from_index_happy_path() {
         let entries = format!(
             r#"
-            {{ "digest": "sha256:aaaa", "platform": {{"os":"linux","architecture":"amd64"}} }},
-            {{ "digest": "sha256:dddd", "artifactType": "{MEDIA_TYPE_PICHI_ARTIFACT_V1}",
+            {{ "mediaType":"application/vnd.oci.image.manifest.v1+json", "size":1, "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "platform": {{"os":"linux","architecture":"amd64"}} }},
+            {{ "mediaType":"application/vnd.oci.image.manifest.v1+json", "size":1, "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "artifactType": "{MEDIA_TYPE_PICHI_ARTIFACT_V1}",
                "platform": {{"os":"linux","architecture":"amd64"}} }}
         "#
         );
         let digest = pick_pichi_entry_from_index(&idx(&entries), "linux", "amd64").unwrap();
         assert_eq!(
-            digest, "sha256:dddd",
+            digest, "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "must pick the pichi entry, not the container-image entry"
         );
     }
@@ -144,8 +129,8 @@ mod tests {
     #[test]
     fn pick_pichi_entry_from_index_no_match_lists_entries() {
         let entries = r#"
-            { "digest": "sha256:cccc1", "platform": {"os":"linux","architecture":"amd64"} },
-            { "digest": "sha256:cccc2", "platform": {"os":"linux","architecture":"arm64"} }
+            { "mediaType":"application/vnd.oci.image.manifest.v1+json", "size":1, "digest": "sha256:ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc1", "platform": {"os":"linux","architecture":"amd64"} },
+            { "mediaType":"application/vnd.oci.image.manifest.v1+json", "size":1, "digest": "sha256:ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc2", "platform": {"os":"linux","architecture":"arm64"} }
         "#;
         let err = pick_pichi_entry_from_index(&idx(entries), "linux", "amd64").unwrap_err();
         let msg = err.to_string();
@@ -154,11 +139,11 @@ mod tests {
             "wrong header: {msg}"
         );
         assert!(
-            msg.contains("sha256:cccc1"),
+            msg.contains("sha256:ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc1"),
             "missing first entry digest in listing: {msg}"
         );
         assert!(
-            msg.contains("sha256:cccc2"),
+            msg.contains("sha256:ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc2"),
             "missing second entry digest in listing: {msg}"
         );
         assert!(
@@ -175,14 +160,16 @@ mod tests {
     fn pick_pichi_entry_from_index_wrong_arch() {
         let entries = format!(
             r#"
-            {{ "digest": "sha256:dddd_arm", "artifactType": "{MEDIA_TYPE_PICHI_ARTIFACT_V1}",
+            {{ "mediaType":"application/vnd.oci.image.manifest.v1+json", "size":1, "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "artifactType": "{MEDIA_TYPE_PICHI_ARTIFACT_V1}",
                "platform": {{"os":"linux","architecture":"arm64"}} }}
         "#
         );
         let err = pick_pichi_entry_from_index(&idx(&entries), "linux", "amd64").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("no pichi entry for platform linux/amd64"));
-        assert!(msg.contains("sha256:dddd_arm"));
+        assert!(
+            msg.contains("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+        );
         assert!(msg.contains("linux/arm64"));
     }
 }

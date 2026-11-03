@@ -321,7 +321,7 @@ async fn run_resolves_cached_index_references() {
             };
             let index = serde_json::json!({
                 "schemaVersion": 2,
-                "mediaType": pichi_registry::OCI_IMAGE_INDEX_MEDIA_TYPE,
+                "mediaType": oci_spec::image::MediaType::ImageIndex,
                 "manifests": [{
                     "mediaType": manifest.media_type,
                     "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,

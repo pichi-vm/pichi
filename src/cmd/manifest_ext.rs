@@ -91,7 +91,7 @@ impl ManifestExt for Manifest {
             return Ok(());
         };
         let host = std::env::consts::ARCH;
-        let host_norm = conglobate::artifact::Platform::host_architecture();
+        let host_norm = oci_spec::image::Platform::host_architecture();
         if arch != host && arch != host_norm {
             bail!(
                 "artifact architecture {arch:?} does not match host {host:?} \
