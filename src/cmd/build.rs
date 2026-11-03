@@ -847,7 +847,7 @@ mod tests {
         )
         .unwrap();
         let parsed = load_build_lock(tmp.path(), "tests/distro/context", "pichi.lock").unwrap();
-        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.version, conglobate::plan::Version::<1>);
         assert_eq!(
             parsed.images["qualification.local/fedora:43"]
                 .index
@@ -866,7 +866,7 @@ mod tests {
         ] {
             std::fs::write(tmp.path().join("pichi.lock"), text).unwrap();
             let lock = load_build_lock(tmp.path(), ".", "pichi.lock").unwrap();
-            assert_eq!(lock.version, 1);
+            assert_eq!(lock.version, conglobate::plan::Version::<1>);
             assert!(lock.images.is_empty());
         }
     }
