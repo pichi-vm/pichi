@@ -5,8 +5,8 @@
 mod index;
 
 use assert_cmd::Command;
-use conglobate::artifact::Manifest;
 use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 
@@ -45,8 +45,8 @@ async fn save_load_preserves_manifest_and_rebuilds_verity_on_cache_hits() {
     let source_store = FilesystemBlobStore::new(&source);
     let bytes = source_store.get_blob(&digest).await.unwrap();
     let (manifest_digest, manifest_bytes) = index::manifest(&source_store, &digest).await;
-    let manifest = Manifest::decode_json(manifest_bytes.as_slice()).unwrap();
-    let cow: Digest = manifest.layers[0].digest().clone();
+    let manifest = ImageManifest::decode_json(manifest_bytes.as_slice()).unwrap();
+    let cow: Digest = manifest.layers()[0].digest().clone();
     let tree = std::fs::read(
         source_store
             .blob_path(&cow)
@@ -125,8 +125,8 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
             .unwrap();
         let bytes = source_store.get_blob(&digest).await.unwrap();
         let (_, manifest_bytes) = index::manifest(&source_store, &digest).await;
-        let manifest = Manifest::decode_json(manifest_bytes.as_slice()).unwrap();
-        let cow: Digest = manifest.layers[0].digest().clone();
+        let manifest = ImageManifest::decode_json(manifest_bytes.as_slice()).unwrap();
+        let cow: Digest = manifest.layers()[0].digest().clone();
         let tree = source_store
             .blob_path(&cow)
             .unwrap()
@@ -176,8 +176,8 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
         manifests.push((digest, manifest, bytes));
     }
     assert_eq!(
-        manifests[0].1.layers[0].digest().to_string(),
-        manifests[1].1.layers[0].digest().to_string()
+        manifests[0].1.layers()[0].digest().to_string(),
+        manifests[1].1.layers()[0].digest().to_string()
     );
     assert_ne!(expected_trees[0].1, expected_trees[1].1);
     std::fs::write(
@@ -185,11 +185,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
         serde_json::to_vec(&index).unwrap(),
     )
     .unwrap();
-    let cow: Digest = manifests[0].1.layers[0]
-        .digest()
-        .to_string()
-        .parse()
-        .unwrap();
+    let cow: Digest = manifests[0].1.layers()[0].digest().clone();
     for (name, bytes) in &expected_trees {
         assert_eq!(
             std::fs::read(

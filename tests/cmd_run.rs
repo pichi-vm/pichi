@@ -12,7 +12,8 @@
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations};
+use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations};
+use oci_spec::image::ImageManifest;
 use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
@@ -58,22 +59,24 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
     let pmi_digest = sha256_digest(&pmi_bytes);
     blob_store.put_blob(&pmi_digest, &pmi_bytes).await.unwrap();
 
-    let mut manifest = Manifest {
-        schema_version: 2,
-        media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-        config: oci_spec::image::DescriptorBuilder::default()
-            .media_type(oci_spec::image::MediaType::EmptyJSON)
-            .digest(
-                "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
-                    .parse::<oci_spec::image::Digest>()
-                    .expect("empty config digest"),
-            )
-            .size(2u64)
-            .data("e30=")
-            .build()
-            .expect("empty config descriptor"),
-        layers: vec![
+    let mut manifest = oci_spec::image::ImageManifestBuilder::default()
+        .schema_version(2u32)
+        .media_type("application/vnd.oci.image.manifest.v1+json")
+        .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+        .config(
+            oci_spec::image::DescriptorBuilder::default()
+                .media_type(oci_spec::image::MediaType::EmptyJSON)
+                .digest(
+                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("empty config digest"),
+                )
+                .size(2u64)
+                .data("e30=")
+                .build()
+                .expect("empty config descriptor"),
+        )
+        .layers(vec![
             {
                 let mut descriptor = oci_spec::image::Descriptor::new(
                     conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
@@ -93,16 +96,22 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
                 pmi_bytes.len() as u64,
                 pmi_digest.clone(),
             ),
-        ],
-        annotations: chain_annotations(),
-    };
+        ])
+        .annotations(
+            (chain_annotations())
+                .into_iter()
+                .collect::<std::collections::HashMap<String, String>>(),
+        )
+        .build()
+        .expect("manifest fields are set");
     let root = manifest
-        .cached_scute_root(&manifest.layers[0], &blob_store)
+        .cached_scute_root(&manifest.layers()[0], &blob_store)
         .await
         .unwrap()
         .unwrap();
     manifest
-        .annotations
+        .annotations_mut()
+        .get_or_insert_default()
         .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
     let bytes = serde_json::to_vec(&manifest).unwrap();
     let digest = format!(
@@ -211,7 +220,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             let tags = FilesystemTagDb::open(&root).unwrap();
             let tag = "docker.io/library/workflow:source";
             let original = tags.resolve_tag(tag).await.unwrap().unwrap();
-            let mut manifest: Manifest =
+            let mut manifest: ImageManifest =
                 serde_json::from_slice(&store.get_blob(&original).await.unwrap()).unwrap();
             let mut data = vec![0x5a; length];
             let wire = if compressed {
@@ -239,7 +248,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 ));
                 descriptor
             };
-            manifest.layers[0] = if compressed {
+            manifest.layers_mut()[0] = if compressed {
                 {
                     let mut descriptor = descriptor;
                     descriptor.set_media_type(
@@ -251,12 +260,13 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 descriptor
             };
             let root = manifest
-                .cached_scute_root(&manifest.layers[0], &store)
+                .cached_scute_root(&manifest.layers()[0], &store)
                 .await
                 .unwrap()
                 .unwrap();
             manifest
-                .annotations
+                .annotations_mut()
+                .get_or_insert_default()
                 .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
             let bytes = serde_json::to_vec(&manifest).unwrap();
             let manifest_digest = sha256_digest(&bytes);
@@ -285,7 +295,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             let prepared = FilesystemBlobStore::new(&graphroot(&destination));
             assert_eq!(prepared.get_blob(&manifest_digest).await.unwrap(), bytes);
             let blob = prepared.blob_path(&digest).unwrap();
-            let scute = &manifest.layers[0];
+            let scute = &manifest.layers()[0];
             let header = manifest.verity_header(scute, None).unwrap();
             let verity_path = blob.verity_path(&sha256_digest(&header.encode())).unwrap();
             let data_path = if compressed || length != 8192 {
@@ -337,7 +347,7 @@ async fn run_resolves_cached_index_references() {
                 .unwrap();
             let manifest_bytes = store.get_blob(&manifest_digest).await.unwrap();
             let manifest_size = manifest_bytes.len();
-            let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+            let manifest: ImageManifest = serde_json::from_slice(&manifest_bytes).unwrap();
             let architecture = match std::env::consts::ARCH {
                 "x86_64" => "amd64",
                 "aarch64" => "arm64",
@@ -347,13 +357,13 @@ async fn run_resolves_cached_index_references() {
                 "schemaVersion": 2,
                 "mediaType": oci_spec::image::MediaType::ImageIndex,
                 "manifests": [{
-                    "mediaType": manifest.media_type,
+                    "mediaType": manifest.media_type(),
                     "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
                     "digest": format!("sha256:{}", "44".repeat(32)),
                     "size": 1,
                     "platform": { "os": "pichi", "architecture": "not-this-host" },
                 }, {
-                    "mediaType": manifest.media_type,
+                    "mediaType": manifest.media_type(),
                     "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
                     "digest": manifest_digest.to_string(),
                     "size": manifest_size,

@@ -17,10 +17,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::cache::ImageStore as _;
-use conglobate::artifact::Manifest;
 use conglobate::resources::Requirements;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{BuildArgs, PullArgs, PullPolicy};
@@ -322,7 +322,7 @@ pub(crate) async fn resolve_manifest(
     reference: &str,
     db: &FilesystemTagDb,
     blob_store: &FilesystemBlobStore,
-) -> Result<(Digest, Manifest)> {
+) -> Result<(Digest, ImageManifest)> {
     let target: Reference = reference
         .parse()
         .with_context(|| format!("invalid reference: {reference}"))?;

@@ -12,10 +12,10 @@ use super::cache::ImageStore as _;
 use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
-use conglobate::artifact::Manifest;
 use futures_util::stream;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_registry::Registry;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
@@ -100,7 +100,7 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     // Pre-push re-validation (cheap O(layers) safety net); also the source of
     // truth for the config + layer walk below.
     let manifest =
-        Manifest::decode_json(raw_manifest).context("re-validate manifest before push")?;
+        ImageManifest::decode_json(raw_manifest).context("re-validate manifest before push")?;
 
     // Push the empty-config blob (`{}`, 2 bytes, sha256:44136fa3...)
     //      before any layer. OCI 1.1 lets the manifest carry inline `data`
@@ -111,24 +111,24 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     //      `MANIFEST_INVALID` 400 because the `{}` blob wasn't uploaded.
     //      For a real `vnd.pichi.config.v1+json` blob the bytes come from the
     //      local cache; for the OCI empty config they are the well-known `{}`.
-    let config_digest = manifest.config.digest();
+    let config_digest = manifest.config().digest();
     if !registry
         .head_blob(target.registry(), target.repository(), config_digest)
         .await
         .map_err(|e| anyhow!("head_blob config {config_digest}: {e}"))?
     {
-        let bytes: Bytes = if manifest.config.media_type() == &oci_spec::image::MediaType::EmptyJSON
-        {
-            Bytes::from_static(b"{}")
-        } else {
-            Bytes::from(
-                blob_store
-                    .get_blob(config_digest)
-                    .await
-                    .with_context(|| format!("read config blob {config_digest} from cache"))?
-                    .to_vec(),
-            )
-        };
+        let bytes: Bytes =
+            if manifest.config().media_type() == &oci_spec::image::MediaType::EmptyJSON {
+                Bytes::from_static(b"{}")
+            } else {
+                Bytes::from(
+                    blob_store
+                        .get_blob(config_digest)
+                        .await
+                        .with_context(|| format!("read config blob {config_digest} from cache"))?
+                        .to_vec(),
+                )
+            };
         let size = bytes.len() as u64;
         let one_chunk = stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) });
         registry
@@ -149,7 +149,7 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     //    so calling `try_blob_mount(target_repo, target_repo, digest)` is
     //    a wasted round-trip (registry would refuse). When v0.9 adds the
     //    config surface this becomes a one-line attempt before push_stream.
-    for layer in &manifest.layers {
+    for layer in manifest.layers() {
         let digest_str = layer.digest().to_string();
         let layer_digest: Digest = digest_str
             .parse()
@@ -188,7 +188,7 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     //    before this call — see source-line-order regression guard in
     //    src/cmd/push.rs::tests::push_manifest_pushed_after_all_blobs.
     //    Pitfall 3: bytes are passed verbatim from the cache, NOT
-    //    re-serialised through Manifest's serialise helper.
+    //    re-serialised through ImageManifest's serialise helper.
     registry
         .push_manifest(
             target,
@@ -241,7 +241,7 @@ mod tests {
 
     /// Build a minimal D-07-valid pichi manifest with one Scute layer.
     /// Returns (canonical bytes, manifest digest). Uses serde_json::to_vec
-    /// (NOT Manifest::to_bytes) so the Pitfall 3 negative-grep gate
+    /// (NOT ImageManifest::to_bytes) so the Pitfall 3 negative-grep gate
     /// stays clean of false-positive call sites.
     fn make_pichi_manifest(scute_digest: &Digest, data: &[u8]) -> (Bytes, Digest) {
         let mut annotations = BTreeMap::new();
@@ -266,22 +266,24 @@ mod tests {
         .unwrap()
         .root_hash;
         annotations.insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
-        let manifest = Manifest {
-            schema_version: 2,
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: oci_spec::image::DescriptorBuilder::default()
-                .media_type(oci_spec::image::MediaType::EmptyJSON)
-                .digest(
-                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
-                        .parse::<oci_spec::image::Digest>()
-                        .expect("empty config digest"),
-                )
-                .size(2u64)
-                .data("e30=")
-                .build()
-                .expect("empty config descriptor"),
-            layers: vec![{
+        let manifest = oci_spec::image::ImageManifestBuilder::default()
+            .schema_version(2u32)
+            .media_type("application/vnd.oci.image.manifest.v1+json")
+            .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+            .config(
+                oci_spec::image::DescriptorBuilder::default()
+                    .media_type(oci_spec::image::MediaType::EmptyJSON)
+                    .digest(
+                        "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                            .parse::<oci_spec::image::Digest>()
+                            .expect("empty config digest"),
+                    )
+                    .size(2u64)
+                    .data("e30=")
+                    .build()
+                    .expect("empty config descriptor"),
+            )
+            .layers(vec![{
                 let mut descriptor = oci_spec::image::Descriptor::new(
                     conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
                     data.len() as u64,
@@ -294,9 +296,14 @@ mod tests {
                     }),
                 ));
                 descriptor
-            }],
-            annotations,
-        };
+            }])
+            .annotations(
+                (annotations)
+                    .into_iter()
+                    .collect::<std::collections::HashMap<String, String>>(),
+            )
+            .build()
+            .expect("manifest fields are set");
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
         let digest = format!(
             "sha256:{}",
@@ -362,7 +369,7 @@ mod tests {
             pushed.iter().all(|(_, _, d, _)| d != &layer_digest),
             "layer present on registry must NOT be re-pushed: {pushed:?}"
         );
-        // Manifest IS pushed regardless (it's the leaf of the push pipeline).
+        // ImageManifest IS pushed regardless (it's the leaf of the push pipeline).
         assert_eq!(
             mock.pushed_manifests().len(),
             1,

@@ -89,7 +89,7 @@ fn test_repo_base() -> Option<String> {
 ///   - Pitfall 3 (manifest digest preservation): the raw OCI bytes are written
 ///     verbatim by `cmd::pull` (Plan 04 negative-grep gate `serde_json::to_vec(&manifest)`
 ///     returns 0) and pushed verbatim by `cmd::push` (Plan 05 same gate). If
-///     either side serialised through Manifest the manifest digest would
+///     either side serialised through ImageManifest the manifest digest would
 ///     drift and the first assertion below would fail.
 ///   - +zstd descriptor mismatch (Phase 42 D-10): the layer digest in the
 ///     MANIFEST is the registry-side compressed digest; the BlobStore stores

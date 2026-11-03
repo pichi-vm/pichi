@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use carapace::image::{Plan as _, Planned};
-use conglobate::artifact::Manifest;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use sha2::{Digest as _, Sha256};
 use tempfile::NamedTempFile;
@@ -143,7 +143,7 @@ impl StagedImport {
             );
             log::info!("pichi import: verity root {}", hex::encode(root));
         }
-        let manifest = Manifest::base(
+        let manifest = ImageManifest::base(
             &cow_digest,
             size,
             &salt,
@@ -343,8 +343,8 @@ mod tests {
                 .expect("SHA-256 digest"),
                 staged.cow_digest
             );
-            let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
-            let scute = &manifest.layers[0];
+            let manifest: ImageManifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
+            let scute = &manifest.layers()[0];
             assert_eq!(
                 conglobate::artifact::ScuteAnnotations::try_from(scute)
                     .unwrap()
@@ -379,7 +379,10 @@ mod tests {
             .compute(&bytes)
             .unwrap();
             assert_eq!(
-                manifest.annotations.get("dev.pichi.carapace.verity.hash"),
+                manifest
+                    .annotations()
+                    .as_ref()
+                    .and_then(|a| a.get("dev.pichi.carapace.verity.hash")),
                 Some(&hex::encode(formatted.root_hash))
             );
             assert_eq!(std::fs::read(staged.verity.path()).unwrap(), formatted.blob);
@@ -399,7 +402,7 @@ mod tests {
             staged.cow_digest.to_string(),
             "sha256:e912b9b25375cf235229c113b88eb7fcc038073c703696c4904f1712fa193823"
         );
-        let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
+        let manifest: ImageManifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
 
         let bytes = std::fs::read(staged.cow.path()).unwrap();
         let formatted = VerityParams {
@@ -423,7 +426,10 @@ mod tests {
         .compute(&bytes)
         .unwrap();
         assert_eq!(
-            manifest.annotations.get("dev.pichi.carapace.verity.hash"),
+            manifest
+                .annotations()
+                .as_ref()
+                .and_then(|a| a.get("dev.pichi.carapace.verity.hash")),
             Some(&hex::encode(formatted.root_hash))
         );
         assert_eq!(std::fs::read(staged.verity.path()).unwrap(), formatted.blob);
@@ -451,15 +457,18 @@ mod tests {
             sparse.header.parameters.salt.as_ref()[32..],
             dense.header.parameters.salt.as_ref()[32..]
         );
-        let sparse_manifest: Manifest = serde_json::from_slice(&sparse.manifest_bytes).unwrap();
-        let dense_manifest: Manifest = serde_json::from_slice(&dense.manifest_bytes).unwrap();
+        let sparse_manifest: ImageManifest =
+            serde_json::from_slice(&sparse.manifest_bytes).unwrap();
+        let dense_manifest: ImageManifest = serde_json::from_slice(&dense.manifest_bytes).unwrap();
         assert_ne!(
             sparse_manifest
-                .annotations
-                .get("dev.pichi.carapace.verity.hash"),
+                .annotations()
+                .as_ref()
+                .and_then(|a| a.get("dev.pichi.carapace.verity.hash")),
             dense_manifest
-                .annotations
-                .get("dev.pichi.carapace.verity.hash")
+                .annotations()
+                .as_ref()
+                .and_then(|a| a.get("dev.pichi.carapace.verity.hash"))
         );
         assert_eq!(
             std::fs::read(sparse.cow.path()).unwrap(),
@@ -493,6 +502,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn sparse_import_preserves_data_above_the_old_extent() {
+        use conglobate::artifact::ManifestExt as _;
         use std::io::{Read, Seek, SeekFrom, Write};
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("large.raw");
@@ -511,7 +521,7 @@ mod tests {
         let mut data = [0; 4096];
         cow.read_exact(&mut data).unwrap();
         assert_eq!(data, [0x5a; 4096]);
-        let manifest: Manifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
+        let manifest: ImageManifest = serde_json::from_slice(&staged.manifest_bytes).unwrap();
         manifest.validate().unwrap();
     }
 }

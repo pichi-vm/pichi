@@ -8,21 +8,21 @@
 //! `recommended` (else `required`) tier is used.
 
 use anyhow::{Context, Result, bail};
-use conglobate::artifact::Manifest;
 use conglobate::resources::{Config, Requirements};
+use oci_spec::image::ImageManifest;
 use pichi_storage::BlobStore;
 
 /// Load the artifact's launch contract from its config blob. Returns `Ok(None)`
 /// for artifacts with the OCI empty config (no launch contract, e.g. plain
 /// carapaces).
 pub async fn load_requirements(
-    manifest: &Manifest,
+    manifest: &ImageManifest,
     blob_store: &impl BlobStore,
 ) -> Result<Option<Requirements>> {
-    if manifest.config.media_type() == &oci_spec::image::MediaType::EmptyJSON {
+    if manifest.config().media_type() == &oci_spec::image::MediaType::EmptyJSON {
         return Ok(None);
     }
-    let digest = manifest.config.digest();
+    let digest = manifest.config().digest();
     let bytes = blob_store
         .get_blob(digest)
         .await

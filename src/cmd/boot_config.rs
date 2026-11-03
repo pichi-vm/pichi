@@ -3,8 +3,8 @@
 
 //! Native configuration is image data. YAML plans remain inside Conglobate.
 use anyhow::{Context as _, Result, ensure};
-use conglobate::artifact::Manifest;
 use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_storage::{BlobSidecarExt as _, BlobStore};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -67,7 +67,7 @@ impl BootConfigFile {
     }
 
     pub(super) async fn validate_image(
-        manifest: &Manifest,
+        manifest: &ImageManifest,
         store: &(impl BlobStore + ?Sized),
     ) -> Result<()> {
         Self::from_image(manifest, store).await?;
@@ -75,10 +75,10 @@ impl BootConfigFile {
     }
 
     async fn from_image(
-        manifest: &Manifest,
+        manifest: &ImageManifest,
         store: &(impl BlobStore + ?Sized),
     ) -> Result<Option<Self>> {
-        let Some(descriptor) = manifest.layers.iter().find(|layer| {
+        let Some(descriptor) = manifest.layers().iter().find(|layer| {
             layer.media_type().as_ref() == conglobate::artifact::MEDIA_TYPE_PICHI_BOOTCONFIG_V1_ZSTD
         }) else {
             return Ok(None);
@@ -91,7 +91,7 @@ impl BootConfigFile {
 
     /// Regenerate native text from verified wire bytes at every launch.
     pub(super) async fn prepare_image(
-        manifest: &Manifest,
+        manifest: &ImageManifest,
         store: &(impl BlobStore + ?Sized),
     ) -> Result<Option<PathBuf>> {
         let Some(config) = Self::from_image(manifest, store).await? else {
@@ -189,22 +189,24 @@ mod tests {
         assert!(bytes.len() < text.len());
         let config = BootConfigFile::try_from(bytes).unwrap();
         config.store(&store).await.unwrap();
-        let manifest = Manifest {
-            schema_version: 2,
-            media_type: oci_spec::image::MediaType::ImageManifest.to_string(),
-            artifact_type: conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: oci_spec::image::DescriptorBuilder::default()
-                .media_type(oci_spec::image::MediaType::EmptyJSON)
-                .digest(
-                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
-                        .parse::<oci_spec::image::Digest>()
-                        .expect("empty config digest"),
-                )
-                .size(2u64)
-                .data("e30=")
-                .build()
-                .expect("empty config descriptor"),
-            layers: vec![
+        let manifest = oci_spec::image::ImageManifestBuilder::default()
+            .schema_version(2u32)
+            .media_type(oci_spec::image::MediaType::ImageManifest)
+            .artifact_type(conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1)
+            .config(
+                oci_spec::image::DescriptorBuilder::default()
+                    .media_type(oci_spec::image::MediaType::EmptyJSON)
+                    .digest(
+                        "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                            .parse::<oci_spec::image::Digest>()
+                            .expect("empty config digest"),
+                    )
+                    .size(2u64)
+                    .data("e30=")
+                    .build()
+                    .expect("empty config descriptor"),
+            )
+            .layers(vec![
                 oci_spec::image::Descriptor::new(
                     conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
                     10u64,
@@ -213,9 +215,14 @@ mod tests {
                         .expect("SHA-256 digest"),
                 ),
                 config.descriptor().unwrap(),
-            ],
-            annotations: std::collections::BTreeMap::default(),
-        };
+            ])
+            .annotations(
+                (std::collections::BTreeMap::default())
+                    .into_iter()
+                    .collect::<std::collections::HashMap<String, String>>(),
+            )
+            .build()
+            .expect("manifest fields are set");
         let path = BootConfigFile::prepare_image(&manifest, &store)
             .await
             .unwrap()

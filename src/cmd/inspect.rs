@@ -22,9 +22,10 @@ use minijinja::Environment;
 use serde::Serialize;
 use serde_json::Value;
 
-use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest};
+use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::InspectArgs;
@@ -99,7 +100,7 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
 
     // Bare manifest path. Validate defensively, then emit the manifest verbatim
     // plus its resolved digest.
-    Manifest::decode_json(bytes.as_slice())
+    ImageManifest::decode_json(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
     let output = InspectOutput {
         digest: digest.to_string(),

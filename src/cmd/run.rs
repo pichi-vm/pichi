@@ -28,9 +28,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use conglobate::artifact::Manifest;
 use conglobate::resources::Requirements;
 use oci_spec::distribution::Reference;
+use oci_spec::image::ImageManifest;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
@@ -111,7 +111,7 @@ async fn auto_pull(reference: &Reference, config: &Config) -> Result<()> {
 
 /// Assemble the `dillo` argument vector (program name excluded).
 async fn build_dillo_args(
-    manifest: &Manifest,
+    manifest: &ImageManifest,
     blob_store: &FilesystemBlobStore,
     cpus: Option<u32>,
     memory_mib: Option<u32>,
@@ -154,7 +154,7 @@ async fn build_dillo_args(
 /// them from the PARTUUIDs (matching the carapace formula). Every data partition
 /// uses uncompressed, block-aligned bytes prepared by Pichi.
 pub(crate) async fn build_gpt_spec(
-    manifest: &Manifest,
+    manifest: &ImageManifest,
     scutes: &[&oci_spec::image::Descriptor],
     blob_store: &FilesystemBlobStore,
 ) -> Result<String> {
@@ -275,7 +275,8 @@ mod tests {
 
     const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
-    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations};
+    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations};
+    use oci_spec::image::ImageManifest;
     use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore};
     use tempfile::TempDir;
 
@@ -308,25 +309,32 @@ mod tests {
         )
     }
 
-    fn manifest_with(layers: Vec<oci_spec::image::Descriptor>) -> Manifest {
-        Manifest {
-            schema_version: 2,
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: oci_spec::image::DescriptorBuilder::default()
-                .media_type(oci_spec::image::MediaType::EmptyJSON)
-                .digest(
-                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
-                        .parse::<oci_spec::image::Digest>()
-                        .expect("empty config digest"),
-                )
-                .size(2u64)
-                .data("e30=")
-                .build()
-                .expect("empty config descriptor"),
-            layers,
-            annotations: chain_annotations(),
-        }
+    fn manifest_with(layers: Vec<oci_spec::image::Descriptor>) -> ImageManifest {
+        oci_spec::image::ImageManifestBuilder::default()
+            .schema_version(2u32)
+            .media_type("application/vnd.oci.image.manifest.v1+json")
+            .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+            .config(
+                oci_spec::image::DescriptorBuilder::default()
+                    .media_type(oci_spec::image::MediaType::EmptyJSON)
+                    .digest(
+                        "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                            .parse::<oci_spec::image::Digest>()
+                            .expect("empty config digest"),
+                    )
+                    .size(2u64)
+                    .data("e30=")
+                    .build()
+                    .expect("empty config descriptor"),
+            )
+            .layers(layers)
+            .annotations(
+                (chain_annotations())
+                    .into_iter()
+                    .collect::<std::collections::HashMap<String, String>>(),
+            )
+            .build()
+            .expect("manifest fields are set")
     }
 
     #[tokio::test]
@@ -399,7 +407,7 @@ mod tests {
             descriptor
         }]);
         let (_, scutes) = m.partition_layers().unwrap();
-        assert_eq!(scutes, vec![&m.layers[0], &m.layers[2]]);
+        assert_eq!(scutes, vec![&m.layers()[0], &m.layers()[2]]);
         assert_eq!(m.scute_layers(), scutes);
     }
 
@@ -500,7 +508,8 @@ mod tests {
         let mut tip = [0; 32];
         let mut manifest = manifest_with(Vec::new());
         manifest
-            .annotations
+            .annotations_mut()
+            .get_or_insert_default()
             .insert("dev.pichi.carapace.verity.hash-type".into(), "0".into());
         for byte in [0x42, 0x73] {
             let data = vec![byte; 8193];
@@ -526,9 +535,10 @@ mod tests {
                 .unwrap();
             scutes.push(scute);
         }
-        manifest.layers = scutes.clone();
+        manifest.set_layers(scutes.clone());
         manifest
-            .annotations
+            .annotations_mut()
+            .get_or_insert_default()
             .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(tip));
         let refs = manifest.scute_layers();
         let mut prepared = Vec::new();
@@ -588,11 +598,12 @@ mod tests {
         };
         let mut m = manifest_with(vec![pmi_layer(), scute.clone()]);
         let root = m
-            .cached_scute_root(&m.layers[1], &blob_store)
+            .cached_scute_root(&m.layers()[1], &blob_store)
             .await
             .unwrap()
             .unwrap();
-        m.annotations
+        m.annotations_mut()
+            .get_or_insert_default()
             .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
 
         let spec = build_gpt_spec(&m, &m.scute_layers(), &blob_store)
@@ -618,7 +629,7 @@ mod tests {
         );
         assert_eq!(
             gpt.partitions[1].path,
-            ScuteFiles::new(&m, &m.layers[1], &blob_store)
+            ScuteFiles::new(&m, &m.layers()[1], &blob_store)
                 .unwrap()
                 .verity
         );
@@ -675,7 +686,7 @@ mod tests {
                 );
                 store.put_blob(&digest, &wire).await.unwrap();
                 let source = store.blob_path(&digest).unwrap();
-                let files = ScuteFiles::new(&manifest, &manifest.layers[1], &store).unwrap();
+                let files = ScuteFiles::new(&manifest, &manifest.layers()[1], &store).unwrap();
                 let expected_data = if compressed || length != 8192 {
                     source.deflated_path(8192)
                 } else {
@@ -692,7 +703,7 @@ mod tests {
                 .compute(&padded)
                 .unwrap()
                 .root_hash;
-                manifest.annotations.insert(
+                manifest.annotations_mut().get_or_insert_default().insert(
                     "dev.pichi.carapace.verity.hash".into(),
                     hex::encode(expected_root),
                 );
@@ -750,7 +761,8 @@ mod tests {
 
         let mut m2 = manifest_with(vec![pmi_layer()]);
         let host = std::env::consts::ARCH;
-        m2.annotations
+        m2.annotations_mut()
+            .get_or_insert_default()
             .insert(ARCH_ANNOTATION.to_string(), host.to_string());
         m2.check_architecture().unwrap(); // matching
     }
@@ -758,7 +770,7 @@ mod tests {
     #[tokio::test]
     async fn check_architecture_rejects_mismatch() {
         let mut m = manifest_with(vec![pmi_layer()]);
-        m.annotations.insert(
+        m.annotations_mut().get_or_insert_default().insert(
             ARCH_ANNOTATION.to_string(),
             "totally-not-this-host".to_string(),
         );

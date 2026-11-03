@@ -223,7 +223,19 @@ async fn inconsistent_index_descriptors_abort_collection() {
 #[tokio::test]
 async fn index_export_and_import_preserve_original_bytes() {
     for null_media_type in [false, true] {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fixture.store.get_blob(&fixture.manifest).await.unwrap())
+                .unwrap();
+        if null_media_type {
+            manifest["mediaType"] = serde_json::Value::Null;
+        } else {
+            manifest.as_object_mut().unwrap().remove("mediaType");
+        }
+        manifest["subject"] = manifest["config"].clone();
+        manifest["config"]["urls"] = json!(["https://example.org/config"]);
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        fixture.manifest = Fixture::put(&fixture.store, &manifest_bytes).await;
         let tag = "registry.example/image:one";
         let index = fixture.index(tag, false).await;
         let mut value: serde_json::Value =
@@ -264,6 +276,10 @@ async fn index_export_and_import_preserve_original_bytes() {
         let tags = FilesystemTagDb::open(destination.path().join("pichi/storage")).unwrap();
         assert_eq!(tags.resolve_tag(tag).await.unwrap(), Some(index.clone()));
         assert_eq!(store.get_blob(&index).await.unwrap(), bytes);
+        assert_eq!(
+            store.get_blob(&fixture.manifest).await.unwrap(),
+            manifest_bytes
+        );
         assert!(store.blob_exists(&fixture.layer).await);
     }
 }

@@ -222,7 +222,7 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations};
+    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations};
     use pichi_storage::{FilesystemTagDb, TagDb};
     use tempfile::TempDir;
 
@@ -350,22 +350,24 @@ mod tests {
         // shape used by tests/cmd_rmi.rs::insert_manifest).
         let scute_digest_str = format!("sha256:{}", "a".repeat(64));
         let scute_digest: Digest = scute_digest_str.parse().unwrap();
-        let m = Manifest {
-            schema_version: 2,
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: oci_spec::image::DescriptorBuilder::default()
-                .media_type(oci_spec::image::MediaType::EmptyJSON)
-                .digest(
-                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
-                        .parse::<oci_spec::image::Digest>()
-                        .expect("empty config digest"),
-                )
-                .size(2u64)
-                .data("e30=")
-                .build()
-                .expect("empty config descriptor"),
-            layers: vec![{
+        let m = oci_spec::image::ImageManifestBuilder::default()
+            .schema_version(2u32)
+            .media_type("application/vnd.oci.image.manifest.v1+json")
+            .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+            .config(
+                oci_spec::image::DescriptorBuilder::default()
+                    .media_type(oci_spec::image::MediaType::EmptyJSON)
+                    .digest(
+                        "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                            .parse::<oci_spec::image::Digest>()
+                            .expect("empty config digest"),
+                    )
+                    .size(2u64)
+                    .data("e30=")
+                    .build()
+                    .expect("empty config descriptor"),
+            )
+            .layers(vec![{
                 let mut descriptor = oci_spec::image::Descriptor::new(
                     conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
                     1024u64,
@@ -381,9 +383,14 @@ mod tests {
                     }),
                 ));
                 descriptor
-            }],
-            annotations: chain_annotations(),
-        };
+            }])
+            .annotations(
+                (chain_annotations())
+                    .into_iter()
+                    .collect::<std::collections::HashMap<String, String>>(),
+            )
+            .build()
+            .expect("manifest fields are set");
         let mbytes = serde_json::to_vec(&m).unwrap();
         let mdigest = format!(
             "sha256:{}",

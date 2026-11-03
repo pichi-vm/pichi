@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 use crate::cmd::verity::VerityFormat as _;
 use anyhow::{Context as _, Result, bail};
-use conglobate::artifact::Manifest;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_registry::Registry;
 use pichi_storage::{BlobSidecarExt, BlobStore};
 use sha2::{Digest as _, Sha256};
@@ -27,7 +27,7 @@ pub(super) struct ScuteFiles {
 
 impl ScuteFiles {
     pub(super) fn new(
-        manifest: &Manifest,
+        manifest: &ImageManifest,
         layer: &oci_spec::image::Descriptor,
         store: &dyn BlobStore,
     ) -> Result<Self> {
@@ -81,7 +81,7 @@ impl PreparedLayer {
     pub(super) async fn fetch<R: Registry>(
         registry: &R,
         target: &Reference,
-        manifest: &Manifest,
+        manifest: &ImageManifest,
         layer: &oci_spec::image::Descriptor,
         store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>> {
@@ -114,7 +114,7 @@ impl PreparedLayer {
 
     /// Import must rebuild even when a cache sidecar already exists.
     pub(super) async fn prepare_cached(
-        manifest: &Manifest,
+        manifest: &ImageManifest,
         layer: &oci_spec::image::Descriptor,
         store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>> {
@@ -134,7 +134,7 @@ impl PreparedLayer {
 
     fn read<R: Read>(
         input: R,
-        manifest: &Manifest,
+        manifest: &ImageManifest,
         layer: &oci_spec::image::Descriptor,
         scratch: &Path,
     ) -> Result<Self> {
@@ -154,7 +154,7 @@ impl PreparedLayer {
     fn read_into<R: Read, W: Write>(
         input: R,
         output: W,
-        manifest: &Manifest,
+        manifest: &ImageManifest,
         layer: &oci_spec::image::Descriptor,
         scratch: &Path,
     ) -> Result<Self> {
@@ -379,7 +379,7 @@ mod tests {
         data: Vec<u8>,
         wire: Vec<u8>,
         root: [u8; 32],
-        manifest: Manifest,
+        manifest: ImageManifest,
     }
 
     impl Fixture {
@@ -440,7 +440,7 @@ mod tests {
             PreparedLayer::read(
                 self.wire.as_slice(),
                 &self.manifest,
-                &self.manifest.layers[0],
+                &self.manifest.layers()[0],
                 scratch,
             )
         }
@@ -501,7 +501,7 @@ mod tests {
             let fixture = Fixture::new(compressed, 2);
             let dir = tempfile::tempdir().unwrap();
             let store = pichi_storage::FilesystemBlobStore::new(dir.path());
-            let layer = &fixture.manifest.layers[0];
+            let layer = &fixture.manifest.layers()[0];
             let digest = layer.digest().clone();
             store.put_blob(&digest, &fixture.wire).await.unwrap();
             let path = store.blob_path(&digest).unwrap();
@@ -542,7 +542,7 @@ mod tests {
         let mut fixture = Fixture::new(true, 2);
         let dir = tempfile::tempdir().unwrap();
         let store = pichi_storage::FilesystemBlobStore::new(dir.path());
-        let digest = fixture.manifest.layers[0].digest().clone();
+        let digest = fixture.manifest.layers()[0].digest().clone();
         store.put_blob(&digest, &fixture.wire).await.unwrap();
         let mut variants = Vec::new();
         for (block_size, count, hash_size, hash_type, suffix) in [
@@ -557,12 +557,16 @@ mod tests {
                 ("hash-block-size", hash_size),
                 ("hash-type", hash_type),
             ] {
-                fixture.manifest.annotations.insert(
-                    format!("dev.pichi.carapace.verity.{key}"),
-                    value.to_string(),
-                );
+                fixture
+                    .manifest
+                    .annotations_mut()
+                    .get_or_insert_default()
+                    .insert(
+                        format!("dev.pichi.carapace.verity.{key}"),
+                        value.to_string(),
+                    );
             }
-            let scute = &mut fixture.manifest.layers[0];
+            let scute = &mut fixture.manifest.layers_mut()[0];
             let mut annotations =
                 conglobate::artifact::ScuteAnnotations::try_from(&*scute).unwrap();
             annotations.data_blocks = (count as u64).try_into().unwrap();
@@ -571,11 +575,11 @@ mod tests {
                 conglobate::artifact::ScuteAnnotations::try_from(&*scute).unwrap();
             annotations.salt = format!("{}{suffix}", "00".repeat(32));
             scute.set_annotations(Some(annotations.into()));
-            PreparedLayer::prepare_cached(&fixture.manifest, &fixture.manifest.layers[0], &store)
+            PreparedLayer::prepare_cached(&fixture.manifest, &fixture.manifest.layers()[0], &store)
                 .await
                 .unwrap();
             let files =
-                ScuteFiles::new(&fixture.manifest, &fixture.manifest.layers[0], &store).unwrap();
+                ScuteFiles::new(&fixture.manifest, &fixture.manifest.layers()[0], &store).unwrap();
             variants.push((files, fixture.prepare(dir.path()).unwrap().scute.unwrap()));
         }
         assert_eq!(variants[0].0.data, variants[1].0.data);
@@ -617,7 +621,7 @@ mod tests {
             fixture.wire.pop();
             assert!(fixture.prepare(scratch.path()).is_err());
             let mut fixture = Fixture::new(compressed, 2);
-            let d = &mut fixture.manifest.layers[0];
+            let d = &mut fixture.manifest.layers_mut()[0];
             d.set_digest(
                 format!(
                     "sha256:{}",
@@ -633,7 +637,7 @@ mod tests {
         }
         let mut fixture = Fixture::new(true, 2);
         fixture.wire.extend_from_within(..);
-        let d = &mut fixture.manifest.layers[0];
+        let d = &mut fixture.manifest.layers_mut()[0];
         d.set_size(fixture.wire.len() as u64);
         d.set_digest(
             format!(
@@ -708,9 +712,9 @@ mod tests {
                 "dev.pichi.carapace.verity.hash": hex::encode([0; 32]),
             },
         });
-        let manifest: Manifest = serde_json::from_value(manifest).unwrap();
+        let manifest: ImageManifest = serde_json::from_value(manifest).unwrap();
         let scratch = tempfile::tempdir().unwrap();
-        let error = PreparedLayer::read(WIRE, &manifest, &manifest.layers[0], scratch.path())
+        let error = PreparedLayer::read(WIRE, &manifest, &manifest.layers()[0], scratch.path())
             .err()
             .expect("oversized zstd window must fail");
         let message = format!("{error:#}");
@@ -733,7 +737,7 @@ mod tests {
             let error = PreparedLayer::read(
                 LateFailure(&fixture.wire),
                 &fixture.manifest,
-                &fixture.manifest.layers[0],
+                &fixture.manifest.layers()[0],
                 scratch.path(),
             )
             .err()

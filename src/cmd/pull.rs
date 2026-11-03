@@ -8,10 +8,10 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use anyhow::{Context, Result, anyhow, ensure};
-#[cfg(test)]
-use conglobate::artifact::Manifest;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
+#[cfg(test)]
+use oci_spec::image::ImageManifest;
 
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 
@@ -127,8 +127,8 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     // 4a. Pull the config blob when it is a real `vnd.pichi.config.v1+json`
     //     (the OCI empty config rides inline in the manifest — nothing to
     //     fetch). It is small; pull it into memory and commit.
-    if manifest.config.media_type() != &oci_spec::image::MediaType::EmptyJSON {
-        let config_digest = manifest.config.digest();
+    if manifest.config().media_type() != &oci_spec::image::MediaType::EmptyJSON {
+        let config_digest = manifest.config().digest();
         if !blob_store.blob_exists(config_digest).await {
             let mut buf: Vec<u8> = Vec::new();
             registry
@@ -136,7 +136,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
                     target.registry(),
                     target.repository(),
                     config_digest,
-                    manifest.config.size(),
+                    manifest.config().size(),
                     &mut buf,
                 )
                 .await
@@ -153,7 +153,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     // Consume results in manifest order even when downloads finish out of order.
     let target_ref = &target;
     let manifest_ref = &manifest;
-    let mut downloads = futures_stream::iter(&manifest.layers)
+    let mut downloads = futures_stream::iter(manifest.layers())
         .map(|layer| async move {
             let digest: Digest = layer.digest().clone();
             let root = if blob_store.blob_exists(&digest).await {
@@ -263,11 +263,7 @@ mod tests {
             };
             let pmi_digest = digest(&firmware);
             let config_digest = digest(&compressed);
-            let manifest = Manifest {
-                schema_version: 2,
-                media_type: oci_spec::image::MediaType::ImageManifest.to_string(),
-                artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-                config: oci_spec::image::DescriptorBuilder::default()
+            let manifest = oci_spec::image::ImageManifestBuilder::default().schema_version(2u32).media_type(oci_spec::image::MediaType::ImageManifest).artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1).config(oci_spec::image::DescriptorBuilder::default()
                     .media_type(oci_spec::image::MediaType::EmptyJSON)
                     .digest(
                         "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
@@ -277,8 +273,7 @@ mod tests {
                     .size(2u64)
                     .data("e30=")
                     .build()
-                    .expect("empty config descriptor"),
-                layers: vec![
+                    .expect("empty config descriptor")).layers(vec![
                     oci_spec::image::Descriptor::new(
                         conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
                         firmware.len() as u64,
@@ -289,9 +284,7 @@ mod tests {
                         compressed.len() as u64,
                         config_digest.clone(),
                     ),
-                ],
-                annotations: BTreeMap::new(),
-            };
+                ]).annotations((BTreeMap::new()).into_iter().collect::<std::collections::HashMap<String, String>>()).build().expect("manifest fields are set");
             registry.insert_manifest(
                 "ghcr.io",
                 "example/boot",
@@ -453,7 +446,7 @@ mod tests {
     /// Pitfall 3 regression guard — cmd::pull writes the manifest's RAW bytes
     /// (from pull_manifest_*) to BlobStore, never a re-serialised form. Set
     /// up the mock with manifest bytes that include trailing whitespace; if
-    /// cmd::pull went through Manifest::to_bytes the whitespace would
+    /// cmd::pull went through ImageManifest::to_bytes the whitespace would
     /// be lost. Asserts BlobStore::get_blob returns the EXACT mock bytes.
     #[tokio::test(flavor = "current_thread")]
     async fn pull_inner_writes_manifest_raw_bytes() {
@@ -778,24 +771,31 @@ mod tests {
         } else {
             scute_desc
         };
-        let manifest = Manifest {
-            schema_version: 2,
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: oci_spec::image::DescriptorBuilder::default()
-                .media_type(oci_spec::image::MediaType::EmptyJSON)
-                .digest(
-                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
-                        .parse::<oci_spec::image::Digest>()
-                        .expect("empty config digest"),
-                )
-                .size(2u64)
-                .data("e30=")
-                .build()
-                .expect("empty config descriptor"),
-            layers: vec![layer],
-            annotations,
-        };
+        let manifest = oci_spec::image::ImageManifestBuilder::default()
+            .schema_version(2u32)
+            .media_type("application/vnd.oci.image.manifest.v1+json")
+            .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+            .config(
+                oci_spec::image::DescriptorBuilder::default()
+                    .media_type(oci_spec::image::MediaType::EmptyJSON)
+                    .digest(
+                        "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                            .parse::<oci_spec::image::Digest>()
+                            .expect("empty config digest"),
+                    )
+                    .size(2u64)
+                    .data("e30=")
+                    .build()
+                    .expect("empty config descriptor"),
+            )
+            .layers(vec![layer])
+            .annotations(
+                (annotations)
+                    .into_iter()
+                    .collect::<std::collections::HashMap<String, String>>(),
+            )
+            .build()
+            .expect("manifest fields are set");
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
         let digest = format!(
             "sha256:{}",
@@ -847,7 +847,7 @@ mod tests {
                 .expect("SHA-256 digest");
                 let (bytes, manifest_digest) =
                     make_scute_manifest(&digest, wire.len() as u64, &data, compressed);
-                let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+                let manifest: ImageManifest = serde_json::from_slice(&bytes).unwrap();
                 registry.insert_manifest("ghcr.io", "example/foo", "bar", bytes.clone());
                 registry.insert_blob(
                     "ghcr.io",
@@ -857,7 +857,7 @@ mod tests {
                 );
                 let source = store.blob_path(&digest).unwrap();
                 let files =
-                    crate::cmd::layer::ScuteFiles::new(&manifest, &manifest.layers[0], &store)
+                    crate::cmd::layer::ScuteFiles::new(&manifest, &manifest.layers()[0], &store)
                         .unwrap();
                 let expected_data = if compressed || length != 8192 {
                     source.deflated_path(8192)
@@ -930,7 +930,7 @@ mod tests {
             &decompressed,
             /* is_zstd= */ true,
         );
-        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        let manifest: ImageManifest = serde_json::from_slice(&manifest_bytes).unwrap();
         let files =
             crate::cmd::layer::ScuteFiles::new(&manifest, manifest.scute_layers()[0], &blob_store)
                 .unwrap();
@@ -996,7 +996,7 @@ mod tests {
             &layer_data,
             /* is_zstd= */ false,
         );
-        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        let manifest: ImageManifest = serde_json::from_slice(&manifest_bytes).unwrap();
         let files =
             crate::cmd::layer::ScuteFiles::new(&manifest, manifest.scute_layers()[0], &blob_store)
                 .unwrap();
@@ -1061,8 +1061,8 @@ mod tests {
 
         let (bytes, _) =
             make_scute_manifest(&scute_digest, scute_data.len() as u64, &scute_data, false);
-        let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
-        manifest.layers.push(oci_spec::image::Descriptor::new(
+        let mut manifest: ImageManifest = serde_json::from_slice(&bytes).unwrap();
+        manifest.layers_mut().push(oci_spec::image::Descriptor::new(
             conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
             pmi_bytes.len() as u64,
             pmi_digest.clone(),
@@ -1128,7 +1128,7 @@ mod tests {
         .expect("SHA-256 digest");
         let (manifest_bytes, _manifest_digest) =
             make_scute_manifest(&layer_digest, layer_data.len() as u64, &layer_data, false);
-        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        let manifest: ImageManifest = serde_json::from_slice(&manifest_bytes).unwrap();
         let files =
             crate::cmd::layer::ScuteFiles::new(&manifest, manifest.scute_layers()[0], &blob_store)
                 .unwrap();
@@ -1184,8 +1184,8 @@ mod tests {
                 .parse::<Digest>()
                 .expect("SHA-256 digest");
                 let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, &data, compressed);
-                let mut next: Manifest = serde_json::from_slice(&bytes).unwrap();
-                let scute = &mut next.layers[0];
+                let mut next: ImageManifest = serde_json::from_slice(&bytes).unwrap();
+                let scute = &mut next.layers_mut()[0];
                 let mut annotations =
                     conglobate::artifact::ScuteAnnotations::try_from(&*scute).unwrap();
                 annotations.salt = hex::encode(parent);
@@ -1193,18 +1193,21 @@ mod tests {
                 let mut parameters = pull_side_verity_params();
                 parameters.salt = parent.to_vec();
                 parent = parameters.compute(&data).unwrap().root_hash;
-                layers.push(next.layers[0].clone());
+                layers.push(next.layers()[0].clone());
                 manifest = Some(next);
                 registry.insert_blob("ghcr.io", "example/foo", digest, Bytes::from(wire));
             }
             let mut manifest = manifest.unwrap();
             manifest
-                .annotations
+                .annotations_mut()
+                .get_or_insert_default()
                 .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(parent));
-            manifest.layers = order
-                .into_iter()
-                .map(|index| layers[index].clone())
-                .collect();
+            manifest.set_layers(
+                order
+                    .into_iter()
+                    .map(|index| layers[index].clone())
+                    .collect(),
+            );
             registry.insert_manifest(
                 "ghcr.io",
                 "example/foo",
@@ -1256,17 +1259,17 @@ mod tests {
             .parse::<Digest>()
             .expect("SHA-256 digest");
             let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, &data, compressed);
-            let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+            let mut manifest: ImageManifest = serde_json::from_slice(&bytes).unwrap();
             let mut trees = Vec::new();
             for suffix in [0xaa, 0xbb] {
                 let mut params = pull_side_verity_params();
                 params.salt.push(suffix);
-                let scute = &mut manifest.layers[0];
+                let scute = &mut manifest.layers_mut()[0];
                 let mut annotations =
                     conglobate::artifact::ScuteAnnotations::try_from(&*scute).unwrap();
                 annotations.salt = hex::encode(&params.salt);
                 scute.set_annotations(Some(annotations.into()));
-                manifest.annotations.insert(
+                manifest.annotations_mut().get_or_insert_default().insert(
                     "dev.pichi.carapace.verity.hash".into(),
                     hex::encode(params.compute(&data).unwrap().root_hash),
                 );
@@ -1296,7 +1299,7 @@ mod tests {
                 .await
                 .unwrap();
                 let files =
-                    crate::cmd::layer::ScuteFiles::new(&manifest, &manifest.layers[0], &store)
+                    crate::cmd::layer::ScuteFiles::new(&manifest, &manifest.layers()[0], &store)
                         .unwrap();
                 trees.push((files.verity, params.compute(&data).unwrap().blob));
             }
@@ -1333,29 +1336,37 @@ mod tests {
                     .parse::<Digest>()
                     .expect("SHA-256 digest");
                     let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, &data, true);
-                    let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+                    let mut manifest: ImageManifest = serde_json::from_slice(&bytes).unwrap();
                     if cached {
                         store.put_blob(&digest, &wire).await.unwrap();
-                        PreparedLayer::prepare_cached(&manifest, &manifest.layers[0], &store)
+                        PreparedLayer::prepare_cached(&manifest, &manifest.layers()[0], &store)
                             .await
                             .unwrap();
                     }
                     let key = "dev.pichi.carapace.verity.hash";
                     match tip {
                         "missing" => {
-                            manifest.annotations.remove(key);
+                            manifest
+                                .annotations_mut()
+                                .get_or_insert_default()
+                                .remove(key);
                         }
                         "zero" => {
                             manifest
-                                .annotations
+                                .annotations_mut()
+                                .get_or_insert_default()
                                 .insert(key.into(), hex::encode([0; 32]));
                         }
                         "malformed" => {
-                            manifest.annotations.insert(key.into(), "not a root".into());
+                            manifest
+                                .annotations_mut()
+                                .get_or_insert_default()
+                                .insert(key.into(), "not a root".into());
                         }
                         "wrong" => {
                             manifest
-                                .annotations
+                                .annotations_mut()
+                                .get_or_insert_default()
                                 .insert(key.into(), hex::encode([42; 32]));
                         }
                         _ => {}

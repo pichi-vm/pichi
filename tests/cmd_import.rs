@@ -13,7 +13,7 @@ mod index;
 use std::path::PathBuf;
 
 use assert_cmd::Command;
-use conglobate::artifact::Manifest;
+use oci_spec::image::ImageManifest;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
@@ -77,11 +77,11 @@ async fn import_happy_path() {
         "inspect output should contain artifactType: {inspect_str}"
     );
 
-    // Manifest has exactly one Scute layer (no PMI).
+    // ImageManifest has exactly one Scute layer (no PMI).
     let blob_store = FilesystemBlobStore::new(&g);
     let (_, bytes) = index::manifest(&blob_store, &manifest_digest).await;
-    let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(manifest.layers.len(), 1, "exactly one layer (one scute)");
+    let manifest: ImageManifest = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(manifest.layers().len(), 1, "exactly one layer (one scute)");
 }
 
 /// IMPORT-05 / CONTEXT D-06: `pichi import` accepts non-GPT input
@@ -169,8 +169,8 @@ async fn bottom_scute_salt_is_zero_prefix_e2e() {
         .unwrap();
     let blob_store = FilesystemBlobStore::new(&g);
     let (_, bytes) = index::manifest(&blob_store, &manifest_digest).await;
-    let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
-    let salt = conglobate::artifact::ScuteAnnotations::try_from(&manifest.layers[0])
+    let manifest: ImageManifest = serde_json::from_slice(&bytes).unwrap();
+    let salt = conglobate::artifact::ScuteAnnotations::try_from(&manifest.layers()[0])
         .unwrap()
         .salt;
     let salt = hex::decode(salt).unwrap();
@@ -213,7 +213,7 @@ async fn import_without_pmi_has_no_pmi_layer() {
     );
 }
 
-/// VALIDATION row "Manifest contains chain-wide verity annotations":
+/// VALIDATION row "ImageManifest contains chain-wide verity annotations":
 /// chain annotations carry locked Phase 42 D-06 values.
 #[tokio::test]
 async fn manifest_has_locked_verity_params_e2e() {
@@ -238,25 +238,28 @@ async fn manifest_has_locked_verity_params_e2e() {
         .unwrap();
     let blob_store = FilesystemBlobStore::new(&g);
     let (_, bytes) = index::manifest(&blob_store, &manifest_digest).await;
-    let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+    let manifest: ImageManifest = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         manifest
-            .annotations
-            .get("dev.pichi.carapace.verity.algo")
+            .annotations()
+            .as_ref()
+            .and_then(|a| a.get("dev.pichi.carapace.verity.algo"))
             .map(String::as_str),
         Some("sha256")
     );
     assert_eq!(
         manifest
-            .annotations
-            .get("dev.pichi.carapace.verity.data-block-size")
+            .annotations()
+            .as_ref()
+            .and_then(|a| a.get("dev.pichi.carapace.verity.data-block-size"))
             .map(String::as_str),
         Some("4096")
     );
     assert_eq!(
         manifest
-            .annotations
-            .get("dev.pichi.carapace.verity.hash-block-size")
+            .annotations()
+            .as_ref()
+            .and_then(|a| a.get("dev.pichi.carapace.verity.hash-block-size"))
             .map(String::as_str),
         Some("4096")
     );

@@ -5,9 +5,9 @@
 
 use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context, Result, anyhow, ensure};
-use conglobate::artifact::Manifest;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use oci_spec::image::{Descriptor, ImageIndex, MediaType, Platform};
 use pichi_registry::pick_pichi_entry_from_index;
 use pichi_storage::{BlobStore, TagDb};
@@ -117,13 +117,13 @@ impl ImageMetadata {
         Ok(())
     }
 
-    pub(super) fn manifest(&self) -> Result<Manifest> {
+    pub(super) fn manifest(&self) -> Result<ImageManifest> {
         ensure!(
             self.value["artifactType"] == conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
             "expected {}",
             conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1
         );
-        Manifest::decode_json(self.bytes.as_slice()).context("invalid image manifest")
+        ImageManifest::decode_json(self.bytes.as_slice()).context("invalid image manifest")
     }
 }
 
@@ -211,7 +211,7 @@ pub(super) trait ImageStore: BlobStore {
         }
     }
 
-    async fn manifest(&self, digest: &Digest) -> Result<(ImageMetadata, Manifest)> {
+    async fn manifest(&self, digest: &Digest) -> Result<(ImageMetadata, ImageManifest)> {
         let metadata = self.metadata(digest).await?;
         if metadata.is_index() {
             return self.manifest_entry(metadata.selected_entry()?).await;
@@ -221,7 +221,7 @@ pub(super) trait ImageStore: BlobStore {
     }
 
     /// Authenticate the manifest referenced by an already selected descriptor.
-    async fn manifest_entry(&self, entry: &Value) -> Result<(ImageMetadata, Manifest)> {
+    async fn manifest_entry(&self, entry: &Value) -> Result<(ImageMetadata, ImageManifest)> {
         let metadata = self
             .metadata(
                 &entry["digest"]
@@ -323,9 +323,9 @@ pub(super) trait ImageStore: BlobStore {
                     );
                 }
             } else {
-                let manifest: Manifest = serde_json::from_slice(&metadata.bytes)?;
-                live.insert(manifest.config.digest().clone());
-                for layer in &manifest.layers {
+                let manifest: ImageManifest = serde_json::from_slice(&metadata.bytes)?;
+                live.insert(manifest.config().digest().clone());
+                for layer in manifest.layers() {
                     live.insert(layer.digest().clone());
                 }
             }

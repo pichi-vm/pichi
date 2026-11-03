@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use super::cache::ImageStore as _;
 use anyhow::{Context, Result, bail, ensure};
 use cap_std::fs::Dir;
-use conglobate::artifact::Manifest;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use oci_spec::image::{Descriptor, ImageIndex, MediaType};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use sha2::{Digest as _, Sha256};
@@ -34,7 +34,7 @@ pub(super) struct OciLayout {
     capacity: u64,
     staging: tempfile::TempDir,
     store: FilesystemBlobStore,
-    manifests: Vec<(Digest, Manifest)>,
+    manifests: Vec<(Digest, ImageManifest)>,
     roots: Vec<Descriptor>,
     blobs: HashMap<Digest, u64>,
     guest_verity: Vec<(PathBuf, PathBuf)>,
@@ -64,7 +64,7 @@ impl OciLayout {
         for (_, manifest) in &layout.manifests {
             super::boot_config::BootConfigFile::validate_image(manifest, &layout.store).await?;
             let mut roots = ScuteRoots::default();
-            for layer in &manifest.layers {
+            for layer in manifest.layers() {
                 if let Some(root) =
                     PreparedLayer::prepare_cached(manifest, layer, &layout.store).await?
                 {
@@ -176,14 +176,17 @@ impl OciLayout {
                 continue;
             }
             let manifest =
-                Manifest::decode_json(bytes.as_slice()).context("invalid OCI manifest")?;
+                ImageManifest::decode_json(bytes.as_slice()).context("invalid OCI manifest")?;
             ensure!(
-                manifest.schema_version == 2
-                    && manifest.media_type == MediaType::ImageManifest.to_string(),
+                manifest.schema_version() == 2
+                    && manifest
+                        .media_type()
+                        .as_ref()
+                        .is_none_or(|media| media == &MediaType::ImageManifest),
                 "invalid manifest schema or media type"
             );
-            ensure!(!manifest.layers.is_empty(), "OCI artifact has no layers");
-            let config = &manifest.config;
+            ensure!(!manifest.layers().is_empty(), "OCI artifact has no layers");
+            let config = &manifest.config();
             ensure!(config.size() <= METADATA_CAP, "config exceeds metadata cap");
             if config.media_type() != &oci_spec::image::MediaType::EmptyJSON
                 || files.contains_key(&Self::blob_name(config.digest())?)
@@ -197,7 +200,7 @@ impl OciLayout {
                     config.validate().context("invalid launch config")?;
                 }
             }
-            if manifest.layers.iter().any(|l| {
+            if manifest.layers().iter().any(|l| {
                 matches!(
                     l.media_type().as_ref(),
                     conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
@@ -209,13 +212,18 @@ impl OciLayout {
                     "dev.pichi.carapace.verity.hash-block-size",
                 ] {
                     ensure!(
-                        manifest.annotations.get(key).map(String::as_str) == Some("4096"),
+                        manifest
+                            .annotations()
+                            .as_ref()
+                            .and_then(|a| a.get(key))
+                            .map(String::as_str)
+                            == Some("4096"),
                         "carapace block sizes must be 4096"
                     );
                 }
             }
             let mut layers = HashSet::new();
-            for layer in &manifest.layers {
+            for layer in manifest.layers() {
                 ensure!(layers.insert(layer.digest()), "duplicate OCI layer");
                 layout.copy_blob(&root, layer.digest(), layer.size(), &mut expected)?;
                 if matches!(
@@ -225,8 +233,9 @@ impl OciLayout {
                 ) {
                     ensure!(
                         manifest
-                            .annotations
-                            .get("dev.pichi.carapace.verity.hash-type")
+                            .annotations()
+                            .as_ref()
+                            .and_then(|a| a.get("dev.pichi.carapace.verity.hash-type"))
                             .map(String::as_str)
                             == Some("1"),
                         "carapace hash type must be 1"
@@ -533,6 +542,7 @@ pub(super) mod tests {
     use super::*;
     use crate::cmd::test_support::ScuteFixture as _;
     use crate::cmd::verity::VerityParams;
+    use conglobate::artifact::ManifestExt as _;
 
     use pichi_storage::TagDb as _;
     use serde_json::{Value, json};
@@ -689,8 +699,8 @@ pub(super) mod tests {
             fixture.add_cow(shared.clone(), false);
             fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash"] =
                 hex::encode(fixture.tip).into();
-            let manifest: Manifest = serde_json::from_value(fixture.manifest.clone()).unwrap();
-            let layer = manifest.layers.last().unwrap();
+            let manifest: ImageManifest = serde_json::from_value(fixture.manifest.clone()).unwrap();
+            let layer = manifest.layers().last().unwrap();
             assert_eq!(layer.digest(), &digest);
             let scute = layer;
             assert_eq!(
@@ -774,7 +784,7 @@ pub(super) mod tests {
             );
             let bytes = store.get_blob(&digest).await.unwrap();
             assert_eq!(bytes, serde_json::to_vec(&fixture.manifest).unwrap());
-            let manifest = Manifest::decode_json(&bytes[..]).unwrap();
+            let manifest = ImageManifest::decode_json(&bytes[..]).unwrap();
             assert_eq!(
                 manifest.carapace_top_root(&store).await.unwrap(),
                 fixture.tip

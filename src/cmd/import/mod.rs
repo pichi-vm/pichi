@@ -24,10 +24,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest};
+use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
+use conglobate::artifact::ManifestExt as _;
 use conglobate::resources::Config;
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use super::{boot_config::BootConfigFile, cache::ImageStore as _};
@@ -110,9 +112,12 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         if k.starts_with("dev.pichi.carapace.verity.") {
             continue;
         }
-        manifest.annotations.insert(k, v);
+        manifest
+            .annotations_mut()
+            .get_or_insert_default()
+            .insert(k, v);
     }
-    manifest.layers.push(oci_spec::image::Descriptor::new(
+    manifest.layers_mut().push(oci_spec::image::Descriptor::new(
         conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
         pmi_bytes.len() as u64,
         pmi_digest.clone(),
@@ -120,14 +125,14 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     if let Some(config) = &bootconfig
         && let Some(descriptor) = config.descriptor()
     {
-        manifest.layers.push(descriptor);
+        manifest.layers_mut().push(descriptor);
     }
     if let Some((digest, bytes)) = &config_blob {
-        manifest.config = oci_spec::image::Descriptor::new(
+        manifest.set_config(oci_spec::image::Descriptor::new(
             conglobate::resources::MEDIA_TYPE_PICHI_CONFIG_V1.into(),
             bytes.len() as u64,
             digest.clone(),
-        );
+        ));
     }
     manifest
         .validate()
@@ -149,7 +154,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         .await
         .with_context(|| format!("put_blob pmi {pmi_digest}"))?;
     let pmi_layer = manifest
-        .layers
+        .layers()
         .iter()
         .find(|layer| {
             matches!(
@@ -200,7 +205,7 @@ async fn carapace_scutes_manifest(
     blob_store: &FilesystemBlobStore,
     db: &FilesystemTagDb,
     carapace: &str,
-) -> Result<Manifest> {
+) -> Result<ImageManifest> {
     // Accept a bare `sha256:<hex>` image digest directly — that is exactly
     // what `pichi import raw` prints, so an untagged carapace is referenceable
     // without inventing a repo. Otherwise parse as a tag / `repo@sha256:…` ref.
@@ -218,7 +223,7 @@ async fn carapace_scutes_manifest(
     }
     // Keep only the carapace's scute layers (drop any prior PMI/bootconfig so a re-run
     // replaces cleanly); its scute cows + `.verity` sidecars are already cached.
-    manifest.layers.retain(|l| {
+    manifest.layers_mut().retain(|l| {
         matches!(
             l.media_type().as_ref(),
             conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
@@ -230,30 +235,37 @@ async fn carapace_scutes_manifest(
 
 /// A fresh scute-less manifest (a PMI-only bootable artifact): no carapace, so
 /// no chain-verity annotations — only the creation timestamp.
-fn scuteless_manifest() -> Manifest {
+fn scuteless_manifest() -> ImageManifest {
     let mut annotations = BTreeMap::new();
     annotations.insert(
         "org.opencontainers.image.created".to_string(),
         chrono::Utc::now().to_rfc3339(),
     );
-    Manifest {
-        schema_version: 2,
-        media_type: oci_spec::image::MediaType::ImageManifest.to_string(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-        config: oci_spec::image::DescriptorBuilder::default()
-            .media_type(oci_spec::image::MediaType::EmptyJSON)
-            .digest(
-                "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
-                    .parse::<oci_spec::image::Digest>()
-                    .expect("empty config digest"),
-            )
-            .size(2u64)
-            .data("e30=")
-            .build()
-            .expect("empty config descriptor"),
-        layers: Vec::new(),
-        annotations,
-    }
+    oci_spec::image::ImageManifestBuilder::default()
+        .schema_version(2u32)
+        .media_type(oci_spec::image::MediaType::ImageManifest)
+        .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+        .config(
+            oci_spec::image::DescriptorBuilder::default()
+                .media_type(oci_spec::image::MediaType::EmptyJSON)
+                .digest(
+                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("empty config digest"),
+                )
+                .size(2u64)
+                .data("e30=")
+                .build()
+                .expect("empty config descriptor"),
+        )
+        .layers(Vec::new())
+        .annotations(
+            (annotations)
+                .into_iter()
+                .collect::<std::collections::HashMap<String, String>>(),
+        )
+        .build()
+        .expect("manifest fields are set")
 }
 
 /// Parse repeatable `KEY=VALUE` annotation flags into a map. The key is

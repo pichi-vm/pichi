@@ -1,12 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `ManifestExt`: pichi-side helpers on `conglobate::artifact::Manifest`.
-//!
-//! `Manifest` is defined in `conglobate::artifact` (it mirrors the normative wire
-//! schema), so per the repo's "extension trait when you don't own the type"
-//! rule these run/build-specific queries live here as an extension trait rather
-//! than as free functions scattered across the command modules.
+//! Pichi runtime operations on upstream OCI manifests.
 
 use crate::cmd::layer::{PreparedLayer, ScuteFiles};
 use crate::cmd::platform::PlatformExt as _;
@@ -14,8 +9,9 @@ use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context as _, Result, anyhow, bail};
 
 use crate::cmd::verity::{VerityFormat as _, VerityParams};
-use conglobate::artifact::Manifest;
+use conglobate::artifact::ManifestExt as _;
 use devmap_verity::{HashType, Header};
+use oci_spec::image::ImageManifest;
 use pichi_storage::BlobStore;
 
 /// Chain-wide verity annotation keys.
@@ -25,8 +21,8 @@ const ANN_HASH_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.hash-block-size";
 /// Standard OCI image-architecture annotation key.
 const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
-/// pichi-side queries and validations on a cached [`Manifest`].
-#[allow(async_fn_in_trait)] // used only via static dispatch on Manifest values
+/// pichi-side queries and validations on a cached [`ImageManifest`].
+#[allow(async_fn_in_trait)] // used only via static dispatch on ImageManifest values
 pub trait ManifestExt {
     /// Decode and validate a manifest at a Pichi input boundary.
     fn decode_json(reader: impl std::io::Read) -> Result<Self>
@@ -62,7 +58,7 @@ pub trait ManifestExt {
     async fn carapace_top_root(&self, blob_store: &dyn BlobStore) -> Result<[u8; 32]>;
 }
 
-impl ManifestExt for Manifest {
+impl ManifestExt for ImageManifest {
     fn decode_json(reader: impl std::io::Read) -> Result<Self> {
         let manifest: Self = serde_json::from_reader(reader)?;
         manifest.validate()?;
@@ -70,7 +66,7 @@ impl ManifestExt for Manifest {
     }
 
     fn bootconfig_layer(&self) -> Option<&oci_spec::image::Descriptor> {
-        self.layers.iter().find(|layer| {
+        self.layers().iter().find(|layer| {
             layer.media_type().as_ref() == conglobate::artifact::MEDIA_TYPE_PICHI_BOOTCONFIG_V1_ZSTD
         })
     }
@@ -81,7 +77,7 @@ impl ManifestExt for Manifest {
         &oci_spec::image::Descriptor,
         Vec<&oci_spec::image::Descriptor>,
     )> {
-        let pmi = self.layers.iter().find(|layer| {
+        let pmi = self.layers().iter().find(|layer| {
             layer.media_type().as_ref() == conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
         });
         let pmi = pmi.ok_or_else(|| {
@@ -91,7 +87,7 @@ impl ManifestExt for Manifest {
     }
 
     fn scute_layers(&self) -> Vec<&oci_spec::image::Descriptor> {
-        self.layers
+        self.layers()
             .iter()
             .filter(|layer| {
                 matches!(
@@ -104,7 +100,11 @@ impl ManifestExt for Manifest {
     }
 
     fn check_architecture(&self) -> Result<()> {
-        let Some(arch) = self.annotations.get(ARCH_ANNOTATION) else {
+        let Some(arch) = self
+            .annotations()
+            .as_ref()
+            .and_then(|a| a.get(ARCH_ANNOTATION))
+        else {
             return Ok(());
         };
         let host = std::env::consts::ARCH;
@@ -125,8 +125,9 @@ impl ManifestExt for Manifest {
         size: Option<u64>,
     ) -> Result<Header> {
         let annotation = |key: &str| {
-            self.annotations
-                .get(key)
+            self.annotations()
+                .as_ref()
+                .and_then(|a| a.get(key))
                 .ok_or_else(|| anyhow!("missing verity annotation {key}"))
         };
         if annotation("dev.pichi.carapace.verity.version")?.parse::<u32>()? != 1 {
@@ -197,7 +198,7 @@ impl ManifestExt for Manifest {
 
     async fn carapace_top_root(&self, blob_store: &dyn BlobStore) -> Result<[u8; 32]> {
         let mut roots = ScuteRoots::default();
-        for layer in &self.layers {
+        for layer in self.layers() {
             if let Some(root) = self.cached_scute_root(layer, blob_store).await? {
                 roots.add(layer, root)?;
             }
@@ -241,9 +242,9 @@ impl ScuteRoots {
     }
 
     /// Bind the complete ordered reconstruction to the manifest commitment.
-    pub(super) fn verify(&self, manifest: &Manifest) -> Result<Option<[u8; 32]>> {
+    pub(super) fn verify(&self, manifest: &ImageManifest) -> Result<Option<[u8; 32]>> {
         let expected = manifest
-            .layers
+            .layers()
             .iter()
             .filter(|l| {
                 matches!(

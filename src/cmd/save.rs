@@ -61,10 +61,10 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
         tokio::fs::write(blobs_dir.join(image.digest.digest()), &image.bytes).await?;
         if !image.is_index() {
             let manifest = image.manifest()?;
-            if manifest.config.media_type() != &oci_spec::image::MediaType::EmptyJSON {
-                to_copy.insert(manifest.config.digest().clone());
+            if manifest.config().media_type() != &oci_spec::image::MediaType::EmptyJSON {
+                to_copy.insert(manifest.config().digest().clone());
             }
-            for layer in &manifest.layers {
+            for layer in manifest.layers() {
                 to_copy.insert(layer.digest().clone());
             }
         }
