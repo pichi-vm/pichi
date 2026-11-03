@@ -135,11 +135,7 @@ impl HttpRegistry {
         if let Some(c) = cache.get(registry) {
             return c.clone(); // oci_client::Client is Arc-internally — cheap clone.
         }
-        let insecure = self
-            .entries
-            .get(registry)
-            .map(|e| e.insecure)
-            .unwrap_or(false);
+        let insecure = self.entries.get(registry).is_some_and(|e| e.insecure);
         let protocol = if insecure {
             // Pitfall 10: explicit per-registry insecure escape hatch.
             ClientProtocol::HttpsExcept(vec![registry.to_string()])
@@ -463,11 +459,7 @@ impl Registry for HttpRegistry {
             .await
             .map_err(RegistryError::from)?;
 
-        let insecure = self
-            .entries
-            .get(registry)
-            .map(|e| e.insecure)
-            .unwrap_or(false);
+        let insecure = self.entries.get(registry).is_some_and(|e| e.insecure);
         let scheme = if insecure { "http" } else { "https" };
 
         // 1. Begin an upload session.

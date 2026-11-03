@@ -61,7 +61,7 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::a
 
 fn count_blobs(graphroot: &std::path::Path) -> usize {
     let dir = graphroot.join("blobs").join("sha256");
-    std::fs::read_dir(&dir).map(|it| it.count()).unwrap_or(0)
+    std::fs::read_dir(&dir).map_or(0, std::iter::Iterator::count)
 }
 
 #[tokio::test]

@@ -180,7 +180,7 @@ impl AuthEnv {
         // parked on a config read during a registry call.
         for path in self.auth_search_paths() {
             if let Some(entry) = read_entry_for(&path, registry).await? {
-                return entry.into_registry_auth(registry);
+                return entry.to_registry_auth(registry);
             }
         }
 
@@ -206,7 +206,7 @@ impl AuthEntry {
     /// Extract a [`RegistryAuth`] from this entry, applying D-04's loud-error
     /// rule for `credsStore` / `credHelpers` (the entry has already been keyed
     /// on `registry` by [`read_entry_for`]).
-    fn into_registry_auth(&self, registry: &str) -> Result<RegistryAuth> {
+    fn to_registry_auth(&self, registry: &str) -> Result<RegistryAuth> {
         if let Some(store) = &self.creds_store {
             return Err(anyhow!(
                 "credsStore \"{store}\" not supported by pichi; configure static credentials \

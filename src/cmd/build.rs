@@ -245,8 +245,7 @@ pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:2e23b0
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
 fn resolve_build_image(flag: Option<&str>) -> String {
-    flag.map(str::to_owned)
-        .unwrap_or_else(|| DEFAULT_BUILD_IMAGE.to_owned())
+    flag.map_or_else(|| DEFAULT_BUILD_IMAGE.to_owned(), str::to_owned)
 }
 
 /// Pull the resolved appliance when it is not already cached.
@@ -300,7 +299,7 @@ pub(crate) fn canonicalize_reference(s: &str) -> std::borrow::Cow<'_, str> {
     };
     let name = &s[..at];
     let digest = &s[at..]; // includes '@'
-    let search_from = name.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let search_from = name.rfind('/').map_or(0, |i| i + 1);
     let Some(rel_colon) = name[search_from..].find(':') else {
         return std::borrow::Cow::Borrowed(s);
     };
@@ -398,11 +397,11 @@ async fn boot_serve_and_wait(
     }
     #[cfg(windows)]
     {
-        // FDs are only consumed by the unix pre_exec path; silence -D warnings.
-        let _ = (device_rx_fd, device_tx_fd);
         // tokio::process::Command does not wrap inherit_handles; apply it on
         // the inner std::process::Command (nightly feature gated in lib.rs).
         use std::os::windows::process::CommandExt as _;
+        // FDs are only consumed by the unix pre_exec path; silence -D warnings.
+        let _ = (device_rx_fd, device_tx_fd);
         cmd.as_std_mut().inherit_handles(true);
     }
 

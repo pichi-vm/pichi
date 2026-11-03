@@ -23,7 +23,7 @@
 mod index;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use pichi_storage::{FilesystemTagDb, TagDb};
@@ -42,7 +42,7 @@ fn graphroot(tmp: &TempDir) -> PathBuf {
 /// `{ "sha256:<hex>" -> bytes }`. Empty map when the dir doesn't exist (which
 /// is the expected post-rmi state when the tag's blobs were the only ones
 /// cached).
-fn snapshot_cache(graphroot: &PathBuf) -> BTreeMap<String, Vec<u8>> {
+fn snapshot_cache(graphroot: &Path) -> BTreeMap<String, Vec<u8>> {
     let blobs_dir = graphroot.join("blobs").join("sha256");
     let mut snap = BTreeMap::new();
     if !blobs_dir.exists() {
@@ -66,10 +66,10 @@ fn pichi_test_registry() -> Option<String> {
 }
 
 fn test_repo_base() -> Option<String> {
-    if let Ok(base) = std::env::var("PICHI_TEST_REPO_BASE") {
-        if !base.is_empty() {
-            return Some(base);
-        }
+    if let Ok(base) = std::env::var("PICHI_TEST_REPO_BASE")
+        && !base.is_empty()
+    {
+        return Some(base);
     }
     pichi_test_registry().map(|reg| format!("{reg}/test"))
 }

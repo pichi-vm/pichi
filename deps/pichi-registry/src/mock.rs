@@ -244,7 +244,7 @@ impl Registry for MockRegistry {
                 actual,
             });
         }
-        let chunk = Bytes::from(bytes);
+        let chunk = bytes;
         Ok(Box::pin(futures_util::stream::once(async move {
             Ok::<Bytes, std::io::Error>(chunk)
         })))
@@ -365,8 +365,7 @@ impl Registry for MockRegistry {
 mod tests {
     use super::*;
     use std::future::Future;
-    use std::sync::Arc;
-    use std::task::{Context, Poll, Wake};
+    use std::task::{Context, Poll, Waker};
 
     /// Minimal block_on for tests. The mock's futures resolve on first poll
     /// (no real await happens), so we never need a tokio runtime. Uses
@@ -382,12 +381,7 @@ mod tests {
     /// path; if a future re-polls itself with a noop waker, panicking is
     /// the correct response.
     fn block_on<F: Future>(fut: F) -> F::Output {
-        struct NoopWaker;
-        impl Wake for NoopWaker {
-            fn wake(self: Arc<Self>) {}
-        }
-        let waker = Arc::new(NoopWaker).into();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(Waker::noop());
         let mut fut = Box::pin(fut);
         // Cap iterations: if Pending under a noop waker means nobody will
         // ever wake us, so continuing to poll is a no-progress busy loop.
