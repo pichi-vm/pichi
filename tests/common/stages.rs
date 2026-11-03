@@ -168,7 +168,7 @@ impl Builds {
                 "--build-image",
                 super::build_image(),
                 "--memory",
-                "3072",
+                "3584",
                 "-t",
                 tag,
             ])
