@@ -4,8 +4,6 @@
 //! Stream a planned base scute into the artifact cache and its verity sidecar.
 //! The source image must remain unchanged during planning and streaming.
 
-mod manifest;
-
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -17,7 +15,7 @@ use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTa
 use sha2::{Digest as _, Sha256};
 use tempfile::NamedTempFile;
 
-use self::manifest::BaseManifest as _;
+use super::manifest::BaseManifest as _;
 use crate::cmd::cache::ImageStore as _;
 use crate::cmd::layer::ScuteFiles;
 use crate::cmd::verity::{VerityFormat as _, VerityParams};
