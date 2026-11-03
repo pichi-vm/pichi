@@ -12,9 +12,6 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   NIGHTLY: nightly-2026-07-06
 
-# Cheap / fail-fast tier (parallel). The platform matrix and registry
-# round-trips wait on this whole workflow via ci.yml, so a red fmt,
-# header, or commit-message check skips that expensive work.
 jobs:
   license-headers:
     name: license headers
