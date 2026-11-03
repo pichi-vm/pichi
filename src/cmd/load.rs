@@ -13,7 +13,7 @@ use super::cache::ImageStore as _;
 use anyhow::{Context, Result, bail, ensure};
 use cap_std::fs::Dir;
 use conglobate::artifact::Manifest;
-use conglobate::artifact::{Index as LayoutIndex, IndexDescriptor as LayoutEntry, LayoutMarker};
+use conglobate::artifact::{Index as LayoutIndex, IndexDescriptor as LayoutEntry};
 use oci_spec::distribution::Reference;
 use oci_spec::image::Digest;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
@@ -97,10 +97,10 @@ impl OciLayout {
         let root = Dir::open_ambient_dir(dir, cap_std::ambient_authority())?;
         let mut files = BTreeMap::new();
         Self::scan(&root, Path::new(""), &mut files, &mut 0, capacity)?;
-        let marker: LayoutMarker =
+        let marker: oci_spec::image::OciLayout =
             serde_json::from_slice(&Self::small(&root, Path::new("oci-layout"), 4096)?)?;
         ensure!(
-            marker.image_layout_version == "1.0.0",
+            marker.image_layout_version() == "1.0.0",
             "unsupported OCI layout version"
         );
         let index: LayoutIndex =

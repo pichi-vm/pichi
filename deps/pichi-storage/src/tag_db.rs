@@ -36,14 +36,12 @@ use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
-use conglobate::artifact::{
-    Index as ImageIndex, IndexDescriptor as ManifestDescriptor, LayoutMarker,
-};
+use conglobate::artifact::{Index as ImageIndex, IndexDescriptor as ManifestDescriptor};
 
 use crate::atomic::write_atomic;
 use crate::lock::lock_exclusive_async;
 use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
-use oci_spec::image::Digest;
+use oci_spec::image::{Digest, OciLayoutBuilder};
 
 /// OCI annotation key for the human-readable image reference (tag).
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
@@ -155,7 +153,11 @@ impl FilesystemTagDb {
         write_atomic(
             parent,
             &path,
-            &serde_json::to_vec(&LayoutMarker::default())?,
+            &serde_json::to_vec(
+                &OciLayoutBuilder::default()
+                    .image_layout_version("1.0.0")
+                    .build()?,
+            )?,
         )
         .await
         .context("failed to write oci-layout marker")

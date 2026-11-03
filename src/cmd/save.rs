@@ -15,9 +15,9 @@ use crate::cmd::cache::ImageStore as _;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use conglobate::artifact::{Index, IndexDescriptor, LayoutMarker, MEDIA_TYPE_PICHI_ARTIFACT_V1};
+use conglobate::artifact::{Index, IndexDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1};
 use oci_spec::distribution::Reference;
-use oci_spec::image::Digest;
+use oci_spec::image::{Digest, OciLayoutBuilder};
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::SaveArgs;
@@ -47,7 +47,11 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
         .with_context(|| format!("create {}", blobs_dir.display()))?;
     tokio::fs::write(
         out.join("oci-layout"),
-        serde_json::to_vec(&LayoutMarker::default())?,
+        serde_json::to_vec(
+            &OciLayoutBuilder::default()
+                .image_layout_version("1.0.0")
+                .build()?,
+        )?,
     )
     .await?;
 
