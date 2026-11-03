@@ -70,6 +70,8 @@ jobs:
       # (rust-lang/cargo#10647) is fixed in the pinned nightly, so stock cargo
       # resolves the graph — no patched cargo needed.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ runner.environment == 'github-hosted' || github.ref == 'refs/heads/main' }}
 
       - name: Versions
         shell: bash
