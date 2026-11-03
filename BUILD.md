@@ -82,6 +82,9 @@ mount tags or commit identities for those mounts.
 
 ### 2.4 Named console `dev.pichi.build` (build command V1)
 
+The portable wire types live in `deps/pichi-launch`, shared by the host
+and guest adapter. Pichi owns this console contract.
+
 Port name: `dev.pichi.build` (dillo named-console convention). The port is
 **bidirectional**: launch dillo with both `rx=pipe:…` and `tx=pipe:…`
 (not rx-only). dillo named MULTIPORT ports supply the pipe inheritance
@@ -122,7 +125,7 @@ CBOR push (bytes written before the guest opened the port).
 ### 2.5 Types and outputs
 
 - Pichi depends on the **Conglobate library for types only** (portable
-  plan / request shapes as needed by the CLI).
+  plan, lock, and artifact contracts).
 - **The annotated OCI layout is the Conglobate output.** It is not
   defined by, or reassembled through, `pichi-artifact` as the build
   product contract. Host import may still use ecosystem artifact types
@@ -385,7 +388,7 @@ request/response contracts; the protocol has no global version field.
 
 The three elements are command name, `u16` command version, and request body.
 Build V1 has a unit body, encoded as null. The host decodes the shared
-`conglobate::launch::Requests` enum; unsupported command/version pairs,
+`pichi_launch::Requests` enum; unsupported command/version pairs,
 wrong bodies, and incorrect array lengths fail before success is sent.
 
 ### 4.2 Host success response
@@ -424,7 +427,7 @@ the repository, and plan/lock resolution inside the selected context, even
 through symlinks and parent components. Pichi uses capability-relative opens
 for its host-side lock read so context and lock symlinks cannot escape.
 
-The command types live in `conglobate::launch`; plans, locks and remote
+The command types live in `pichi_launch`; plans, locks and remote
 references live in `conglobate::plan`. These array envelopes replace the old map
 format. The default appliance digest must identify an image with this command
 contract: updating the library/source pin alone does not update the guest.

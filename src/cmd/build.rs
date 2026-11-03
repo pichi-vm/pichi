@@ -740,7 +740,7 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
             let mut req = Vec::new();
             ciborium::into_writer(
-                &conglobate::launch::Request(conglobate::launch::Build::default()),
+                &pichi_launch::Request(pichi_launch::Build::default()),
                 &mut req,
             )
             .unwrap();

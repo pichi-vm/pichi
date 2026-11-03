@@ -15,8 +15,8 @@
 use anyhow::{Context, Result, bail};
 use std::io::{Read, Write};
 
-use conglobate::launch::Requests;
-pub(crate) use conglobate::launch::{Input as BuildInput, PORT_NAME as BUILD_PORT_NAME, Response};
+use pichi_launch::Requests;
+pub(crate) use pichi_launch::{Input as BuildInput, PORT_NAME as BUILD_PORT_NAME, Response};
 
 pub(crate) trait ResponseExt {
     fn encode_cbor(&self) -> Result<Vec<u8>>;
@@ -211,7 +211,7 @@ pub(crate) fn console_arg_names_build_port(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use conglobate::launch::{Build, Request};
+    use pichi_launch::{Build, Request};
     use std::io::Cursor;
 
     #[test]

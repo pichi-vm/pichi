@@ -29,6 +29,7 @@ carapace.workspace = true
 devmap-core.workspace = true
 devmap-verity.workspace = true
 conglobate.workspace = true
+pichi-launch.workspace = true
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true
 bytes.workspace = true
@@ -93,6 +94,7 @@ members = [
     # `pichi` crate).
     "deps/pichi-storage",
     "deps/pichi-registry",
+    "deps/pichi-launch",
 ]
 
 [workspace.package]
@@ -142,6 +144,7 @@ burrow = { git = "https://github.com/pichi-vm/burrow" }
 dillo-config = { git = "https://github.com/pichi-vm/dillo", rev = "a6285a051164241cabb5160d9759b4f3bf2e7200" }
 
 # pichi-internal crates
+pichi-launch = { path = "deps/pichi-launch" }
 pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
