@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use conglobate::build::Lock;
+use conglobate::{build::Lock, plan::Remote};
 use std::{
     collections::BTreeMap,
     fs,
@@ -84,7 +84,12 @@ fn working_files_regenerate_the_lock_without_git_or_other_executables() {
         summary.contains("2 added, 0 changed, 0 removed"),
         "{summary}"
     );
-    assert_eq!(project.lock().images[a].index.to_string(), first);
+    assert_eq!(
+        project.lock().images[&Remote::new(a.into()).unwrap()]
+            .index
+            .to_string(),
+        first
+    );
     assert!(!project.0.path().join("executed").exists());
 
     let second = project.import(a, 3);
@@ -95,7 +100,12 @@ fn working_files_regenerate_the_lock_without_git_or_other_executables() {
         "{summary}"
     );
     assert_eq!(project.lock().images.len(), 1);
-    assert_eq!(project.lock().images[a].index.to_string(), second);
+    assert_eq!(
+        project.lock().images[&Remote::new(a.into()).unwrap()]
+            .index
+            .to_string(),
+        second
+    );
     let summary = Project::success(project.run(&["update", "--pull=never"]));
     assert!(
         summary.contains("0 added, 0 changed, 0 removed"),
@@ -106,7 +116,12 @@ fn working_files_regenerate_the_lock_without_git_or_other_executables() {
     fs::write(project.0.path().join("pichi.lock"), "old invalid lock").unwrap();
     let summary = Project::success(project.run(&["update", "--pull=never"]));
     assert!(summary.contains("unavailable for comparison"), "{summary}");
-    assert_eq!(project.lock().images[a].index.to_string(), second);
+    assert_eq!(
+        project.lock().images[&Remote::new(a.into()).unwrap()]
+            .index
+            .to_string(),
+        second
+    );
 
     let nested = project.0.path().join("nested");
     fs::create_dir(&nested).unwrap();
@@ -384,17 +399,32 @@ fn pull_policies_refresh_exact_index_pins_and_preserve_locks_on_failure() {
 
     Project::success(registry.update(&project, None));
     assert!(registry.requests() > 0, "default must contact registry");
-    assert_eq!(project.lock().images[&reference].index.to_string(), second);
+    assert_eq!(
+        project.lock().images[&Remote::new(reference.clone()).unwrap()]
+            .index
+            .to_string(),
+        second
+    );
     registry.publish(&project.cache(), &first);
     let requests = registry.requests();
     for policy in ["missing", "never"] {
         Project::success(registry.update(&project, Some(policy)));
         assert_eq!(registry.requests(), requests);
-        assert_eq!(project.lock().images[&reference].index.to_string(), second);
+        assert_eq!(
+            project.lock().images[&Remote::new(reference.clone()).unwrap()]
+                .index
+                .to_string(),
+            second
+        );
     }
     Project::success(registry.update(&project, Some("newer")));
     assert!(registry.requests() > requests);
-    assert_eq!(project.lock().images[&reference].index.to_string(), first);
+    assert_eq!(
+        project.lock().images[&Remote::new(reference.clone()).unwrap()]
+            .index
+            .to_string(),
+        first
+    );
     let requests = registry.requests();
     Project::success(registry.update(&project, Some("newer")));
     assert!(registry.requests() > requests);
@@ -410,7 +440,12 @@ fn pull_policies_refresh_exact_index_pins_and_preserve_locks_on_failure() {
     );
     Project::success(registry.update(&project, Some("missing")));
     assert!(registry.requests() > requests);
-    assert_eq!(project.lock().images[&reference].index.to_string(), first);
+    assert_eq!(
+        project.lock().images[&Remote::new(reference.clone()).unwrap()]
+            .index
+            .to_string(),
+        first
+    );
 
     // A foreign-platform index must fail before publishing a new lock.
     {

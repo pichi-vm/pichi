@@ -14,7 +14,7 @@ use cap_std::fs::{Dir, OpenOptions};
 use conglobate::{
     artifact::Reference,
     build::{ImagePin, Lock},
-    plan::{Boot, Directive, Image, ImageRef, Plan, Stage},
+    plan::{Boot, Directive, Image, ImageRef, Plan, Remote, Stage},
 };
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 use std::{
@@ -60,7 +60,7 @@ pub async fn run(args: UpdateArgs, config: &Config) -> Result<()> {
 }
 
 impl UpdateArgs {
-    fn inspect(&self, directory: &Dir) -> Result<BTreeSet<String>> {
+    fn inspect(&self, directory: &Dir) -> Result<BTreeSet<Remote>> {
         ensure!(
             directory.metadata(&self.plan)?.is_file(),
             "plan must be a regular file"
@@ -79,7 +79,7 @@ impl UpdateArgs {
         plan.inputs()
     }
 
-    async fn resolve(&self, inputs: &BTreeSet<String>, config: &Config) -> Result<Lock> {
+    async fn resolve(&self, inputs: &BTreeSet<Remote>, config: &Config) -> Result<Lock> {
         let mut lock = Lock::default();
         if inputs.is_empty() {
             return Ok(lock);
@@ -87,7 +87,8 @@ impl UpdateArgs {
         let layout = config.resolve_layout()?;
         let db = FilesystemTagDb::open(&layout.graphroot)?;
         let blobs = FilesystemBlobStore::new(&layout.graphroot);
-        for text in inputs {
+        for remote in inputs {
+            let text = remote.to_string();
             super::pull::run(
                 PullArgs {
                     reference: text.clone(),
@@ -97,7 +98,7 @@ impl UpdateArgs {
                 config,
             )
             .await?;
-            let reference: Reference = super::build::canonicalize_reference(text).parse()?;
+            let reference: Reference = text.parse()?;
             let digest = blobs.resolve(&reference, &db).await?;
             ensure!(
                 blobs.metadata(&digest).await?.is_index(),
@@ -105,7 +106,8 @@ impl UpdateArgs {
             );
             let (_, manifest) = blobs.manifest(&digest).await?;
             manifest.check_architecture()?;
-            lock.images.insert(text.clone(), ImagePin { index: digest });
+            lock.images
+                .insert(remote.clone(), ImagePin { index: digest });
         }
         Ok(lock)
     }
@@ -161,11 +163,11 @@ impl UpdateArgs {
 
 /// Dependency discovery is a Pichi concern; shared types own the encoding.
 trait PlanExt {
-    fn inputs(&self) -> Result<BTreeSet<String>>;
+    fn inputs(&self) -> Result<BTreeSet<Remote>>;
 }
 
 impl PlanExt for Plan {
-    fn inputs(&self) -> Result<BTreeSet<String>> {
+    fn inputs(&self) -> Result<BTreeSet<Remote>> {
         let sources: Vec<_> = match &self.image {
             Image::Shorthand(source) => vec![source],
             Image::Components { root, boot } => root
@@ -186,7 +188,7 @@ impl PlanExt for Plan {
             match source {
                 ImageRef::Local(name) => selected.push(name),
                 ImageRef::Remote(remote) => {
-                    images.insert(remote.to_string());
+                    images.insert(remote.clone());
                 }
             }
         }
@@ -218,7 +220,7 @@ impl PlanExt for Plan {
                     match source {
                         ImageRef::Local(source) => stack.push((source, false)),
                         ImageRef::Remote(remote) if collect => {
-                            images.insert(remote.to_string());
+                            images.insert(remote.clone());
                         }
                         ImageRef::Remote(_) => {}
                     }
@@ -289,10 +291,10 @@ mod tests {
         let original_bytes = blobs.get_blob(&original).await.unwrap();
         let args = arguments(tmp.path());
         let lock = args
-            .resolve(&[reference.into()].into(), &config)
+            .resolve(&[Remote::new(reference.into()).unwrap()].into(), &config)
             .await
             .unwrap();
-        let pin = &lock.images[reference].index;
+        let pin = &lock.images[&Remote::new(reference.into()).unwrap()].index;
         assert_eq!(pin, &original);
         assert_eq!(
             db.resolve_tag(reference).await.unwrap(),
@@ -300,7 +302,8 @@ mod tests {
         );
         assert_eq!(blobs.get_blob(pin).await.unwrap(), original_bytes);
         let pinned = format!("registry.example/base@{pin}");
-        let pinned_inputs = [pinned.clone()].into();
+        let pinned_remote = Remote::new(pinned.clone()).unwrap();
+        let pinned_inputs = [pinned_remote.clone()].into();
         crate::cmd::prune::run(crate::cli::PruneArgs { dry_run: false }, &config)
             .await
             .unwrap();
@@ -309,7 +312,7 @@ mod tests {
             .unwrap();
         assert_eq!(resolved, *pin);
         let pinned_lock = args.resolve(&pinned_inputs, &config).await.unwrap();
-        assert_eq!(pinned_lock.images[&pinned].index, *pin);
+        assert_eq!(pinned_lock.images[&pinned_remote].index, *pin);
         let (path, _) = args
             .write_lock(
                 &Dir::open_ambient_dir(tmp.path(), cap_std::ambient_authority()).unwrap(),
@@ -326,13 +329,17 @@ mod tests {
         let decoded: Lock = serde_saphyr::from_slice(&before).unwrap();
         assert_eq!(decoded, lock);
         assert!(
-            args.resolve(&["registry.example/missing:1".into()].into(), &config)
-                .await
-                .is_err()
+            args.resolve(
+                &[Remote::new("registry.example/missing:1".into()).unwrap()].into(),
+                &config
+            )
+            .await
+            .is_err()
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let (selected, _) = blobs.manifest(pin).await.unwrap();
-        let bare = [format!("registry.example/base@{}", selected.digest)].into();
+        let bare =
+            [Remote::new(format!("registry.example/base@{}", selected.digest)).unwrap()].into();
         assert!(
             args.resolve(&bare, &config)
                 .await
@@ -402,7 +409,7 @@ image: {{root: root, boot: {boot}}}
                     "registry.test/other:1",
                     "registry.test/boot:1"
                 ]
-                .map(str::to_owned)
+                .map(|text| Remote::new(text.into()).unwrap())
                 .into()
             );
         }
@@ -416,7 +423,7 @@ image: {{root: root, boot: {boot}}}
                 serde_saphyr::from_str(&format!("version: 1\nimage: {image}")).unwrap();
             assert_eq!(
                 plan.inputs().unwrap(),
-                ["registry.test/base:1".into()].into()
+                [Remote::new("registry.test/base:1".into()).unwrap()].into()
             );
         }
     }

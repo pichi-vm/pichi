@@ -91,7 +91,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         );
     }
     for (reference, pin) in &build_lock.images {
-        let mut target: Reference = canonicalize_reference(reference).parse()?;
+        let mut target: Reference = reference.to_string().parse()?;
         target.kind = ReferenceKind::Digest(pin.index.clone());
         let (digest, manifest) = resolve_manifest(&target.to_string(), &db, &blob_store)
             .await
@@ -849,7 +849,8 @@ mod tests {
         let parsed = load_build_lock(tmp.path(), "tests/distro/context", "pichi.lock").unwrap();
         assert_eq!(parsed.version, conglobate::plan::Version::<1>);
         assert_eq!(
-            parsed.images["qualification.local/fedora:43"]
+            parsed.images
+                [&conglobate::plan::Remote::new("qualification.local/fedora:43".into()).unwrap()]
                 .index
                 .to_string(),
             "sha256:abababababababababababababababababababababababababababababababab"
@@ -886,7 +887,7 @@ mod tests {
         for text in [
             "version: 1\nversion: 2\nimages: {}\n",
             "version: 1\nimages: {}\n---\nversion: 2\nimages: {}\n",
-            "version: 1\nimages: {base: {index: sha256:invalid}}\n",
+            "version: 1\nimages: {registry.test/base:1: {index: sha256:invalid}}\n",
         ] {
             std::fs::write(&path, text).unwrap();
             assert!(load_build_lock(tmp.path(), ".", "pichi.lock").is_err());
