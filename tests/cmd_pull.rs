@@ -41,10 +41,10 @@ fn pichi_test_registry() -> Option<String> {
 /// `PICHI_TEST_REPO_BASE` (e.g. `ghcr.io/shelbyapichi/pichi-ci-test` for the
 /// GHCR CI job). Fallback for the legacy zot-style setup: `{registry}/test`.
 fn test_repo_base() -> Option<String> {
-    if let Ok(base) = std::env::var("PICHI_TEST_REPO_BASE") {
-        if !base.is_empty() {
-            return Some(base);
-        }
+    if let Ok(base) = std::env::var("PICHI_TEST_REPO_BASE")
+        && !base.is_empty()
+    {
+        return Some(base);
     }
     pichi_test_registry().map(|reg| format!("{reg}/test"))
 }

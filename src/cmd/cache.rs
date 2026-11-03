@@ -12,7 +12,10 @@ use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
 use pichi_storage::{BlobStore, TagDb};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use std::{collections::HashSet, io};
+use std::{
+    collections::{BTreeMap, HashSet},
+    io,
+};
 use tokio::io::AsyncReadExt as _;
 
 use super::manifest_ext::ManifestExt as _;
@@ -131,7 +134,7 @@ pub(super) trait ImageStore: BlobStore {
                     architecture: Platform::host_architecture().into(),
                     variant: None,
                 })),
-                annotations: Default::default(),
+                annotations: BTreeMap::new(),
             }],
             ..Index::default()
         };

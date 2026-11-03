@@ -313,13 +313,13 @@ image:
 
     let unchanged = builds.build(
         "unchanged-root",
-        r#"
+        r"
 image:
   root: qualification.local/bootable:1
   boot:
     inherit: qualification.local/bootable:1
     extend: {corium.root: deliberately-unchanged}
-"#,
+",
         &[],
     );
     assert_eq!(unchanged.layers("scute"), base.layers("scute"));

@@ -35,7 +35,7 @@ impl From<&Image> for Disk {
                 file.seek(SeekFrom::Start((1 + area * 257) * 4096)).unwrap();
                 let mut records = [0u8; 4096];
                 file.read_exact(&mut records).unwrap();
-                for record in records.chunks_exact(16) {
+                for record in records.as_chunks::<16>().0 {
                     let old = u64::from_le_bytes(record[..8].try_into().unwrap());
                     let new = u64::from_le_bytes(record[8..].try_into().unwrap());
                     if new == 0 {

@@ -14,6 +14,8 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+use std::fmt::Write as _;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
 use humansize::{BINARY, format_size};
@@ -124,20 +126,17 @@ impl Row {
             .ok()
             .map(|(_, manifest)| manifest);
 
-        let (bootable, scute_count, size) = manifest
-            .as_ref()
-            .map(|m| {
-                let bootable = m.layers.iter().any(|l| matches!(l, Layer::Pmi(_)));
-                let scute_count = m
-                    .layers
-                    .iter()
-                    .filter(|l| !matches!(l, Layer::Pmi(_)))
-                    .count();
-                // Sum of all layer sizes (per D-16). Excludes inline empty config + manifest.
-                let size: u64 = m.layers.iter().map(Layer::size).sum();
-                (bootable, scute_count, size)
-            })
-            .unwrap_or((false, 0, 0));
+        let (bootable, scute_count, size) = manifest.as_ref().map_or((false, 0, 0), |m| {
+            let bootable = m.layers.iter().any(|l| matches!(l, Layer::Pmi(_)));
+            let scute_count = m
+                .layers
+                .iter()
+                .filter(|l| !matches!(l, Layer::Pmi(_)))
+                .count();
+            // Sum of all layer sizes (per D-16). Excludes inline empty config + manifest.
+            let size: u64 = m.layers.iter().map(Layer::size).sum();
+            (bootable, scute_count, size)
+        });
 
         let (repository, tag_name) = split_repo_tag(&entry.tag);
 
@@ -154,9 +153,7 @@ impl Row {
                     .map(DateTime::<Utc>::from)
             });
 
-        let created = created_dt
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_else(|| "?".to_string());
+        let created = created_dt.map_or_else(|| "?".to_string(), |dt| dt.to_rfc3339());
 
         let digest_full = entry.digest.to_string();
         let digest_short: String = digest_full.chars().take(DIGEST_PREFIX_LEN).collect();
@@ -283,7 +280,6 @@ impl Row {
                 header_line.push_str("  ");
             }
             let w = widths[i];
-            use std::fmt::Write as _;
             write!(header_line, "{h:<w$}").ok();
         }
         println!("{}", header_line.trim_end());
@@ -296,7 +292,6 @@ impl Row {
                     line.push_str("  ");
                 }
                 let w = widths[i];
-                use std::fmt::Write as _;
                 write!(line, "{cell:<w$}").ok();
             }
             println!("{}", line.trim_end());

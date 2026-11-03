@@ -16,7 +16,8 @@ concurrency:
 
 # Fail-fast DAG (one push/PR entrypoint):
 #
-#   Tier 1 — checks (parallel): cargo fmt, license headers, commit messages
+#   Tier 1 — checks (parallel): cargo fmt, Clippy, license headers,
+#                              commit messages
 #   Tier 2 — after Tier 1 succeeds (parallel with each other):
 #            platform matrix (ubuntu / linux-arm64 / windows / macos),
 #            registry round-trips (zot / ghcr)
