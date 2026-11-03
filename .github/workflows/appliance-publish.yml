@@ -1,0 +1,65 @@
+name: publish appliance
+
+on:
+  workflow_call:
+
+env:
+  # Pichi version. The image builder verifies it against Cargo.toml.
+  # Main pushes this tag and :latest. Pull requests do not push.
+  PICHI_BUILD_VERSION: "0.1.0"
+  NIGHTLY: "nightly-2026-07-06"
+
+jobs:
+  # Load both OCI layouts, assemble one multi-arch index, and push :0.1.0
+  # and :latest. Absent on pull requests and on non-main branches, so those
+  # builds stay green without registry credentials.
+  index:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build this Pichi revision
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          cargo "+$NIGHTLY" build --locked --release --bin pichi
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+
+      - name: Download OCI layout artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: oci-*
+
+      - name: Authenticate to ghcr.io
+        run: |
+          mkdir -p "$HOME/.docker"
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
+            "$(printf '%s:%s' "${{ github.actor }}" "${{ secrets.GITHUB_TOKEN }}" | base64 -w0)" \
+            > "$HOME/.docker/config.json"
+
+      - name: Load, assemble, and push the multi-arch index
+        run: |
+          # platform.os = pichi: a carapace is a pichi VM guest, not a
+          # container "used on" an OS. Producer and `pichi pull` share this.
+          # Consumers pin published digests; these tags remain updateable.
+          VERSION="${PICHI_BUILD_VERSION}"
+          pichi load "oci-amd64" --tag "pichi-build:${VERSION}-amd64"
+          pichi load "oci-arm64" --tag "pichi-build:${VERSION}-arm64"
+          list="pichi-build:${VERSION}"
+          pichi manifest create "$list" "${list}-amd64" "${list}-arm64" \
+            -a "org.opencontainers.image.source=https://github.com/pichi-vm/pichi" \
+            -a "org.opencontainers.image.revision=${{ github.sha }}" \
+            -a "org.opencontainers.image.version=${VERSION}" \
+            -a "org.opencontainers.image.title=Pichi build appliance ${VERSION}" \
+            -a "org.opencontainers.image.description=Pichi build appliance"
+          pichi manifest annotate "$list" "${list}-amd64" --os pichi --arch amd64
+          pichi manifest annotate "$list" "${list}-arm64" --os pichi --arch arm64
+          pichi manifest push "$list" "ghcr.io/pichi-vm/pichi-build:${VERSION}"
+          pichi manifest push "$list" "ghcr.io/pichi-vm/pichi-build:latest"

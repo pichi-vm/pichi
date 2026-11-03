@@ -119,5 +119,13 @@ jobs:
     uses: ./.github/workflows/appliance.yml
     permissions:
       contents: read
+
+  publish-appliance:
+    name: publish appliance
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [appliance, ci]
+    uses: ./.github/workflows/appliance-publish.yml
+    permissions:
+      contents: read
       packages: write
     secrets: inherit
