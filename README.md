@@ -64,7 +64,8 @@ git commit -m "Update image inputs"
 `pichi update [DIR]` defaults to the current directory. `-p`/`--plan` and
 `-l`/`--lock` select paths within DIR, defaulting to `pichi.yaml` and
 `pichi.lock`. It reads working-tree edits directly; Git, the Conglobate CLI,
-and a VM are unnecessary. Stage commands are never executed during update.
+and a VM are unnecessary. Stage commands are never executed during update. Plans require an explicit
+`version: 1` field.
 
 Update resolves only the selected image's remote dependencies, including
 stage-copy and boot sources, and replaces the complete version-1 lock with

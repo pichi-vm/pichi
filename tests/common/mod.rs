@@ -234,7 +234,7 @@ pub fn prepare_smoke_repo(tmp: &Path, index: &str) -> (PathBuf, String) {
     std::fs::write(
         context.join(SMOKE_PLAN),
         format!(
-            "{}image: rootfs\n",
+            "version: 1\n{}image: rootfs\n",
             plan.split("    - exec:").next().unwrap()
         ),
     )

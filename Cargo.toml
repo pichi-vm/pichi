@@ -145,7 +145,7 @@ pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
 # Match the contract revision used by the pinned appliance.
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "88471e2cf69b43685a901eb888487d41af9458c5", default-features = false }
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "252680a429f2ab75048a83d9c02dbc87ec0c84de", default-features = false }
 # Error handling
 anyhow = "1"
 thiserror = "2"

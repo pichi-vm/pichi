@@ -246,7 +246,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn arguments(dir: &Path) -> UpdateArgs {
-        std::fs::write(dir.join("pichi.yaml"), "image: registry.example/base:1\n").unwrap();
+        std::fs::write(
+            dir.join("pichi.yaml"),
+            "version: 1\nimage: registry.example/base:1\n",
+        )
+        .unwrap();
         UpdateArgs {
             dir: dir.into(),
             plan: "pichi.yaml".into(),
@@ -381,6 +385,7 @@ mod tests {
             "{extract: {from: firmware, path: /boot.pmi}}",
         ] {
             let plan: Plan = serde_saphyr::from_str(&format!(r#"
+version: 1
 stages:
   tools: {{use: registry.test/tools:1}}
   root: {{extend: tools, steps: [{{copy: {{from: producer, path: /out, into: /out}}}}, {{exec: {{command: 'must never run'}}}}]}}
@@ -407,7 +412,8 @@ image: {{root: root, boot: {boot}}}
             "{boot: registry.test/base:1}",
             "{root: registry.test/base:1, boot: registry.test/base:1}",
         ] {
-            let plan: Plan = serde_saphyr::from_str(&format!("image: {image}")).unwrap();
+            let plan: Plan =
+                serde_saphyr::from_str(&format!("version: 1\nimage: {image}")).unwrap();
             assert_eq!(
                 plan.inputs().unwrap(),
                 ["registry.test/base:1".into()].into()
@@ -418,15 +424,15 @@ image: {{root: root, boot: {boot}}}
     #[test]
     fn missing_stages_cycles_and_empty_selections_are_rejected() {
         for text in [
-            "image: {}",
-            "image: missing",
-            "image: {boot: missing}",
-            "image: a\nstages: {a: {extend: a}}",
-            "image: a\nstages: {a: {extend: b}, b: {extend: a}}",
-            "image: a\nstages: {a: {extend: registry.test/base:1, steps: [{copy: {from: missing, path: /x, into: /x}}]}}",
-            "image: a\nstages: {a: {extend: registry.test/base:1, steps: [{copy: {from: a, path: /x, into: /x}}]}}",
-            "image: registry.test/base:1\nstages: {unused: {extend: missing}}",
-            "image: registry.test/base:1\nstages: {a: {extend: b}, b: {extend: a}}",
+            "version: 1\nimage: {}",
+            "version: 1\nimage: missing",
+            "version: 1\nimage: {boot: missing}",
+            "version: 1\nimage: a\nstages: {a: {extend: a}}",
+            "version: 1\nimage: a\nstages: {a: {extend: b}, b: {extend: a}}",
+            "version: 1\nimage: a\nstages: {a: {extend: registry.test/base:1, steps: [{copy: {from: missing, path: /x, into: /x}}]}}",
+            "version: 1\nimage: a\nstages: {a: {extend: registry.test/base:1, steps: [{copy: {from: a, path: /x, into: /x}}]}}",
+            "version: 1\nimage: registry.test/base:1\nstages: {unused: {extend: missing}}",
+            "version: 1\nimage: registry.test/base:1\nstages: {a: {extend: b}, b: {extend: a}}",
         ] {
             let plan: Plan = serde_saphyr::from_str(text).unwrap();
             assert!(plan.inputs().is_err(), "accepted {text}");

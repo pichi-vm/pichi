@@ -78,7 +78,7 @@ fn working_files_regenerate_the_lock_without_git_or_other_executables() {
     let b = "registry.test/b:1";
     let first = project.import(a, 1);
     project.import(b, 2);
-    project.plan(&format!("stages: {{root: {{extend: {a}, steps: [{{exec: {{command: 'touch executed'}}}}]}}}}\nimage: {{root: root, boot: {b}}}"));
+    project.plan(&format!("version: 1\nstages: {{root: {{extend: {a}, steps: [{{exec: {{command: 'touch executed'}}}}]}}}}\nimage: {{root: root, boot: {b}}}"));
     let summary = Project::success(project.run(&["update", "--pull=never"]));
     assert!(
         summary.contains("2 added, 0 changed, 0 removed"),
@@ -88,7 +88,7 @@ fn working_files_regenerate_the_lock_without_git_or_other_executables() {
     assert!(!project.0.path().join("executed").exists());
 
     let second = project.import(a, 3);
-    project.plan(&format!("image: {a}"));
+    project.plan(&format!("version: 1\nimage: {a}"));
     let summary = Project::success(project.run(&["update", "--pull=never"]));
     assert!(
         summary.contains("0 added, 1 changed, 1 removed"),
@@ -110,7 +110,7 @@ fn working_files_regenerate_the_lock_without_git_or_other_executables() {
 
     let nested = project.0.path().join("nested");
     fs::create_dir(&nested).unwrap();
-    fs::write(nested.join("plan.yaml"), format!("image: {a}")).unwrap();
+    fs::write(nested.join("plan.yaml"), format!("version: 1\nimage: {a}")).unwrap();
     Project::success(project.run(&[
         "update",
         "nested",
@@ -132,11 +132,11 @@ fn errors_preserve_the_lock_and_retired_options_are_rejected() {
     fs::write(project.0.path().join("pichi.lock"), before).unwrap();
     for plan in [
         "invalid: [",
-        "image: {}",
-        "image: missing",
-        "image: registry.test/missing:1",
-        "image: registry.test/base:1\nimage: registry.test/other:1",
-        "image: x\nstages: {x: {extend: registry.test/base:1, steps: [{exec: {command: ':', network: yes}}]}}",
+        "version: 1\nimage: {}",
+        "version: 1\nimage: missing",
+        "version: 1\nimage: registry.test/missing:1",
+        "version: 1\nimage: registry.test/base:1\nimage: registry.test/other:1",
+        "version: 1\nimage: x\nstages: {x: {extend: registry.test/base:1, steps: [{exec: {command: ':', network: yes}}]}}",
     ] {
         project.plan(plan);
         let output = project.run(&["update", "--pull=never"]);
@@ -173,7 +173,7 @@ fn plan_and_lock_paths_stay_in_the_project() {
     let project = Project::new();
     let reference = "registry.test/base:1";
     project.import(reference, 1);
-    project.plan(&format!("image: {reference}"));
+    project.plan(&format!("version: 1\nimage: {reference}"));
     let before = fs::read(project.0.path().join("pichi.yaml")).unwrap();
     for args in [
         vec!["update", "--pull=never", "--plan", "../pichi.yaml"],
@@ -380,7 +380,7 @@ fn pull_policies_refresh_exact_index_pins_and_preserve_locks_on_failure() {
     let first = project.import(&reference, 1);
     let second = project.import(&format!("{}/test/base:next", registry.address), 2);
     registry.publish(&project.cache(), &second);
-    project.plan(&format!("image: {reference}"));
+    project.plan(&format!("version: 1\nimage: {reference}"));
 
     Project::success(registry.update(&project, None));
     assert!(registry.requests() > 0, "default must contact registry");
