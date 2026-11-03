@@ -11,7 +11,7 @@
 //! first poll. The clippy lint `unused_async` is allowed for this reason
 //! (Pitfall 8 in 42-RESEARCH.md).
 
-#![allow(clippy::unused_async)]
+#![allow(clippy::unused_async, clippy::unused_async_trait_impl)]
 
 use std::collections::HashMap;
 use std::sync::Mutex;

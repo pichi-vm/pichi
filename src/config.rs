@@ -222,6 +222,7 @@ impl Config {
 /// System-wide config path: `/etc/pichi/config.toml` on Unix,
 /// `%PROGRAMDATA%\pichi\config.toml` on Windows. `pub(crate)` so
 /// `system info` reports the same path the loader consults.
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(unix)]
 pub(crate) fn system_config_path() -> Option<PathBuf> {
     Some(PathBuf::from("/etc/pichi/config.toml"))
