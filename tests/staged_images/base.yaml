@@ -7,7 +7,7 @@ requirements:
   memory: {required: 1024, recommended: 2048}
 stages:
   rootfs:
-    use: qualification.local/tools:1
+    use: !bootstrap localhost/tools
     format:
       fs: ext4
       size: 4GiB

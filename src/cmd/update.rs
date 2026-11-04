@@ -13,7 +13,7 @@ use anyhow::{Context, Result, ensure};
 use cap_std::fs::{Dir, OpenOptions};
 use conglobate::{
     artifact::Reference,
-    plan::{Boot, Directive, Image, ImageRef, Lock, Plan, Remote, Stage},
+    plan::{Boot, Directive, Image, ImageRef, Lock, Plan, Remote, Stage, Tool},
 };
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 use std::{
@@ -26,6 +26,10 @@ pub async fn run(args: UpdateArgs, config: &Config) -> Result<()> {
     let directory = Dir::open_ambient_dir(&args.dir, cap_std::ambient_authority())
         .context("opening project directory")?;
     let inputs = args.inspect(&directory)?;
+    if inputs.is_empty() && !directory.try_exists(&args.lock)? {
+        println!("pichi update: no ordinary image inputs; no lock required");
+        return Ok(());
+    }
     let lock = args.resolve(&inputs, config).await?;
     let (path, previous) = args.write_lock(&directory, &lock)?;
     if let Some(previous) = previous {
@@ -67,14 +71,7 @@ impl UpdateArgs {
         let text = directory
             .read_to_string(&self.plan)
             .with_context(|| format!("reading plan {} within project directory", self.plan))?;
-        let plan: Plan = serde_saphyr::from_str_with_options(
-            &text,
-            serde_saphyr::options! {
-                strict_booleans: true,
-                merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
-            },
-        )
-        .with_context(|| format!("parsing plan {}", self.plan))?;
+        let plan = Plan::from_yaml(&text).with_context(|| format!("parsing plan {}", self.plan))?;
         plan.inputs()
     }
 
@@ -181,6 +178,7 @@ impl PlanExt for Plan {
         };
         ensure!(!sources.is_empty(), "image contains neither root nor PMI");
         let mut images = BTreeSet::new();
+        let mut bootstraps = BTreeSet::new();
         let mut selected = Vec::new();
         for source in sources {
             match source {
@@ -211,16 +209,34 @@ impl PlanExt for Plan {
                         .with_context(|| format!("unknown stage {name}"))?;
                     ensure!(visiting.insert(name), "stage dependency cycle at {name}");
                     let (source, steps) = match stage {
-                        Stage::Create { r#use, steps, .. } => (r#use, steps),
-                        Stage::Extend { extend, steps, .. } => (extend, steps),
+                        Stage::Create {
+                            r#use: Tool::Bootstrap(remote),
+                            steps,
+                            ..
+                        } => {
+                            if collect {
+                                bootstraps.insert(remote);
+                            }
+                            (None, steps)
+                        }
+                        Stage::Create {
+                            r#use: Tool::Image(source),
+                            steps,
+                            ..
+                        }
+                        | Stage::Extend {
+                            extend: source,
+                            steps,
+                            ..
+                        } => (Some(source), steps),
                     };
                     stack.push((name, true));
                     match source {
-                        ImageRef::Local(source) => stack.push((source, false)),
-                        ImageRef::Remote(remote) if collect => {
+                        Some(ImageRef::Local(source)) => stack.push((source, false)),
+                        Some(ImageRef::Remote(remote)) if collect => {
                             images.insert(remote.clone());
                         }
-                        ImageRef::Remote(_) => {}
+                        Some(ImageRef::Remote(_)) | None => {}
                     }
                     for step in steps {
                         if let Directive::Copy {
@@ -233,6 +249,12 @@ impl PlanExt for Plan {
                 }
             }
         }
+        ensure!(
+            bootstraps
+                .into_iter()
+                .all(|remote| !images.contains(remote)),
+            "an image cannot be both ordinary and bootstrap"
+        );
         Ok(images)
     }
 }
@@ -347,6 +369,75 @@ mod tests {
         );
         std::fs::write(blobs.blob_path(pin), b"tampered").unwrap();
         assert!(args.resolve(&pinned_inputs, &config).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_only_update_needs_neither_a_cache_nor_a_new_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = arguments(tmp.path());
+        let plan = "version: 1\nstages: {root: {use: !bootstrap localhost/missing}}\nimage: root\n";
+        std::fs::write(tmp.path().join("pichi.yaml"), plan).unwrap();
+        let config = Config {
+            storage: StorageConfig {
+                graphroot: Some(tmp.path().join("unused-cache")),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        run(args, &config).await.unwrap();
+        assert!(!tmp.path().join("pichi.lock").exists());
+        assert!(!tmp.path().join("unused-cache").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("pichi.yaml")).unwrap(),
+            plan
+        );
+        let args = UpdateArgs {
+            dir: tmp.path().into(),
+            plan: "pichi.yaml".into(),
+            lock: "pichi.lock".into(),
+            pull: crate::cli::PullPolicy::Never,
+        };
+        std::fs::write(tmp.path().join("pichi.lock"), "version: 1\nimages: {localhost/missing: sha256:0000000000000000000000000000000000000000000000000000000000000000}\n").unwrap();
+        run(args, &config).await.unwrap();
+        let lock: Lock = serde_saphyr::from_str(
+            &std::fs::read_to_string(tmp.path().join("pichi.lock")).unwrap(),
+        )
+        .unwrap();
+        assert!(lock.images.is_empty());
+        assert!(!tmp.path().join("unused-cache").exists());
+    }
+
+    #[test]
+    fn discovery_keeps_only_selected_ordinary_inputs() {
+        let plan = Plan::from_yaml(
+            r#"
+version: 1
+stages:
+  root: {use: !bootstrap localhost/first}
+  extra: {use: !bootstrap ghcr.io/pichi-vm/fedora}
+  final:
+    extend: registry.test/base
+    steps:
+      - copy: {from: root, path: /x, into: /x}
+      - copy: {from: extra, path: /x, into: /y}
+  unused: {extend: registry.test/unused}
+image: final
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.inputs().unwrap(),
+            [Remote::new("registry.test/base:latest".into()).unwrap()].into()
+        );
+        let conflict = Plan::from_yaml(
+            r#"
+version: 1
+stages: {root: {use: !bootstrap registry.test/base}}
+image: {root: root, boot: registry.test/base:latest}
+"#,
+        )
+        .unwrap();
+        assert!(conflict.inputs().is_err());
     }
 
     #[tokio::test]

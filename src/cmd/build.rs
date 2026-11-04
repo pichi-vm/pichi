@@ -10,14 +10,13 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use conglobate::plan::Lock as BuildLockFile;
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::cache::ImageStore as _;
-use conglobate::artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements};
+use conglobate::artifact::{Digest, Manifest, Reference, Requirements};
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{BuildArgs, PullArgs, PullPolicy};
@@ -76,10 +75,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let bootconfig_path =
         super::boot_config::BootConfigFile::prepare_image(&build_manifest, &blob_store).await?;
 
-    // Source preparation follows the current lock contract. Plans are parsed
-    // only by Conglobate; legacy host plan parsing is no longer supported.
-    let build_lock = load_build_lock(&args.dir, &context, &lock)?;
-
     let mut gpt_specs = Vec::new();
     // Only the appliance root is a VM disk. Conglobate opens locked image
     // inputs through the read-only cache and assembles roots when needed.
@@ -90,24 +85,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
                 .with_context(|| format!("building vGPT for build image {build_image_ref}"))?,
         );
     }
-    for (reference, pin) in &build_lock.images {
-        let mut target: Reference = reference.to_string().parse()?;
-        target.kind = ReferenceKind::Digest(pin.clone());
-        let (digest, manifest) = resolve_manifest(&target.to_string(), &db, &blob_store)
-            .await
-            .with_context(|| format!("resolving pinned source {reference}"))?;
-        if digest != *pin {
-            bail!("cached {reference} does not match lock pin {pin}");
-        }
-        super::boot_config::BootConfigFile::validate_image(&manifest, &blob_store).await?;
-        if !manifest.scute_layers().is_empty() {
-            manifest
-                .carapace_top_root(&blob_store)
-                .await
-                .with_context(|| format!("preparing cached source {reference}"))?;
-        }
-    }
-
     // Thin-launcher mounts (BUILD.md §2.2–§2.3): empty RW output, RO cache,
     // RO repo (git object store / work tree the guest resolves `--ref` against).
     let output_dir = tempfile::TempDir::new().context("creating build output dir")?;
@@ -237,10 +214,10 @@ pub(crate) fn build_dillo_args(
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
 /// Conglobate appliance pinned by content digest.
-/// Built from 2f26a83441049c800b2a55aaa0d686da6e33a5f7 for amd64 and arm64.
+/// Built from f63474a47bc94316fcf662493d0cf8f7036777d0 for amd64 and arm64.
 /// It consumes versioned staged plans and boots its GPT root with native bootconfig.
 /// Official-image smoke verifies guest output, poweroff, and host import.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:66c89000f137e04d2cef6e68b78e3817a113876f7d7651fd266aa01768d3c878";
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:278ca85b9c06639592db961ee1c8e78827a768f452838f2d03e683b5f8cf7095";
 
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
@@ -306,31 +283,6 @@ pub(crate) fn canonicalize_reference(s: &str) -> std::borrow::Cow<'_, str> {
     };
     let abs = search_from + rel_colon;
     std::borrow::Cow::Owned(format!("{}{}", &name[..abs], digest))
-}
-
-/// Load the build lock without interpreting a plan on the host.
-/// Capability-relative opens resolve symlinks without allowing either the
-/// selected context or the lock to escape its containing directory.
-fn load_build_lock(repo: &Path, context: &str, lock_rel: &str) -> Result<BuildLockFile> {
-    let path = repo.join(context).join(lock_rel);
-    let repo = cap_std::fs::Dir::open_ambient_dir(repo, cap_std::ambient_authority())
-        .context("opening build repository")?;
-    let context = repo
-        .open_dir(context)
-        .context("opening build context within repository")?;
-    let text = context
-        .read_to_string(lock_rel)
-        .with_context(|| format!("reading build lock {lock_rel} within context"))?;
-    let parsed: BuildLockFile = serde_saphyr::from_str_with_options(
-        &text,
-        serde_saphyr::options! {
-            // Match YAML 1.2 scalars and leave merge keys to the schema.
-            strict_booleans: true,
-            merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
-        },
-    )
-    .with_context(|| format!("parsing build lock {}", path.display()))?;
-    Ok(parsed)
 }
 
 /// Resolve a cached reference to its parsed pichi manifest.
@@ -643,7 +595,7 @@ mod tests {
         let canon = canonicalize_reference(&pinned);
         assert_eq!(
             canon.as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:66c89000f137e04d2cef6e68b78e3817a113876f7d7651fd266aa01768d3c878"
+            "ghcr.io/pichi-vm/conglobate@sha256:278ca85b9c06639592db961ee1c8e78827a768f452838f2d03e683b5f8cf7095"
         );
         let parsed: Reference = canon.parse().unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
@@ -652,7 +604,7 @@ mod tests {
             ReferenceKind::Digest(d) => {
                 assert_eq!(
                     d.to_string(),
-                    "sha256:66c89000f137e04d2cef6e68b78e3817a113876f7d7651fd266aa01768d3c878"
+                    "sha256:278ca85b9c06639592db961ee1c8e78827a768f452838f2d03e683b5f8cf7095"
                 );
             }
             ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),
@@ -772,126 +724,6 @@ mod tests {
         assert_eq!(db.resolve_tag(&key).await.unwrap(), Some(digest));
     }
 
-    #[test]
-    fn load_build_lock_confines_context_and_lock_paths() {
-        let root = tempfile::tempdir().unwrap();
-        let repo = root.path().join("repo");
-        std::fs::create_dir_all(repo.join("context/dir")).unwrap();
-        for path in [
-            root.path().join("outside.lock"),
-            repo.join("outside.lock"),
-            repo.join("context/pichi.lock"),
-        ] {
-            std::fs::write(path, "version: 1\nimages: {}\n").unwrap();
-        }
-        assert!(load_build_lock(&repo, "context", "dir/../pichi.lock").is_ok());
-        for (context, lock) in [("..", "outside.lock"), ("context", "../outside.lock")] {
-            assert!(
-                load_build_lock(&repo, context, lock).is_err(),
-                "{context}: {lock}"
-            );
-        }
-        assert!(load_build_lock(&repo, root.path().to_str().unwrap(), "outside.lock").is_err());
-        assert!(
-            load_build_lock(
-                &repo,
-                "context",
-                root.path().join("outside.lock").to_str().unwrap()
-            )
-            .is_err()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn load_build_lock_resolves_symlinks_within_their_roots() {
-        use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir().unwrap();
-        let repo = root.path().join("repo");
-        std::fs::create_dir_all(repo.join("context/dir")).unwrap();
-        std::fs::create_dir_all(root.path().join("outside")).unwrap();
-        for path in [
-            repo.join("context/pichi.lock"),
-            root.path().join("outside/pichi.lock"),
-            repo.join("outside.lock"),
-        ] {
-            std::fs::write(path, "version: 1\nimages: {}\n").unwrap();
-        }
-        symlink("context", repo.join("selected")).unwrap();
-        symlink("../outside", repo.join("escape")).unwrap();
-        symlink("../outside.lock", repo.join("context/escape.lock")).unwrap();
-        symlink("../../outside", repo.join("context/escape")).unwrap();
-        symlink("pichi.lock", repo.join("context/selected.lock")).unwrap();
-        assert!(load_build_lock(&repo, "selected", "selected.lock").is_ok());
-        for (context, lock) in [
-            ("escape", "pichi.lock"),
-            ("escape/../context", "pichi.lock"),
-            ("context", "escape.lock"),
-            ("context", "escape/../pichi.lock"),
-        ] {
-            assert!(
-                load_build_lock(&repo, context, lock).is_err(),
-                "{context}: {lock}"
-            );
-        }
-    }
-
-    #[test]
-    fn load_build_lock_reads_conglobate_shape() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let ctx = tmp.path().join("tests/distro/context");
-        std::fs::create_dir_all(&ctx).unwrap();
-        std::fs::write(
-            ctx.join("pichi.lock"),
-            "version: 1\nimages:\n  qualification.local/fedora:43: sha256:abababababababababababababababababababababababababababababababab\n",
-        )
-        .unwrap();
-        let parsed = load_build_lock(tmp.path(), "tests/distro/context", "pichi.lock").unwrap();
-        assert_eq!(parsed.version, conglobate::plan::Version::<1>);
-        assert_eq!(
-            parsed.images
-                [&conglobate::plan::Remote::new("qualification.local/fedora:43".into()).unwrap()]
-                .to_string(),
-            "sha256:abababababababababababababababababababababababababababababababab"
-        );
-    }
-
-    #[test]
-    fn build_lock_accepts_yaml_and_json() {
-        let tmp = tempfile::tempdir().unwrap();
-        for text in [
-            "# Current lock\nversion: 1\nimages: {}\n",
-            "---\nversion: 1\nimages: {}\n...\n",
-            r#"{"version": 1, "images": {}}"#,
-        ] {
-            std::fs::write(tmp.path().join("pichi.lock"), text).unwrap();
-            let lock = load_build_lock(tmp.path(), ".", "pichi.lock").unwrap();
-            assert_eq!(lock.version, conglobate::plan::Version::<1>);
-            assert!(lock.images.is_empty());
-        }
-    }
-
-    #[test]
-    fn build_lock_errors_include_path_and_location() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join(".").join("pichi.lock");
-        for text in ["version: invalid\nimages: {}\n", "version: 1\nimages: [\n"] {
-            std::fs::write(&path, text).unwrap();
-            let error = load_build_lock(tmp.path(), ".", "pichi.lock").unwrap_err();
-            let diagnostic = format!("{error:#}");
-            assert!(diagnostic.contains(path.to_str().unwrap()), "{diagnostic}");
-            assert!(diagnostic.contains("line"), "{diagnostic}");
-            assert!(diagnostic.contains("column"), "{diagnostic}");
-        }
-        for text in [
-            "version: 1\nversion: 2\nimages: {}\n",
-            "version: 1\nimages: {}\n---\nversion: 2\nimages: {}\n",
-            "version: 1\nimages: {registry.test/base:1: sha256:invalid}\n",
-        ] {
-            std::fs::write(&path, text).unwrap();
-            assert!(load_build_lock(tmp.path(), ".", "pichi.lock").is_err());
-        }
-    }
     /// A pin must never resolve to different metadata through a tag mapping.
     #[tokio::test]
     async fn resolve_manifest_rejects_missing_pin_despite_tag_mapping() {
@@ -946,17 +778,5 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("pichi pull"));
-    }
-    #[test]
-    fn build_lock_is_required_but_may_have_no_remote_inputs() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(load_build_lock(tmp.path(), ".", "pichi.lock").is_err());
-        std::fs::write(tmp.path().join("pichi.lock"), "version: 1\nimages: {}\n").unwrap();
-        assert!(
-            load_build_lock(tmp.path(), ".", "pichi.lock")
-                .unwrap()
-                .images
-                .is_empty()
-        );
     }
 }

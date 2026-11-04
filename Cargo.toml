@@ -28,7 +28,7 @@ serde-saphyr = { workspace = true }
 carapace.workspace = true
 devmap-core.workspace = true
 devmap-verity.workspace = true
-conglobate.workspace = true
+conglobate = { workspace = true, features = ["yaml"] }
 pichi-launch.workspace = true
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true
@@ -149,7 +149,7 @@ pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
 # Match the contract revision used by the pinned appliance.
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "2f26a83441049c800b2a55aaa0d686da6e33a5f7", default-features = false }
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "f63474a47bc94316fcf662493d0cf8f7036777d0", default-features = false }
 # Error handling
 anyhow = "1"
 thiserror = "2"
