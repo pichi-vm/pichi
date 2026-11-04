@@ -521,10 +521,11 @@ dependencies = [
 [[package]]
 name = "conglobate"
 version = "0.2.0"
-source = "git+https://github.com/pichi-vm/conglobate?rev=d3f395acecdfd95c75ed545d2bc03ba409a99298#d3f395acecdfd95c75ed545d2bc03ba409a99298"
+source = "git+https://github.com/pichi-vm/conglobate?rev=9f0cfe028b32cde30d9d4ac74f14a9677f6379a4#9f0cfe028b32cde30d9d4ac74f14a9677f6379a4"
 dependencies = [
  "hex",
  "humantime-serde",
+ "oci-spec",
  "serde",
  "thiserror 2.0.18",
 ]
@@ -2276,6 +2277,7 @@ dependencies = [
  "log",
  "minijinja",
  "nix",
+ "oci-spec",
  "pichi-registry",
  "pichi-storage",
  "ruzstd",
@@ -2302,8 +2304,10 @@ dependencies = [
  "bytes",
  "conglobate",
  "futures-util",
+ "hex",
  "http",
  "oci-client",
+ "oci-spec",
  "reqwest",
  "ruzstd",
  "serde",
@@ -2323,6 +2327,8 @@ dependencies = [
  "async-trait",
  "conglobate",
  "fs4",
+ "hex",
+ "oci-spec",
  "rustix",
  "serde",
  "serde_json",

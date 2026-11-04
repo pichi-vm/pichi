@@ -17,8 +17,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bytes::Bytes;
-use conglobate::artifact::{Digest, Reference};
 use futures_util::stream::{Stream, StreamExt};
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::{Registry, RegistryError, Result};
@@ -67,7 +68,12 @@ impl MockRegistry {
     /// digest is computed from `bytes` (so callers don't have to compute it
     /// themselves and risk a mismatch).
     pub fn insert_manifest(&self, registry: &str, repo: &str, tag: &str, bytes: Bytes) -> Digest {
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         self.manifests
             .lock()
             .expect("manifests mutex poisoned")
@@ -88,7 +94,12 @@ impl MockRegistry {
     /// `pull_manifest_by_digest`, never via tag. Returns the inserted
     /// digest (computed from `bytes`).
     pub fn insert_manifest_by_digest(&self, registry: &str, repo: &str, bytes: Bytes) -> Digest {
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         self.manifests
             .lock()
             .expect("manifests mutex poisoned")
@@ -129,13 +140,16 @@ impl MockRegistry {
 
 impl Registry for MockRegistry {
     async fn pull_manifest_by_tag(&self, reference: &Reference) -> Result<(Bytes, Digest)> {
-        let key_tag = match &reference.kind {
-            conglobate::artifact::ReferenceKind::Tag(t) => t.clone(),
-            conglobate::artifact::ReferenceKind::Digest(d) => {
+        let key_tag = match reference.digest() {
+            None => reference.tag().unwrap_or("latest").to_owned(),
+            Some(text) => {
+                let d: Digest = text
+                    .parse()
+                    .map_err(|e| RegistryError::Transport(format!("invalid digest: {e}")))?;
                 // Digest-form refs go straight to manifests by digest.
                 let mkey = (
-                    reference.registry.clone(),
-                    reference.repo.clone(),
+                    reference.registry().to_owned(),
+                    reference.repository().to_owned(),
                     d.clone(),
                 );
                 let bytes = self
@@ -148,7 +162,11 @@ impl Registry for MockRegistry {
                 return Ok((bytes, d.clone()));
             }
         };
-        let tag_key = (reference.registry.clone(), reference.repo.clone(), key_tag);
+        let tag_key = (
+            reference.registry().to_owned(),
+            reference.repository().to_owned(),
+            key_tag,
+        );
         let digest = self
             .tags
             .lock()
@@ -157,8 +175,8 @@ impl Registry for MockRegistry {
             .cloned()
             .ok_or_else(|| RegistryError::NotFound(format!("tag {reference}")))?;
         let mkey = (
-            reference.registry.clone(),
-            reference.repo.clone(),
+            reference.registry().to_owned(),
+            reference.repository().to_owned(),
             digest.clone(),
         );
         let bytes = self
@@ -209,7 +227,12 @@ impl Registry for MockRegistry {
         // Verify content-addressing invariant per the trait contract BEFORE
         // any sink write — mismatch errors must never leak partial bytes.
         // This catches insert_blob misuse in tests.
-        let actual = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+        let actual = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         if actual != *digest {
             return Err(RegistryError::DigestMismatch {
                 expected: digest.clone(),
@@ -237,7 +260,12 @@ impl Registry for MockRegistry {
             .get(&key)
             .cloned()
             .ok_or_else(|| RegistryError::NotFound(format!("blob {registry}/{repo}@{digest}")))?;
-        let actual = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+        let actual = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         if actual != *digest {
             return Err(RegistryError::DigestMismatch {
                 expected: digest.clone(),
@@ -265,21 +293,26 @@ impl Registry for MockRegistry {
         media_type: &str,
         bytes: Bytes,
     ) -> Result<Digest> {
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let mkey = (
-            reference.registry.clone(),
-            reference.repo.clone(),
+            reference.registry().to_owned(),
+            reference.repository().to_owned(),
             digest.clone(),
         );
         self.manifests
             .lock()
             .expect("manifests mutex poisoned")
             .insert(mkey, bytes);
-        if let conglobate::artifact::ReferenceKind::Tag(t) = &reference.kind {
+        if let Some(t) = reference.tag() {
             let tag_key = (
-                reference.registry.clone(),
-                reference.repo.clone(),
-                t.clone(),
+                reference.registry().to_owned(),
+                reference.repository().to_owned(),
+                t.to_owned(),
             );
             self.tags
                 .lock()
@@ -412,7 +445,12 @@ mod tests {
     fn pull_blob_round_trip() {
         let m = MockRegistry::new();
         let data = Bytes::from_static(b"hello-blob");
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&data).into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         m.insert_blob("docker.io", "library/alpine", digest.clone(), data.clone());
         // Vec<u8> implements tokio::io::AsyncWrite (zero-poll: poll_write
         // always returns Ready), so block_on's 1024-poll cap (WR-01) is
@@ -432,7 +470,12 @@ mod tests {
     #[test]
     fn pull_blob_not_found() {
         let m = MockRegistry::new();
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"absent").into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"absent"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let mut sink: Vec<u8> = Vec::new();
         let err = block_on(m.pull_blob("docker.io", "library/alpine", &digest, 0, &mut sink))
             .unwrap_err();
@@ -456,7 +499,12 @@ mod tests {
     fn head_blob_false_then_true() {
         let m = MockRegistry::new();
         let data = Bytes::from_static(b"head-test");
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&data).into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         assert!(!block_on(m.head_blob("r.io", "x", &digest)).unwrap());
         m.insert_blob("r.io", "x", digest.clone(), data);
         assert!(block_on(m.head_blob("r.io", "x", &digest)).unwrap());
@@ -468,7 +516,12 @@ mod tests {
         let m = MockRegistry::new();
         let chunk1 = Bytes::from_static(b"hello ");
         let chunk2 = Bytes::from_static(b"world");
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"hello world").into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"hello world"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let s = stream::iter(vec![Ok(chunk1.clone()), Ok(chunk2.clone())]);
         block_on(m.push_blob_stream("r.io", "x", &digest, 11, s)).unwrap();
         let log = m.pushed_blobs();
@@ -492,7 +545,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             pushed,
-            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into())
+            format!(
+                "sha256:{}",
+                hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+            )
+            .parse::<Digest>()
+            .expect("SHA-256 digest")
         );
         // After push, the same reference resolves on pull.
         let (got, got_digest) = block_on(m.pull_manifest_by_tag(&r)).unwrap();
@@ -506,7 +564,12 @@ mod tests {
     fn try_blob_mount_succeeds_when_source_present() {
         let m = MockRegistry::new();
         let data = Bytes::from_static(b"mount-me");
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&data).into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         m.insert_blob("r.io", "src/repo", digest.clone(), data.clone());
         let mounted = block_on(m.try_blob_mount("r.io", "dst/repo", "src/repo", &digest)).unwrap();
         assert!(mounted);
@@ -519,7 +582,12 @@ mod tests {
     #[test]
     fn try_blob_mount_returns_false_when_source_absent() {
         let m = MockRegistry::new();
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"never-stored").into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"never-stored"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let mounted = block_on(m.try_blob_mount("r.io", "dst", "src", &digest)).unwrap();
         assert!(!mounted);
     }
@@ -529,8 +597,12 @@ mod tests {
         let m = MockRegistry::new();
         // Insert bytes under the WRONG digest (test helper allows this).
         let real = Bytes::from_static(b"actual-bytes");
-        let wrong_digest =
-            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"different").into());
+        let wrong_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"different"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         m.insert_blob("r.io", "x", wrong_digest.clone(), real);
         let mut sink: Vec<u8> = Vec::new();
         let err = block_on(m.pull_blob("r.io", "x", &wrong_digest, 0, &mut sink)).unwrap_err();

@@ -22,12 +22,15 @@
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use futures_util::StreamExt as _;
-use serde_json::{Value, json};
+#[cfg(test)]
+use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 
-use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference, ReferenceKind};
-use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry};
+use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
+use oci_spec::distribution::Reference;
+use oci_spec::image::{Descriptor, Digest, ImageIndex, MediaType, Platform};
+use pichi_registry::Registry;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use super::cache::ImageStore as _;
@@ -35,9 +38,6 @@ use crate::cmd::push::push_manifest_and_blobs;
 
 use crate::cli::{ManifestAnnotateArgs, ManifestCreateArgs, ManifestPushArgs};
 use crate::config::Config;
-
-/// OCI image manifest media type (the per-arch entries' `mediaType`).
-use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as OCI_MANIFEST_MEDIA_TYPE;
 
 /// Internal, non-OCI annotation recording which `create`/`annotate` source ref
 /// an entry came from. Stripped before the index is pushed.
@@ -73,13 +73,14 @@ pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
         } else {
             metadata.manifest()?;
         }
-        entries.push(json!({
-            "mediaType": OCI_MANIFEST_MEDIA_TYPE,
-            "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "digest": metadata.digest.to_string(),
-            "size": metadata.bytes.len(),
-            "annotations": { SOURCE_REF_ANNOTATION: src },
-        }));
+        let mut descriptor = Descriptor::new(
+            MediaType::ImageManifest,
+            metadata.bytes.len() as u64,
+            metadata.digest,
+        );
+        descriptor.set_artifact_type(Some(MEDIA_TYPE_PICHI_ARTIFACT_V1.into()));
+        descriptor.set_annotations(Some([(SOURCE_REF_ANNOTATION.into(), src.clone())].into()));
+        entries.push(descriptor);
     }
 
     // Index-level provenance: carry caller annotations verbatim, and stamp
@@ -133,17 +134,9 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
     // manifest, by digest into the dest repo), then the index last, so the
     // dest tag only resolves once all content is present. The per-arch images
     // are independent, so push them concurrently; the index push waits for all.
-    let manifests = ready
-        .get("manifests")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("manifest list is malformed (no `manifests` array)"))?;
-    let mut arches: Vec<(Digest, Vec<u8>)> = Vec::with_capacity(manifests.len());
-    for m in manifests {
-        let digest: Digest = m
-            .get("digest")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("index entry missing digest"))?
-            .parse()?;
+    let mut arches: Vec<(Digest, Vec<u8>)> = Vec::with_capacity(ready.manifests().len());
+    for descriptor in ready.manifests() {
+        let digest = descriptor.digest().clone();
         let raw = blob_store
             .get_blob(&digest)
             .await
@@ -153,18 +146,14 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
     let registry = &registry;
     let blob_store = &blob_store;
     let mut pushes = futures_util::stream::iter(arches.iter().map(|(digest, raw)| {
-        let arch_ref = Reference {
-            registry: dest.registry.clone(),
-            repo: dest.repo.clone(),
-            kind: ReferenceKind::Digest(digest.clone()),
-        };
+        let arch_ref = dest.clone_with_digest(digest.to_string());
         async move {
             push_manifest_and_blobs(
                 registry,
                 blob_store,
                 &arch_ref,
                 raw,
-                OCI_MANIFEST_MEDIA_TYPE,
+                MediaType::ImageManifest.as_ref(),
             )
             .await
             .with_context(|| format!("push arch image {digest}"))
@@ -176,9 +165,15 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
     }
     drop(pushes);
 
-    let index_bytes = serde_json::to_vec(&ready).context("serialise OCI image index")?;
+    let mut value = serde_json::to_value(&ready)?;
+    value.sort_all_objects();
+    let index_bytes = serde_json::to_vec(&value).context("serialise OCI image index")?;
     registry
-        .push_manifest(&dest, OCI_IMAGE_INDEX_MEDIA_TYPE, Bytes::from(index_bytes))
+        .push_manifest(
+            &dest,
+            MediaType::ImageIndex.as_ref(),
+            Bytes::from(index_bytes),
+        )
         .await
         .map_err(|e| anyhow!("push image index {dest}: {e}"))?;
 
@@ -193,76 +188,63 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
 /// Wrap per-arch descriptor entries in an OCI image index, with optional
 /// index-level annotations (omitted from the JSON when empty).
 fn build_index(
-    entries: Vec<Value>,
+    entries: Vec<Descriptor>,
     annotations: &std::collections::BTreeMap<String, String>,
-) -> Value {
-    let mut index = json!({
-        "schemaVersion": 2,
-        "mediaType": OCI_IMAGE_INDEX_MEDIA_TYPE,
-        "manifests": entries,
-    });
+) -> ImageIndex {
+    let mut index = ImageIndex::default();
+    index.set_media_type(Some(MediaType::ImageIndex));
+    index.set_manifests(entries);
     if !annotations.is_empty() {
-        index["annotations"] = json!(annotations);
+        index.set_annotations(Some(annotations.clone().into_iter().collect()));
     }
     index
 }
 
-/// Set `platform.os`/`platform.architecture` on the entry recorded for
-/// `source`. Errors if no entry matches.
-fn set_platform(index: &mut Value, source: &str, os: &str, arch: &str) -> Result<()> {
-    let manifests = index
-        .get_mut("manifests")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| anyhow!("manifest list is malformed (no `manifests` array)"))?;
+/// Set the platform on the entry recorded for `source`.
+fn set_platform(index: &mut ImageIndex, source: &str, os: &str, arch: &str) -> Result<()> {
+    let mut manifests = index.manifests().clone();
     let mut matched = false;
-    for m in manifests.iter_mut() {
-        let is_match = m
-            .get("annotations")
+    for descriptor in &mut manifests {
+        if descriptor
+            .annotations()
+            .as_ref()
             .and_then(|a| a.get(SOURCE_REF_ANNOTATION))
-            .and_then(Value::as_str)
-            == Some(source);
-        if is_match {
-            m["platform"] = json!({ "os": os, "architecture": arch });
+            .map(String::as_str)
+            == Some(source)
+        {
+            let mut platform = Platform::default();
+            platform.set_os(os.into());
+            platform.set_architecture(arch.into());
+            descriptor.set_platform(Some(platform));
             matched = true;
         }
     }
     if !matched {
         bail!("source {source} is not in this manifest list (run `create` first)");
     }
+    index.set_manifests(manifests);
     Ok(())
 }
 
-/// Validate every entry has a platform and strip the internal source-ref
-/// annotation, producing the exact index to PUT.
-fn prepare_for_push(mut index: Value, list_ref: &Reference) -> Result<Value> {
-    let manifests = index
-        .get_mut("manifests")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| anyhow!("manifest list is malformed (no `manifests` array)"))?;
-    if manifests.is_empty() {
+/// Require a platform and strip the internal source annotation before publication.
+fn prepare_for_push(mut index: ImageIndex, list_ref: &Reference) -> Result<ImageIndex> {
+    if index.manifests().is_empty() {
         bail!("manifest list {list_ref} is empty");
     }
-    for m in manifests.iter_mut() {
-        let has_platform = m.pointer("/platform/os").and_then(Value::as_str).is_some()
-            && m.pointer("/platform/architecture")
-                .and_then(Value::as_str)
-                .is_some();
-        if !has_platform {
-            let digest = m.get("digest").and_then(Value::as_str).unwrap_or("?");
+    let mut manifests = index.manifests().clone();
+    for descriptor in &mut manifests {
+        if descriptor.platform().is_none() {
             bail!(
-                "entry {digest} has no platform; run `pichi manifest annotate {list_ref} \
-                 <source> --os <os> --arch <arch>` before pushing"
+                "entry {} has no platform; run `pichi manifest annotate {list_ref} <source> --os <os> --arch <arch>` before pushing",
+                descriptor.digest()
             );
         }
-        if let Some(obj) = m.get_mut("annotations").and_then(Value::as_object_mut) {
-            obj.remove(SOURCE_REF_ANNOTATION);
-            if obj.is_empty() {
-                m.as_object_mut()
-                    .expect("entry is an object")
-                    .remove("annotations");
-            }
+        if let Some(mut annotations) = descriptor.annotations().clone() {
+            annotations.remove(SOURCE_REF_ANNOTATION);
+            descriptor.set_annotations((!annotations.is_empty()).then_some(annotations));
         }
     }
+    index.set_manifests(manifests);
     Ok(index)
 }
 
@@ -270,18 +252,20 @@ fn prepare_for_push(mut index: Value, list_ref: &Reference) -> Result<Value> {
 // Local list storage: `<graphroot>/manifests/<encoded-ref>.json`.
 // ---------------------------------------------------------------------------
 
-fn store_list(config: &Config, list_ref: &Reference, index: &Value) -> Result<()> {
+fn store_list(config: &Config, list_ref: &Reference, index: &ImageIndex) -> Result<()> {
     let path = list_path(config, list_ref)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)
             .with_context(|| format!("create manifests dir {}", dir.display()))?;
     }
-    let bytes = serde_json::to_vec_pretty(index).context("serialise manifest list")?;
+    let mut value = serde_json::to_value(index)?;
+    value.sort_all_objects();
+    let bytes = serde_json::to_vec_pretty(&value).context("serialise manifest list")?;
     fs::write(&path, bytes).with_context(|| format!("write manifest list {}", path.display()))?;
     Ok(())
 }
 
-fn load_list(config: &Config, list_ref: &Reference) -> Result<Value> {
+fn load_list(config: &Config, list_ref: &Reference) -> Result<ImageIndex> {
     let path = list_path(config, list_ref)?;
     let bytes = fs::read(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -328,14 +312,15 @@ mod tests {
         std::collections::BTreeMap::new()
     }
 
-    fn entry(source: &str, digest: &str) -> Value {
-        json!({
-            "mediaType": OCI_MANIFEST_MEDIA_TYPE,
-            "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "digest": digest,
-            "size": 123,
-            "annotations": { SOURCE_REF_ANNOTATION: source },
-        })
+    fn entry(source: &str, digest: &str) -> Descriptor {
+        let mut descriptor = Descriptor::new(
+            MediaType::ImageManifest,
+            123,
+            digest.parse::<Digest>().unwrap(),
+        );
+        descriptor.set_artifact_type(Some(MEDIA_TYPE_PICHI_ARTIFACT_V1.into()));
+        descriptor.set_annotations(Some([(SOURCE_REF_ANNOTATION.into(), source.into())].into()));
+        descriptor
     }
 
     fn list_ref() -> Reference {
@@ -344,13 +329,20 @@ mod tests {
 
     #[tokio::test]
     async fn build_index_has_index_media_type() {
-        let idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &empty());
+        let idx = build_index(
+            vec![entry(
+                "img:43-amd64",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+            &empty(),
+        );
         assert_eq!(
-            idx["mediaType"], OCI_IMAGE_INDEX_MEDIA_TYPE,
+            json!(idx)["mediaType"],
+            MediaType::ImageIndex.as_ref(),
             "index media type"
         );
-        assert_eq!(idx["schemaVersion"], 2);
-        assert_eq!(idx["manifests"].as_array().unwrap().len(), 1);
+        assert_eq!(json!(idx)["schemaVersion"], 2);
+        assert_eq!(json!(idx)["manifests"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -360,9 +352,15 @@ mod tests {
             "org.opencontainers.image.source".to_string(),
             "https://example/repo".to_string(),
         );
-        let mut idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &ann);
+        let mut idx = build_index(
+            vec![entry(
+                "img:43-amd64",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+            &ann,
+        );
         assert_eq!(
-            idx["annotations"]["org.opencontainers.image.source"],
+            json!(idx)["annotations"]["org.opencontainers.image.source"],
             "https://example/repo"
         );
         // prepare_for_push only touches per-entry annotations, so index-level
@@ -370,37 +368,55 @@ mod tests {
         set_platform(&mut idx, "img:43-amd64", "pichi", "amd64").unwrap();
         let ready = prepare_for_push(idx, &list_ref()).unwrap();
         assert_eq!(
-            ready["annotations"]["org.opencontainers.image.source"],
+            json!(ready)["annotations"]["org.opencontainers.image.source"],
             "https://example/repo"
         );
     }
 
     #[tokio::test]
     async fn empty_index_annotations_omit_the_field() {
-        let idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &empty());
-        assert!(idx.get("annotations").is_none());
+        let idx = build_index(
+            vec![entry(
+                "img:43-amd64",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+            &empty(),
+        );
+        assert!(idx.annotations().is_none());
     }
 
     #[tokio::test]
     async fn annotate_sets_platform_on_matching_source() {
         let mut idx = build_index(
             vec![
-                entry("img:43-amd64", "sha256:aa"),
-                entry("img:43-arm64", "sha256:bb"),
+                entry(
+                    "img:43-amd64",
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+                entry(
+                    "img:43-arm64",
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
             ],
             &empty(),
         );
         set_platform(&mut idx, "img:43-arm64", "pichi", "arm64").unwrap();
-        let arm = &idx["manifests"][1];
+        let arm = &json!(idx)["manifests"][1];
         assert_eq!(arm["platform"]["os"], "pichi");
         assert_eq!(arm["platform"]["architecture"], "arm64");
         // the other entry is untouched
-        assert!(idx["manifests"][0].get("platform").is_none());
+        assert!(json!(idx)["manifests"][0].get("platform").is_none());
     }
 
     #[tokio::test]
     async fn annotate_unknown_source_errors() {
-        let mut idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &empty());
+        let mut idx = build_index(
+            vec![entry(
+                "img:43-amd64",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+            &empty(),
+        );
         assert!(set_platform(&mut idx, "img:43-ppc64le", "pichi", "ppc64le").is_err());
     }
 
@@ -408,8 +424,14 @@ mod tests {
     async fn push_requires_platform_on_every_entry() {
         let mut idx = build_index(
             vec![
-                entry("img:43-amd64", "sha256:aa"),
-                entry("img:43-arm64", "sha256:bb"),
+                entry(
+                    "img:43-amd64",
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+                entry(
+                    "img:43-arm64",
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
             ],
             &empty(),
         );
@@ -421,10 +443,16 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_strips_internal_annotation_and_keeps_platform() {
-        let mut idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &empty());
+        let mut idx = build_index(
+            vec![entry(
+                "img:43-amd64",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+            &empty(),
+        );
         set_platform(&mut idx, "img:43-amd64", "pichi", "amd64").unwrap();
         let ready = prepare_for_push(idx, &list_ref()).unwrap();
-        let m = &ready["manifests"][0];
+        let m = &json!(ready)["manifests"][0];
         // internal annotation gone; empty annotations object removed entirely
         assert!(
             m.get("annotations").is_none(),

@@ -22,13 +22,14 @@ use minijinja::Environment;
 use serde::Serialize;
 use serde_json::Value;
 
-use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::InspectArgs;
 use crate::config::Config;
-
-use conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1 as OCI_IMAGE_INDEX_MEDIA_TYPE;
 
 /// `pichi inspect` output: the manifest verbatim (the artifact of record) plus
 /// the resolved content digest — the one datum a content-addressed manifest
@@ -69,7 +70,8 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
-    let target_ref: Reference = super::build::canonicalize_reference(&args.reference)
+    let target_ref: Reference = args
+        .reference
         .parse()
         .with_context(|| format!("invalid reference: {}", args.reference))?;
 
@@ -98,7 +100,7 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
 
     // Bare manifest path. Validate defensively, then emit the manifest verbatim
     // plus its resolved digest.
-    Manifest::decode_json(bytes.as_slice())
+    ImageManifest::decode_json(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
     let output = InspectOutput {
         digest: digest.to_string(),
@@ -156,7 +158,7 @@ fn inspect_index(
     };
     let output = IndexInspectOutput {
         digest: digest.to_string(),
-        media_type: OCI_IMAGE_INDEX_MEDIA_TYPE.to_string(),
+        media_type: oci_spec::image::MediaType::ImageIndex.to_string(),
         entries,
         note,
         manifest_digest: selected.as_ref().map(|image| image.digest.to_string()),

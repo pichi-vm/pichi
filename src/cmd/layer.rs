@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use crate::cmd::verity::VerityFormat as _;
 use anyhow::{Context as _, Result, bail};
-use conglobate::artifact::{Digest, Layer, Manifest, Reference};
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_registry::Registry;
 use pichi_storage::{BlobSidecarExt, BlobStore};
 use sha2::{Digest as _, Sha256};
@@ -24,16 +26,21 @@ pub(super) struct ScuteFiles {
 }
 
 impl ScuteFiles {
-    pub(super) fn new(manifest: &Manifest, layer: &Layer, store: &dyn BlobStore) -> Result<Self> {
-        let (scute, compressed) = match layer {
-            Layer::Scute(scute) => (scute, false),
-            Layer::ScuteZstd(scute) => (scute, true),
+    pub(super) fn new(
+        manifest: &ImageManifest,
+        layer: &oci_spec::image::Descriptor,
+        store: &dyn BlobStore,
+    ) -> Result<Self> {
+        let scute = layer;
+        let compressed = match layer.media_type().as_ref() {
+            conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 => false,
+            conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD => true,
             _ => bail!("metadata layer has no scute files"),
         };
-        let header = manifest.verity_header(scute, (!compressed).then_some(scute.size))?;
+        let header = manifest.verity_header(scute, (!compressed).then_some(scute.size()))?;
         Self::from_header(
-            &store.blob_path(&scute.digest.parse()?),
-            compressed || scute.size != header.parameters.data_size()?,
+            &store.blob_path(scute.digest())?,
+            compressed || scute.size() != header.parameters.data_size()?,
             &header,
         )
     }
@@ -43,7 +50,9 @@ impl ScuteFiles {
         materialized: bool,
         header: &devmap_verity::Header,
     ) -> Result<Self> {
-        let key = Digest::Sha256(Sha256::digest(header.encode()).into());
+        let key = format!("sha256:{}", hex::encode(Sha256::digest(header.encode())))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         let data = if materialized {
             source.deflated_path(header.parameters.data_size()?)
         } else {
@@ -51,7 +60,7 @@ impl ScuteFiles {
         };
         Ok(Self {
             data,
-            verity: source.verity_path(&key),
+            verity: source.verity_path(&key)?,
         })
     }
 }
@@ -72,14 +81,24 @@ impl PreparedLayer {
     pub(super) async fn fetch<R: Registry>(
         registry: &R,
         target: &Reference,
-        manifest: &Manifest,
-        layer: &Layer,
+        manifest: &ImageManifest,
+        layer: &oci_spec::image::Descriptor,
         store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>> {
-        let digest: Digest = layer.digest_str().parse()?;
+        let digest: Digest = layer.digest().clone();
+        anyhow::ensure!(
+            digest.algorithm() == &oci_spec::image::DigestAlgorithm::Sha256,
+            "unsupported digest algorithm: {}",
+            digest.algorithm()
+        );
         let scratch = store.scratch_dir().await?;
         let stream = registry
-            .pull_blob_stream(&target.registry, &target.repo, &digest, layer.size())
+            .pull_blob_stream(
+                target.registry(),
+                target.repository(),
+                &digest,
+                layer.size(),
+            )
             .await?;
         // Capture the runtime handle before entering the blocking pool. Each
         // read polls the network only when the formatter needs more bytes.
@@ -95,12 +114,12 @@ impl PreparedLayer {
 
     /// Import must rebuild even when a cache sidecar already exists.
     pub(super) async fn prepare_cached(
-        manifest: &Manifest,
-        layer: &Layer,
+        manifest: &ImageManifest,
+        layer: &oci_spec::image::Descriptor,
         store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>> {
-        let digest: Digest = layer.digest_str().parse()?;
-        let path = store.blob_path(&digest);
+        let digest: Digest = layer.digest().clone();
+        let path = store.blob_path(&digest)?;
         let scratch = store.scratch_dir().await?;
         let manifest = manifest.clone();
         let layer = layer.clone();
@@ -113,7 +132,12 @@ impl PreparedLayer {
         prepared.commit(store, &digest).await
     }
 
-    fn read<R: Read>(input: R, manifest: &Manifest, layer: &Layer, scratch: &Path) -> Result<Self> {
+    fn read<R: Read>(
+        input: R,
+        manifest: &ImageManifest,
+        layer: &oci_spec::image::Descriptor,
+        scratch: &Path,
+    ) -> Result<Self> {
         let source = NamedTempFile::new_in(scratch)?;
         let mut prepared = Self::read_into(
             input,
@@ -130,10 +154,16 @@ impl PreparedLayer {
     fn read_into<R: Read, W: Write>(
         input: R,
         output: W,
-        manifest: &Manifest,
-        layer: &Layer,
+        manifest: &ImageManifest,
+        layer: &oci_spec::image::Descriptor,
         scratch: &Path,
     ) -> Result<Self> {
+        let digest: Digest = layer.digest().clone();
+        anyhow::ensure!(
+            digest.algorithm() == &oci_spec::image::DigestAlgorithm::Sha256,
+            "unsupported digest algorithm: {}",
+            digest.algorithm()
+        );
         let mut wire = WireReader {
             input,
             output,
@@ -141,11 +171,12 @@ impl PreparedLayer {
             count: 0,
             expected: layer.size(),
         };
-        let scute = match layer {
-            Layer::Scute(scute) => {
+        let scute = match layer.media_type().as_ref() {
+            conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 => {
+                let scute = layer;
                 let mut output = NamedTempFile::new_in(scratch)?;
-                let header = manifest.verity_header(scute, Some(scute.size))?;
-                let (deflated, root) = if header.parameters.data_size()? == scute.size {
+                let header = manifest.verity_header(scute, Some(scute.size()))?;
+                let (deflated, root) = if header.parameters.data_size()? == scute.size() {
                     (None, header.format_padded(&mut wire, output.as_file_mut())?)
                 } else {
                     let (data, root) =
@@ -159,7 +190,8 @@ impl PreparedLayer {
                     deflated,
                 })
             }
-            Layer::ScuteZstd(scute) => {
+            conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD => {
+                let scute = layer;
                 let mut output = NamedTempFile::new_in(scratch)?;
                 let decoder = match ruzstd::decoding::StreamingDecoder::new(&mut wire) {
                     Ok(decoder) => decoder,
@@ -187,7 +219,7 @@ impl PreparedLayer {
                     deflated: Some(data),
                 })
             }
-            Layer::BootConfig(_) => {
+            conglobate::artifact::MEDIA_TYPE_PICHI_BOOTCONFIG_V1_ZSTD => {
                 let mut bytes = Vec::new();
                 wire.read_to_end(&mut bytes)?;
                 let config = super::boot_config::BootConfigFile::try_from(bytes)?;
@@ -197,12 +229,13 @@ impl PreparedLayer {
                 );
                 None
             }
-            Layer::Pmi(_) => {
+            conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1 => {
                 io::copy(&mut wire, &mut io::sink())?;
                 None
             }
+            other => bail!("unsupported artifact layer media type: {other}"),
         };
-        wire.finish(&layer.digest_str().parse()?)?;
+        wire.finish(&layer.digest().clone())?;
         if let Some(scute) = &scute {
             scute.verity.as_file().sync_all()?;
             if let Some(data) = &scute.deflated {
@@ -244,7 +277,7 @@ impl PreparedLayer {
     }
 
     async fn commit(self, store: &dyn BlobStore, digest: &Digest) -> Result<Option<[u8; 32]>> {
-        let path = store.blob_path(digest);
+        let path = store.blob_path(digest)?;
         tokio::fs::create_dir_all(path.parent().context("blob path has no parent")?).await?;
         // Publish preparation first: the source blob marks cache presence.
         if let Some(scute) = &self.scute {
@@ -300,7 +333,9 @@ impl<R: Read, W: Write> WireReader<R, W> {
         if self.count != self.expected {
             bail!("layer size mismatch");
         }
-        let actual = Digest::Sha256(self.hash.finalize().into());
+        let actual = format!("sha256:{}", hex::encode(self.hash.finalize()))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         if &actual != digest {
             bail!("layer digest mismatch: expected {digest}, got {actual}");
         }
@@ -344,7 +379,7 @@ mod tests {
         data: Vec<u8>,
         wire: Vec<u8>,
         root: [u8; 32],
-        manifest: Manifest,
+        manifest: ImageManifest,
     }
 
     impl Fixture {
@@ -379,10 +414,10 @@ mod tests {
                 "schemaVersion": 2,
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-                "config": conglobate::artifact::ConfigDescriptor::canonical(),
+                "config": oci_spec::image::DescriptorBuilder::default().media_type(oci_spec::image::MediaType::EmptyJSON).digest("sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a".parse::<oci_spec::image::Digest>().expect("empty config digest")).size(2u64).data("e30=").build().expect("empty config descriptor"),
                 "layers": [{
                     "mediaType": if compressed { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
-                    "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
+                    "digest": format!("sha256:{}", hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&wire))).parse::<Digest>().expect("SHA-256 digest").to_string(),
                     "size": wire.len(), "annotations": annotations,
                 }],
                 "annotations": {
@@ -405,7 +440,7 @@ mod tests {
             PreparedLayer::read(
                 self.wire.as_slice(),
                 &self.manifest,
-                &self.manifest.layers[0],
+                &self.manifest.layers()[0],
                 scratch,
             )
         }
@@ -466,10 +501,10 @@ mod tests {
             let fixture = Fixture::new(compressed, 2);
             let dir = tempfile::tempdir().unwrap();
             let store = pichi_storage::FilesystemBlobStore::new(dir.path());
-            let layer = &fixture.manifest.layers[0];
-            let digest = layer.digest_str().parse().unwrap();
+            let layer = &fixture.manifest.layers()[0];
+            let digest = layer.digest().clone();
             store.put_blob(&digest, &fixture.wire).await.unwrap();
-            let path = store.blob_path(&digest);
+            let path = store.blob_path(&digest).unwrap();
             let expected = fixture.prepare(dir.path()).unwrap().scute.unwrap();
             let files = ScuteFiles::new(&fixture.manifest, layer, &store).unwrap();
             for _ in 0..2 {
@@ -507,7 +542,7 @@ mod tests {
         let mut fixture = Fixture::new(true, 2);
         let dir = tempfile::tempdir().unwrap();
         let store = pichi_storage::FilesystemBlobStore::new(dir.path());
-        let digest = fixture.manifest.layers[0].digest_str().parse().unwrap();
+        let digest = fixture.manifest.layers()[0].digest().clone();
         store.put_blob(&digest, &fixture.wire).await.unwrap();
         let mut variants = Vec::new();
         for (block_size, count, hash_size, hash_type, suffix) in [
@@ -522,21 +557,29 @@ mod tests {
                 ("hash-block-size", hash_size),
                 ("hash-type", hash_type),
             ] {
-                fixture.manifest.annotations.insert(
-                    format!("dev.pichi.carapace.verity.{key}"),
-                    value.to_string(),
-                );
+                fixture
+                    .manifest
+                    .annotations_mut()
+                    .get_or_insert_default()
+                    .insert(
+                        format!("dev.pichi.carapace.verity.{key}"),
+                        value.to_string(),
+                    );
             }
-            let Layer::ScuteZstd(scute) = &mut fixture.manifest.layers[0] else {
-                unreachable!()
-            };
-            scute.annotations.data_blocks = (count as u64).try_into().unwrap();
-            scute.annotations.salt = format!("{}{suffix}", "00".repeat(32));
-            PreparedLayer::prepare_cached(&fixture.manifest, &fixture.manifest.layers[0], &store)
+            let scute = &mut fixture.manifest.layers_mut()[0];
+            let mut annotations =
+                conglobate::artifact::ScuteAnnotations::try_from(&*scute).unwrap();
+            annotations.data_blocks = (count as u64).try_into().unwrap();
+            scute.set_annotations(Some(annotations.into()));
+            let mut annotations =
+                conglobate::artifact::ScuteAnnotations::try_from(&*scute).unwrap();
+            annotations.salt = format!("{}{suffix}", "00".repeat(32));
+            scute.set_annotations(Some(annotations.into()));
+            PreparedLayer::prepare_cached(&fixture.manifest, &fixture.manifest.layers()[0], &store)
                 .await
                 .unwrap();
             let files =
-                ScuteFiles::new(&fixture.manifest, &fixture.manifest.layers[0], &store).unwrap();
+                ScuteFiles::new(&fixture.manifest, &fixture.manifest.layers()[0], &store).unwrap();
             variants.push((files, fixture.prepare(dir.path()).unwrap().scute.unwrap()));
         }
         assert_eq!(variants[0].0.data, variants[1].0.data);
@@ -554,7 +597,15 @@ mod tests {
                 std::fs::read(expected.deflated.unwrap().path()).unwrap()
             );
         }
-        assert_eq!(store.blob_path(&digest).prepared_files().unwrap().len(), 7);
+        assert_eq!(
+            store
+                .blob_path(&digest)
+                .unwrap()
+                .prepared_files()
+                .unwrap()
+                .len(),
+            7
+        );
     }
 
     #[test]
@@ -570,21 +621,35 @@ mod tests {
             fixture.wire.pop();
             assert!(fixture.prepare(scratch.path()).is_err());
             let mut fixture = Fixture::new(compressed, 2);
-            let (Layer::Scute(d) | Layer::ScuteZstd(d)) = &mut fixture.manifest.layers[0] else {
-                unreachable!()
-            };
-            d.digest =
-                Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"wrong").into()).to_string();
+            let d = &mut fixture.manifest.layers_mut()[0];
+            d.set_digest(
+                format!(
+                    "sha256:{}",
+                    hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"wrong"))
+                )
+                .parse::<Digest>()
+                .expect("SHA-256 digest")
+                .to_string()
+                .parse()
+                .unwrap(),
+            );
             assert!(fixture.prepare(scratch.path()).is_err());
         }
         let mut fixture = Fixture::new(true, 2);
         fixture.wire.extend_from_within(..);
-        let Layer::ScuteZstd(d) = &mut fixture.manifest.layers[0] else {
-            unreachable!()
-        };
-        d.size = fixture.wire.len() as u64;
-        d.digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&fixture.wire).into())
-            .to_string();
+        let d = &mut fixture.manifest.layers_mut()[0];
+        d.set_size(fixture.wire.len() as u64);
+        d.set_digest(
+            format!(
+                "sha256:{}",
+                hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&fixture.wire))
+            )
+            .parse::<Digest>()
+            .expect("SHA-256 digest")
+            .to_string()
+            .parse()
+            .unwrap(),
+        );
         let error = fixture.prepare(scratch.path()).err().unwrap();
         assert!(error.to_string().contains("trailing bytes"), "{error:#}");
         assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
@@ -618,12 +683,17 @@ mod tests {
         ];
         assert_eq!(DEFAULT_MAX_WINDOW_SIZE, 128 * 1024 * 1024);
 
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(WIRE).into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(WIRE))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let manifest = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "config": conglobate::artifact::ConfigDescriptor::canonical(),
+            "config": oci_spec::image::DescriptorBuilder::default().media_type(oci_spec::image::MediaType::EmptyJSON).digest("sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a".parse::<oci_spec::image::Digest>().expect("empty config digest")).size(2u64).data("e30=").build().expect("empty config descriptor"),
             "layers": [{
                 "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD,
                 "digest": digest.to_string(),
@@ -642,9 +712,9 @@ mod tests {
                 "dev.pichi.carapace.verity.hash": hex::encode([0; 32]),
             },
         });
-        let manifest: Manifest = serde_json::from_value(manifest).unwrap();
+        let manifest: ImageManifest = serde_json::from_value(manifest).unwrap();
         let scratch = tempfile::tempdir().unwrap();
-        let error = PreparedLayer::read(WIRE, &manifest, &manifest.layers[0], scratch.path())
+        let error = PreparedLayer::read(WIRE, &manifest, &manifest.layers()[0], scratch.path())
             .err()
             .expect("oversized zstd window must fail");
         let message = format!("{error:#}");
@@ -667,7 +737,7 @@ mod tests {
             let error = PreparedLayer::read(
                 LateFailure(&fixture.wire),
                 &fixture.manifest,
-                &fixture.manifest.layers[0],
+                &fixture.manifest.layers()[0],
                 scratch.path(),
             )
             .err()

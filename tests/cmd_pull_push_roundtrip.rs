@@ -89,7 +89,7 @@ fn test_repo_base() -> Option<String> {
 ///   - Pitfall 3 (manifest digest preservation): the raw OCI bytes are written
 ///     verbatim by `cmd::pull` (Plan 04 negative-grep gate `serde_json::to_vec(&manifest)`
 ///     returns 0) and pushed verbatim by `cmd::push` (Plan 05 same gate). If
-///     either side serialised through Manifest the manifest digest would
+///     either side serialised through ImageManifest the manifest digest would
 ///     drift and the first assertion below would fail.
 ///   - +zstd descriptor mismatch (Phase 42 D-10): the layer digest in the
 ///     MANIFEST is the registry-side compressed digest; the BlobStore stores
@@ -293,7 +293,7 @@ async fn bootconfig_and_pmi_are_byte_identical_after_registry_round_trip() {
 /// an unselected platform or changing the upstream index bytes.
 #[tokio::test]
 async fn index_pin_survives_tag_move_and_fresh_cache() {
-    use conglobate::artifact::Digest;
+    use oci_spec::image::Digest;
     use pichi_storage::{BlobStore, FilesystemBlobStore};
     use sha2::{Digest as _, Sha256};
     let Some(base) = test_repo_base() else {
@@ -317,7 +317,9 @@ async fn index_pin_survives_tag_move_and_fresh_cache() {
     let mut second_value: serde_json::Value = serde_json::from_slice(&first_bytes).unwrap();
     second_value["annotations"]["org.opencontainers.image.title"] = "other platform".into();
     let second_bytes = serde_json::to_vec(&second_value).unwrap();
-    let second = Digest::Sha256(Sha256::digest(&second_bytes).into());
+    let second = format!("sha256:{}", hex::encode(Sha256::digest(&second_bytes)))
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
     store.put_blob(&second, &second_bytes).await.unwrap();
     let arch = match std::env::consts::ARCH {
         "x86_64" => "amd64",
@@ -336,7 +338,9 @@ async fn index_pin_survives_tag_move_and_fresh_cache() {
         ]
     });
     let index_bytes = serde_json::to_vec_pretty(&index).unwrap();
-    let index_digest = Digest::Sha256(Sha256::digest(&index_bytes).into());
+    let index_digest = format!("sha256:{}", hex::encode(Sha256::digest(&index_bytes)))
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
     store.put_blob(&index_digest, &index_bytes).await.unwrap();
     tags.set_tag(&tag, &index_digest).await.unwrap();
     Command::cargo_bin("pichi")

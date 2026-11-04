@@ -11,10 +11,8 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use cap_std::fs::{Dir, OpenOptions};
-use conglobate::{
-    artifact::Reference,
-    plan::{Boot, Directive, Image, ImageRef, Lock, Plan, Remote, Stage},
-};
+use conglobate::plan::{Boot, Directive, Image, ImageRef, Lock, Plan, Remote, Stage};
+use oci_spec::distribution::Reference;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 use std::{
     collections::BTreeSet,
@@ -345,7 +343,7 @@ mod tests {
                 .to_string()
                 .contains("bare manifest")
         );
-        std::fs::write(blobs.blob_path(pin), b"tampered").unwrap();
+        std::fs::write(blobs.blob_path(pin).unwrap(), b"tampered").unwrap();
         assert!(args.resolve(&pinned_inputs, &config).await.is_err());
     }
 

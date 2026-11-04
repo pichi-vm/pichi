@@ -24,10 +24,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use conglobate::artifact::{
-    Config, ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-    Reference,
-};
+use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
+use conglobate::artifact::ManifestExt as _;
+use conglobate::resources::Config;
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use super::{boot_config::BootConfigFile, cache::ImageStore as _};
@@ -74,7 +76,12 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     let pmi_bytes = tokio::fs::read(&args.pmi)
         .await
         .with_context(|| format!("reading PMI file: {}", args.pmi.display()))?;
-    let pmi_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes).into());
+    let pmi_digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes))
+    )
+    .parse::<Digest>()
+    .expect("SHA-256 digest");
 
     let bootconfig = match &args.bootconfig {
         Some(path) => Some(BootConfigFile::read(path).await?),
@@ -105,26 +112,40 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         if k.starts_with("dev.pichi.carapace.verity.") {
             continue;
         }
-        manifest.annotations.insert(k, v);
+        manifest
+            .annotations_mut()
+            .get_or_insert_default()
+            .insert(k, v);
     }
-    manifest.layers.push(Layer::Pmi(PmiDescriptor {
-        digest: pmi_digest.to_string(),
-        size: pmi_bytes.len() as u64,
-    }));
+    manifest.layers_mut().push(oci_spec::image::Descriptor::new(
+        conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
+        pmi_bytes.len() as u64,
+        pmi_digest.clone(),
+    ));
     if let Some(config) = &bootconfig
         && let Some(descriptor) = config.descriptor()
     {
-        manifest.layers.push(Layer::BootConfig(descriptor));
+        manifest.layers_mut().push(descriptor);
     }
     if let Some((digest, bytes)) = &config_blob {
-        manifest.config = ConfigDescriptor::for_config(digest.to_string(), bytes.len() as u64);
+        manifest.set_config(oci_spec::image::Descriptor::new(
+            conglobate::resources::MEDIA_TYPE_PICHI_CONFIG_V1.into(),
+            bytes.len() as u64,
+            digest.clone(),
+        ));
     }
     manifest
         .validate()
         .context("assembled bootable manifest failed self-validation (bug)")?;
-    let manifest_bytes = serde_json::to_vec(&manifest).context("serialising bootable manifest")?;
-    let manifest_digest =
-        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
+    let mut value = serde_json::to_value(&manifest)?;
+    value.sort_all_objects();
+    let manifest_bytes = serde_json::to_vec(&value).context("serialising bootable manifest")?;
+    let manifest_digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes))
+    )
+    .parse::<Digest>()
+    .expect("SHA-256 digest");
 
     // Commit blobs (PMI → bootconfig → launch config → manifest), then tag. Scute blobs (if
     // any) are already present — content-addressed no-op if re-put.
@@ -133,9 +154,14 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         .await
         .with_context(|| format!("put_blob pmi {pmi_digest}"))?;
     let pmi_layer = manifest
-        .layers
+        .layers()
         .iter()
-        .find(|layer| matches!(layer, Layer::Pmi(_)))
+        .find(|layer| {
+            matches!(
+                layer.media_type().as_ref(),
+                conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+            )
+        })
         .context("PMI descriptor missing")?;
     super::layer::PreparedLayer::prepare_cached(&manifest, pmi_layer, &blob_store).await?;
     if let Some(config) = &bootconfig {
@@ -179,12 +205,12 @@ async fn carapace_scutes_manifest(
     blob_store: &FilesystemBlobStore,
     db: &FilesystemTagDb,
     carapace: &str,
-) -> Result<Manifest> {
+) -> Result<ImageManifest> {
     // Accept a bare `sha256:<hex>` image digest directly — that is exactly
     // what `pichi import raw` prints, so an untagged carapace is referenceable
     // without inventing a repo. Otherwise parse as a tag / `repo@sha256:…` ref.
-    let src_digest = if let Ok(digest) = carapace.parse::<Digest>() {
-        digest
+    let src_digest = if carapace.starts_with("sha256:") {
+        carapace.parse::<Digest>()?
     } else {
         let carapace_ref: Reference = carapace
             .parse()
@@ -197,28 +223,49 @@ async fn carapace_scutes_manifest(
     }
     // Keep only the carapace's scute layers (drop any prior PMI/bootconfig so a re-run
     // replaces cleanly); its scute cows + `.verity` sidecars are already cached.
-    manifest
-        .layers
-        .retain(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)));
+    manifest.layers_mut().retain(|l| {
+        matches!(
+            l.media_type().as_ref(),
+            conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1
+                | conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD
+        )
+    });
     Ok(manifest)
 }
 
 /// A fresh scute-less manifest (a PMI-only bootable artifact): no carapace, so
 /// no chain-verity annotations — only the creation timestamp.
-fn scuteless_manifest() -> Manifest {
+fn scuteless_manifest() -> ImageManifest {
     let mut annotations = BTreeMap::new();
     annotations.insert(
         "org.opencontainers.image.created".to_string(),
         chrono::Utc::now().to_rfc3339(),
     );
-    Manifest {
-        schema_version: 2,
-        media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-        config: ConfigDescriptor::canonical(),
-        layers: Vec::new(),
-        annotations,
-    }
+    oci_spec::image::ImageManifestBuilder::default()
+        .schema_version(2u32)
+        .media_type(oci_spec::image::MediaType::ImageManifest)
+        .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+        .config(
+            oci_spec::image::DescriptorBuilder::default()
+                .media_type(oci_spec::image::MediaType::EmptyJSON)
+                .digest(
+                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("empty config digest"),
+                )
+                .size(2u64)
+                .data("e30=")
+                .build()
+                .expect("empty config descriptor"),
+        )
+        .layers(Vec::new())
+        .annotations(
+            (annotations)
+                .into_iter()
+                .collect::<std::collections::HashMap<String, String>>(),
+        )
+        .build()
+        .expect("manifest fields are set")
 }
 
 /// Parse repeatable `KEY=VALUE` annotation flags into a map. The key is
@@ -256,7 +303,12 @@ async fn read_launch_contract(path: &Path) -> Result<(Digest, Vec<u8>)> {
     cfg.validate().context("invalid --config")?;
     let bytes = serde_json::to_vec(&cfg).context("serialise config blob")?;
     Ok((
-        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into()),
+        format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest"),
         bytes,
     ))
 }

@@ -12,18 +12,15 @@ use super::cache::ImageStore as _;
 use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
-use conglobate::artifact::{Digest, Manifest, Reference, ReferenceKind};
 use futures_util::stream;
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_registry::Registry;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::PushArgs;
 use crate::config::Config;
-
-/// Content-type for OCI image manifests. Plan 05 always pushes the pichi
-/// manifest under this media type — the inner `artifactType` field carries
-/// the `application/vnd.pichi.artifact.v1+json` discriminator (REGISTRY-07).
-use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as PUSH_MANIFEST_CONTENT_TYPE;
 
 /// Publish the cached image at the requested reference.
 pub async fn run(args: PushArgs, config: &Config) -> Result<()> {
@@ -64,17 +61,13 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
         let destination = if image.digest == root {
             target.clone()
         } else {
-            Reference {
-                registry: target.registry.clone(),
-                repo: target.repo.clone(),
-                kind: ReferenceKind::Digest(image.digest.clone()),
-            }
+            target.clone_with_digest(image.digest.to_string())
         };
         if image.is_index() {
             registry
                 .push_manifest(
                     &destination,
-                    pichi_registry::OCI_IMAGE_INDEX_MEDIA_TYPE,
+                    oci_spec::image::MediaType::ImageIndex.as_ref(),
                     Bytes::from(image.bytes),
                 )
                 .await
@@ -85,7 +78,7 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
                 blob_store,
                 &destination,
                 &image.bytes,
-                PUSH_MANIFEST_CONTENT_TYPE,
+                oci_spec::image::MediaType::ImageManifest.as_ref(),
             )
             .await?;
         }
@@ -94,7 +87,7 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
 }
 
 /// Push one image manifest and all its blobs (config + layers) to `target`,
-/// HEAD-skipping blobs already present. Blobs go to `target.registry`/`repo`;
+/// HEAD-skipping blobs already present. Blobs go to `target.registry()`/`repo`;
 /// the manifest is PUT at `target` (a tag or a digest). Shared by `pichi push`
 /// (single image) and `pichi manifest push` (each referenced arch image).
 pub(crate) async fn push_manifest_and_blobs<R: Registry>(
@@ -107,7 +100,7 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     // Pre-push re-validation (cheap O(layers) safety net); also the source of
     // truth for the config + layer walk below.
     let manifest =
-        Manifest::decode_json(raw_manifest).context("re-validate manifest before push")?;
+        ImageManifest::decode_json(raw_manifest).context("re-validate manifest before push")?;
 
     // Push the empty-config blob (`{}`, 2 bytes, sha256:44136fa3...)
     //      before any layer. OCI 1.1 lets the manifest carry inline `data`
@@ -118,34 +111,31 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     //      `MANIFEST_INVALID` 400 because the `{}` blob wasn't uploaded.
     //      For a real `vnd.pichi.config.v1+json` blob the bytes come from the
     //      local cache; for the OCI empty config they are the well-known `{}`.
-    let config_digest: Digest = manifest
-        .config
-        .digest
-        .parse()
-        .with_context(|| format!("invalid config digest: {}", manifest.config.digest))?;
+    let config_digest = manifest.config().digest();
     if !registry
-        .head_blob(&target.registry, &target.repo, &config_digest)
+        .head_blob(target.registry(), target.repository(), config_digest)
         .await
         .map_err(|e| anyhow!("head_blob config {config_digest}: {e}"))?
     {
-        let bytes: Bytes = if manifest.config.is_empty() {
-            Bytes::from_static(b"{}")
-        } else {
-            Bytes::from(
-                blob_store
-                    .get_blob(&config_digest)
-                    .await
-                    .with_context(|| format!("read config blob {config_digest} from cache"))?
-                    .to_vec(),
-            )
-        };
+        let bytes: Bytes =
+            if manifest.config().media_type() == &oci_spec::image::MediaType::EmptyJSON {
+                Bytes::from_static(b"{}")
+            } else {
+                Bytes::from(
+                    blob_store
+                        .get_blob(config_digest)
+                        .await
+                        .with_context(|| format!("read config blob {config_digest} from cache"))?
+                        .to_vec(),
+                )
+            };
         let size = bytes.len() as u64;
         let one_chunk = stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) });
         registry
             .push_blob_stream(
-                &target.registry,
-                &target.repo,
-                &config_digest,
+                target.registry(),
+                target.repository(),
+                config_digest,
                 size,
                 one_chunk,
             )
@@ -159,8 +149,8 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     //    so calling `try_blob_mount(target_repo, target_repo, digest)` is
     //    a wasted round-trip (registry would refuse). When v0.9 adds the
     //    config surface this becomes a one-line attempt before push_stream.
-    for layer in &manifest.layers {
-        let digest_str = layer.digest_str();
+    for layer in manifest.layers() {
+        let digest_str = layer.digest().to_string();
         let layer_digest: Digest = digest_str
             .parse()
             .with_context(|| format!("parse layer digest {digest_str}"))?;
@@ -169,11 +159,14 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
         //     with concurrent push is benign per OCI semantics: PUT of a
         //     digest already present returns 201.
         if registry
-            .head_blob(&target.registry, &target.repo, &layer_digest)
+            .head_blob(target.registry(), target.repository(), &layer_digest)
             .await
             .map_err(|e| anyhow!("head_blob {layer_digest}: {e}"))?
         {
-            log::debug!("blob {layer_digest} already in {} — skip", target.registry);
+            log::debug!(
+                "blob {layer_digest} already in {} — skip",
+                target.registry()
+            );
             continue;
         }
 
@@ -181,8 +174,8 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
         let stream_chunks = blob_to_stream(blob_store, &layer_digest).await?;
         registry
             .push_blob_stream(
-                &target.registry,
-                &target.repo,
+                target.registry(),
+                target.repository(),
                 &layer_digest,
                 layer.size(),
                 stream_chunks,
@@ -195,7 +188,7 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     //    before this call — see source-line-order regression guard in
     //    src/cmd/push.rs::tests::push_manifest_pushed_after_all_blobs.
     //    Pitfall 3: bytes are passed verbatim from the cache, NOT
-    //    re-serialised through Manifest's serialise helper.
+    //    re-serialised through ImageManifest's serialise helper.
     registry
         .push_manifest(
             target,
@@ -227,9 +220,7 @@ async fn blob_to_stream(
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use conglobate::artifact::{
-        ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
-    };
+    use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations};
     use pichi_registry::MockRegistry;
     use pichi_storage::TagDb as _;
     use std::collections::BTreeMap;
@@ -250,7 +241,7 @@ mod tests {
 
     /// Build a minimal D-07-valid pichi manifest with one Scute layer.
     /// Returns (canonical bytes, manifest digest). Uses serde_json::to_vec
-    /// (NOT Manifest::to_bytes) so the Pitfall 3 negative-grep gate
+    /// (NOT ImageManifest::to_bytes) so the Pitfall 3 negative-grep gate
     /// stays clean of false-positive call sites.
     fn make_pichi_manifest(scute_digest: &Digest, data: &[u8]) -> (Bytes, Digest) {
         let mut annotations = BTreeMap::new();
@@ -275,23 +266,51 @@ mod tests {
         .unwrap()
         .root_hash;
         annotations.insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
-        let manifest = Manifest {
-            schema_version: 2,
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: ConfigDescriptor::canonical(),
-            layers: vec![Layer::Scute(ScuteDescriptor {
-                digest: scute_digest.to_string(),
-                size: data.len() as u64,
-                annotations: ScuteAnnotations {
-                    data_blocks: (data.len() as u64).div_ceil(4096).try_into().unwrap(),
-                    salt: hex::encode([0u8; 32]),
-                },
-            })],
-            annotations,
-        };
+        let manifest = oci_spec::image::ImageManifestBuilder::default()
+            .schema_version(2u32)
+            .media_type("application/vnd.oci.image.manifest.v1+json")
+            .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+            .config(
+                oci_spec::image::DescriptorBuilder::default()
+                    .media_type(oci_spec::image::MediaType::EmptyJSON)
+                    .digest(
+                        "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                            .parse::<oci_spec::image::Digest>()
+                            .expect("empty config digest"),
+                    )
+                    .size(2u64)
+                    .data("e30=")
+                    .build()
+                    .expect("empty config descriptor"),
+            )
+            .layers(vec![{
+                let mut descriptor = oci_spec::image::Descriptor::new(
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                    data.len() as u64,
+                    scute_digest.clone(),
+                );
+                descriptor.set_annotations(Some(
+                    std::collections::HashMap::<String, String>::from(ScuteAnnotations {
+                        data_blocks: (data.len() as u64).div_ceil(4096).try_into().unwrap(),
+                        salt: hex::encode([0u8; 32]),
+                    }),
+                ));
+                descriptor
+            }])
+            .annotations(
+                (annotations)
+                    .into_iter()
+                    .collect::<std::collections::HashMap<String, String>>(),
+            )
+            .build()
+            .expect("manifest fields are set");
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         (bytes, digest)
     }
 
@@ -300,8 +319,12 @@ mod tests {
     async fn seed_cache(graphroot: &Path, tag: &str, layer_data: &[u8]) -> (Digest, Digest) {
         let blob_store = FilesystemBlobStore::new(graphroot);
         let db = FilesystemTagDb::open(graphroot).unwrap();
-        let layer_digest =
-            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
+        let layer_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(layer_data))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         blob_store
             .put_blob(&layer_digest, layer_data)
             .await
@@ -330,8 +353,8 @@ mod tests {
         let mock = MockRegistry::new();
         // Pre-load the registry with the layer blob → HEAD returns true.
         mock.insert_blob(
-            &target.registry,
-            &target.repo,
+            target.registry(),
+            target.repository(),
             layer_digest.clone(),
             Bytes::copy_from_slice(layer_data),
         );
@@ -346,7 +369,7 @@ mod tests {
             pushed.iter().all(|(_, _, d, _)| d != &layer_digest),
             "layer present on registry must NOT be re-pushed: {pushed:?}"
         );
-        // Manifest IS pushed regardless (it's the leaf of the push pipeline).
+        // ImageManifest IS pushed regardless (it's the leaf of the push pipeline).
         assert_eq!(
             mock.pushed_manifests().len(),
             1,
@@ -492,7 +515,12 @@ mod tests {
             // NOTE: no top-level annotations → missing chain annotations.
         });
         let bytes = serde_json::to_vec(&bad_manifest).unwrap();
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         blob_store.put_blob(&digest, &bytes).await.unwrap();
         db.set_tag(&target.to_string(), &digest).await.unwrap();
 
@@ -530,8 +558,12 @@ mod tests {
         let target: Reference = "ghcr.io/example/raw:1".parse().unwrap();
 
         let layer_data = b"raw-bytes-layer-data";
-        let layer_digest =
-            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
+        let layer_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(layer_data))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         blob_store
             .put_blob(&layer_digest, layer_data)
             .await
@@ -540,8 +572,12 @@ mod tests {
         let mut raw_with_ws: Vec<u8> = clean_manifest.to_vec();
         raw_with_ws.extend_from_slice(b"   \n"); // trailing whitespace
         let raw_bytes = Bytes::from(raw_with_ws);
-        let manifest_digest =
-            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&raw_bytes).into());
+        let manifest_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&raw_bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         blob_store
             .put_blob(&manifest_digest, raw_bytes.as_ref())
             .await
@@ -563,7 +599,8 @@ mod tests {
         let (pushed_ref, pushed_media_type, pushed_digest) = &pushed[0];
         assert_eq!(pushed_ref, &target, "pushed reference matches");
         assert_eq!(
-            pushed_media_type, PUSH_MANIFEST_CONTENT_TYPE,
+            pushed_media_type,
+            oci_spec::image::MediaType::ImageManifest.as_ref(),
             "manifest content-type matches"
         );
         assert_eq!(

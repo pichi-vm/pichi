@@ -5,10 +5,11 @@
 
 use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context, Result, anyhow, ensure};
-use conglobate::artifact::{
-    Digest, Index, IndexDescriptor, Manifest, Platform, Reference, ReferenceKind,
-};
-use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
+use oci_spec::image::{Descriptor, ImageIndex, MediaType, Platform};
+use pichi_registry::pick_pichi_entry_from_index;
 use pichi_storage::{BlobStore, TagDb};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -18,7 +19,7 @@ use tokio::io::AsyncReadExt as _;
 use super::manifest_ext::ManifestExt as _;
 
 pub(super) const METADATA_CAP: u64 = 1024 * 1024;
-pub(super) use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as MANIFEST_TYPE;
+
 pub(super) const TARGET_OS: &str = "pichi";
 /// Captured bytes retain their original content identity through publication.
 pub(super) struct ImageMetadata {
@@ -32,10 +33,17 @@ impl TryFrom<(Digest, Vec<u8>)> for ImageMetadata {
 
     fn try_from((digest, bytes): (Digest, Vec<u8>)) -> Result<Self> {
         ensure!(
+            digest.algorithm() == &oci_spec::image::DigestAlgorithm::Sha256,
+            "unsupported digest algorithm: {}",
+            digest.algorithm()
+        );
+        ensure!(
             bytes.len() as u64 <= METADATA_CAP,
             "image metadata exceeds size limit"
         );
-        let actual = Digest::Sha256(Sha256::digest(&bytes).into());
+        let actual = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         ensure!(actual == digest, "image metadata digest mismatch: {digest}");
         let value: Value = serde_json::from_slice(&bytes)?;
         ensure!(
@@ -43,12 +51,19 @@ impl TryFrom<(Digest, Vec<u8>)> for ImageMetadata {
             "unsupported image metadata version"
         );
         ensure!(
-            matches!(
-                value["mediaType"].as_str(),
-                Some(OCI_IMAGE_INDEX_MEDIA_TYPE | MANIFEST_TYPE)
-            ),
+            value["mediaType"].is_null()
+                || matches!(
+                    value["mediaType"].as_str().map(MediaType::from),
+                    Some(
+                        oci_spec::image::MediaType::ImageIndex
+                            | oci_spec::image::MediaType::ImageManifest
+                    )
+                ),
             "unsupported image metadata media type"
         );
+        if value.get("manifests").is_some() {
+            serde_json::from_value::<ImageIndex>(value.clone()).context("invalid OCI index")?;
+        }
         Ok(Self {
             digest,
             bytes,
@@ -59,7 +74,7 @@ impl TryFrom<(Digest, Vec<u8>)> for ImageMetadata {
 
 impl ImageMetadata {
     pub(super) fn is_index(&self) -> bool {
-        self.value["mediaType"] == OCI_IMAGE_INDEX_MEDIA_TYPE
+        self.value.get("manifests").is_some()
     }
 
     pub(super) fn entries(&self) -> Result<&[Value]> {
@@ -89,20 +104,26 @@ impl ImageMetadata {
             self.digest
         );
         ensure!(
-            descriptor["mediaType"] == self.value["mediaType"],
+            descriptor["mediaType"]
+                == if self.is_index() {
+                    MediaType::ImageIndex
+                } else {
+                    MediaType::ImageManifest
+                }
+                .to_string(),
             "index entry media type mismatch: {}",
             self.digest
         );
         Ok(())
     }
 
-    pub(super) fn manifest(&self) -> Result<Manifest> {
+    pub(super) fn manifest(&self) -> Result<ImageManifest> {
         ensure!(
             self.value["artifactType"] == conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
             "expected {}",
             conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1
         );
-        Manifest::decode_json(self.bytes.as_slice()).context("invalid image manifest")
+        ImageManifest::decode_json(self.bytes.as_slice()).context("invalid image manifest")
     }
 }
 
@@ -120,23 +141,29 @@ pub(super) trait ImageStore: BlobStore {
             return Ok(metadata.digest);
         }
         metadata.manifest()?;
-        let index = Index {
-            manifests: vec![IndexDescriptor {
-                media_type: MANIFEST_TYPE.into(),
-                artifact_type: Some(conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1.into()),
-                digest: metadata.digest.to_string(),
-                size: metadata.bytes.len() as u64,
-                platform: Some(platform.unwrap_or_else(|| Platform {
-                    os: TARGET_OS.into(),
-                    architecture: Platform::host_architecture().into(),
-                    variant: None,
-                })),
-                annotations: Default::default(),
-            }],
-            ..Index::default()
-        };
-        let bytes = serde_json::to_vec(&index)?;
-        let digest = Digest::Sha256(Sha256::digest(&bytes).into());
+        let mut descriptor = Descriptor::new(
+            MediaType::ImageManifest,
+            metadata.bytes.len() as u64,
+            metadata.digest,
+        );
+        descriptor.set_artifact_type(Some(
+            conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+        ));
+        descriptor.set_platform(Some(platform.unwrap_or_else(|| {
+            let mut platform = Platform::default();
+            platform.set_os(TARGET_OS.into());
+            platform.set_architecture(Platform::host_architecture().into());
+            platform
+        })));
+        let mut index = ImageIndex::default();
+        index.set_media_type(Some(MediaType::ImageIndex));
+        index.set_manifests(vec![descriptor]);
+        let mut value = serde_json::to_value(&index)?;
+        value.sort_all_objects();
+        let bytes = serde_json::to_vec(&value)?;
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         self.put_blob(&digest, &bytes).await?;
         Ok(digest)
     }
@@ -152,22 +179,21 @@ pub(super) trait ImageStore: BlobStore {
     }
 
     async fn resolve(&self, reference: &Reference, tags: &dyn TagDb) -> Result<Digest> {
-        match &reference.kind {
-            ReferenceKind::Digest(digest) => Ok(digest.clone()),
-            ReferenceKind::Tag(_) => {
-                tags.resolve_tag(&reference.to_string())
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow!("ref not in cache: {reference}\n  hint: pichi pull {reference}")
-                    })
-            }
+        match reference.digest() {
+            Some(digest) => Ok(digest.parse()?),
+            None => tags
+                .resolve_tag(&reference.to_string())
+                .await?
+                .ok_or_else(|| {
+                    anyhow!("ref not in cache: {reference}\n  hint: pichi pull {reference}")
+                }),
         }
     }
 
     async fn cached(&self, reference: &Reference, tags: &dyn TagDb) -> Result<bool> {
-        let digest = match &reference.kind {
-            ReferenceKind::Digest(digest) => Some(digest.clone()),
-            ReferenceKind::Tag(_) => tags.resolve_tag(&reference.to_string()).await?,
+        let digest = match reference.digest() {
+            Some(digest) => Some(digest.parse()?),
+            None => tags.resolve_tag(&reference.to_string()).await?,
         };
         let Some(digest) = digest else {
             return Ok(false);
@@ -185,7 +211,7 @@ pub(super) trait ImageStore: BlobStore {
         }
     }
 
-    async fn manifest(&self, digest: &Digest) -> Result<(ImageMetadata, Manifest)> {
+    async fn manifest(&self, digest: &Digest) -> Result<(ImageMetadata, ImageManifest)> {
         let metadata = self.metadata(digest).await?;
         if metadata.is_index() {
             return self.manifest_entry(metadata.selected_entry()?).await;
@@ -195,7 +221,7 @@ pub(super) trait ImageStore: BlobStore {
     }
 
     /// Authenticate the manifest referenced by an already selected descriptor.
-    async fn manifest_entry(&self, entry: &Value) -> Result<(ImageMetadata, Manifest)> {
+    async fn manifest_entry(&self, entry: &Value) -> Result<(ImageMetadata, ImageManifest)> {
         let metadata = self
             .metadata(
                 &entry["digest"]
@@ -261,8 +287,11 @@ pub(super) trait ImageStore: BlobStore {
                     for entry in entries.into_iter().rev() {
                         ensure!(
                             matches!(
-                                entry["mediaType"].as_str(),
-                                Some(OCI_IMAGE_INDEX_MEDIA_TYPE | MANIFEST_TYPE)
+                                entry["mediaType"].as_str().map(MediaType::from),
+                                Some(
+                                    oci_spec::image::MediaType::ImageIndex
+                                        | oci_spec::image::MediaType::ImageManifest
+                                )
                             ),
                             "unsupported index entry media type"
                         );
@@ -294,10 +323,10 @@ pub(super) trait ImageStore: BlobStore {
                     );
                 }
             } else {
-                let manifest: Manifest = serde_json::from_slice(&metadata.bytes)?;
-                live.insert(manifest.config.digest.parse()?);
-                for layer in &manifest.layers {
-                    live.insert(layer.digest_str().parse()?);
+                let manifest: ImageManifest = serde_json::from_slice(&metadata.bytes)?;
+                live.insert(manifest.config().digest().clone());
+                for layer in manifest.layers() {
+                    live.insert(layer.digest().clone());
                 }
             }
             Ok(())

@@ -6,10 +6,7 @@
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
-use conglobate::artifact::{
-    ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-    ScuteAnnotations, ScuteDescriptor,
-};
+use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
@@ -40,32 +37,62 @@ fn graphroot(tmp: &TempDir) -> std::path::PathBuf {
 async fn inspect_bare_manifest_returns_full_schema() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let m = Manifest {
-        schema_version: 2,
-        media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-        config: ConfigDescriptor::canonical(),
-        layers: vec![
-            Layer::Scute(ScuteDescriptor {
-                digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                    .into(),
-                size: 4096,
-                annotations: ScuteAnnotations {
-                    data_blocks: 1u64.try_into().unwrap(),
-                    salt: "00".repeat(32),
-                },
-            }),
-            Layer::Pmi(PmiDescriptor {
-                digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                    .into(),
-                size: 8192,
-            }),
-        ],
-        annotations: chain_annotations(),
-    };
+    let m = oci_spec::image::ImageManifestBuilder::default()
+        .schema_version(2u32)
+        .media_type("application/vnd.oci.image.manifest.v1+json")
+        .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+        .config(
+            oci_spec::image::DescriptorBuilder::default()
+                .media_type(oci_spec::image::MediaType::EmptyJSON)
+                .digest(
+                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("empty config digest"),
+                )
+                .size(2u64)
+                .data("e30=")
+                .build()
+                .expect("empty config descriptor"),
+        )
+        .layers(vec![
+            {
+                let mut descriptor = oci_spec::image::Descriptor::new(
+                    conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                    4096u64,
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("layer digest"),
+                );
+                descriptor.set_annotations(Some(
+                    std::collections::HashMap::<String, String>::from(ScuteAnnotations {
+                        data_blocks: 1u64.try_into().unwrap(),
+                        salt: "00".repeat(32),
+                    }),
+                ));
+                descriptor
+            },
+            oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1.into(),
+                8192u64,
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("layer digest"),
+            ),
+        ])
+        .annotations(
+            (chain_annotations())
+                .into_iter()
+                .collect::<std::collections::HashMap<String, String>>(),
+        )
+        .build()
+        .expect("manifest fields are set");
     let bytes = serde_json::to_vec(&m).unwrap();
-    let digest =
-        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();
@@ -106,25 +133,53 @@ async fn inspect_bare_manifest_returns_full_schema() {
 async fn inspect_format_reaches_dotted_annotation() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
-    let m = Manifest {
-        schema_version: 2,
-        media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-        config: ConfigDescriptor::canonical(),
-        layers: vec![Layer::Scute(ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
-            size: 4096,
-            annotations: ScuteAnnotations {
-                data_blocks: 1u64.try_into().unwrap(),
-                salt: "00".repeat(32),
-            },
-        })],
-        annotations: chain_annotations(),
-    };
+    let m = oci_spec::image::ImageManifestBuilder::default()
+        .schema_version(2u32)
+        .media_type("application/vnd.oci.image.manifest.v1+json")
+        .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+        .config(
+            oci_spec::image::DescriptorBuilder::default()
+                .media_type(oci_spec::image::MediaType::EmptyJSON)
+                .digest(
+                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("empty config digest"),
+                )
+                .size(2u64)
+                .data("e30=")
+                .build()
+                .expect("empty config descriptor"),
+        )
+        .layers(vec![{
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                4096u64,
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("layer digest"),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: 1u64.try_into().unwrap(),
+                    salt: "00".repeat(32),
+                },
+            )));
+            descriptor
+        }])
+        .annotations(
+            (chain_annotations())
+                .into_iter()
+                .collect::<std::collections::HashMap<String, String>>(),
+        )
+        .build()
+        .expect("manifest fields are set");
     let bytes = serde_json::to_vec(&m).unwrap();
-    let digest =
-        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();
@@ -175,8 +230,12 @@ async fn inspect_image_index_lists_entries() {
         ]
     });
     let bytes = serde_json::to_vec(&index).unwrap();
-    let digest =
-        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let bs = FilesystemBlobStore::new(&g);
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();

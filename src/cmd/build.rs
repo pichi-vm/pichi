@@ -17,7 +17,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::cache::ImageStore as _;
-use conglobate::artifact::{Digest, Manifest, Reference, ReferenceKind, Requirements};
+use conglobate::resources::Requirements;
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{BuildArgs, PullArgs, PullPolicy};
@@ -68,11 +71,8 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let (pmi, build_scutes) = build_manifest
         .partition_layers()
         .with_context(|| format!("build image {build_image_ref} is not bootable"))?;
-    let pmi_digest: Digest = pmi
-        .digest
-        .parse()
-        .context("invalid build-image PMI digest")?;
-    let pmi_path = blob_store.blob_path(&pmi_digest);
+    let pmi_digest = pmi.digest();
+    let pmi_path = blob_store.blob_path(pmi_digest)?;
     let bootconfig_path =
         super::boot_config::BootConfigFile::prepare_image(&build_manifest, &blob_store).await?;
 
@@ -91,8 +91,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         );
     }
     for (reference, pin) in &build_lock.images {
-        let mut target: Reference = reference.to_string().parse()?;
-        target.kind = ReferenceKind::Digest(pin.clone());
+        let target = reference.as_ref().clone_with_digest(pin.to_string());
         let (digest, manifest) = resolve_manifest(&target.to_string(), &db, &blob_store)
             .await
             .with_context(|| format!("resolving pinned source {reference}"))?;
@@ -281,31 +280,10 @@ pub(crate) async fn image_cached(
     db: &FilesystemTagDb,
     blob_store: &FilesystemBlobStore,
 ) -> Result<bool> {
-    let canonical = canonicalize_reference(reference);
-    let target: Reference = canonical
+    let target: Reference = reference
         .parse()
         .with_context(|| format!("invalid image reference: {reference}"))?;
     blob_store.cached(&target, db).await
-}
-
-/// Map OCI `name:tag@digest` → `name@digest` before [`Reference`] parse.
-///
-/// Conglobate locks pins as `tag@digest`. `conglobate::artifact::Reference` currently
-/// folds `:tag` into `repo` when `@digest` is present, so GHCR blob paths 404.
-/// Digest wins; the tag is informational. No-op without `@digest` or without a
-/// `:tag` after the last `/`.
-pub(crate) fn canonicalize_reference(s: &str) -> std::borrow::Cow<'_, str> {
-    let Some(at) = s.find('@') else {
-        return std::borrow::Cow::Borrowed(s);
-    };
-    let name = &s[..at];
-    let digest = &s[at..]; // includes '@'
-    let search_from = name.rfind('/').map(|i| i + 1).unwrap_or(0);
-    let Some(rel_colon) = name[search_from..].find(':') else {
-        return std::borrow::Cow::Borrowed(s);
-    };
-    let abs = search_from + rel_colon;
-    std::borrow::Cow::Owned(format!("{}{}", &name[..abs], digest))
 }
 
 /// Load the build lock without interpreting a plan on the host.
@@ -344,9 +322,8 @@ pub(crate) async fn resolve_manifest(
     reference: &str,
     db: &FilesystemTagDb,
     blob_store: &FilesystemBlobStore,
-) -> Result<(Digest, Manifest)> {
-    let canonical = canonicalize_reference(reference);
-    let target: Reference = canonical
+) -> Result<(Digest, ImageManifest)> {
+    let target: Reference = reference
         .parse()
         .with_context(|| format!("invalid reference: {reference}"))?;
     let digest = blob_store.resolve(&target, db).await?;
@@ -475,7 +452,6 @@ async fn boot_serve_and_wait(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use conglobate::artifact::ReferenceKind;
     use dillo_config::FsSpec;
     use pichi_storage::TagDb as _;
 
@@ -629,49 +605,8 @@ mod tests {
         // A legacy mapping to another digest cannot satisfy the pin.
         let pin = "ghcr.io/pichi-vm/conglobate:0.2.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         assert!(!image_cached(pin, &db, &blob_store).await.unwrap());
-        let canon = canonicalize_reference(pin);
-        db.set_tag(canon.as_ref(), &digest).await.unwrap();
+        db.set_tag(pin, &digest).await.unwrap();
         assert!(!image_cached(pin, &db, &blob_store).await.unwrap());
-    }
-
-    #[test]
-    fn canonicalize_reference_strips_tag_before_digest() {
-        let pinned = format!(
-            "ghcr.io/pichi-vm/conglobate:0.2.0@{}",
-            DEFAULT_BUILD_IMAGE.split_once('@').unwrap().1
-        );
-        let canon = canonicalize_reference(&pinned);
-        assert_eq!(
-            canon.as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:8cff87098d440055b55f296cebd07c08f7d10b1e401335172cb6ac8bdc69f234"
-        );
-        let parsed: Reference = canon.parse().unwrap();
-        assert_eq!(parsed.registry, "ghcr.io");
-        assert_eq!(parsed.repo, "pichi-vm/conglobate");
-        match parsed.kind {
-            ReferenceKind::Digest(d) => {
-                assert_eq!(
-                    d.to_string(),
-                    "sha256:8cff87098d440055b55f296cebd07c08f7d10b1e401335172cb6ac8bdc69f234"
-                );
-            }
-            ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),
-        }
-    }
-
-    #[test]
-    fn canonicalize_reference_noop_without_digest_or_tag() {
-        assert_eq!(
-            canonicalize_reference("ghcr.io/pichi-vm/conglobate:0.2.0").as_ref(),
-            "ghcr.io/pichi-vm/conglobate:0.2.0"
-        );
-        assert_eq!(
-            canonicalize_reference(
-                "ghcr.io/pichi-vm/conglobate@sha256:8cff87098d440055b55f296cebd07c08f7d10b1e401335172cb6ac8bdc69f234"
-            )
-            .as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:8cff87098d440055b55f296cebd07c08f7d10b1e401335172cb6ac8bdc69f234"
-        );
     }
 
     /// Host-side smoke: mounts, build-port exchange, then guest OCI import.
@@ -924,8 +859,12 @@ mod tests {
         // Compact JSON so digest is stable-ish; recompute after parse round-trip.
         let platform_val: serde_json::Value = serde_json::from_slice(platform_bytes).unwrap();
         let platform = serde_json::to_vec(&platform_val).unwrap();
-        let platform_digest =
-            Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&platform).into());
+        let platform_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&platform))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         blob_store
             .put_blob(&platform_digest, &platform)
             .await

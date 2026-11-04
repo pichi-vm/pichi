@@ -81,8 +81,9 @@ upstream and refreshes changed images. For locally imported inputs or
 cached-only operation, use `pichi update --pull=never`. Inputs must resolve
 to OCI indexes; bare manifest references are rejected.
 
-The `conglobate` library supplies shared plan, artifact, lock, and build-port
-types. `pichi update` maintains locks on the host; `pichi build` remains a
+The `conglobate` library supplies shared plans, locks, resource configuration,
+build-port types and Pichi artifact validation. OCI representations come from
+`oci-spec`. `pichi update` maintains locks on the host; `pichi build` remains a
 thin launcher and consumes a committed plan and lock in the appliance.
 
 `-b`/`--build-image` selects the build appliance image. When it is omitted,

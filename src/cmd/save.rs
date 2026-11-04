@@ -15,9 +15,10 @@ use crate::cmd::cache::ImageStore as _;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use conglobate::artifact::{
-    Digest, Index, IndexDescriptor, LayoutMarker, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference,
-};
+use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
+use oci_spec::image::{Descriptor, ImageIndex, MediaType, OciLayoutBuilder};
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::SaveArgs;
@@ -47,20 +48,24 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
         .with_context(|| format!("create {}", blobs_dir.display()))?;
     tokio::fs::write(
         out.join("oci-layout"),
-        serde_json::to_vec(&LayoutMarker::default())?,
+        serde_json::to_vec(
+            &OciLayoutBuilder::default()
+                .image_layout_version("1.0.0")
+                .build()?,
+        )?,
     )
     .await?;
 
     let mut to_copy = std::collections::HashSet::new();
     for image in &images {
-        tokio::fs::write(blobs_dir.join(image.digest.hex()), &image.bytes).await?;
+        tokio::fs::write(blobs_dir.join(image.digest.digest()), &image.bytes).await?;
         if !image.is_index() {
             let manifest = image.manifest()?;
-            if !manifest.config.is_empty() {
-                to_copy.insert(manifest.config.digest.parse::<Digest>()?);
+            if manifest.config().media_type() != &oci_spec::image::MediaType::EmptyJSON {
+                to_copy.insert(manifest.config().digest().clone());
             }
-            for layer in &manifest.layers {
-                to_copy.insert(layer.digest_str().parse::<Digest>()?);
+            for layer in manifest.layers() {
+                to_copy.insert(layer.digest().clone());
             }
         }
     }
@@ -71,23 +76,25 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
     )
     .await?;
 
-    let index = Index {
-        manifests: vec![IndexDescriptor {
-            media_type: root.value["mediaType"]
-                .as_str()
-                .context("image has no media type")?
-                .into(),
-            artifact_type: Some(MEDIA_TYPE_PICHI_ARTIFACT_V1.into()),
-            digest: digest.to_string(),
-            size: root.bytes.len() as u64,
-            platform: None,
-            annotations: [(REF_NAME_ANNOTATION.into(), tag.clone())].into(),
-        }],
-        ..Index::default()
-    };
+    let mut descriptor = Descriptor::new(
+        if root.is_index() {
+            MediaType::ImageIndex
+        } else {
+            MediaType::ImageManifest
+        },
+        root.bytes.len() as u64,
+        digest,
+    );
+    descriptor.set_artifact_type(Some(MEDIA_TYPE_PICHI_ARTIFACT_V1.into()));
+    descriptor.set_annotations(Some([(REF_NAME_ANNOTATION.into(), tag.clone())].into()));
+    let mut index = ImageIndex::default();
+    index.set_media_type(Some(MediaType::ImageIndex));
+    index.set_manifests(vec![descriptor]);
+    let mut value = serde_json::to_value(&index)?;
+    value.sort_all_objects();
     tokio::fs::write(
         out.join("index.json"),
-        serde_json::to_vec_pretty(&index).context("serialise index.json")?,
+        serde_json::to_vec_pretty(&value).context("serialise index.json")?,
     )
     .await?;
 
@@ -102,8 +109,8 @@ async fn copy_blob(
     digest: &Digest,
     blobs_dir: &Path,
 ) -> Result<()> {
-    let src = blob_store.blob_path(digest);
-    let dst = blobs_dir.join(digest.hex());
+    let src = blob_store.blob_path(digest)?;
+    let dst = blobs_dir.join(digest.digest());
     tokio::fs::copy(&src, &dst).await.with_context(|| {
         format!(
             "copy blob {digest} ({} -> {})",

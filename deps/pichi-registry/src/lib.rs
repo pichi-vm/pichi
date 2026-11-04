@@ -41,8 +41,9 @@
 //! the feature flag and only inside this crate.
 
 use bytes::Bytes;
-use conglobate::artifact::{Digest, Reference};
 use futures_util::stream::Stream;
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use thiserror::Error;
 use tokio::io::AsyncWrite;
 
@@ -59,7 +60,7 @@ pub use auth::{AuthEnv, AuthHint};
 #[cfg(feature = "http-client")]
 pub use http::{HttpRegistry, RegistryEntry};
 #[cfg(feature = "http-client")]
-pub use index_walk::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
+pub use index_walk::pick_pichi_entry_from_index;
 pub use mock::MockRegistry;
 
 /// Registry I/O failures. Variants are deliberately coarse — Phase 44's
@@ -96,7 +97,7 @@ pub type Result<T> = std::result::Result<T, RegistryError>;
 /// - All methods are `async` (Rust 2024 native AFIT).
 /// - Manifest payloads are returned as raw [`Bytes`] (not parsed) so the
 ///   caller can choose whether to dispatch via D-20 (image-index walk) or
-///   parse directly as [`conglobate::artifact::Manifest`]. Manifests are
+///   parse directly as [`oci_spec::image::ImageManifest`]. Manifests are
 ///   KB-scale; streaming them adds zero value.
 /// - Blob payloads are STREAMING (D-01): `pull_blob` writes into an
 ///   [`AsyncWrite`] sink; `push_blob_stream` reads from a

@@ -10,8 +10,6 @@
 //                          (the one that runs the internal platform-resolver) —
 //                          the literal name is intentionally not written here
 //                          so the CI negative-grep gate stays clean.
-// Pitfall 6: conglobate::artifact::Reference vs oci_client::Reference are different
-//            types — convert at the boundary via to_oci_ref helper.
 // Pitfall 10: Default Client uses HTTPS; insecure registries need explicit
 //            ClientProtocol::HttpsExcept(vec!["host:port"]) per-registry.
 // Pitfall 14: OciDistributionError::UnauthorizedError MUST be mapped to a
@@ -31,32 +29,20 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bytes::Bytes;
-use conglobate::artifact::{Digest, Reference as PichiRef};
 use futures_util::stream::{Stream, StreamExt as _};
 use oci_client::{
-    Client, Reference as OciRef, RegistryOperation,
+    Client, RegistryOperation,
     client::{ClientConfig, ClientProtocol},
     errors::OciDistributionError,
     manifest::OciDescriptor,
     secrets::RegistryAuth,
 };
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use tokio::io::AsyncWrite;
 
 use crate::auth::{AuthEnv, AuthHint};
 use crate::{Registry, RegistryError, Result};
-
-/// Manifest media types the pichi client will accept from `pull_manifest_raw`.
-/// Includes both OCI image manifest + index AND legacy Docker v2 manifest +
-/// list shapes, since real-world registries (ghcr.io, quay.io, mirror.gcr.io)
-/// still serve Docker types for older tags. The discrimination between
-/// "single-manifest" and "multi-arch index" happens at the call site
-/// (Plan 04 `cmd::pull`) by inspecting the returned bytes' `mediaType` field.
-const ACCEPTED_MANIFEST_TYPES: &[&str] = &[
-    conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1,
-    conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1,
-    "application/vnd.docker.distribution.manifest.v2+json",
-    "application/vnd.docker.distribution.manifest.list.v2+json",
-];
 
 /// Per-registry credential hint shipped from the pichi binary's config.
 ///
@@ -66,7 +52,7 @@ const ACCEPTED_MANIFEST_TYPES: &[&str] = &[
 #[derive(Debug)]
 pub struct RegistryEntry {
     /// Registry hostname (e.g. `"ghcr.io"`). MUST match the
-    /// `PichiRef::registry` field exactly for the entry to apply.
+    /// `Reference::registry()` value exactly for the entry to apply.
     pub prefix: String,
     /// `true` → use plain HTTP for THIS registry (Pitfall 10 escape hatch);
     /// other registries continue to use HTTPS.
@@ -171,31 +157,12 @@ impl HttpRegistry {
     }
 }
 
-/// Convert pichi's [`PichiRef`] to oci-client's [`OciRef`] at the boundary
-/// (Pitfall 6). Both types are foreign to this crate, so this is a local
-/// extension trait rather than a `From` impl (orphan rule). Pichi's `Display`
-/// canonicalises to `"host/repo:tag"` / `"host/repo@digest"`; oci-client parses
-/// the same form.
-trait ToOciRef {
-    fn to_oci_ref(&self) -> Result<OciRef>;
-}
-
-impl ToOciRef for PichiRef {
-    fn to_oci_ref(&self) -> Result<OciRef> {
-        self.to_string()
-            .parse()
-            .map_err(|e: oci_client::ParseError| {
-                RegistryError::Transport(format!("oci ref parse: {e}"))
-            })
-    }
-}
-
-/// Build an [`OciRef`] from raw `(registry, repo, tag-or-digest)` parts. Used
+/// Build a [`Reference`] from raw `(registry, repo, tag-or-digest)` parts. Used
 /// by the trait methods that take `(&str, &str, &Digest)` rather than a full
-/// [`PichiRef`].
-fn build_oci_ref(registry: &str, repo: &str, tag_or_digest: Option<&str>) -> Result<OciRef> {
+/// [`Reference`].
+fn build_oci_ref(registry: &str, repo: &str, tag_or_digest: Option<&str>) -> Result<Reference> {
     let s = match tag_or_digest {
-        Some(td) if td.starts_with("sha256:") => format!("{registry}/{repo}@{td}"),
+        Some(td) if td.contains(':') => format!("{registry}/{repo}@{td}"),
         Some(td) => format!("{registry}/{repo}:{td}"),
         None => format!("{registry}/{repo}"),
     };
@@ -286,15 +253,23 @@ impl From<OciDistributionError> for RegistryError {
 }
 
 impl Registry for HttpRegistry {
-    async fn pull_manifest_by_tag(&self, reference: &PichiRef) -> Result<(Bytes, Digest)> {
-        let oci_ref = reference.to_oci_ref()?;
-        let auth = self.auth_for(&reference.registry).await?;
-        let client = self.client_for(&reference.registry);
+    async fn pull_manifest_by_tag(&self, reference: &Reference) -> Result<(Bytes, Digest)> {
+        let auth = self.auth_for(reference.registry()).await?;
+        let client = self.client_for(reference.registry());
         // REGISTRY-05 / Pitfall 1: pull_manifest_raw — NOT the auto-resolving
         // variant that runs oci-client's internal platform-resolver. Index
         // discrimination is pichi's job (see `crate::index_walk`).
         let (raw, digest_str) = client
-            .pull_manifest_raw(&oci_ref, &auth, ACCEPTED_MANIFEST_TYPES)
+            .pull_manifest_raw(
+                reference,
+                &auth,
+                &[
+                    oci_spec::image::MediaType::ImageManifest.as_ref(),
+                    oci_spec::image::MediaType::ImageIndex.as_ref(),
+                    "application/vnd.docker.distribution.manifest.v2+json",
+                    "application/vnd.docker.distribution.manifest.list.v2+json",
+                ],
+            )
             .await
             .map_err(RegistryError::from)?;
         let digest: Digest = digest_str
@@ -309,11 +284,20 @@ impl Registry for HttpRegistry {
         repo: &str,
         digest: &Digest,
     ) -> Result<Bytes> {
-        let oci_ref = build_oci_ref(registry, repo, Some(&digest.to_string()))?;
+        let oci_ref = build_oci_ref(registry, repo, Some(digest.as_ref()))?;
         let auth = self.auth_for(registry).await?;
         let client = self.client_for(registry);
         let (raw, _digest_str) = client
-            .pull_manifest_raw(&oci_ref, &auth, ACCEPTED_MANIFEST_TYPES)
+            .pull_manifest_raw(
+                &oci_ref,
+                &auth,
+                &[
+                    oci_spec::image::MediaType::ImageManifest.as_ref(),
+                    oci_spec::image::MediaType::ImageIndex.as_ref(),
+                    "application/vnd.docker.distribution.manifest.v2+json",
+                    "application/vnd.docker.distribution.manifest.list.v2+json",
+                ],
+            )
             .await
             .map_err(RegistryError::from)?;
         Ok(raw)
@@ -401,23 +385,22 @@ impl Registry for HttpRegistry {
             .await
             .map_err(RegistryError::from)?;
         client
-            .blob_exists(&oci_ref, &digest.to_string())
+            .blob_exists(&oci_ref, digest.as_ref())
             .await
             .map_err(RegistryError::from)
     }
 
     async fn push_manifest(
         &self,
-        reference: &PichiRef,
+        reference: &Reference,
         media_type: &str,
         bytes: Bytes,
     ) -> Result<Digest> {
-        let oci_ref = reference.to_oci_ref()?;
-        let auth = self.auth_for(&reference.registry).await?;
-        let client = self.client_for(&reference.registry);
+        let auth = self.auth_for(reference.registry()).await?;
+        let client = self.client_for(reference.registry());
         // Pre-auth: manifest push needs write-scope bearer token before the PUT.
         client
-            .auth(&oci_ref, &auth, RegistryOperation::Push)
+            .auth(reference, &auth, RegistryOperation::Push)
             .await
             .map_err(RegistryError::from)?;
         // The Content-Type MUST match the payload: an image manifest and an
@@ -431,9 +414,14 @@ impl Registry for HttpRegistry {
         // (push consumes the bytes). The registry's location-header URL also
         // contains the assigned digest, but we trust local sha256 for the
         // return value (D-11: CVM-friendly local validation).
-        let computed = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+        let computed = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let _location_url = client
-            .push_manifest_raw(&oci_ref, bytes, ct)
+            .push_manifest_raw(reference, bytes, ct)
             .await
             .map_err(RegistryError::from)?;
         Ok(computed)
@@ -545,10 +533,7 @@ impl Registry for HttpRegistry {
             .auth(&target, &auth, RegistryOperation::Push)
             .await
             .map_err(RegistryError::from)?;
-        match client
-            .mount_blob(&target, &source, &digest.to_string())
-            .await
-        {
+        match client.mount_blob(&target, &source, digest.as_ref()).await {
             Ok(()) => Ok(true),
             // Mount unsupported (405), source blob absent, or registry simply
             // refuses — treat as fall-back signal per the trait contract.
@@ -605,7 +590,7 @@ mod tests {
     async fn blob_stream_keeps_eof_and_reports_digest_errors() {
         use super::{HttpRegistry, RegistryEntry};
         use crate::{Registry as _, auth::AuthEnv};
-        use conglobate::artifact::Digest;
+        use oci_spec::image::Digest;
         use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
         use tokio::net::TcpListener;
         use tokio_util::io::StreamReader;
@@ -652,14 +637,16 @@ mod tests {
                 }],
                 AuthEnv::default(),
             );
-            let digest = Digest::Sha256(
-                <sha2::Sha256 as sha2::Digest>::digest(if valid {
+            let digest = format!(
+                "sha256:{}",
+                hex::encode(<sha2::Sha256 as sha2::Digest>::digest(if valid {
                     b"scute bytes"
                 } else {
                     b"wrong bytes"
-                })
-                .into(),
-            );
+                }))
+            )
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 let stream = registry
                     .pull_blob_stream(&address, "test/scute", &digest, 11)

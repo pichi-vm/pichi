@@ -7,7 +7,7 @@
 //! Legacy flat sidecars are
 //! ignored when reading, but retained in cleanup accounting.
 
-use conglobate::artifact::Digest;
+use oci_spec::image::{Digest, DigestAlgorithm};
 use std::path::{Path, PathBuf};
 
 /// Paths and cleanup for files derived from a cached source blob.
@@ -17,8 +17,7 @@ pub trait BlobSidecarExt {
     fn prepared_dir(&self) -> PathBuf;
     #[must_use]
     fn deflated_path(&self, padded_bytes: u64) -> PathBuf;
-    #[must_use]
-    fn verity_path(&self, parameters: &Digest) -> PathBuf;
+    fn verity_path(&self, parameters: &Digest) -> std::io::Result<PathBuf>;
     /// List regular prepared files without following symlinks.
     fn prepared_files(&self) -> std::io::Result<Vec<PathBuf>>;
     /// Count prepared and legacy sidecars, excluding directory metadata.
@@ -36,9 +35,16 @@ impl BlobSidecarExt for Path {
         self.prepared_dir().join(format!("{padded_bytes}.deflated"))
     }
 
-    fn verity_path(&self, parameters: &Digest) -> PathBuf {
-        self.prepared_dir()
-            .join(format!("{}.verity", parameters.hex()))
+    fn verity_path(&self, parameters: &Digest) -> std::io::Result<PathBuf> {
+        if parameters.algorithm() != &DigestAlgorithm::Sha256 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "unsupported digest algorithm",
+            ));
+        }
+        Ok(self
+            .prepared_dir()
+            .join(format!("{}.verity", parameters.digest())))
     }
 
     fn prepared_files(&self) -> std::io::Result<Vec<PathBuf>> {
@@ -122,20 +128,27 @@ mod tests {
     fn prepared_paths_include_reconstruction_inputs() {
         let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let src = PathBuf::from(format!("/tmp/abc/blobs/sha256/{hex}"));
-        let key = Digest::Sha256([0x11; 32]);
+        let key = format!("sha256:{}", hex::encode([0x11; 32]))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         assert_eq!(
             src.deflated_path(8192),
             src.with_extension("prepared").join("8192.deflated")
         );
         assert_eq!(
-            src.verity_path(&key),
+            src.verity_path(&key).unwrap(),
             src.with_extension("prepared")
-                .join(format!("{}.verity", key.hex()))
+                .join(format!("{}.verity", key.digest()))
         );
         assert_ne!(src.deflated_path(8192), src.deflated_path(4096));
         assert_ne!(
-            src.verity_path(&key),
-            src.verity_path(&Digest::Sha256([0x22; 32]))
+            src.verity_path(&key).unwrap(),
+            src.verity_path(
+                &format!("sha256:{}", hex::encode([0x22; 32]))
+                    .parse::<Digest>()
+                    .expect("SHA-256 digest")
+            )
+            .unwrap()
         );
     }
 
@@ -207,8 +220,26 @@ mod tests {
         for (path, size) in [
             (source.deflated_path(8192), 3),
             (source.deflated_path(5120), 5),
-            (source.verity_path(&Digest::Sha256([1; 32])), 7),
-            (source.verity_path(&Digest::Sha256([2; 32])), 13),
+            (
+                source
+                    .verity_path(
+                        &format!("sha256:{}", hex::encode([1; 32]))
+                            .parse::<Digest>()
+                            .expect("SHA-256 digest"),
+                    )
+                    .unwrap(),
+                7,
+            ),
+            (
+                source
+                    .verity_path(
+                        &format!("sha256:{}", hex::encode([2; 32]))
+                            .parse::<Digest>()
+                            .expect("SHA-256 digest"),
+                    )
+                    .unwrap(),
+                13,
+            ),
             (source.with_extension("verity"), 17),
             (source.with_extension("deflated"), 19),
         ] {

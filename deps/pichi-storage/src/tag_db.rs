@@ -7,7 +7,7 @@
 //! [OCI Image Layout][1] `index.json` file at the cache root, with one
 //! `manifests` entry per tag. Each entry's
 //! `annotations["org.opencontainers.image.ref.name"]` carries the canonical
-//! tag string (per CONTEXT D-02: `conglobate::artifact::Reference::Display` form).
+//! tag string (per CONTEXT D-02: `oci_spec::distribution::Reference::Display` form).
 //!
 //! Concurrency model: `set_tag` and `delete_tag` perform read-modify-write
 //! under an advisory `flock(2)` on a sibling lockfile (`index.json.lock`).
@@ -30,19 +30,16 @@
 //!
 //! [1]: https://github.com/opencontainers/image-spec/blob/main/image-layout.md
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
-use conglobate::artifact::{
-    Index as ImageIndex, IndexDescriptor as ManifestDescriptor, LayoutMarker,
-};
+use oci_spec::image::{Descriptor, ImageIndex, MediaType, OciLayoutBuilder};
 
 use crate::atomic::write_atomic;
 use crate::lock::lock_exclusive_async;
-use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1};
+use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
+use oci_spec::image::Digest;
 
 /// OCI annotation key for the human-readable image reference (tag).
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
@@ -124,7 +121,11 @@ impl FilesystemTagDb {
         match tokio::fs::read(&path).await {
             Ok(bytes) => serde_json::from_slice::<ImageIndex>(&bytes)
                 .with_context(|| format!("failed to parse index.json at {}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ImageIndex::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut index = ImageIndex::default();
+                index.set_media_type(Some(MediaType::ImageIndex));
+                Ok(index)
+            }
             Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
         }
     }
@@ -137,7 +138,9 @@ impl FilesystemTagDb {
             .parent()
             .expect("index_path always has a parent (cache root)");
         // Pretty-print for human readability and skopeo/oras compatibility.
-        let bytes = serde_json::to_vec_pretty(index).context("failed to serialise index.json")?;
+        let mut value = serde_json::to_value(index)?;
+        value.sort_all_objects();
+        let bytes = serde_json::to_vec_pretty(&value).context("failed to serialise index.json")?;
         write_atomic(parent, &path, &bytes)
             .await
             .context("failed to write index.json")
@@ -154,7 +157,11 @@ impl FilesystemTagDb {
         write_atomic(
             parent,
             &path,
-            &serde_json::to_vec(&LayoutMarker::default())?,
+            &serde_json::to_vec(
+                &OciLayoutBuilder::default()
+                    .image_layout_version("1.0.0")
+                    .build()?,
+            )?,
         )
         .await
         .context("failed to write oci-layout marker")
@@ -174,21 +181,19 @@ impl FilesystemTagDb {
         let mut index = self.read_index().await?;
 
         // Overwrite semantics: drop any existing entry for this tag first.
-        index
-            .manifests
-            .retain(|m| m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag));
-        index.manifests.push(ManifestDescriptor {
-            artifact_type: None,
-            platform: None,
-            media_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-            digest: digest.to_string(),
-            size: 0,
-            annotations: {
-                let mut a = BTreeMap::new();
-                a.insert(REF_NAME_ANNOTATION.to_string(), tag.to_string());
-                a
-            },
+        let mut manifests = index.manifests().clone();
+        manifests.retain(|m| {
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get(REF_NAME_ANNOTATION))
+                .map(String::as_str)
+                != Some(tag)
         });
+        let mut descriptor =
+            Descriptor::new(MEDIA_TYPE_PICHI_ARTIFACT_V1.into(), 0, digest.clone());
+        descriptor.set_annotations(Some([(REF_NAME_ANNOTATION.into(), tag.into())].into()));
+        manifests.push(descriptor);
+        index.set_manifests(manifests);
         self.write_index_atomic(&index).await
     }
 
@@ -204,11 +209,17 @@ impl FilesystemTagDb {
     /// otherwise.
     pub async fn delete_tag_locked(&self, tag: &str) -> Result<bool> {
         let mut index = self.read_index().await?;
-        let before = index.manifests.len();
-        index
-            .manifests
-            .retain(|m| m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) != Some(tag));
-        let existed = index.manifests.len() != before;
+        let before = index.manifests().len();
+        let mut manifests = index.manifests().clone();
+        manifests.retain(|m| {
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get(REF_NAME_ANNOTATION))
+                .map(String::as_str)
+                != Some(tag)
+        });
+        let existed = manifests.len() != before;
+        index.set_manifests(manifests);
         if existed {
             self.ensure_oci_layout_marker().await?;
             self.write_index_atomic(&index).await?;
@@ -228,12 +239,14 @@ impl TagDb for FilesystemTagDb {
 
     async fn resolve_tag(&self, tag: &str) -> Result<Option<Digest>> {
         let index = self.read_index().await?;
-        for m in &index.manifests {
-            if m.annotations.get(REF_NAME_ANNOTATION).map(String::as_str) == Some(tag) {
-                let d = Digest::from_str(&m.digest).with_context(|| {
-                    format!("corrupt digest for tag {tag} in index.json: {}", m.digest)
-                })?;
-                return Ok(Some(d));
+        for m in index.manifests() {
+            if m.annotations()
+                .as_ref()
+                .and_then(|a| a.get(REF_NAME_ANNOTATION))
+                .map(String::as_str)
+                == Some(tag)
+            {
+                return Ok(Some(m.digest().clone()));
             }
         }
         Ok(None)
@@ -241,14 +254,16 @@ impl TagDb for FilesystemTagDb {
 
     async fn list_tags(&self) -> Result<Vec<TagEntry>> {
         let index = self.read_index().await?;
-        let mut out = Vec::with_capacity(index.manifests.len());
-        for m in &index.manifests {
-            let Some(tag) = m.annotations.get(REF_NAME_ANNOTATION) else {
+        let mut out = Vec::with_capacity(index.manifests().len());
+        for m in index.manifests() {
+            let Some(tag) = m
+                .annotations()
+                .as_ref()
+                .and_then(|a| a.get(REF_NAME_ANNOTATION))
+            else {
                 continue; // skip manifests without a ref name annotation
             };
-            let digest = Digest::from_str(&m.digest).with_context(|| {
-                format!("corrupt digest for tag {tag} in index.json: {}", m.digest)
-            })?;
+            let digest = m.digest().clone();
             out.push(TagEntry {
                 tag: tag.clone(),
                 digest,
@@ -276,7 +291,12 @@ mod tests {
     #[tokio::test]
     async fn set_and_resolve_round_trip() {
         let (_dir, db) = db();
-        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"manifest-bytes").into());
+        let d = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"manifest-bytes"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         db.set_tag("docker.io/library/alpine:latest", &d)
             .await
             .unwrap();
@@ -297,9 +317,24 @@ mod tests {
     async fn list_tags_returns_all() {
         use std::collections::HashSet;
         let (_dir, db) = db();
-        let d1 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"one").into());
-        let d2 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"two").into());
-        let d3 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"three").into());
+        let d1 = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"one"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
+        let d2 = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"two"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
+        let d3 = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"three"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         db.set_tag("a:latest", &d1).await.unwrap();
         db.set_tag("b:latest", &d2).await.unwrap();
         db.set_tag("c:latest", &d3).await.unwrap();
@@ -319,7 +354,12 @@ mod tests {
     #[tokio::test]
     async fn delete_tag_returns_true_then_false() {
         let (_dir, db) = db();
-        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"toremove").into());
+        let d = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"toremove"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         db.set_tag("foo:latest", &d).await.unwrap();
         assert!(db.delete_tag("foo:latest").await.unwrap());
         assert_eq!(db.resolve_tag("foo:latest").await.unwrap(), None);
@@ -329,7 +369,12 @@ mod tests {
     #[tokio::test]
     async fn persists_across_drop_and_reopen() {
         let dir = tempfile::TempDir::new().unwrap();
-        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"persistent").into());
+        let d = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"persistent"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         {
             let db = FilesystemTagDb::open(dir.path()).unwrap();
             db.set_tag("persist:tag", &d).await.unwrap();
@@ -349,8 +394,18 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db = std::sync::Arc::new(FilesystemTagDb::open(dir.path()).unwrap());
 
-        let d1 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"data-one").into());
-        let d2 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"data-two").into());
+        let d1 = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"data-one"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
+        let d2 = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"data-two"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
 
         let h1 = {
             let db = std::sync::Arc::clone(&db);
@@ -376,7 +431,12 @@ mod tests {
     async fn index_json_schema_is_oci_compliant() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = FilesystemTagDb::open(dir.path()).unwrap();
-        let d = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"oci-shape-check").into());
+        let d = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"oci-shape-check"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         db.set_tag("registry.example/app:v1", &d).await.unwrap();
 
         let index_path = dir.path().join("index.json");
@@ -408,8 +468,18 @@ mod tests {
     #[tokio::test]
     async fn setting_same_tag_twice_overwrites() {
         let (_dir, db) = db();
-        let d1 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"v1").into());
-        let d2 = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"v2").into());
+        let d1 = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"v1"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
+        let d2 = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"v2"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         db.set_tag("x:latest", &d1).await.unwrap();
         db.set_tag("x:latest", &d2).await.unwrap();
         assert_eq!(db.resolve_tag("x:latest").await.unwrap(), Some(d2));

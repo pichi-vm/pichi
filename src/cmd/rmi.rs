@@ -32,7 +32,8 @@ use std::collections::HashSet;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use conglobate::artifact::{Digest, Reference};
+use oci_spec::distribution::Reference;
+use oci_spec::image::Digest;
 use pichi_storage::{
     BlobSidecarExt, CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry,
 };
@@ -125,7 +126,7 @@ async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
         // ignoring sidecar absence).
         let mut deleted = 0usize;
         for d in &to_delete {
-            let blob_path = blob_store.blob_path(d);
+            let blob_path = blob_store.blob_path(d)?;
             let existed = blob_path.exists();
             blob_path.unlink_with_sidecars()
                 .await

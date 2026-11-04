@@ -3,7 +3,7 @@
 
 //! Cache lifetime follows OCI indexes, including shared and partially cached images.
 
-use conglobate::artifact::Digest;
+use oci_spec::image::Digest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -67,7 +67,9 @@ impl Fixture {
     }
 
     async fn put(store: &FilesystemBlobStore, bytes: &[u8]) -> Digest {
-        let digest = Digest::Sha256(Sha256::digest(bytes).into());
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+            .parse::<Digest>()
+            .expect("SHA-256 digest");
         store.put_blob(&digest, bytes).await.unwrap();
         digest
     }
@@ -177,7 +179,7 @@ async fn corrupt_live_metadata_stops_collection_before_any_deletion() {
         } else {
             &fixture.manifest
         };
-        std::fs::write(fixture.store.blob_path(digest), b"{}").unwrap();
+        std::fs::write(fixture.store.blob_path(digest).unwrap(), b"{}").unwrap();
         let orphan = Fixture::put(&fixture.store, b"unreferenced").await;
         for args in [["system", "prune"], ["rmi", "registry.example/image:one"]] {
             let output = fixture.run(&args);
@@ -220,37 +222,66 @@ async fn inconsistent_index_descriptors_abort_collection() {
 
 #[tokio::test]
 async fn index_export_and_import_preserve_original_bytes() {
-    let fixture = Fixture::new().await;
-    let tag = "registry.example/image:one";
-    let index = fixture.index(tag, false).await;
-    let bytes = fixture.store.get_blob(&index).await.unwrap();
-    let layout = fixture.directory.path().join("export");
-    let output = fixture.run(&["save", tag, "-o", layout.to_str().unwrap()]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        std::fs::read(layout.join("blobs/sha256").join(index.hex())).unwrap(),
-        bytes
-    );
-    let destination = TempDir::new().unwrap();
-    let output = Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
-        .env("XDG_DATA_HOME", destination.path())
-        .args(["load", layout.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let store = FilesystemBlobStore::new(destination.path().join("pichi/storage"));
-    let tags = FilesystemTagDb::open(destination.path().join("pichi/storage")).unwrap();
-    assert_eq!(tags.resolve_tag(tag).await.unwrap(), Some(index.clone()));
-    assert_eq!(store.get_blob(&index).await.unwrap(), bytes);
-    assert!(store.blob_exists(&fixture.layer).await);
+    for null_media_type in [false, true] {
+        let mut fixture = Fixture::new().await;
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fixture.store.get_blob(&fixture.manifest).await.unwrap())
+                .unwrap();
+        if null_media_type {
+            manifest["mediaType"] = serde_json::Value::Null;
+        } else {
+            manifest.as_object_mut().unwrap().remove("mediaType");
+        }
+        manifest["subject"] = manifest["config"].clone();
+        manifest["config"]["urls"] = json!(["https://example.org/config"]);
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        fixture.manifest = Fixture::put(&fixture.store, &manifest_bytes).await;
+        let tag = "registry.example/image:one";
+        let index = fixture.index(tag, false).await;
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fixture.store.get_blob(&index).await.unwrap()).unwrap();
+        if null_media_type {
+            value["mediaType"] = serde_json::Value::Null;
+        } else {
+            value.as_object_mut().unwrap().remove("mediaType");
+        }
+        value["manifests"][0]["platform"]["os.version"] = "ecosystem-version".into();
+        value["manifests"][0]["annotations"] = json!({"org.example.note": "retained"});
+        let bytes = serde_json::to_vec_pretty(&value).unwrap();
+        let index = Fixture::put(&fixture.store, &bytes).await;
+        fixture.tags.set_tag(tag, &index).await.unwrap();
+        let layout = fixture.directory.path().join("export");
+        let output = fixture.run(&["save", tag, "-o", layout.to_str().unwrap()]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read(layout.join("blobs/sha256").join(index.digest())).unwrap(),
+            bytes
+        );
+        let destination = TempDir::new().unwrap();
+        let output = Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
+            .env("XDG_DATA_HOME", destination.path())
+            .args(["load", layout.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let store = FilesystemBlobStore::new(destination.path().join("pichi/storage"));
+        let tags = FilesystemTagDb::open(destination.path().join("pichi/storage")).unwrap();
+        assert_eq!(tags.resolve_tag(tag).await.unwrap(), Some(index.clone()));
+        assert_eq!(store.get_blob(&index).await.unwrap(), bytes);
+        assert_eq!(
+            store.get_blob(&fixture.manifest).await.unwrap(),
+            manifest_bytes
+        );
+        assert!(store.blob_exists(&fixture.layer).await);
+    }
 }
 
 #[tokio::test]
@@ -384,7 +415,9 @@ async fn manifest_create_rejects_ambiguous_or_invalid_sources_before_writing() {
                 value["manifests"][0]["mediaType"] =
                     json!("application/vnd.oci.image.index.v1+json")
             }
-            "digest" => std::fs::write(fixture.store.blob_path(&fixture.manifest), b"{}").unwrap(),
+            "digest" => {
+                std::fs::write(fixture.store.blob_path(&fixture.manifest).unwrap(), b"{}").unwrap();
+            }
             _ => unreachable!(),
         }
         let index = Fixture::put(&fixture.store, &serde_json::to_vec(&value).unwrap()).await;
@@ -412,7 +445,7 @@ async fn cached_index_requires_the_selected_platform() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_file(fixture.store.blob_path(&fixture.manifest)).unwrap();
+    std::fs::remove_file(fixture.store.blob_path(&fixture.manifest).unwrap()).unwrap();
     let output = fixture.run(&["pull", "--pull=never", tag]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("ref not in cache"));

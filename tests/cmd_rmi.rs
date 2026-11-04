@@ -6,10 +6,7 @@
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
-use conglobate::artifact::{
-    ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
-    ScuteDescriptor,
-};
+use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
@@ -37,31 +34,60 @@ async fn insert_manifest(
     graphroot: &std::path::Path,
     tag: &str,
     salt_seed: &str,
-) -> (conglobate::artifact::Digest, conglobate::artifact::Digest) {
+) -> (oci_spec::image::Digest, oci_spec::image::Digest) {
     let scute_digest = format!("sha256:{:0<64}", salt_seed);
-    let m = Manifest {
-        schema_version: 2,
-        media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-        config: ConfigDescriptor::canonical(),
-        layers: vec![Layer::Scute(ScuteDescriptor {
-            digest: scute_digest.clone(),
-            size: 1024,
-            annotations: ScuteAnnotations {
-                data_blocks: 1u64.try_into().unwrap(),
-                salt: format!("{:0<8}", salt_seed),
-            },
-        })],
-        annotations: chain_annotations(),
-    };
+    let m = oci_spec::image::ImageManifestBuilder::default()
+        .schema_version(2u32)
+        .media_type("application/vnd.oci.image.manifest.v1+json")
+        .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+        .config(
+            oci_spec::image::DescriptorBuilder::default()
+                .media_type(oci_spec::image::MediaType::EmptyJSON)
+                .digest(
+                    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                        .parse::<oci_spec::image::Digest>()
+                        .expect("empty config digest"),
+                )
+                .size(2u64)
+                .data("e30=")
+                .build()
+                .expect("empty config descriptor"),
+        )
+        .layers(vec![{
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                1024u64,
+                scute_digest
+                    .clone()
+                    .parse::<oci_spec::image::Digest>()
+                    .expect("layer digest"),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: 1u64.try_into().unwrap(),
+                    salt: format!("{:0<8}", salt_seed),
+                },
+            )));
+            descriptor
+        }])
+        .annotations(
+            (chain_annotations())
+                .into_iter()
+                .collect::<std::collections::HashMap<String, String>>(),
+        )
+        .build()
+        .expect("manifest fields are set");
     let mbytes = serde_json::to_vec(&m).unwrap();
-    let mdigest = conglobate::artifact::Digest::Sha256(
-        <sha2::Sha256 as sha2::Digest>::digest(&mbytes).into(),
-    );
+    let mdigest = format!(
+        "sha256:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&mbytes))
+    )
+    .parse::<oci_spec::image::Digest>()
+    .expect("SHA-256 digest");
     let bs = FilesystemBlobStore::new(graphroot);
     bs.put_blob(&mdigest, &mbytes).await.unwrap();
     // Insert a fake scute blob too so `delete_blob` actually finds something.
-    let parsed_scute: conglobate::artifact::Digest = scute_digest.parse().unwrap();
+    let parsed_scute: oci_spec::image::Digest = scute_digest.parse().unwrap();
     bs.put_blob(&parsed_scute, b"fake-scute-bytes")
         .await
         .unwrap();
@@ -377,7 +403,7 @@ async fn rmi_tolerates_source_blob_without_sidecars() {
 
     // Sanity check: NO sidecars exist for the fixture-inserted blobs.
     let bs = FilesystemBlobStore::new(&g);
-    let scute_path = bs.blob_path(&sdigest);
+    let scute_path = bs.blob_path(&sdigest).unwrap();
     assert!(
         !scute_path.with_extension("verity").exists(),
         "fixture must NOT have a .verity sidecar (legacy shape)"

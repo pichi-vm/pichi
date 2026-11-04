@@ -10,7 +10,9 @@ workspace = true
 
 [dependencies]
 conglobate.workspace = true
+oci-spec.workspace = true
 sha2.workspace = true
+hex.workspace = true
 bytes = { workspace = true }
 thiserror = { workspace = true }
 

@@ -21,7 +21,7 @@ use minijinja::Environment;
 use serde::Serialize;
 
 use super::cache::ImageStore as _;
-use conglobate::artifact::Layer;
+
 use pichi_storage::{CacheLayout, FilesystemBlobStore, FilesystemTagDb, TagDb, TagEntry};
 
 use crate::cli::ImagesArgs;
@@ -127,14 +127,28 @@ impl Row {
         let (bootable, scute_count, size) = manifest
             .as_ref()
             .map(|m| {
-                let bootable = m.layers.iter().any(|l| matches!(l, Layer::Pmi(_)));
+                let bootable = m.layers().iter().any(|l| {
+                    matches!(
+                        l.media_type().as_ref(),
+                        conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+                    )
+                });
                 let scute_count = m
-                    .layers
+                    .layers()
                     .iter()
-                    .filter(|l| !matches!(l, Layer::Pmi(_)))
+                    .filter(|l| {
+                        !matches!(
+                            l.media_type().as_ref(),
+                            conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+                        )
+                    })
                     .count();
                 // Sum of all layer sizes (per D-16). Excludes inline empty config + manifest.
-                let size: u64 = m.layers.iter().map(Layer::size).sum();
+                let size: u64 = m
+                    .layers()
+                    .iter()
+                    .map(oci_spec::image::Descriptor::size)
+                    .sum();
                 (bootable, scute_count, size)
             })
             .unwrap_or((false, 0, 0));
@@ -143,12 +157,16 @@ impl Row {
 
         let created_dt = manifest
             .as_ref()
-            .and_then(|m| m.annotations.get("org.opencontainers.image.created"))
+            .and_then(|m| {
+                m.annotations()
+                    .as_ref()
+                    .and_then(|a| a.get("org.opencontainers.image.created"))
+            })
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&Utc))
             .or_else(|| {
                 // Fallback: manifest blob mtime (per D-15).
-                std::fs::metadata(layout.blob_path(&entry.digest))
+                std::fs::metadata(layout.blob_path(&entry.digest).ok()?)
                     .and_then(|m| m.modified())
                     .ok()
                     .map(DateTime::<Utc>::from)

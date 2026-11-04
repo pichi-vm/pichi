@@ -1,19 +1,19 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Builds the typed `Manifest` for a base scute (one cow, no PMI)
+//! Builds the typed `ImageManifest` for a base scute (one cow, no PMI)
 //! per Phase 42's typed schema and Phase 42 D-06 locked chain annotations.
 //!
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
 
-use conglobate::artifact::{
-    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
-    ScuteDescriptor,
-};
+use conglobate::artifact::ManifestExt as _;
+use conglobate::artifact::{MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations};
+use oci_spec::image::Digest;
+use oci_spec::image::ImageManifest;
 
-/// Build a `Manifest` for a base carapace import (one Scute, no PMI).
+/// Build a `ImageManifest` for a base carapace import (one Scute, no PMI).
 ///
 /// `pichi import` produces base carapaces only; the bootable appliance form
 /// (Scute + PMI + boot configuration) is assembled later by `pichi import pmi`, which appends the
@@ -32,7 +32,7 @@ use conglobate::artifact::{
 /// - Config descriptor: the canonical OCI empty config (base carapaces carry
 ///   no launch contract; `pichi import pmi` sets one if given a `--config`).
 ///
-/// Calls `Manifest::validate()` defensively to catch any drift in
+/// Calls `ImageManifest::validate()` defensively to catch any drift in
 /// our own builder against Phase 42 D-07 validation rules. Returns the
 /// validated manifest ready for `to_bytes()` + `BlobStore::put_blob`.
 pub(super) trait BaseManifest {
@@ -43,10 +43,10 @@ pub(super) trait BaseManifest {
         root: &[u8; 32],
         created_rfc3339: &str,
         extra: &BTreeMap<String, String>,
-    ) -> Result<Manifest>;
+    ) -> Result<ImageManifest>;
 }
 
-impl BaseManifest for Manifest {
+impl BaseManifest for ImageManifest {
     fn base(
         cow_digest: &Digest,
         cow_size: u64,
@@ -54,7 +54,7 @@ impl BaseManifest for Manifest {
         root: &[u8; 32],
         created_rfc3339: &str,
         extra: &BTreeMap<String, String>,
-    ) -> Result<Manifest> {
+    ) -> Result<ImageManifest> {
         // Caller-supplied provenance annotations go in first; the structural
         // `verity.*` keys below then overwrite (they can't be spoofed via `extra`),
         // and `created` is filled only if the caller didn't supply one.
@@ -84,23 +84,46 @@ impl BaseManifest for Manifest {
             .entry("org.opencontainers.image.created".to_string())
             .or_insert_with(|| created_rfc3339.to_string());
 
-        let layers = vec![Layer::Scute(ScuteDescriptor {
-            digest: cow_digest.to_string(),
-            size: cow_size,
-            annotations: ScuteAnnotations {
-                data_blocks: cow_size.div_ceil(4096).try_into().context("empty COW")?,
-                salt: hex::encode(full_salt),
-            },
-        })];
+        let layers = vec![{
+            let mut descriptor = oci_spec::image::Descriptor::new(
+                conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1.into(),
+                cow_size,
+                cow_digest.clone(),
+            );
+            descriptor.set_annotations(Some(std::collections::HashMap::<String, String>::from(
+                ScuteAnnotations {
+                    data_blocks: cow_size.div_ceil(4096).try_into().context("empty COW")?,
+                    salt: hex::encode(full_salt),
+                },
+            )));
+            descriptor
+        }];
 
-        let manifest = Manifest {
-            schema_version: 2,
-            media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-            config: ConfigDescriptor::canonical(),
-            layers,
-            annotations,
-        };
+        let manifest = oci_spec::image::ImageManifestBuilder::default()
+            .schema_version(2u32)
+            .media_type(oci_spec::image::MediaType::ImageManifest)
+            .artifact_type(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+            .config(
+                oci_spec::image::DescriptorBuilder::default()
+                    .media_type(oci_spec::image::MediaType::EmptyJSON)
+                    .digest(
+                        "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                            .parse::<oci_spec::image::Digest>()
+                            .expect("empty config digest"),
+                    )
+                    .size(2u64)
+                    .data("e30=")
+                    .build()
+                    .expect("empty config descriptor"),
+            )
+            .layers(layers)
+            .annotations(
+                (annotations)
+                    .into_iter()
+                    .collect::<std::collections::HashMap<String, String>>(),
+            )
+            .build()
+            .expect("manifest fields are set");
 
         manifest
             .validate()
@@ -118,9 +141,14 @@ mod tests {
     /// chain annotations carry the Phase 42 D-06 locked values.
     #[test]
     fn manifest_has_locked_chain_annotations() {
-        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
+        let cow_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let salt = vec![0u8; 32];
-        let m = Manifest::base(
+        let m = ImageManifest::base(
             &cow_digest,
             16384,
             &salt,
@@ -130,31 +158,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            m.annotations
-                .get("dev.pichi.carapace.verity.algo")
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get("dev.pichi.carapace.verity.algo"))
                 .map(String::as_str),
             Some("sha256")
         );
         assert_eq!(
-            m.annotations
-                .get("dev.pichi.carapace.verity.data-block-size")
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get("dev.pichi.carapace.verity.data-block-size"))
                 .map(String::as_str),
             Some("4096")
         );
         assert_eq!(
-            m.annotations
-                .get("dev.pichi.carapace.verity.hash-block-size")
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get("dev.pichi.carapace.verity.hash-block-size"))
                 .map(String::as_str),
             Some("4096")
         );
         assert_eq!(
-            m.annotations
-                .get("org.opencontainers.image.created")
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get("org.opencontainers.image.created"))
                 .map(String::as_str),
             Some("2026-05-07T12:00:00Z")
         );
         assert_eq!(
-            m.annotations.get("dev.pichi.carapace.verity.hash"),
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get("dev.pichi.carapace.verity.hash")),
             Some(&"ab".repeat(32))
         );
     }
@@ -164,9 +198,14 @@ mod tests {
     /// of zeros for a default-flag import).
     #[test]
     fn bottom_scute_salt_is_zero_prefix() {
-        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
+        let cow_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let salt = vec![0u8; 32]; // Existing layers may have no suffix.
-        let m = Manifest::base(
+        let m = ImageManifest::base(
             &cow_digest,
             16384,
             &salt,
@@ -175,12 +214,18 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        let Layer::Scute(scute) = &m.layers[0] else {
-            panic!("expected scute layer");
-        };
-        assert_eq!(scute.annotations.data_blocks.get(), 4);
+        let scute = &m.layers()[0];
         assert_eq!(
-            scute.annotations.salt,
+            conglobate::artifact::ScuteAnnotations::try_from(scute)
+                .unwrap()
+                .data_blocks
+                .get(),
+            4
+        );
+        assert_eq!(
+            conglobate::artifact::ScuteAnnotations::try_from(scute)
+                .unwrap()
+                .salt,
             "0".repeat(64),
             "salt annotation = 32 zero bytes hex-encoded = 64 hex zeros"
         );
@@ -189,10 +234,15 @@ mod tests {
     /// Preserve the producer's full salt, including its random suffix.
     #[test]
     fn preserves_full_salt() {
-        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
+        let cow_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let mut salt = vec![0u8; 32];
         salt.extend_from_slice(&[0xAB; 32]);
-        let m = Manifest::base(
+        let m = ImageManifest::base(
             &cow_digest,
             16384,
             &salt,
@@ -201,21 +251,26 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        let Layer::Scute(scute) = &m.layers[0] else {
-            panic!("expected scute layer");
-        };
+        let scute = &m.layers()[0];
         assert_eq!(
-            scute.annotations.salt,
+            conglobate::artifact::ScuteAnnotations::try_from(scute)
+                .unwrap()
+                .salt,
             format!("{}{}", "0".repeat(64), "ab".repeat(32))
         );
     }
 
-    /// Manifest passes `validate()` (Phase 42 D-07 rules).
+    /// ImageManifest passes `validate()` (Phase 42 D-07 rules).
     #[test]
     fn build_passes_validate() {
-        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
+        let cow_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let salt = vec![0u8; 32];
-        let m = Manifest::base(
+        let m = ImageManifest::base(
             &cow_digest,
             16384,
             &salt,
@@ -234,9 +289,14 @@ mod tests {
     /// by `pichi import pmi`).
     #[test]
     fn build_is_carapace_only() {
-        let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
+        let cow_digest = format!(
+            "sha256:{}",
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+        )
+        .parse::<Digest>()
+        .expect("SHA-256 digest");
         let salt = vec![0u8; 32];
-        let m = Manifest::base(
+        let m = ImageManifest::base(
             &cow_digest,
             16384,
             &salt,
@@ -245,13 +305,22 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        assert_eq!(m.layers.len(), 1, "expected exactly 1 layer (Scute)");
-        assert!(matches!(m.layers[0], Layer::Scute(_)), "layer[0] is Scute");
+        assert_eq!(m.layers().len(), 1, "expected exactly 1 layer (Scute)");
         assert!(
-            !m.layers.iter().any(|l| matches!(l, Layer::Pmi(_))),
+            m.layers()[0].media_type().as_ref() == conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1,
+            "layer[0] is Scute"
+        );
+        assert!(
+            !m.layers().iter().any(|l| matches!(
+                l.media_type().as_ref(),
+                conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1
+            )),
             "base carapace carries no PMI layer"
         );
-        assert!(m.config.is_empty(), "base carapace uses the empty config");
+        assert!(
+            m.config().media_type() == &oci_spec::image::MediaType::EmptyJSON,
+            "base carapace uses the empty config"
+        );
     }
 
     /// Caller annotations merge in, but structural verity keys can't be spoofed
@@ -275,8 +344,13 @@ mod tests {
             "dev.pichi.carapace.verity.hash".to_string(),
             "cd".repeat(32),
         );
-        let m = Manifest::base(
-            &Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into()),
+        let m = ImageManifest::base(
+            &format!(
+                "sha256:{}",
+                hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef"))
+            )
+            .parse::<Digest>()
+            .expect("SHA-256 digest"),
             16384,
             &[0u8; 32],
             &[0xab; 32],
@@ -286,25 +360,32 @@ mod tests {
         .unwrap();
         // provenance carried verbatim
         assert_eq!(
-            m.annotations
-                .get("org.opencontainers.image.source")
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get("org.opencontainers.image.source"))
                 .unwrap(),
             "https://example/repo"
         );
         // caller-supplied created wins over the stamped timestamp
         assert_eq!(
-            m.annotations
-                .get("org.opencontainers.image.created")
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get("org.opencontainers.image.created"))
                 .unwrap(),
             "2020-01-01T00:00:00Z"
         );
         // structural verity key cannot be overridden by a caller annotation
         assert_eq!(
-            m.annotations.get("dev.pichi.carapace.verity.algo").unwrap(),
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get("dev.pichi.carapace.verity.algo"))
+                .unwrap(),
             "sha256"
         );
         assert_eq!(
-            m.annotations.get("dev.pichi.carapace.verity.hash"),
+            m.annotations()
+                .as_ref()
+                .and_then(|a| a.get("dev.pichi.carapace.verity.hash")),
             Some(&"ab".repeat(32))
         );
     }
