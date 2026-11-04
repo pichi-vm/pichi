@@ -92,6 +92,13 @@ fn staged_images_create_extend_and_compose() {
     assert_eq!(base.layers("scute").len(), 1);
     assert!(base.bytes("pmi").is_none());
     assert!(base.boot_config().is_none());
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(base.layer_path(&base.manifest["config"])).unwrap())
+            .unwrap();
+    assert_eq!(
+        config,
+        serde_json::json!({"version":1,"requirements":{"cpus":{"recommended":2},"memory":{"required":1024,"recommended":2048}}})
+    );
     let root = disk::Disk::from(&base).verify(&builds.directory.join("base-gpt.raw"));
     fs::write(
         builds.directory.join("root-sectors.json"),
@@ -121,6 +128,16 @@ fn staged_images_create_extend_and_compose() {
             .contains(&format!("corium.root = \"{}\";", base.root()))
     );
     matrix.assert_boot("bootable", &bootable, &["base root"]);
+    let undersized = common::pichi(
+        &builds.cache,
+        &[],
+        &["run", "qualification.local/bootable:1", "--memory", "512"],
+    );
+    assert!(!undersized.status.success());
+    assert!(
+        String::from_utf8_lossy(&undersized.stderr)
+            .contains("below the image's required minimum (1024)")
+    );
 
     let extended = builds.build(
         "extended",
