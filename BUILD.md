@@ -33,7 +33,12 @@ command reads the working-tree plan through shared `conglobate::plan` types
 and maintains its lock on the host. It uses `--plan` and `--lock` relative to
 DIR, defaults to refreshing images with `--pull=always`, and supports the
 other existing pull policies. It needs neither Git nor a Conglobate process
-or appliance. Commit the plan and generated lock together before building.
+or appliance. It locks only ordinary inputs in the selected dependency graph.
+`use: !bootstrap localhost/fedora` selects a local tool carapace without a
+lock entry; a fully qualified remote name is also allowed. Only bootstrap
+tools may use localhost names. With no ordinary inputs, update creates no new
+lock and clears obsolete entries from an existing lock. Commit the plan and
+any required lock together before building.
 
 ---
 
@@ -140,14 +145,18 @@ contract is:
 | `dev.pichi.build.commit` | Required: full resolved Git commit, `sha1:<hex>` or `sha256:<hex>` |
 | `dev.pichi.build.context` | Required: path in that commit; `.` selects the root |
 | `dev.pichi.build.plan` | Required: plan path relative to the context |
-| `dev.pichi.build.lock` | Required: lock path relative to the context |
+| `dev.pichi.build.lock` | Present when consumed: lock path relative to the context |
+| `dev.pichi.build.bootstrapped` | `"true"` when the selected build uses a bootstrap tool |
 | `dev.pichi.build.location` | Optional: repository provenance / locator hint |
 
 The guest resolves the requested `ref` to the annotated commit. Location
 is a locator, not an authenticated identity; omit it when absent and do
 not include embedded credentials. The commit and selected paths bind the
 plan and lock bytes; there are no separate tree or object-format keys or
-plan/lock content-digest annotations.
+plan/lock content-digest annotations. The bootstrap marker describes this
+build's direct inputs, not inherited ancestry. It appears only on the manifest,
+never on a layer. Raw import does not add it. A bootstrap-only build ignores
+an unused lock, including a stale or malformed one.
 
 Conglobate emits only the OCI layout (`oci-layout`, `index.json`, and
 `blobs/`). The host rejects `build.yaml`, `inventory.cbor`, and loose disk
@@ -259,9 +268,11 @@ The registry index and manifest retain their original bytes and descriptors.
 
 Run and build use the same file selection and pass prepared data and verity
 files to Dillo's GPT backend. A build attaches only the appliance root. Source
-images are available through the read-only cache. If preparation is missing,
-Pichi recreates it from the retained blob through the same bounded path. Incorrect prepared extents fail
-before Dillo starts. Dillo never receives compressed COW bytes.
+images are available through the read-only cache, prepared by import, pull or
+load and verified by Conglobate before execution. For the image being launched,
+Pichi recreates missing preparation from the retained blob through the same
+bounded path. Incorrect prepared extents fail before Dillo starts. Dillo never
+receives compressed COW bytes.
 
 Pichi constructs verity from the prepared data and full manifest salt using
 SHA-256, format 1/hash type 1, 4,096-byte data/hash blocks, and a zero UUID.
@@ -307,12 +318,16 @@ the import.
 
 ### Locked build inputs
 
-The host reads the lock named by `-l`/`--lock` (default `pichi.lock`
-under `--context`) for image reference keys and index digest pins. Inputs may
-contain roots, boot components or both. Prepare any scutes in the cache without
-attaching source images as VM disks; component-only inputs need no root. The
-lock does not select or prepend layers during output import. Plan parse of
-`pichi.yaml` stays on the guest (§2.2). Shape:
+Conglobate reads the committed lock named by `-l`/`--lock` (default
+`pichi.lock` under `--context`) only when the selected graph contains ordinary
+image inputs. It resolves their index digest pins independently of local tags.
+Bootstrap tool references resolve from one captured local cache index instead;
+all image resolution stays local. Inputs may contain roots, boot components
+or both. Import, pull and load prepare source scutes before publishing cache
+references; build exposes that cache read-only without attaching source images
+as VM disks. Component-only inputs need no root. Neither the working-tree lock
+nor input layer lists control output import. Plan and lock parsing stay on the
+guest (§2.2). Lock shape:
 
 ```yaml
 version: 1
@@ -326,9 +341,9 @@ from the committed lock. `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a rebuilt
 OCI appliance layout for cross-project qualification; otherwise the smoke
 uses the shipping default. Staged plans require an appliance built with the
 matching Conglobate engine; `--build-image` selects it explicitly. The default image is
-`ghcr.io/pichi-vm/conglobate@sha256:66c89000f137e04d2cef6e68b78e3817a113876f7d7651fd266aa01768d3c878`.
+`ghcr.io/pichi-vm/conglobate@sha256:278ca85b9c06639592db961ee1c8e78827a768f452838f2d03e683b5f8cf7095`.
 This amd64/arm64 index is built from Conglobate revision
-`2f26a83441049c800b2a55aaa0d686da6e33a5f7` and uses the staged plan, GPT
+`f63474a47bc94316fcf662493d0cf8f7036777d0` and uses the staged plan, GPT
 root, embedded-DTB PMI and native bootconfig contracts described here.
 The appliance and library revision in `Cargo.toml` both require `version: 1`
 in plans and the flat digest lock shown above.
@@ -425,8 +440,9 @@ the payload type. The response array must have exactly two elements.
 resolves `ref` against the `repo` virtiofs Git object store, then resolves the
 selected paths in that committed tree. Context resolution must stay inside
 the repository, and plan/lock resolution inside the selected context, even
-through symlinks and parent components. Pichi uses capability-relative opens
-for its host-side lock read so context and lock symlinks cannot escape.
+through symlinks and parent components. The host forwards the lock path even
+when no lock is required; the guest decides whether to consume it from the
+committed plan.
 
 The command types live in `pichi_launch`; plans, locks and remote
 references live in `conglobate::plan`. These array envelopes replace the old map

@@ -82,6 +82,7 @@ impl Matrix {
 #[test]
 fn staged_images_create_extend_and_compose() {
     let builds = Builds::new("staged-images-");
+    builds.cli(&["tag", "qualification.local/tools:1", "localhost/tools"]);
     let host = builds.directory.join("host.txt");
     fs::write(&host, "host context\n").unwrap();
     let base = builds.build(
@@ -90,6 +91,16 @@ fn staged_images_create_extend_and_compose() {
         &[("host.txt", &host)],
     );
     assert_eq!(base.layers("scute").len(), 1);
+    assert!(!builds.directory.join("base/pichi.lock").exists());
+    assert_eq!(
+        base.manifest["annotations"]["dev.pichi.build.bootstrapped"],
+        "true"
+    );
+    assert!(
+        base.manifest["annotations"]
+            .get("dev.pichi.build.lock")
+            .is_none()
+    );
     assert!(base.bytes("pmi").is_none());
     assert!(base.boot_config().is_none());
     let config: serde_json::Value =
@@ -115,6 +126,11 @@ fn staged_images_create_extend_and_compose() {
         "bootable",
         include_str!("staged_images/firmware.yaml"),
         &firmware,
+    );
+    assert!(
+        bootable.manifest["annotations"]
+            .get("dev.pichi.build.bootstrapped")
+            .is_none()
     );
     assert_eq!(
         bootable.layers("scute"),
@@ -411,6 +427,35 @@ image: target
                 .success()
         );
     }
+
+    let recursive = "qualification.local/bootstrap:1";
+    builds.cli(&["tag", "qualification.local/base:1", recursive]);
+    let before = common::tag_digest(&builds.cache, recursive);
+    let failed = builds.capture(
+        "failed-bootstrap",
+        r#"
+version: 1
+stages:
+  root:
+    use: !bootstrap qualification.local/bootstrap:1
+    format: {size: 64MiB}
+    steps: [exec: {command: 'exit 23'}]
+image: root
+"#,
+        &[],
+    );
+    fs::write(failed.join("pichi.lock"), "unused working-tree lock").unwrap();
+    assert!(!builds.execute(&failed, recursive));
+    assert!(
+        fs::read_to_string(failed.join("build.log"))
+            .unwrap()
+            .contains("command exited with exit status: 23")
+    );
+    assert_eq!(common::tag_digest(&builds.cache, recursive), before);
+    assert_eq!(
+        fs::read_to_string(failed.join("pichi.lock")).unwrap(),
+        "unused working-tree lock"
+    );
 
     for (name, yaml) in [
         ("unknown-stage", "version: 1\nimage: missing\n"),
