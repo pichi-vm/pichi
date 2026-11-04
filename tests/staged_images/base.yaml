@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 version: 1
+requirements:
+  cpus: {recommended: 2}
+  memory: {required: 1024, recommended: 2048}
 stages:
   rootfs:
     use: qualification.local/tools:1
