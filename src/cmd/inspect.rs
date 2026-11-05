@@ -177,6 +177,7 @@ impl InspectArgs {
         match &self.format {
             None => println!("{}", serde_json::to_string_pretty(value)?),
             Some(t) if t == "json" => println!("{}", serde_json::to_string_pretty(value)?),
+            Some(t) if t == "layers" => self.emit_layers(&serde_json::to_value(value)?)?,
             Some(template_in) => {
                 let template = normalize_template_syntax(template_in);
                 let env = Environment::new();
@@ -190,6 +191,41 @@ impl InspectArgs {
                 );
             }
         }
+        Ok(())
+    }
+
+    fn emit_layers(&self, document: &Value) -> Result<()> {
+        let layers = document
+            .pointer("/manifest/layers")
+            .and_then(Value::as_array)
+            .context("platform manifest is not cached; pull the platform image first")?;
+        println!("Layers · {}\n", self.reference);
+        println!("  {:>2}  {:<18} {:>12}  DIGEST", "#", "LAYER", "SIZE");
+        for (index, layer) in layers.iter().enumerate() {
+            let media_type = layer["mediaType"]
+                .as_str()
+                .context("layer has no media type")?;
+            let name = match media_type {
+                "application/vnd.pichi.scute.v1" => "Filesystem",
+                "application/vnd.pichi.pmi.v1" => "Boot payload",
+                "application/vnd.pichi.bootconfig.v1+zstd" => "Boot configuration",
+                "application/vnd.pichi.dtb.v1" => "Device tree",
+                other => other,
+            };
+            let size = layer["size"].as_u64().context("layer has no size")?;
+            let digest: String = layer["digest"]
+                .as_str()
+                .context("layer has no digest")?
+                .chars()
+                .take(19)
+                .collect();
+            println!(
+                "  {:>2}  {name:<18} {:>12}  {digest}",
+                index + 1,
+                humansize::format_size(size, humansize::BINARY)
+            );
+        }
+        println!("\nDigests abbreviated; use --format json for full values.");
         Ok(())
     }
 }

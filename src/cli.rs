@@ -59,8 +59,8 @@ pub struct InspectArgs {
     /// Image reference: `image:tag`, `image@sha256:...`, full registry path,
     /// or dockerhub shorthand (LOCAL-05).
     pub reference: String,
-    /// Output format: `json` (default, pretty-printed) or a minijinja (Jinja2)
-    /// template. Dotted annotation keys use subscripts, e.g.
+    /// Output format: `json` (default), `layers` (readable table), or a
+    /// minijinja (Jinja2) template. Dotted annotation keys use subscripts, e.g.
     /// `{{ manifest.annotations["dev.pichi.carapace.verity.algo"] }}`.
     #[arg(long)]
     pub format: Option<String>,
