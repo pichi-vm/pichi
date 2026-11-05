@@ -209,6 +209,20 @@ async fn carapace_scutes_manifest(
             Digest::Sha256(root).to_string(),
         );
     }
+    for (key, default) in [
+        ("dev.pichi.carapace.verity.data-block-size", 4096),
+        ("dev.pichi.carapace.verity.hash-block-size", 4096),
+        ("dev.pichi.carapace.verity.version", 1),
+        ("dev.pichi.carapace.verity.hash-type", 1),
+    ] {
+        if manifest
+            .annotations
+            .get(key)
+            .is_some_and(|value| value.parse::<u32>() == Ok(default))
+        {
+            manifest.annotations.remove(key);
+        }
+    }
     Ok(manifest)
 }
 

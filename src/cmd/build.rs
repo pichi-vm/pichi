@@ -231,10 +231,10 @@ pub(crate) fn build_dillo_args(
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
 /// Conglobate appliance pinned by content digest.
-/// Built from 39b8706055dd79f00195e256efb4b2536d586b00 for amd64 and arm64.
+/// Built from 64952a01dfadfd419a00184832d9c21646efccec for amd64 and arm64.
 /// It consumes versioned staged plans and boots its GPT root with native bootconfig.
 /// Official-image smoke verifies guest output, poweroff, and host import.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:2239264c3281d53beedabdbfe8b3c587ac8ff8f2e87d4642e192f943f6cd5c45";
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:a3b7f71f87bc4ed2ae29902f8c2801858ec8ad06d87ccdea834317d3ac3f6328";
 
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
@@ -631,7 +631,7 @@ mod tests {
         let canon = canonicalize_reference(&pinned);
         assert_eq!(
             canon.as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:2239264c3281d53beedabdbfe8b3c587ac8ff8f2e87d4642e192f943f6cd5c45"
+            "ghcr.io/pichi-vm/conglobate@sha256:a3b7f71f87bc4ed2ae29902f8c2801858ec8ad06d87ccdea834317d3ac3f6328"
         );
         let parsed: Reference = canon.parse().unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
@@ -640,7 +640,7 @@ mod tests {
             ReferenceKind::Digest(d) => {
                 assert_eq!(
                     d.to_string(),
-                    "sha256:2239264c3281d53beedabdbfe8b3c587ac8ff8f2e87d4642e192f943f6cd5c45"
+                    "sha256:a3b7f71f87bc4ed2ae29902f8c2801858ec8ad06d87ccdea834317d3ac3f6328"
                 );
             }
             ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),
