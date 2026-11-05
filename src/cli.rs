@@ -341,6 +341,14 @@ pub struct UpdateArgs {
 /// Args for `pichi run <ref>` — boot an artifact (auto-pulling if not cached).
 #[derive(Debug, ClapArgs)]
 pub struct RunArgs {
+    /// Forward stdin; a host terminal uses raw mode and Ctrl-P Ctrl-Q detaches.
+    #[arg(long, short = 'i')]
+    pub interactive: bool,
+
+    /// Start independently and print the workload ID.
+    #[arg(long, short = 'd')]
+    pub detach: bool,
+
     /// Image reference to boot (`image:tag` or `image@sha256:...`).
     pub reference: String,
     /// Number of vCPUs. Overrides config; falls back to dillo's default.
@@ -349,6 +357,21 @@ pub struct RunArgs {
     /// Guest memory in MiB. Overrides config; falls back to dillo's default.
     #[arg(long)]
     pub memory: Option<u32>,
+}
+
+/// Attach to an existing workload's live console.
+#[derive(Debug, ClapArgs)]
+pub struct AttachArgs {
+    pub id: uuid::Uuid,
+    /// Forward stdin; a host terminal uses raw mode and Ctrl-P Ctrl-Q detaches.
+    #[arg(long, short = 'i')]
+    pub interactive: bool,
+}
+
+/// Select a workload by its durable ID.
+#[derive(Debug, ClapArgs)]
+pub struct WorkloadArgs {
+    pub id: uuid::Uuid,
 }
 
 /// Validate annotation arguments before dispatching the import.

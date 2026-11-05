@@ -33,3 +33,4 @@ pub mod update;
 #[cfg(test)]
 mod test_support;
 mod verity;
+pub mod workload;

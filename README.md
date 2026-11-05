@@ -6,7 +6,8 @@ ecosystem: it manages VM images as OCI artifacts and boots them.
 `pichi` owns image management — importing, pulling, pushing, and inspecting
 artifacts in a local content-addressed cache — and delegates the actual VM
 launch to the [`dillo`](https://github.com/pichi-vm/dillo) VMM. `pichi run`
-derives the guest's device set from the cached artifact, then `exec()`s dillo.
+derives the guest's device set from the cached artifact, then launches dillo
+through the separate [`madrillo`](https://github.com/pichi-vm/madrillo) monitor.
 
 ## The artifact model
 
@@ -33,7 +34,10 @@ is still a valid image — a base others derive from.
 | `pichi inspect` | Inspect a cached image and its platform manifest |
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
-| `pichi run` | Boot a cached artifact (prepares the environment, execs dillo) |
+| `pichi run` | Boot an artifact under madrillo; `-d` prints a durable workload ID, `-i` forwards stdin |
+| `pichi attach` | Attach to live console output; `-i` also acquires input |
+| `pichi wait` | Wait for a workload ID and print its native exit status |
+| `pichi ps` | List retained workload IDs and running/exited/unknown state |
 | `pichi update` | Update a working-tree plan’s image lock |
 | `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |
 | `pichi system` | System-level inspection and maintenance |
@@ -101,3 +105,22 @@ git submodule update --init --recursive
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+
+Madrillo integration is under development on this branch. Set `PICHI_MADRILLO`
+to its executable (otherwise a sibling executable or PATH is used), and use a
+dillo build supporting `--exit-on-stdin-close`. Foreground run prints its ID on
+stderr; detached run prints it on stdout. Host terminals use raw input with
+`-i`; Ctrl-P Ctrl-Q detaches. Piped input remains binary. Input EOF releases
+ownership while madrillo keeps dillo's liveness pipe open. Attachment is live
+only; completed workloads retain their result and configured CRI console log.
+Missing results remain unknown and retain image pins. `rmi` may remove a tag
+without deleting images still needed by such workloads.
+
+Build integration, stop/log presentation, native Windows/macOS caller testing,
+and the full signal/resize contract are not complete yet. Current external
+termination signals end the foreground attachment; they are not proxied to
+dillo. Workload state lives beside the canonical image cache, in a directory
+whose name appends `.workloads` (for example `storage.workloads`). This keeps
+console data outside the build guest's cache mount. No full conformance pass
+is claimed.

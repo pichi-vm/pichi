@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `pichi run <ref>` — boot an artifact by exec'ing the `dillo` launcher,
+//! `pichi run <ref>` — boot an artifact through madrillo and dillo,
 //! auto-pulling it first if it isn't cached (docker/podman `--pull=missing`).
 //!
 //! pichi *derives* the boot-critical device set from the image manifest; it
@@ -17,14 +17,12 @@
 //! PARTUUIDs (`sha256(concat(partuuids))[..20]`/`[..16]`), which is exactly
 //! the carapace formula, so pichi omits them and lets dillo derive.
 //!
-//! The assembled invocation is handed to `dillo` via `exec()` (process
-//! replacement on Unix; spawn + wait + exit-code propagation elsewhere).
+//! Madrillo retains the console and supervises dillo independently of pichi.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result};
 
@@ -36,6 +34,7 @@ use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
 use crate::cmd::layer::ScuteFiles;
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 use crate::cmd::requirements;
+use crate::cmd::workload::{Running, record::Records};
 use crate::config::Config;
 
 /// GPT type GUID for scute COW partitions (carapace spec §"GPT Deployment
@@ -45,7 +44,7 @@ const SCUTE_COW_TYPEGUID: &str = "11dd804a-e1bf-4ab3-98c1-f9f48ceedbf1";
 const SCUTE_VERITY_TYPEGUID: &str = "40bb9571-2972-4547-b580-6a8cb13fd7d1";
 
 /// `pichi run <ref>` entry point.
-pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
+pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
     let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
@@ -59,34 +58,54 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
     if !image_cached(&canonical, &db, &blob_store).await? {
         auto_pull(&target_ref, config).await?;
     }
-    let (_, manifest) = resolve_manifest(&canonical, &db, &blob_store).await?;
+    // Serialize resolution, device preparation and durable pin publication
+    // with image deletion; launch only after the metadata lock is released.
+    let (record, dillo_args) = layout
+        .with_index_lock(|| async {
+            let (digest, manifest) = resolve_manifest(&canonical, &db, &blob_store).await?;
 
-    // Architecture-mismatch fail-closed check (accept if absent).
-    manifest.check_architecture()?;
+            // Architecture-mismatch fail-closed check (accept if absent).
+            manifest.check_architecture()?;
 
-    // Derive the dillo argv from the manifest + runtime resources, applying
-    // the artifact's requirements.yaml floors (BUILD.md §7) when present.
-    let reqs = requirements::load_requirements(&manifest, &blob_store).await?;
-    let cpus = requirements::resolve_sized(
-        args.cpus.or(config.run.cpus),
-        reqs.as_ref().and_then(Requirements::cpus_required),
-        reqs.as_ref().and_then(Requirements::cpus_recommended),
-        "cpus",
-    )?;
-    let memory = requirements::resolve_sized(
-        args.memory.or(config.run.memory_mib),
-        reqs.as_ref().and_then(Requirements::memory_required_mib),
-        reqs.as_ref().and_then(Requirements::memory_recommended_mib),
-        "memory (MiB)",
-    )?;
-    // One user-mode NIC per declared interface (BUILD.md §7); the guest brings
-    // them up. v1 wires user-net only and does not yet act on ingress/slot.
-    let interfaces = reqs.as_ref().map_or(0, |r| r.interfaces.len());
-    let dillo_args = build_dillo_args(&manifest, &blob_store, cpus, memory, interfaces).await?;
+            // Derive the dillo argv from the manifest + runtime resources, applying
+            // the artifact's requirements.yaml floors (BUILD.md §7) when present.
+            let reqs = requirements::load_requirements(&manifest, &blob_store).await?;
+            let cpus = requirements::resolve_sized(
+                args.cpus.or(config.run.cpus),
+                reqs.as_ref().and_then(Requirements::cpus_required),
+                reqs.as_ref().and_then(Requirements::cpus_recommended),
+                "cpus",
+            )?;
+            let memory = requirements::resolve_sized(
+                args.memory.or(config.run.memory_mib),
+                reqs.as_ref().and_then(Requirements::memory_required_mib),
+                reqs.as_ref().and_then(Requirements::memory_recommended_mib),
+                "memory (MiB)",
+            )?;
+            // One user-mode NIC per declared interface (BUILD.md §7); the guest brings
+            // them up. v1 wires user-net only and does not yet act on ingress/slot.
+            let interfaces = reqs.as_ref().map_or(0, |r| r.interfaces.len());
+            let dillo_args =
+                build_dillo_args(&manifest, &blob_store, cpus, memory, interfaces).await?;
 
-    // Locate dillo and hand off.
-    let dillo = find_dillo();
-    exec_dillo(&dillo, &dillo_args)
+            let record = Records::open(&layout.graphroot)?.reserve(vec![digest])?;
+            Ok((record, dillo_args))
+        })
+        .await?;
+    let arguments: Vec<OsString> = dillo_args.into_iter().map(OsString::from).collect();
+    let mut running = Running::start(
+        &record,
+        &arguments,
+        Vec::new(),
+        args.interactive && !args.detach,
+    )
+    .await?;
+    if args.detach {
+        println!("{}", record.id());
+        return Ok(0);
+    }
+    eprintln!("{}", record.id());
+    running.view(args.interactive).await
 }
 
 /// Fetch an artifact that isn't cached, mirroring `docker`/`podman run`'s
@@ -236,33 +255,6 @@ fn resolve_dillo(override_path: Option<OsString>, current_exe: Option<PathBuf>) 
         }
     }
     PathBuf::from(exe_name)
-}
-
-/// Hand the assembled invocation to `dillo`. On Unix this replaces the
-/// process image (clean signal/tty/exit-code semantics); elsewhere it spawns,
-/// waits, and propagates the child's exit code.
-fn exec_dillo(dillo: &Path, args: &[String]) -> Result<()> {
-    log::info!("exec dillo: {} {}", dillo.display(), args.join(" "));
-    let mut cmd = Command::new(dillo);
-    cmd.args(args);
-    if std::env::var_os("RUST_LOG").is_none() {
-        cmd.env("RUST_LOG", "warn");
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        // `exec` only returns if the replacement failed.
-        let err = cmd.exec();
-        Err(err).with_context(|| format!("failed to exec dillo at {}", dillo.display()))
-    }
-    #[cfg(not(unix))]
-    {
-        let status = cmd
-            .status()
-            .with_context(|| format!("failed to spawn dillo at {}", dillo.display()))?;
-        std::process::exit(status.code().unwrap_or(1));
-    }
 }
 
 /// Render a path as a CLI argument string (lossy is acceptable — blob paths

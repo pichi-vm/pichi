@@ -7,7 +7,7 @@
 //! This binary owns image management — pulling, pushing, importing, and
 //! inspecting OCI artifacts in the local content-addressed cache. Booting a
 //! VM is delegated to the separate `dillo` launcher: `pichi run` derives the
-//! device set from the cached artifact, then `exec()`s `dillo`.
+//! device set from the cached artifact, then launches it through madrillo.
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
@@ -63,12 +63,18 @@ enum Command {
     },
     /// Update the lock for a working-tree plan.
     Update(cli::UpdateArgs),
-    /// Boot a cached artifact by preparing the environment and exec'ing dillo.
+    /// Boot a cached artifact under madrillo supervision.
     Run(cli::RunArgs),
+    /// Attach to a workload's live console.
+    Attach(cli::AttachArgs),
+    /// Wait for a workload and print its exit status.
+    Wait(cli::WorkloadArgs),
+    /// List retained workloads, including unknown and completed workloads.
+    Ps,
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> anyhow::Result<NativeExit> {
     env_logger::init();
 
     let cli = Cli::parse();
@@ -102,6 +108,36 @@ async fn main() -> anyhow::Result<()> {
             cli::ManifestCmd::Push(args) => cmd::manifest::push(args, &config).await,
         },
         Command::Update(args) => cmd::update::run(args, &config).await,
-        Command::Run(args) => cmd::run::run(args, &config).await,
+        Command::Run(args) => return Ok(NativeExit(cmd::run::run(args, &config).await?)),
+        Command::Attach(args) => {
+            return Ok(NativeExit(
+                cmd::workload::Workload::open(args.id, &config)?
+                    .attach(args.interactive)
+                    .await?,
+            ));
+        }
+        Command::Wait(args) => {
+            println!(
+                "{}",
+                cmd::workload::Workload::open(args.id, &config)?
+                    .wait()
+                    .await?
+                    .code()?
+            );
+            Ok(())
+        }
+        Command::Ps => cmd::workload::Workload::list(&config).await,
+    }?;
+    Ok(NativeExit(0))
+}
+
+#[derive(Debug)]
+struct NativeExit(u32);
+
+impl std::process::Termination for NativeExit {
+    fn report(self) -> std::process::ExitCode {
+        // Preserve all Windows status bits; Unix applies its native low byte.
+        // The command and runtime have already dropped their resources here.
+        std::process::exit(self.0.cast_signed())
     }
 }

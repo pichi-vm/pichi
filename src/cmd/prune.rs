@@ -70,7 +70,9 @@ pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
             let all_tags = db.list_tags().await?;
 
             let still_referenced = blob_store
-                .reachable(all_tags.iter().map(|entry| entry.digest.clone()))
+                .reachable(all_tags.iter().map(|entry| entry.digest.clone()).chain(
+                    crate::cmd::workload::record::Records::pins_at(&layout.graphroot)?,
+                ))
                 .await?;
 
             let blob_dir = layout.graphroot.join("blobs").join("sha256");

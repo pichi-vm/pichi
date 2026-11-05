@@ -93,7 +93,9 @@ async fn rmi_one(input: &str, force: bool, layout: &CacheLayout) -> Result<()> {
 
         let still_referenced = blob_store.reachable(
             all_tags.iter().filter(|entry| entry.tag != target_key)
-                .map(|entry| entry.digest.clone()),
+                .map(|entry| entry.digest.clone()).chain(
+                    crate::cmd::workload::record::Records::pins_at(&layout.graphroot)?
+                ),
         ).await?;
         let candidates = blob_store.reachable([target_digest.clone()]).await?;
 
