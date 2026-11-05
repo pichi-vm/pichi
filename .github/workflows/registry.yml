@@ -19,8 +19,23 @@ jobs:
   # bit-identically by a strict, real-world implementation. Runs only on
   # push/dispatch: fork-PR GITHUB_TOKENs are read-only for packages.
   registry-ghcr:
-    name: registry round-trip (ghcr.io)
-    runs-on: ubuntu-24.04
+    name: ghcr.io / ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            os: ubuntu-24.04
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+          - name: windows-amd64
+            os: windows-2025
+          - name: macos-arm64
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      TEST_PACKAGE_PREFIX: pichi-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
     if: github.event_name != 'pull_request'
     permissions:
       contents: read
@@ -42,7 +57,7 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p "$RUNNER_TEMP/auth"
-          auth=$(printf '%s:%s' '${{ github.actor }}' "$GHCR_TOKEN" | base64 -w0)
+          auth=$(printf '%s:%s' '${{ github.actor }}' "$GHCR_TOKEN" | base64 | tr -d '\r\n')
           printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$auth" > "$RUNNER_TEMP/auth/auth.json"
 
       - name: Round-trip test (ghcr.io)
@@ -50,10 +65,12 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
           PICHI_TEST_REGISTRY: ghcr.io
-          PICHI_TEST_REPO_BASE: ghcr.io/${{ github.repository_owner }}/pichi-ci
+          PICHI_TEST_REPO_BASE: ghcr.io/${{ github.repository_owner }}/${{ env.TEST_PACKAGE_PREFIX }}
           REGISTRY_AUTH_FILE: ${{ runner.temp }}/auth/auth.json
         run: |
-          cargo test -p pichi --test cmd_pull_push_roundtrip
+          # Two cases publish to the same new package. Serialize its creation
+          # so GHCR grants the package permissions before the next client auths.
+          cargo test --locked -p pichi --test cmd_pull_push_roundtrip -- --test-threads=1
 
       - name: Delete test package (cleanup)
         if: always()
@@ -61,7 +78,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api -X DELETE \
-            "/orgs/${{ github.repository_owner }}/packages/container/pichi-ci%2Froundtrip" \
-            && echo "deleted pichi-ci/roundtrip" \
-            || echo "cleanup skipped (no package, or token lacks delete:packages)"
+          for package in roundtrip index-pin; do
+            gh api -X DELETE \
+              "orgs/${{ github.repository_owner }}/packages/container/$TEST_PACKAGE_PREFIX%2F$package" \
+              && echo "deleted $TEST_PACKAGE_PREFIX/$package" \
+              || echo "cleanup skipped (no package, or token lacks delete:packages)"
+          done
