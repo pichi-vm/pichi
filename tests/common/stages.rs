@@ -41,10 +41,6 @@ impl Builds {
     }
 
     pub fn new(name: &str) -> Self {
-        assert!(
-            super::kvm_available(),
-            "staged-image tests require usable /dev/kvm"
-        );
         let temporary = if let Some(parent) = std::env::var_os("PICHI_TEST_EVIDENCE") {
             fs::create_dir_all(&parent).unwrap();
             tempfile::Builder::new()
