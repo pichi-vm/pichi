@@ -341,9 +341,9 @@ from the committed lock. `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a rebuilt
 OCI appliance layout for cross-project qualification; otherwise the smoke
 uses the shipping default. Staged plans require an appliance built with the
 matching Conglobate engine; `--build-image` selects it explicitly. The default image is
-`ghcr.io/pichi-vm/conglobate@sha256:2239264c3281d53beedabdbfe8b3c587ac8ff8f2e87d4642e192f943f6cd5c45`.
+`ghcr.io/pichi-vm/conglobate@sha256:a3b7f71f87bc4ed2ae29902f8c2801858ec8ad06d87ccdea834317d3ac3f6328`.
 This amd64/arm64 index is built from Conglobate revision
-`39b8706055dd79f00195e256efb4b2536d586b00` and uses the staged plan, GPT
+`64952a01dfadfd419a00184832d9c21646efccec` and uses the staged plan, GPT
 root, embedded-DTB PMI and native bootconfig contracts described here.
 The default appliance and the library in `deps/conglobate` both require
 `version: 1` in plans and the flat digest lock shown above.
@@ -550,3 +550,9 @@ bare roots with an explicit `verity.algo=sha256`. Bare roots without that
 declaration, unsupported algorithms, and any separate algorithm declaration
 alongside a qualified root are rejected. Composition emits the qualified form.
 Boot configuration continues to carry the verified raw root bytes as hex.
+
+Verity reconstruction defaults are `data-block-size=4096`,
+`hash-block-size=4096`, `version=1` and `hash-type=1`. Producers omit
+parameters equal to these defaults. Consumers use defaults only when
+fields are absent and validate supplied overrides. Image composition
+preserves nondefault parameters; load enforces supported carapace geometry.

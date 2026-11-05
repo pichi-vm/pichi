@@ -186,6 +186,77 @@ async fn legacy_carapace_composition_emits_only_a_qualified_root() {
     );
 }
 
+#[tokio::test]
+async fn composition_omits_inherited_default_parameters() {
+    use conglobate::artifact::Digest;
+    use sha2::{Digest as _, Sha256};
+    let tmp = TempDir::new().unwrap();
+    let g = graphroot(&tmp);
+    let (raw, pmi, _) = fixtures(&tmp);
+    pichi(&tmp)
+        .args(["import", "raw", raw.to_str().unwrap(), "-t", "base:1"])
+        .assert()
+        .success();
+    let mut source = resolve_manifest(&g, "docker.io/library/base:1").await;
+    for (key, value) in [
+        ("data-block-size", "4096"),
+        ("hash-block-size", "4096"),
+        ("version", "1"),
+        ("hash-type", "1"),
+    ] {
+        source
+            .annotations
+            .insert(format!("dev.pichi.carapace.verity.{key}"), value.into());
+    }
+    let store = FilesystemBlobStore::new(&g);
+    let bytes = serde_json::to_vec(&source).unwrap();
+    let digest = Digest::Sha256(Sha256::digest(&bytes).into());
+    store.put_blob(&digest, &bytes).await.unwrap();
+    let db = FilesystemTagDb::open(&g).unwrap();
+    let original = db
+        .resolve_tag("docker.io/library/base:1")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut index: serde_json::Value =
+        serde_json::from_slice(&store.get_blob(&original).await.unwrap()).unwrap();
+    index["manifests"][0]["digest"] = digest.to_string().into();
+    index["manifests"][0]["size"] = bytes.len().into();
+    let index = serde_json::to_vec(&index).unwrap();
+    let digest = Digest::Sha256(Sha256::digest(&index).into());
+    store.put_blob(&digest, &index).await.unwrap();
+    db.set_tag("docker.io/library/explicit:1", &digest)
+        .await
+        .unwrap();
+    pichi(&tmp)
+        .args([
+            "import",
+            "pmi",
+            pmi.to_str().unwrap(),
+            "--carapace",
+            "explicit:1",
+            "-t",
+            "app:1",
+        ])
+        .assert()
+        .success();
+    let app = resolve_manifest(&g, "docker.io/library/app:1").await;
+    assert_eq!(
+        app.carapace_root().unwrap(),
+        source.carapace_root().unwrap()
+    );
+    for key in ["data-block-size", "hash-block-size", "version", "hash-type"] {
+        assert!(
+            !app.annotations
+                .contains_key(&format!("dev.pichi.carapace.verity.{key}"))
+        );
+    }
+    assert_eq!(
+        resolve_manifest(&g, "docker.io/library/explicit:1").await,
+        source
+    );
+}
+
 /// Kind 3: `import pmi` without `--carapace` produces a PMI-only bootable
 /// artifact — no scute layers, no carapace verity annotations.
 #[tokio::test]

@@ -11,9 +11,6 @@ use std::num::NonZero;
 use devmap_core::{BlockSize, Geometry};
 use devmap_verity::{Algorithm, Format as _, HashType, Header, Parameters, Salt};
 
-pub(crate) const VERITY_FORMAT_VERSION: u32 = 1;
-pub(crate) const VERITY_HASH_TYPE_NORMAL: u32 = 1;
-
 /// Parameters used when producing SHA-256 format-1 carapaces.
 #[derive(Debug, Clone)]
 pub(crate) struct VerityParams {
