@@ -260,6 +260,8 @@ impl Image {
         self.manifest["annotations"]["dev.pichi.carapace.verity.hash"]
             .as_str()
             .unwrap()
+            .strip_prefix("sha256:")
+            .unwrap()
     }
 
     pub fn boot_config(&self) -> Option<String> {

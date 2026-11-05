@@ -23,10 +23,9 @@ use conglobate::artifact::{
 ///   `dev.pichi.scute.verity.salt` annotation (hex-encoded full salt —
 ///   32-byte zero parent prefix followed by a 32-byte random suffix).
 /// - Top-level chain annotations per Phase 42 D-06:
-///   - `dev.pichi.carapace.verity.algo` = `"sha256"`
 ///   - `dev.pichi.carapace.verity.data-block-size` = `"4096"`
 ///   - `dev.pichi.carapace.verity.hash-block-size` = `"4096"`
-///   - `dev.pichi.carapace.verity.hash` commits the computed scute root.
+///   - `dev.pichi.carapace.verity.hash` = `sha256:<hex>` commits the scute root.
 ///     Caller annotations cannot override the commitment.
 /// - `org.opencontainers.image.created` = caller-supplied RFC 3339 string.
 /// - Config descriptor: the canonical OCI empty config (base carapaces carry
@@ -59,10 +58,7 @@ impl BaseManifest for Manifest {
         // `verity.*` keys below then overwrite (they can't be spoofed via `extra`),
         // and `created` is filled only if the caller didn't supply one.
         let mut annotations = extra.clone();
-        annotations.insert(
-            "dev.pichi.carapace.verity.algo".to_string(),
-            "sha256".to_string(),
-        );
+        annotations.remove("dev.pichi.carapace.verity.algo");
         annotations.insert(
             "dev.pichi.carapace.verity.data-block-size".to_string(),
             "4096".to_string(),
@@ -79,7 +75,10 @@ impl BaseManifest for Manifest {
             "dev.pichi.carapace.verity.hash-type".to_string(),
             crate::cmd::verity::VERITY_HASH_TYPE_NORMAL.to_string(),
         );
-        annotations.insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
+        annotations.insert(
+            "dev.pichi.carapace.verity.hash".into(),
+            Digest::Sha256(*root).to_string(),
+        );
         annotations
             .entry("org.opencontainers.image.created".to_string())
             .or_insert_with(|| created_rfc3339.to_string());
@@ -129,12 +128,7 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        assert_eq!(
-            m.annotations
-                .get("dev.pichi.carapace.verity.algo")
-                .map(String::as_str),
-            Some("sha256")
-        );
+        assert!(!m.annotations.contains_key("dev.pichi.carapace.verity.algo"));
         assert_eq!(
             m.annotations
                 .get("dev.pichi.carapace.verity.data-block-size")
@@ -155,7 +149,7 @@ mod tests {
         );
         assert_eq!(
             m.annotations.get("dev.pichi.carapace.verity.hash"),
-            Some(&"ab".repeat(32))
+            Some(&format!("sha256:{}", "ab".repeat(32)))
         );
     }
 
@@ -299,13 +293,10 @@ mod tests {
             "2020-01-01T00:00:00Z"
         );
         // structural verity key cannot be overridden by a caller annotation
-        assert_eq!(
-            m.annotations.get("dev.pichi.carapace.verity.algo").unwrap(),
-            "sha256"
-        );
+        assert!(!m.annotations.contains_key("dev.pichi.carapace.verity.algo"));
         assert_eq!(
             m.annotations.get("dev.pichi.carapace.verity.hash"),
-            Some(&"ab".repeat(32))
+            Some(&format!("sha256:{}", "ab".repeat(32)))
         );
     }
 }

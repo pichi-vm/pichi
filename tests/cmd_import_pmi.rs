@@ -109,7 +109,8 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
         .annotations
         .get("dev.pichi.carapace.verity.hash")
         .unwrap();
-    assert_eq!(root.len(), 64);
+    assert_eq!(root.len(), 71);
+    assert!(root.starts_with("sha256:"));
     assert_eq!(
         app.annotations.get("dev.pichi.carapace.verity.hash"),
         Some(root)

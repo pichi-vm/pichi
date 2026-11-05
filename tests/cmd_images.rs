@@ -15,14 +15,13 @@ use tempfile::TempDir;
 
 fn chain_annotations() -> BTreeMap<String, String> {
     [
-        ("dev.pichi.carapace.verity.algo", "sha256"),
         ("dev.pichi.carapace.verity.data-block-size", "4096"),
         ("dev.pichi.carapace.verity.hash-block-size", "4096"),
         ("dev.pichi.carapace.verity.version", "1"),
         ("dev.pichi.carapace.verity.hash-type", "1"),
         (
             "dev.pichi.carapace.verity.hash",
-            "1111111111111111111111111111111111111111111111111111111111111111",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         ),
         ("org.opencontainers.image.created", "2026-05-01T12:00:00Z"),
     ]

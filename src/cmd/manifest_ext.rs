@@ -113,9 +113,8 @@ impl ManifestExt for Manifest {
             bail!("unsupported verity header version");
         }
         // Carapace trust anchors and salt-chain prefixes are SHA-256 digests.
-        if annotation("dev.pichi.carapace.verity.algo")? != "sha256" {
-            bail!("unsupported carapace verity algorithm");
-        }
+        self.carapace_root()?
+            .ok_or_else(|| anyhow!("missing carapace root"))?;
         let params = VerityParams {
             data_block_size: annotation(ANN_DATA_BLOCK_SIZE)?.parse()?,
             hash_block_size: annotation(ANN_HASH_BLOCK_SIZE)?.parse()?,
