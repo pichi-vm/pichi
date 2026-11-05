@@ -67,6 +67,7 @@ image:
     inherit: ghcr.io/pichi-vm/fedora:43
     extend:
       kernel.selinux: "0"
+      kernel.systemd.log_level: "warning"
 
 requirements:
   cpus: { recommended: 2 }
