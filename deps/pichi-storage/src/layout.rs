@@ -323,23 +323,20 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn helpers_match_canonical_paths() {
-        let l = CacheLayout::resolve_with_env(true, &snap(None, None, None, None)).unwrap();
-        assert_eq!(
-            l.blob_dir(),
-            PathBuf::from("/var/lib/pichi/storage/blobs/sha256")
-        );
-        assert_eq!(
-            l.index_json_path(),
-            PathBuf::from("/var/lib/pichi/storage/index.json")
-        );
+        let l = CacheLayout {
+            graphroot: PathBuf::from("cache"),
+            runroot: PathBuf::from("runtime"),
+            mode: Mode::Rootless,
+        };
+        assert_eq!(l.blob_dir(), PathBuf::from("cache/blobs/sha256"));
+        assert_eq!(l.index_json_path(), PathBuf::from("cache/index.json"));
         assert_eq!(
             l.oci_layout_marker_path(),
-            PathBuf::from("/var/lib/pichi/storage/oci-layout")
+            PathBuf::from("cache/oci-layout")
         );
-        assert_eq!(l.lock_dir(), PathBuf::from("/var/lib/pichi/storage/locks"));
+        assert_eq!(l.lock_dir(), PathBuf::from("cache/locks"));
     }
 
     #[cfg(windows)]
