@@ -369,6 +369,9 @@ async fn boot_serve_and_wait(
 
     let mut cmd = tokio::process::Command::new(dillo);
     cmd.args(args);
+    if std::env::var_os("RUST_LOG").is_none() {
+        cmd.env("RUST_LOG", "warn");
+    }
     if let Some(log) = log {
         log.attach(&mut cmd)?;
     }
