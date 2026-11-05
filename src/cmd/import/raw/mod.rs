@@ -466,14 +466,13 @@ mod tests {
             assert_eq!(std::fs::read_dir(scratch).unwrap().count(), 0);
         }
     }
-    #[cfg(unix)]
     #[test]
     fn sparse_import_preserves_data_above_the_old_extent() {
+        use crate::test_support::SparseFile as _;
         use std::io::{Read, Seek, SeekFrom, Write};
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("large.raw");
-        let mut source = File::create(&path).unwrap();
-        source.set_len(65 * 1024 * 1024 * 1024).unwrap();
+        let mut source = path.create_sparse(65 * 1024 * 1024 * 1024);
         source
             .seek(SeekFrom::Start(64 * 1024 * 1024 * 1024 + 4096))
             .unwrap();

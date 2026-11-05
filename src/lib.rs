@@ -19,3 +19,6 @@ pub mod cli;
 pub mod cmd;
 pub mod config;
 pub mod system;
+
+#[cfg(test)]
+mod test_support;
