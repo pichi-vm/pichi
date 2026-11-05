@@ -64,7 +64,7 @@ jobs:
             zot_sha256: d8b29c9cd9d68f46a338a2ae0533991415148587703ec3bd0f909c22604f7bed
           - name: macos-arm64       # macOS arm64 - build + real HVF boot
             os: macos-arm64
-            runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
+            runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1-v2"]'
             guest_musl: aarch64-unknown-linux-musl
             zot_asset: zot-darwin-arm64-minimal
             zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
