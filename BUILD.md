@@ -61,7 +61,7 @@ Host steps, in order:
 1. Prepare an **empty** host output directory (RW).
 2. Prepare a **read-only** cache of pichi images / carapaces the build needs.
 3. Prepare the build-input payload (see §4) — do not push it yet.
-4. Launch **Conglobate's pichi image** via dillo with both rx and tx pipe
+4. Launch **the configured build appliance** via dillo with both rx and tx pipe
    ends on named console `dev.pichi.build` (bidirectional; not rx-only).
 5. After dillo starts, wait for the guest's build-input request on the
    port, then write the prepared response (hold-until-open / Linux discard).
@@ -162,12 +162,12 @@ Conglobate emits only the OCI layout (`oci-layout`, `index.json`, and
 `blobs/`). The host rejects `build.yaml`, `inventory.cbor`, and loose disk
 files beside it. Build identity is carried by the manifest annotations.
 
-### 2.6 Conglobate ships a pichi image
+### 2.6 The build appliance is a Pichi image
 
-The Conglobate **build appliance** (its build machine image) is a normal pichi image shipped from
-the Conglobate repository (bootstrap). Fedora and carapace similarly each
-ship a pichi image for their roles. `pichi build` launches that image the
-same way `pichi run` launches any other bootable artifact.
+[Pichi's build appliance](appliance/README.md) is a normal image built from
+Fedora. Its `pichi-build` program receives the build request and executes
+`conglobate build`. `pichi build` launches the configured appliance the same
+way `pichi run` launches any other bootable artifact.
 
 ### 2.7 Retired stories (must not return)
 
@@ -179,9 +179,9 @@ Do **not** document or reintroduce:
 - host packages OCI from scutes / manifests / virtiofs leftovers after the
   guest exits.
 
-Guest work, measurement, plan execution, and annotated OCI emission live
-in Conglobate (and its appliance wrapper). Pichi's job is the thin launch
-and import.
+Pichi's guest request handler passes inputs to Conglobate. Measurement, plan
+execution, and annotated OCI emission remain in Conglobate. Pichi's host
+command handles launch and import.
 
 ---
 
@@ -198,7 +198,7 @@ pichi (thin launcher)
   │  virtiofs: repo / cache / output
   │  named console dev.pichi.build (rx+tx pipes)
   ▼
-dillo  ──boots──►  Conglobate pichi image
+dillo  ──boots──►  configured build appliance
                       │  writes ["build", 1, null]
                       │     ◄── host success/failure CBOR
                       │  builds from /run/pichi/{repo,cache}
@@ -468,7 +468,7 @@ contract: updating the library/source pin alone does not update the guest.
 | --------- | ---- |
 | **pichi** (`pichi build`) | Thin launcher: dirs, build-port CBOR, dillo launch, import OCI on success |
 | **dillo** | VMM + virtiofs + named console wiring |
-| **Conglobate image** | Guest appliance: init/wrapper, invoke Conglobate, export annotated OCI, shut down |
+| **Pichi build appliance** | Guest init/request handler, invoke Conglobate, export annotated OCI, shut down |
 | **Conglobate binary / lib** | Plans, locks, build execution, OCI layout, image-manifest build annotations (see its DESIGN.md) |
 | **fedora / carapace images** | Each ships its own pichi image for bootstrap / base roles |
 
@@ -515,7 +515,7 @@ Plan and lock formats are Conglobate's, not redefined here.
 - Guest verifies inputs it consumes, runs the build, and emits an annotated
   OCI layout into the output mount.
 - Product integrity is guest-defined (image-manifest binding annotations
-  and future attestation in the Conglobate appliance design). Re-reading
+  and future appliance attestation). Re-reading
   mutable host paths as authoritative after an untrusted copy would break
   that binding — the successful layout the guest published is what the
   host imports.
