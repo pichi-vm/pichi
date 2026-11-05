@@ -100,14 +100,17 @@ pub fn kvm_available() -> bool {
         .is_ok()
 }
 
-/// Build a GPT disk containing a tiny ext4 root populated from `files`.
-pub fn make_root_disk(path: &Path, files: &[(&str, &str)]) {
+/// Build the tiny source root used by smoke and submodule tests. CI supplies
+/// the same ext4 bytes to every host; local Linux runs can generate them.
+pub fn make_root_disk(path: &Path) {
+    if let Some(filesystem) = std::env::var_os("PICHI_TEST_ROOT_FILESYSTEM") {
+        root_disk::RootDisk::write(Path::new(&filesystem), path);
+        return;
+    }
     let filesystem = path.with_extension("filesystem");
     let dir = path.with_extension("src");
     std::fs::create_dir_all(&dir).unwrap();
-    for (name, body) in files {
-        std::fs::write(dir.join(name), body).unwrap();
-    }
+    std::fs::write(dir.join("os-release"), "ID=fedora\nVERSION_ID=43\n").unwrap();
     let status = Command::new("mkfs.ext4")
         .args(["-q", "-F", "-b", "4096"])
         .arg("-d")
@@ -115,7 +118,7 @@ pub fn make_root_disk(path: &Path, files: &[(&str, &str)]) {
         .arg(&filesystem)
         .arg("16M")
         .status()
-        .expect("run mkfs.ext4");
+        .expect("run mkfs.ext4 or set PICHI_TEST_ROOT_FILESYSTEM to the CI fixture");
     assert!(status.success(), "mkfs.ext4 failed");
     root_disk::RootDisk::write(&filesystem, path);
 }
@@ -152,7 +155,7 @@ pub fn tag_digest(graphroot: &Path, reference: &str) -> String {
 /// Returns the index digest to record in the smoke repository's lock.
 pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) -> String {
     let src = tmp.join("qualification-fedora43.raw");
-    make_root_disk(&src, &[("os-release", "ID=fedora\nVERSION_ID=43\n")]);
+    make_root_disk(&src);
     assert_pichi_ok(
         "import smoke source carapace",
         &pichi(

@@ -363,6 +363,10 @@ package repositories. Boots use 2 GiB. Builds retain both the original and
 packed scute during compaction. Missing prerequisites fail the test. No host block
 devices or mounts are created by the harness.
 
+CI creates one tiny ext4 fixture on Linux and distributes the identical bytes
+through `PICHI_TEST_ROOT_FILESYSTEM` for the smoke and submodule tests. Local
+Linux runs can create it with `mkfs.ext4` when that variable is unset.
+
 Use a rebuilt appliance OCI layout, a static musl build of the pinned Arma,
 and a newly compiled static release Corium for qualification. Arma runs inside
 Fedora, so it must not depend on the host's dynamic loader. Corium's release
