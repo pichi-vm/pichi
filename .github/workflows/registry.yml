@@ -10,58 +10,9 @@ env:
   NIGHTLY: nightly-2026-07-06
 
 jobs:
-  # Real network import -> push -> rmi -> pull against an ephemeral zot
-  # registry. Exercises the registry-gated tests that skip in the platform
-  # matrix (PICHI_TEST_REGISTRY is unset there). Linux-only: needs a
-  # container runtime to host the registry. No KVM required.
-  registry-zot:
-    name: registry round-trip (zot)
-    runs-on: ubuntu-24.04
-    # Caller grants packages: write for the ghcr job. This job does not
-    # push, so keep the token at contents read.
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7.0.1
-
-      - name: Install toolchain
-        shell: bash
-        run: |
-          rustup toolchain install "$NIGHTLY" --profile minimal
-          rustup default "$NIGHTLY"
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Start zot
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/zot"
-          cat > "$RUNNER_TEMP/zot/config.json" <<'EOF'
-          {"storage":{"rootDirectory":"/var/lib/registry"},"http":{"address":"0.0.0.0","port":"5000"},"log":{"level":"warn"}}
-          EOF
-          docker run -d --name zot -p 5000:5000 \
-            -v "$RUNNER_TEMP/zot/config.json:/etc/zot/config.json:ro" \
-            ghcr.io/project-zot/zot-linux-amd64:latest serve /etc/zot/config.json
-          for _ in $(seq 1 30); do
-            curl -fsS http://localhost:5000/v2/ >/dev/null && break
-            sleep 1
-          done
-          curl -fsS http://localhost:5000/v2/ >/dev/null
-
-      - name: Round-trip tests (zot)
-        shell: bash
-        env:
-          CARGO_BUILD_RUSTFLAGS: "-D warnings"
-          PICHI_TEST_REGISTRY: localhost:5000
-          PICHI_TEST_REGISTRY_INSECURE: "1"
-        run: |
-          cargo test -p pichi --test cmd_pull --test cmd_push --test cmd_pull_push_roundtrip
-
-      - name: zot logs (on failure)
-        if: failure()
-        shell: bash
-        run: docker logs zot || true
-
+  # Every native platform also runs the complete workspace against a local
+  # Zot registry in platforms.yml. Keep this additional vendor compatibility
+  # check for the hosted registry's authentication and media-type handling.
   # Real network round-trip against ghcr.io, a major production registry.
   # Validates that pichi's custom OCI artifact format (vnd.pichi.* media
   # types, empty-config artifact, verity annotations) is accepted and served
