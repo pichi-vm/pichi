@@ -4,5 +4,5 @@ inlineHeader = """
 SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 SPDX-License-Identifier: Apache-2.0
 """
-includes = ["**/*.rs", "**/*.sh"]
+includes = ["**/*.rs", "**/*.sh", "appliance/image/pichi.yaml"]
 excludes = ["target/**", "deps/conglobate/**", "appliance/lsm/**"]

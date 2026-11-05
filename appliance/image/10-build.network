@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Match]
+Driver=virtio_net
+
+[Link]
+RequiredForOnline=routable
+RequiredFamilyForOnline=ipv4
+
+[Network]
+DHCP=ipv4
+IPv6AcceptRA=no
