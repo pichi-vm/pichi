@@ -10,13 +10,14 @@ outdir=$(cd "$1" && pwd)
 case "$outdir/" in
     "$root/"*) echo 'Output directory must be outside the source tree.' >&2; exit 2 ;;
 esac
+git -C "$root" submodule update --init --recursive
 version=$(dpkg-parsechangelog -l "$root/debian/changelog" -S Version)
 version=${version%-*}
 workdir=$(mktemp -d "$outdir/.pichi-source.XXXXXX")
 trap 'rm -rf "$workdir"' EXIT
 tree="$workdir/pichi-$version"
 mkdir -p "$tree"
-tar -C "$root" --exclude-vcs --exclude='./target' --exclude='./vendor' \
+tar -C "$root" --exclude-vcs --exclude='target' --exclude='vendor' \
     --exclude='./.pc' --exclude='./.codex' -cf - . |
     tar -C "$tree" -xf -
 cd "$tree"

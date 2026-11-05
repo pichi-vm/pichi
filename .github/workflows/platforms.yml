@@ -68,6 +68,8 @@ jobs:
     timeout-minutes: ${{ matrix.os == 'macos-arm64' && 30 || 360 }}
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
 
       - name: Install toolchain
         shell: bash
