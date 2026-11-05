@@ -178,10 +178,10 @@ impl Row {
 /// Split a canonical `Reference::Display` string into (repository, tag).
 /// Examples:
 ///   `docker.io/library/alpine:3` → (`docker.io/library/alpine`, `3`)
-///   `registry.io/foo@sha256:...` → (`registry.io/foo`, `<digest>`)
+///   `registry.io/foo@sha256:...` → (`registry.io/foo`, `<none>`)
 fn split_repo_tag(canonical: &str) -> (String, String) {
     if let Some(at) = canonical.rfind('@') {
-        return (canonical[..at].to_string(), canonical[at + 1..].to_string());
+        return (canonical[..at].to_string(), "<none>".to_string());
     }
     // Find last `:` that comes after the last `/` (avoid host:port).
     let last_slash = canonical.rfind('/').map_or(0, |p| p + 1);
@@ -331,10 +331,7 @@ mod tests {
         );
         assert_eq!(
             split_repo_tag("docker.io/library/alpine@sha256:abc"),
-            (
-                "docker.io/library/alpine".to_string(),
-                "sha256:abc".to_string()
-            )
+            ("docker.io/library/alpine".to_string(), "<none>".to_string())
         );
     }
 
