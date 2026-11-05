@@ -3,10 +3,7 @@
 
 //! Integration tests for `pichi run` (boot orchestration → exec dillo).
 //!
-//! Unix-only: the dillo stub is a shell script and the test exercises the
-//! `exec()` handoff path. The Windows spawn arm is covered by a cross-target
-//! `cargo check` and the `cmd::run` unit tests (which run on every OS).
-#![cfg(unix)]
+//! A native executable records the launcher arguments on every host.
 #![allow(clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
@@ -109,19 +106,27 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
     )
 }
 
-/// Write a stub `dillo` that appends each argv entry (one per line) to
-/// `record`, then exits 0. Returns the stub path for `PICHI_DILLO`.
-fn make_stub_dillo(dir: &Path, record: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
-    let stub = dir.join("dillo-stub");
-    let script = format!(
-        "#!/bin/sh\n: > '{rec}'\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> '{rec}'; done\n",
-        rec = record.display()
-    );
-    std::fs::write(&stub, script).unwrap();
-    let mut perms = std::fs::metadata(&stub).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&stub, perms).unwrap();
+/// Compile once, then copy the native stub beside each test's argument log.
+fn make_stub_dillo(dir: &Path) -> PathBuf {
+    static STUB: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    let compiled = STUB.get_or_init(|| {
+        let directory = TempDir::new().unwrap();
+        let output = std::process::Command::new("rustc")
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/dillo_stub.rs"))
+            .arg("-o")
+            .arg(
+                directory
+                    .path()
+                    .join(format!("dillo-stub{}", std::env::consts::EXE_SUFFIX)),
+            )
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "compile dillo stub: {output:?}");
+        directory
+    });
+    let name = format!("dillo-stub{}", std::env::consts::EXE_SUFFIX);
+    let stub = dir.join(&name);
+    std::fs::copy(compiled.path().join(name), &stub).unwrap();
     stub
 }
 
@@ -132,7 +137,7 @@ async fn run_execs_dillo_with_manifest_derived_devices() {
     let (pmi_path, cow_path) = populate_bootable(&g, "myapp:1").await;
 
     let record = tmp.path().join("argv.txt");
-    let stub = make_stub_dillo(tmp.path(), &record);
+    let stub = make_stub_dillo(tmp.path());
 
     Command::cargo_bin("pichi")
         .unwrap()
@@ -243,7 +248,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
 
             let destination = TempDir::new().unwrap();
             let record = destination.path().join("argv.txt");
-            let dillo = make_stub_dillo(destination.path(), &record);
+            let dillo = make_stub_dillo(destination.path());
             Command::cargo_bin("pichi")
                 .unwrap()
                 .env("XDG_DATA_HOME", destination.path())
@@ -347,7 +352,7 @@ async fn run_resolves_cached_index_references() {
                 canonical
             };
             let record = tmp.path().join("argv.txt");
-            let stub = make_stub_dillo(tmp.path(), &record);
+            let stub = make_stub_dillo(tmp.path());
             let assert = Command::cargo_bin("pichi")
                 .unwrap()
                 .env("XDG_DATA_HOME", tmp.path())
@@ -381,7 +386,7 @@ async fn run_forwards_cpus_and_memory() {
     let _ = populate_bootable(&g, "myapp:1").await;
 
     let record = tmp.path().join("argv.txt");
-    let stub = make_stub_dillo(tmp.path(), &record);
+    let stub = make_stub_dillo(tmp.path());
 
     Command::cargo_bin("pichi")
         .unwrap()
@@ -408,7 +413,7 @@ async fn run_missing_ref_auto_pulls() {
     let tmp = TempDir::new().unwrap();
     let _ = graphroot(&tmp);
     let record = tmp.path().join("argv.txt");
-    let stub = make_stub_dillo(tmp.path(), &record);
+    let stub = make_stub_dillo(tmp.path());
 
     // A cache miss triggers an auto-pull (docker/podman `--pull=missing`)
     // rather than a "pull first" error. Point at a closed local port so the
