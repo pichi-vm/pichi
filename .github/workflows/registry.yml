@@ -74,6 +74,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Isolate package creation and cleanup across runs and rerun attempts.
+    env:
+      GHCR_REPO_BASE: pichi-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -99,10 +102,11 @@ jobs:
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
           PICHI_TEST_REGISTRY: ghcr.io
-          PICHI_TEST_REPO_BASE: ghcr.io/${{ github.repository_owner }}/pichi-ci
+          PICHI_TEST_REPO_BASE: ghcr.io/${{ github.repository_owner }}/${{ env.GHCR_REPO_BASE }}
           REGISTRY_AUTH_FILE: ${{ runner.temp }}/auth/auth.json
         run: |
-          cargo test -p pichi --test cmd_pull_push_roundtrip
+          # Two tests create the roundtrip package; avoid concurrent first pushes.
+          cargo test -p pichi --test cmd_pull_push_roundtrip -- --test-threads=1
 
       - name: Delete test package (cleanup)
         if: always()
@@ -110,7 +114,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api -X DELETE \
-            "/orgs/${{ github.repository_owner }}/packages/container/pichi-ci%2Froundtrip" \
-            && echo "deleted pichi-ci/roundtrip" \
-            || echo "cleanup skipped (no package, or token lacks delete:packages)"
+          for package in roundtrip index-pin; do
+            gh api -X DELETE \
+              "/orgs/${{ github.repository_owner }}/packages/container/${GHCR_REPO_BASE}%2F${package}" \
+              && echo "deleted ${GHCR_REPO_BASE}/${package}" \
+              || echo "cleanup skipped (no package, or token lacks delete:packages)"
+          done
