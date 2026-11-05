@@ -92,7 +92,10 @@ jobs:
 
   ci:
     name: platforms
+    needs: appliance
     uses: ./.github/workflows/platforms.yml
+    with:
+      appliance-artifacts: true
     permissions:
       contents: read
 

@@ -2,6 +2,11 @@ name: platforms
 
 on:
   workflow_call:
+    inputs:
+      appliance-artifacts:
+        description: Test the appliance images built by this workflow run
+        type: boolean
+        default: false
   workflow_dispatch:
 
 permissions:
@@ -188,6 +193,18 @@ jobs:
           echo "PICHI_TEST_GUEST_ARMA=$RUNNER_TEMP/arma-guest/bin/arma" >> "$GITHUB_ENV"
           echo "PICHI_TEST_REPLACEMENT_CORIUM=$RUNNER_TEMP/corium-release/bin/corium" >> "$GITHUB_ENV"
           echo "PICHI_TEST_EVIDENCE=$RUNNER_TEMP/staged-image-evidence" >> "$GITHUB_ENV"
+
+      - name: Download the rebuilt appliance
+        if: inputs.appliance-artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: appliance-oci-${{ runner.arch == 'X64' && 'amd64' || 'arm64' }}
+          path: ${{ runner.temp }}/appliance-layout
+
+      - name: Use the rebuilt appliance for VM tests
+        if: inputs.appliance-artifacts
+        shell: bash
+        run: echo "PICHI_TEST_BUILD_IMAGE_LAYOUT=$RUNNER_TEMP/appliance-layout" >> "$GITHUB_ENV"
 
       # Require every acceptance suite to be present before running it. An OS
       # cfg gate must never turn a native VM job into a green zero-test run.
