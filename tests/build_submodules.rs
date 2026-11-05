@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Exercise committed submodule stores through the published build appliance
-//! (Conglobate's build machine image), using KVM (Linux's VM acceleration).
+//! (Conglobate's build machine image), using the native KVM, WHP, or HVF backend.
 //! Fixture Git operations allow local files only; no submodule can be fetched
 //! from the network. Four boots share the pulled image and tiny source disk.
 
-#![cfg(all(feature = "vm-tests", target_os = "linux", target_arch = "x86_64"))]
+#![cfg(feature = "vm-tests")]
 
 mod common;
 
@@ -14,10 +14,6 @@ use common::submodules::SubmoduleFixture;
 
 #[tokio::test]
 async fn pichi_build_checks_committed_submodule_stores() {
-    assert!(
-        common::kvm_available(),
-        "submodule input tests require usable /dev/kvm"
-    );
     let fixture = SubmoduleFixture::new().await;
     let source = fixture.source("source", "RECORDED_SUBMODULE_PAYLOAD");
     let recorded = source.git(&["rev-parse", "HEAD"]);

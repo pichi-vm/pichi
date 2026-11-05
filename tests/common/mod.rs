@@ -22,7 +22,6 @@ pub mod stages;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod submodules;
 
 pub const CORIUM_BIN: &str = env!("CARGO_BIN_FILE_CORIUM_corium");
@@ -58,6 +57,7 @@ pub fn build_image() -> &'static str {
 }
 
 pub fn prepare_build_image(graphroot: &Path) {
+    Hypervisor::prepare();
     if let Some(layout) = std::env::var_os("PICHI_TEST_BUILD_IMAGE_LAYOUT") {
         assert_pichi_ok(
             "load rebuilt appliance",
@@ -80,6 +80,42 @@ pub fn prepare_build_image(graphroot: &Path) {
     }
 }
 
+struct Hypervisor;
+
+impl Hypervisor {
+    fn prepare() {
+        #[cfg(target_os = "linux")]
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/kvm")
+            .expect("VM tests require usable /dev/kvm");
+
+        #[cfg(target_os = "macos")]
+        {
+            static SIGNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            SIGNED.get_or_init(|| {
+                let directory = tempfile::tempdir().unwrap();
+                let entitlements = directory.path().join("hypervisor.plist");
+                std::fs::write(
+                    &entitlements,
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
+"#,
+                )
+                .unwrap();
+                let output = Command::new("codesign")
+                    .args(["--force", "--sign", "-", "--entitlements"])
+                    .arg(&entitlements)
+                    .arg(DILLO_BIN)
+                    .output()
+                    .expect("codesign dillo for HVF");
+                assert!(output.status.success(), "codesign dillo: {output:?}");
+            });
+        }
+    }
+}
+
 /// Assert a `pichi` invocation succeeded, panicking with the labelled
 /// stdout+stderr otherwise.
 pub fn assert_pichi_ok(label: &str, out: &std::process::Output) {
@@ -90,15 +126,6 @@ pub fn assert_pichi_ok(label: &str, out: &std::process::Output) {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
-}
-
-/// Whether this host can run the boot lane (needs a usable `/dev/kvm`).
-pub fn kvm_available() -> bool {
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/kvm")
-        .is_ok()
 }
 
 /// Build the tiny source root used by smoke and submodule tests. CI supplies

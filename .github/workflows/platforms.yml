@@ -109,7 +109,12 @@ jobs:
         # Backend tests and boot fixtures may touch /dev/kvm during the plain
         # workspace test run, so access must be granted before it.
         if: runner.os == 'Linux'
-        run: ls -l /dev/kvm && sudo chmod 666 /dev/kvm || true
+        run: |
+          test -c /dev/kvm
+          if ! [ -r /dev/kvm ] || ! [ -w /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+          fi
+          test -r /dev/kvm && test -w /dev/kvm
 
       # `CARGO_BUILD_RUSTFLAGS: -D warnings` (set per cargo step below) makes the
       # build warning-clean-or-fail. It is the lowest-priority rustflags source,
@@ -194,18 +199,26 @@ jobs:
           echo "PICHI_TEST_REPLACEMENT_CORIUM=$RUNNER_TEMP/corium-release/bin/corium" >> "$GITHUB_ENV"
           echo "PICHI_TEST_EVIDENCE=$RUNNER_TEMP/staged-image-evidence" >> "$GITHUB_ENV"
 
-      # Real guest boot on every platform. dillo builds its per-OS backend
-      # (KVM on Linux, WHP on Windows, HVF on macOS) and boots an Alpine
-      # same-arch guest; the test asserts the guest's self-report.
+      # Require every acceptance suite to be present before running it. An OS
+      # cfg gate must never turn a native VM job into a green zero-test run.
+      # These suites build and boot Fedora images using KVM, WHP, or HVF.
       - name: Boot tests (KVM / WHP / HVF)
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
         run: |
-          cargo test -p pichi --features vm-tests -- --test-threads=1 --nocapture
+          vm_tests=(--locked -p pichi --features vm-tests --test build_boot --test build_submodules --test staged_images)
+          cargo test "${vm_tests[@]}" -- --list | tr -d '\r' | tee "$RUNNER_TEMP/vm-tests.txt"
+          for test in pichi_build_boots_official_image_to_poweroff pichi_build_checks_committed_submodule_stores staged_images_create_extend_and_compose; do
+            if ! grep -Fxq "$test: test" "$RUNNER_TEMP/vm-tests.txt"; then
+              echo "Missing native VM acceptance test: $test" >&2
+              exit 1
+            fi
+          done
+          cargo test "${vm_tests[@]}" --no-fail-fast -- --test-threads=1 --nocapture
 
       - name: Preserve staged-image evidence
-        if: always() && runner.os == 'Linux'
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: staged-image-evidence-${{ matrix.os }}

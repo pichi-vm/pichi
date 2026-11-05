@@ -11,16 +11,15 @@
 //! - thin-launcher wires: virtiofs repo/cache/output + `dev.pichi.build`;
 //! - complete guest OCI import and host verity rebuild.
 //!
-//! Gated on the `vm-tests` feature; skips if `/dev/kvm` is unavailable.
-//! x86_64 + KVM only.
+//! Gated on `vm-tests`; requires the native KVM, WHP, or HVF backend.
 //!
-#![cfg(all(feature = "vm-tests", target_os = "linux", target_arch = "x86_64"))]
+#![cfg(feature = "vm-tests")]
 
 mod common;
 
 use common::process::{ChildExt as _, CommandExt as _};
 use common::{
-    SMOKE_CONTEXT, SMOKE_LOCK, SMOKE_PLAN, SMOKE_SOURCE_REF, assert_pichi_ok, kvm_available, pichi,
+    SMOKE_CONTEXT, SMOKE_LOCK, SMOKE_PLAN, SMOKE_SOURCE_REF, assert_pichi_ok, pichi,
     prepare_build_image, prepare_smoke_repo, seed_smoke_source_carapace,
 };
 
@@ -29,10 +28,6 @@ const OFFICIAL_SMOKE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 
 #[tokio::test]
 async fn pichi_build_boots_official_image_to_poweroff() {
-    if !kvm_available() {
-        eprintln!("skip: no usable /dev/kvm");
-        return;
-    }
     let tmp = tempfile::TempDir::new().unwrap();
     let graphroot = tmp.path().join("graph");
     std::fs::create_dir_all(&graphroot).unwrap();
