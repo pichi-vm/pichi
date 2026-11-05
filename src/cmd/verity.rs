@@ -250,52 +250,43 @@ mod tests {
 
     #[test]
     fn matches_veritysetup_including_single_data_block() {
-        use std::{fs, process::Command};
-        if Command::new("veritysetup")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            eprintln!("veritysetup unavailable; skipping external compatibility check");
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        for blocks in [1, 2, 128, 129] {
+        use sha2::{Digest as _, Sha256};
+
+        // References from veritysetup 2.8.8, with data filled with 0x5a:
+        // veritysetup format --format=1 --hash=sha256 --data-block-size=4096
+        //   --hash-block-size=4096 --uuid=00000000-0000-0000-0000-000000000000
+        //   --salt=<64 zero hex digits> data hash
+        // Compare the root and SHA-256 of the entire hash file on every host,
+        // including hosts where veritysetup cannot run.
+        for (blocks, root, blob_sha256) in [
+            (
+                1,
+                "0ecd152e0678bd6a24c4b752f6e6064547175b143fbd7057a95267e12abf16c1",
+                "38369acb3def6df515ba26a2ca670baefd0b03e316ad8142333c8b8d347a9782",
+            ),
+            (
+                2,
+                "5d10312f31710534c00115205b2647cd4ef57fbcb1186095f4574094bbfc62fc",
+                "7c0c806e706eaa3fa5e9ea28b67edfafc60c2042d51f0a99c2e8711742426f01",
+            ),
+            (
+                128,
+                "7db6b588ccee2515a070c54f4c8199a4e8a043e2522937e7ee0c1e9a096fd059",
+                "552f3e199a58c0b0fbe4c622f9bfa379173fdf42d559d634762ff686268e59cb",
+            ),
+            (
+                129,
+                "8aed38a04074125290bdd43e524f6a37d2c5baaee8d2f67faab90bc985db361c",
+                "d9cca0200faf892bb169a733028c091d315572f673a5d593bae476bb1d5e76ee",
+            ),
+        ] {
             let data = vec![0x5a; blocks * 4096];
             let p = params();
             let output = p.compute(&data).unwrap();
-            let input = dir.path().join("data");
-            let reference = dir.path().join(format!("hash-{blocks}"));
-            fs::write(&input, &data).unwrap();
-            let result = Command::new("veritysetup")
-                .args([
-                    "format",
-                    "--format=1",
-                    "--hash=sha256",
-                    "--data-block-size=4096",
-                    "--hash-block-size=4096",
-                    "--uuid=00000000-0000-0000-0000-000000000000",
-                ])
-                .arg(format!("--salt={}", hex::encode(&p.salt)))
-                .arg(&input)
-                .arg(&reference)
-                .output()
-                .unwrap();
-            assert!(
-                result.status.success(),
-                "{}",
-                String::from_utf8_lossy(&result.stderr)
-            );
-            let stdout = String::from_utf8(result.stdout).unwrap();
-            let root = stdout
-                .lines()
-                .find_map(|l| l.strip_prefix("Root hash:"))
-                .unwrap()
-                .trim();
             assert_eq!(hex::encode(output.root_hash), root, "{blocks} data blocks");
             assert_eq!(
-                output.blob,
-                fs::read(reference).unwrap(),
+                hex::encode(Sha256::digest(&output.blob)),
+                blob_sha256,
                 "{blocks} data blocks"
             );
         }
