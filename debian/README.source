@@ -6,7 +6,8 @@ To prepare an unsigned source package from this checkout:
 
     debian/prepare-source /absolute/path/to/output
 
-Source preparation needs Cargo, Rust, dpkg-dev, patch, GNU tar, and xz.
+Source preparation needs Git, Cargo, Rust, dpkg-dev, patch, GNU tar, and xz.
+It initializes the pinned Conglobate submodule before copying the source.
 It may access the network to fetch the dependencies pinned in Cargo.lock.
 It works in a temporary copy, copies packaging/host-manifest.patch into
 debian/patches/, and applies that host-only manifest patch. The repository
