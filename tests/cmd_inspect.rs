@@ -98,6 +98,19 @@ async fn inspect_bare_manifest_returns_full_schema() {
         Some("sha256")
     );
     assert!(v.get("_pichi").is_none(), "no computed sidecar");
+    let annotations = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args(["inspect", "myapp:base", "--format", "annotations"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&annotations).unwrap(),
+        v["manifest"]["annotations"]
+    );
 }
 
 /// The dotted annotation key is reachable via `--format` using minijinja's
@@ -202,4 +215,18 @@ async fn inspect_image_index_lists_entries() {
     let pichi_entries: Vec<_> = entries.iter().filter(|e| e["is_pichi"] == true).collect();
     assert_eq!(pichi_entries.len(), 1);
     assert!(v["note"].as_str().unwrap().contains("pichi"));
+    let error = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args(["inspect", "registry.io/multi:1", "--format", "annotations"])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    assert!(
+        String::from_utf8(error)
+            .unwrap()
+            .contains("platform manifest is not cached")
+    );
 }

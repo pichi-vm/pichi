@@ -177,6 +177,13 @@ impl InspectArgs {
         match &self.format {
             None => println!("{}", serde_json::to_string_pretty(value)?),
             Some(t) if t == "json" => println!("{}", serde_json::to_string_pretty(value)?),
+            Some(t) if t == "annotations" => {
+                let document = serde_json::to_value(value)?;
+                let annotations = document
+                    .pointer("/manifest/annotations")
+                    .context("platform manifest is not cached; pull the platform image first")?;
+                println!("{}", serde_json::to_string_pretty(annotations)?);
+            }
             Some(template_in) => {
                 let template = normalize_template_syntax(template_in);
                 let env = Environment::new();
