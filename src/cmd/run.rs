@@ -245,6 +245,9 @@ fn exec_dillo(dillo: &Path, args: &[String]) -> Result<()> {
     log::info!("exec dillo: {} {}", dillo.display(), args.join(" "));
     let mut cmd = Command::new(dillo);
     cmd.args(args);
+    if std::env::var_os("RUST_LOG").is_none() {
+        cmd.env("RUST_LOG", "warn");
+    }
 
     #[cfg(unix)]
     {
