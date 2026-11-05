@@ -143,20 +143,37 @@ contract is:
 | Annotation | Value |
 | ---------- | ----- |
 | `dev.pichi.build.commit` | Required: full resolved Git commit, `sha1:<hex>` or `sha256:<hex>` |
-| `dev.pichi.build.context` | Required: path in that commit; `.` selects the root |
-| `dev.pichi.build.plan` | Required: plan path relative to the context |
-| `dev.pichi.build.lock` | Present when consumed: lock path relative to the context |
+| `dev.pichi.build.context` | Required: commitment to the context path in that commit |
+| `dev.pichi.build.plan` | Required: commitment to the context-relative plan path |
+| `dev.pichi.build.lock` | Present when consumed: commitment to the context-relative lock path |
 | `dev.pichi.build.bootstrapped` | `"true"` when the selected build uses a bootstrap tool |
 | `dev.pichi.build.location` | Optional: repository provenance / locator hint |
 
 The guest resolves the requested `ref` to the annotated commit. Location
 is a locator, not an authenticated identity; omit it when absent and do
-not include embedded credentials. The commit and selected paths bind the
+not include embedded credentials. The commit and selected path commitments bind the
 plan and lock bytes; there are no separate tree or object-format keys or
 plan/lock content-digest annotations. The bootstrap marker describes this
 build's direct inputs, not inherited ancestry. It appears only on the manifest,
 never on a layer. Raw import does not add it. A bootstrap-only build ignores
 an unused lock, including a stale or malformed one.
+
+Context, plan and lock values are `sha256:<hex>` commitments to the
+full annotation key, a NUL byte, the raw resolved context Git tree ID,
+another NUL byte, and the UTF-8 selector path. The context is repository-relative
+(`.` for the root); plan and lock are context-relative. The tree ID is not
+published. Knowing only the public commit ID does not allow guessing the
+commitments for common document names.
+
+The auditor obtains that commit using the optional location or out-of-band
+repository knowledge, enumerates candidate contexts and their resolved tree IDs,
+and matches the context commitment. Within that context they enumerate plan/lock
+paths, hash each with the respective key and same tree ID, and resolve matches
+using the builder's committed-context rules (including symlinks and submodules).
+This supports custom names and multiple contexts without a private path record.
+It commits distinct paths even when their content is identical. Someone who
+already knows the selected tree ID can test candidate names; this is a binding,
+not encryption or build attestation.
 
 Conglobate emits only the OCI layout (`oci-layout`, `index.json`, and
 `blobs/`). The host rejects `build.yaml`, `inventory.cbor`, and loose disk
