@@ -26,7 +26,7 @@ JSON
 launcher=()
 if [ -e /etc/NIXOS ]; then
   glibc=$(nix --extra-experimental-features 'nix-command flakes' build \
-    github:NixOS/nixpkgs/08d3a97586f6b6343b3b5e799980773629432610#glibc \
+    github:NixOS/nixpkgs/08d3a97586f6b6343b3b5e799980773629432610#glibc.out \
     --no-link --print-out-paths)
   launcher=("$glibc/lib/ld-linux-aarch64.so.1")
 fi
