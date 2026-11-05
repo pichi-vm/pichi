@@ -29,6 +29,52 @@ fn b64(s: &str) -> String {
 }
 
 #[tokio::test]
+async fn auth_reads_docker_config_from_native_home() {
+    const CHILD_HOME: &str = "PICHI_TEST_AUTH_HOME";
+    if let Some(home) = std::env::var_os(CHILD_HOME) {
+        let env = AuthEnv::from_process_env();
+        assert_eq!(env.home, Some(PathBuf::from(home)));
+        let auth = env.resolve("registry.example.com", None).await.unwrap();
+        assert_eq!(auth, RegistryAuth::Basic("alice".into(), "secret".into()));
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("native home");
+    let auth = b64("alice:secret");
+    write_at(
+        &home,
+        ".docker/config.json",
+        &format!(r#"{{"auths":{{"registry.example.com":{{"auth":"{auth}"}}}}}}"#),
+    );
+    // Isolate process environment changes from the other parallel tests.
+    // Windows must work with HOME absent and with a shell's unrelated HOME.
+    for wrong_home in 0..if cfg!(windows) { 2 } else { 1 } {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "auth_reads_docker_config_from_native_home",
+                "--nocapture",
+            ])
+            .env(CHILD_HOME, &home)
+            .env_remove("REGISTRY_AUTH_FILE")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_RUNTIME_DIR");
+        if cfg!(windows) {
+            child.env("USERPROFILE", &home).env_remove("HOME");
+            if wrong_home != 0 {
+                child.env("HOME", tmp.path().join("shell home"));
+            }
+        } else {
+            child.env("HOME", &home);
+        }
+        let output = child.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+}
+
+#[tokio::test]
 async fn auth_parses_basic_auth() {
     let tmp = TempDir::new().unwrap();
     let xdg = tmp.path().join("xdg-config");
