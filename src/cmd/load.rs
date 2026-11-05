@@ -1176,17 +1176,14 @@ pub(super) mod tests {
             assert!(external.exists());
         }
     }
-    #[cfg(unix)]
     #[test]
     fn scan_capacity_is_independent_of_the_old_image_limit() {
+        use crate::test_support::SparseFile as _;
         let dir = tempfile::tempdir().unwrap();
         let blobs = dir.path().join("blobs/sha256");
         std::fs::create_dir_all(&blobs).unwrap();
         let size = 65 * 1024 * 1024 * 1024;
-        File::create(blobs.join("ab".repeat(32)))
-            .unwrap()
-            .set_len(size)
-            .unwrap();
+        blobs.join("ab".repeat(32)).create_sparse(size);
         let root = Dir::open_ambient_dir(dir.path(), cap_std::ambient_authority()).unwrap();
         let mut files = BTreeMap::new();
         let mut total = 0;
