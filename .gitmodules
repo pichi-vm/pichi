@@ -1,3 +1,6 @@
 [submodule "deps/conglobate"]
 	path = deps/conglobate
 	url = https://github.com/pichi-vm/conglobate
+[submodule "appliance/lsm"]
+	path = appliance/lsm
+	url = https://github.com/pichi-vm/lsm.git

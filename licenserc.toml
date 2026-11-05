@@ -5,4 +5,4 @@ SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 SPDX-License-Identifier: Apache-2.0
 """
 includes = ["**/*.rs", "**/*.sh"]
-excludes = ["target/**", "deps/conglobate/**"]
+excludes = ["target/**", "deps/conglobate/**", "appliance/lsm/**"]
