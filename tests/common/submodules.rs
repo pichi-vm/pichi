@@ -26,12 +26,17 @@ impl GitRepo {
         std::fs::create_dir_all(&path).unwrap();
         let repo = Self { path };
         repo.git(&["init", "-q", "-b", "main"]);
+        repo.git(&["config", "core.symlinks", "true"]);
         repo
     }
 
     pub fn git(&self, args: &[&str]) -> String {
         let out = Command::new("git")
             .args([
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                "core.autocrlf=false",
                 "-c",
                 "protocol.allow=never",
                 "-c",
@@ -183,7 +188,10 @@ impl SubmoduleFixture {
             // A committed symlink reaches the submodule file through normal
             // context resolution.
             let alias = format!("{}-{index}", name.trim_end_matches(".yaml"));
+            #[cfg(unix)]
             std::os::unix::fs::symlink(source, self.repo.path.join(&alias)).unwrap();
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(source, self.repo.path.join(&alias)).unwrap();
             write!(
                 plan,
                 "    - copy:\n        path: {alias}\n        into: /payload-{index}\n"

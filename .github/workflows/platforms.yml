@@ -79,6 +79,8 @@ jobs:
         shell: bash
         run: |
           echo "PICHI_TEST_ROOT_FILESYSTEM=$RUNNER_TEMP/fixtures/root.ext4" >> "$GITHUB_ENV"
+          git config --global core.longpaths true
+          git config --global core.autocrlf false
 
       # Supply fixture tools missing from the Nix-based runner's service PATH.
       - name: Install fixture tools (Linux arm64)
