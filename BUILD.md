@@ -356,12 +356,24 @@ output layers; host-side input preparation never adds ancestry.
 
 ### Staged-image acceptance
 
-The `staged_images` test runs the complete creation and composition path on
-Linux x86-64 and ARM64. It requires usable KVM, at least 1536 free 2 MiB
-hugepages for a 3 GiB build guest, Git, `strip`, and network access to Fedora's
-package repositories. Boots use 2 GiB. Builds retain both the original and
-packed scute during compaction. Missing prerequisites fail the test. No host block
-devices or mounts are created by the harness.
+The platform workflow runs the same workspace, registry, build smoke,
+submodule, and `staged_images` tests on Linux x86_64 and arm64 (KVM), Windows
+x86_64 (native MSVC/WHP), and macOS arm64 (HVF). Enabling `vm-tests` requires
+working virtualization; missing prerequisites fail instead of skipping tests.
+The macOS harness signs Dillo with the hypervisor entitlement.
+
+Builds use 3.5 GiB and boots use 2 GiB. Linux requires at least 1792 free
+2 MiB hugepages. All hosts need Git and network access to Fedora's package
+repositories. Builds retain both the original and packed scute during
+compaction. No host block devices or mounts are created by the harness.
+
+CI creates one tiny ext4 fixture on Linux and distributes the identical bytes
+through `PICHI_TEST_ROOT_FILESYSTEM` for the smoke and submodule tests. Local
+Linux runs can create it with `mkfs.ext4` when that variable is unset.
+`PICHI_TEST_STRIP` selects Rust's LLVM objcopy on every CI host so Linux guest
+executables can be stripped on Windows and macOS as well. Local runs default
+to `strip`. Each native platform runs the complete workspace against the same
+pinned Zot release; GHCR provides an additional registry compatibility check.
 
 Use a rebuilt appliance OCI layout, a static musl build of the pinned Arma,
 and a newly compiled static release Corium for qualification. Arma runs inside

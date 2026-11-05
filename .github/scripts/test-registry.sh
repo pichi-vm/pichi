@@ -21,7 +21,16 @@ mkdir -p "$fixture_dir/zot-storage"
 cat > "$fixture_dir/zot.json" <<JSON
 {"storage":{"rootDirectory":"$fixture_dir/zot-storage"},"http":{"address":"127.0.0.1","port":"5000"},"log":{"level":"warn"}}
 JSON
-"$zot" serve "$fixture_dir/zot.json" > "$fixture_dir/zot.log" 2>&1 &
+# The ARM Go PIE release names the conventional Linux dynamic loader.
+# NixOS provides that loader in the store instead of /lib.
+launcher=()
+if [ -e /etc/NIXOS ]; then
+  glibc=$(nix --extra-experimental-features 'nix-command flakes' build \
+    github:NixOS/nixpkgs/08d3a97586f6b6343b3b5e799980773629432610#glibc \
+    --no-link --print-out-paths)
+  launcher=("$glibc/lib/ld-linux-aarch64.so.1")
+fi
+"${launcher[@]}" "$zot" serve "$fixture_dir/zot.json" > "$fixture_dir/zot.log" 2>&1 &
 zot_pid=$!
 trap 'kill "$zot_pid" 2>/dev/null || true; wait "$zot_pid" 2>/dev/null || true; cat "$fixture_dir/zot.log"' EXIT
 for _ in {1..30}; do
