@@ -28,7 +28,10 @@ const OFFICIAL_SMOKE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 
 #[tokio::test]
 async fn pichi_build_boots_official_image_to_poweroff() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = tempfile::Builder::new()
+        .prefix("pichi O'Brien, [build] ")
+        .tempdir()
+        .unwrap();
     let graphroot = tmp.path().join("graph");
     std::fs::create_dir_all(&graphroot).unwrap();
     let g = &graphroot;

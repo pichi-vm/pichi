@@ -195,14 +195,14 @@ pub(crate) async fn build_gpt_spec(
 
         parts.push(format!(
             "[path={},partuuid={},typeguid={},label=c:{}]",
-            path_arg(&cow_path),
+            cow_path.key_value_arg(),
             cow_partuuid,
             SCUTE_COW_TYPEGUID,
             label_hex
         ));
         parts.push(format!(
             "[path={},partuuid={},typeguid={},label=v:{}]",
-            path_arg(&v_path),
+            v_path.key_value_arg(),
             verity_partuuid,
             SCUTE_VERITY_TYPEGUID,
             label_hex
@@ -266,6 +266,23 @@ fn exec_dillo(dillo: &Path, args: &[String]) -> Result<()> {
 /// are content-addressed hex under the graphroot).
 pub(crate) fn path_arg(p: &Path) -> String {
     p.to_string_lossy().into_owned()
+}
+
+/// Paths embedded in Dillo's key-value device options need their own quoting;
+/// normal process arguments (`--pmi`, `--bootconfig`) stay untouched.
+pub(crate) trait DevicePath {
+    fn key_value_arg(&self) -> String;
+}
+
+impl DevicePath for Path {
+    fn key_value_arg(&self) -> String {
+        let value = self.to_string_lossy();
+        if value.contains([',', '[', ']', '\'', '"']) {
+            format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+        } else {
+            value.into_owned()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -526,7 +543,10 @@ mod tests {
     /// device schema into the partitions we intended (guards format drift).
     #[tokio::test]
     async fn gpt_spec_round_trips_through_dillo_config() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("O'Brien, [pichi] ")
+            .tempdir()
+            .unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
 
         let cow_bytes = vec![0u8; 8192];

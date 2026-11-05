@@ -30,7 +30,7 @@ use crate::cmd::build_port::{
 };
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
-use crate::cmd::run::{build_gpt_spec, find_dillo, path_arg};
+use crate::cmd::run::{DevicePath as _, build_gpt_spec, find_dillo, path_arg};
 use crate::config::Config;
 
 /// virtio-fs mount tags the host and Conglobate agree on (BUILD.md §2.3).
@@ -184,15 +184,18 @@ pub(crate) fn build_dillo_args(
     argv.push("--fs".to_string());
     argv.push(format!(
         "tag={REPO_TAG},source={},readonly",
-        path_arg(repo_dir)
+        repo_dir.key_value_arg()
     ));
     argv.push("--fs".to_string());
     argv.push(format!(
         "tag={CACHE_TAG},source={},readonly",
-        path_arg(cache_dir)
+        cache_dir.key_value_arg()
     ));
     argv.push("--fs".to_string());
-    argv.push(format!("tag={OUTPUT_TAG},source={}", path_arg(output_dir)));
+    argv.push(format!(
+        "tag={OUTPUT_TAG},source={}",
+        output_dir.key_value_arg()
+    ));
     if let Some(console) = console {
         argv.push("--console".to_string());
         argv.push(console.to_string());
@@ -510,6 +513,21 @@ mod tests {
         assert_eq!(spec.ports[0].name, build_port::BUILD_PORT_NAME);
         assert!(spec.ports[0].rx.is_some());
         assert!(spec.ports[0].tx.is_some());
+    }
+
+    #[test]
+    fn filesystem_paths_preserve_native_separators_and_punctuation() {
+        for path in [
+            r"C:\Users\O'Brien\project [1], current",
+            r"\\?\C:\Users\O'Brien\project [1], current",
+            r#"/home/test/a "quoted", [project]"#,
+        ] {
+            let path = Path::new(path);
+            let argv = build_dillo_args(path, None, &[], path, path, path, None, None, None);
+            for pair in argv.windows(2).filter(|pair| pair[0] == "--fs") {
+                assert_eq!(parse_fs(&pair[1]).source, path);
+            }
+        }
     }
 
     #[tokio::test]
