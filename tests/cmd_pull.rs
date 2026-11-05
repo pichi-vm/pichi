@@ -106,18 +106,13 @@ async fn pull_skips_existing_blobs() {
         ])
         .assert()
         .success();
-    // Step 2: push to zot. (Plan 05 implements push; until then the zot
-    // round-trip path is partially-functional. Skip the rest if push is
-    // not yet shipped.)
+    // Step 2: push to the test registry; a failed push must fail the test.
     let push = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
         .args(["push", &format!("{base}/dedup:1")])
         .assert();
-    if !push.get_output().status.success() {
-        eprintln!("pichi push not yet shipped (Plan 05); skipping pull dedup steps");
-        return;
-    }
+    push.success();
     // Step 3: rmi locally then pull; second pull must skip blob bodies.
     Command::cargo_bin("pichi")
         .unwrap()
@@ -191,10 +186,7 @@ async fn pull_always_refetches() {
         .env("XDG_DATA_HOME", tmp.path())
         .args(["push", &format!("{base}/always:1")])
         .assert();
-    if !push.get_output().status.success() {
-        eprintln!("pichi push not yet shipped (Plan 05); skipping pull_always");
-        return;
-    }
+    push.success();
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
@@ -233,10 +225,7 @@ async fn pull_newer_skips_when_unchanged() {
         .env("XDG_DATA_HOME", tmp.path())
         .args(["push", &format!("{base}/newer:1")])
         .assert();
-    if !push.get_output().status.success() {
-        eprintln!("pichi push not yet shipped (Plan 05); skipping pull_newer");
-        return;
-    }
+    push.success();
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
@@ -275,10 +264,7 @@ async fn anonymous_pull() {
         .env("XDG_DATA_HOME", tmp.path())
         .args(["push", &format!("{base}/anon:1")])
         .assert();
-    if !push.get_output().status.success() {
-        eprintln!("pichi push not yet shipped (Plan 05); skipping anonymous_pull");
-        return;
-    }
+    push.success();
     let tmp2 = TempDir::new().unwrap();
     let _g2 = graphroot(&tmp2);
     Command::cargo_bin("pichi")
