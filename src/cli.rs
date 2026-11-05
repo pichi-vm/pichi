@@ -316,6 +316,9 @@ pub struct BuildArgs {
     /// vCPUs for the build VM (forwarded to dillo).
     #[arg(long)]
     pub cpus: Option<u32>,
+    /// Suppress build output and print the image digest on success.
+    #[arg(long, short = 'q')]
+    pub quiet: bool,
 }
 
 /// Update the lock for a working-tree plan.

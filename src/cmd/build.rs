@@ -141,15 +141,29 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .ok_or_else(|| anyhow!("pichi build requires -t <tag> to name the result"))?;
 
     let dillo = find_dillo();
-    boot_serve_and_wait(&dillo, &argv, pipes, response).await?;
-
-    // Successful guest exit is required before opening its OCI output.
-    let imported = crate::cmd::load::OciLayout::read(output_dir.path(), &blob_store).await?;
-    let digest = imported
-        .import_build(&blob_store, &db, tag)
-        .await
-        .context("importing build output")?;
-    println!("pichi build: imported {tag} -> {digest}");
+    let log = args
+        .quiet
+        .then(|| super::build_output::BuildLog::create(&layout.runroot))
+        .transpose()?;
+    let result: Result<_> = async {
+        boot_serve_and_wait(&dillo, &argv, pipes, response, log.as_ref()).await?;
+        // Successful guest exit is required before opening its OCI output.
+        let imported = crate::cmd::load::OciLayout::read(output_dir.path(), &blob_store).await?;
+        imported
+            .import_build(&blob_store, &db, tag)
+            .await
+            .context("importing build output")
+    }
+    .await;
+    let digest = result.map_err(|error| match &log {
+        Some(log) => log.failure(error),
+        None => error,
+    })?;
+    if args.quiet {
+        println!("{digest}");
+    } else {
+        println!("pichi build: imported {tag} -> {digest}");
+    }
     Ok(())
 }
 
@@ -317,6 +331,7 @@ async fn boot_serve_and_wait(
     args: &[String],
     pipes: build_port::BuildPortPipes,
     response: Vec<u8>,
+    log: Option<&super::build_output::BuildLog>,
 ) -> Result<()> {
     log::info!("boot build VM: {} {}", dillo.display(), args.join(" "));
 
@@ -331,6 +346,9 @@ async fn boot_serve_and_wait(
 
     let mut cmd = tokio::process::Command::new(dillo);
     cmd.args(args);
+    if let Some(log) = log {
+        log.attach(&mut cmd)?;
+    }
     // Tear down dillo if the host drops the child (exchange/error paths).
     cmd.kill_on_drop(true);
 

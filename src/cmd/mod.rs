@@ -9,6 +9,7 @@
 
 mod boot_config;
 pub mod build;
+mod build_output;
 mod build_port;
 mod cache;
 pub mod images;
