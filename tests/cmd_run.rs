@@ -131,6 +131,32 @@ fn make_stub_dillo(dir: &Path) -> PathBuf {
 }
 
 #[tokio::test]
+async fn run_defaults_to_warnings_and_preserves_log_overrides() {
+    let tmp = TempDir::new().unwrap();
+    populate_bootable(&graphroot(&tmp), "myapp:1").await;
+    let stub = make_stub_dillo(tmp.path());
+    for (configured, expected) in [
+        (None, "warn"),
+        (Some("dillo=debug"), "dillo=debug"),
+        (Some(""), ""),
+    ] {
+        let mut command = Command::cargo_bin("pichi").unwrap();
+        command
+            .env("XDG_DATA_HOME", tmp.path())
+            .env("PICHI_DILLO", &stub)
+            .env_remove("RUST_LOG");
+        if let Some(value) = configured {
+            command.env("RUST_LOG", value);
+        }
+        command.args(["run", "myapp:1"]).assert().success();
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("rust-log.txt")).unwrap(),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
 async fn run_execs_dillo_with_manifest_derived_devices() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
