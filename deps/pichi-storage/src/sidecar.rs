@@ -244,31 +244,21 @@ mod tests {
         assert_eq!(std::fs::read(outside).unwrap(), b"untouched");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn unlink_blob_with_sidecars_propagates_non_enoent() {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::TempDir::new().unwrap();
-        let parent = dir.path().join("locked");
-        std::fs::create_dir(&parent).unwrap();
-        let src = parent.join("ccc");
-        std::fs::write(&src, b"source").unwrap();
+        let src = dir.path().join("ccc");
+        // File deletion rejects a directory on every host, including as root.
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("keep"), b"source").unwrap();
         std::fs::write(src.with_extension("verity"), b"verity").unwrap();
 
-        let original = std::fs::metadata(&parent).unwrap().permissions();
-        let mut readonly = original.clone();
-        readonly.set_mode(0o500);
-        std::fs::set_permissions(&parent, readonly).unwrap();
-
-        let result = src.unlink_with_sidecars().await;
-
-        std::fs::set_permissions(&parent, original).unwrap();
-
-        if rustix::process::geteuid().as_raw() != 0 {
-            assert!(
-                result.is_err(),
-                "unlink_blob_with_sidecars should propagate EACCES on a read-only parent dir"
-            );
-        }
+        let error = src.unlink_with_sidecars().await.unwrap_err();
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(std::fs::read(src.join("keep")).unwrap(), b"source");
+        assert_eq!(
+            std::fs::read(src.with_extension("verity")).unwrap(),
+            b"verity"
+        );
     }
 }
