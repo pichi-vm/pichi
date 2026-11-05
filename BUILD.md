@@ -366,6 +366,9 @@ devices or mounts are created by the harness.
 CI creates one tiny ext4 fixture on Linux and distributes the identical bytes
 through `PICHI_TEST_ROOT_FILESYSTEM` for the smoke and submodule tests. Local
 Linux runs can create it with `mkfs.ext4` when that variable is unset.
+`PICHI_TEST_STRIP` selects Rust's LLVM objcopy on every CI host so Linux guest
+executables can be stripped on Windows and macOS as well. Local runs default
+to `strip`.
 
 Use a rebuilt appliance OCI layout, a static musl build of the pinned Arma,
 and a newly compiled static release Corium for qualification. Arma runs inside
