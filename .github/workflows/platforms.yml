@@ -25,18 +25,26 @@ jobs:
             os: ubuntu-24.04
             runs_on: '["ubuntu-24.04"]'
             guest_musl: x86_64-unknown-linux-musl
+            zot_asset: zot-linux-amd64-minimal
+            zot_sha256: 8a6e77686bc0e7751766c49828cff6c66b115c854d350c9d936b855463f6c973
           - name: linux-arm64       # Linux arm64 - full workspace + real KVM boot
             os: linux-arm64
             runs_on: '["self-hosted","Linux","ARM64","bare-metal","aarch64","kvm"]'
             guest_musl: aarch64-unknown-linux-musl
+            zot_asset: zot-linux-arm64-minimal
+            zot_sha256: 931d687899cc4b1fcad4c026d2792df6132e6de1b2f329aa730dccee14ec0395
           - name: windows-2025      # Windows x86_64 - build + real WHP boot
             os: windows-2025
             runs_on: '["windows-2025"]'
             guest_musl: x86_64-unknown-linux-musl
+            zot_asset: zot-windows-amd64-minimal.exe
+            zot_sha256: d8b29c9cd9d68f46a338a2ae0533991415148587703ec3bd0f909c22604f7bed
           - name: macos-arm64       # macOS arm64 - build + real HVF boot
             os: macos-arm64
             runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
             guest_musl: aarch64-unknown-linux-musl
+            zot_asset: zot-darwin-arm64-minimal
+            zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
     runs-on: ${{ fromJSON(matrix.runs_on) }}
     # A hung test must not hold the only Mac runner for hours.
     timeout-minutes: ${{ matrix.os == 'macos-arm64' && 30 || 360 }}
@@ -96,33 +104,13 @@ jobs:
       # (Registry deps are cap-lints'd, so only our crates can fail it.) It is set
       # per-step, never globally, so it can't reach the patched-cargo build above.
 
-      # All platforms run the full workspace unit tests. The only members are
-      # pichi and its nested deps/* crates (the products live in their own
-      # repos, consumed as git deps), so a plain `cargo test --workspace` works
-      # on every OS in the matrix.
-      - name: Test (Linux, full workspace)
-        if: runner.os == 'Linux'
+      - name: Test full workspace and registry
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
-        run: |
-          cargo test --workspace
-
-      - name: Test (Windows, full workspace)
-        if: runner.os == 'Windows'
-        shell: bash
-        env:
-          CARGO_BUILD_RUSTFLAGS: "-D warnings"
-        run: |
-          cargo test --workspace
-
-      - name: Test (macOS, full workspace)
-        if: runner.os == 'macOS'
-        shell: bash
-        env:
-          CARGO_BUILD_RUSTFLAGS: "-D warnings"
-        run: |
-          cargo test --workspace
+          ZOT_ASSET: ${{ matrix.zot_asset }}
+          ZOT_SHA256: ${{ matrix.zot_sha256 }}
+        run: bash .github/scripts/test-registry.sh
 
       - name: Reserve hugepages for guest RAM (Linux/KVM)
         if: runner.os == 'Linux'
@@ -184,11 +172,12 @@ jobs:
           cargo test -p pichi --features vm-tests -- --test-threads=1 --nocapture
 
       - name: Preserve staged-image evidence
-        if: always() && runner.os == 'Linux'
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: staged-image-evidence-${{ matrix.os }}
           path: |
+            ${{ runner.temp }}/zot.log
             ${{ runner.temp }}/staged-image-evidence/**/*.log
             ${{ runner.temp }}/staged-image-evidence/**/manifest.json
             ${{ runner.temp }}/staged-image-evidence/**/root-sectors.json
