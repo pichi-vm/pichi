@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Import complete OCI layouts into the cache. Build and load share this
+//! Import OCI layouts into the cache. Build and load share this
 //! boundary: snapshot and verify guest bytes, rebuild verity, then publish tags.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -37,6 +37,7 @@ pub(super) struct OciLayout {
     store: FilesystemBlobStore,
     manifests: Vec<(Digest, Manifest)>,
     roots: Vec<LayoutEntry>,
+    incomplete: bool,
     blobs: HashMap<Digest, u64>,
     guest_verity: Vec<(PathBuf, PathBuf)>,
 }
@@ -58,7 +59,7 @@ impl OciLayout {
         let layout = tokio::task::spawn_blocking(move || Self::snapshot(&dir, staging, capacity))
             .await
             .context("OCI snapshot task panicked")?
-            .context("reading complete OCI output layout")?;
+            .context("reading OCI image layout")?;
         // The snapshot contains only OCI blobs. No pre-existing sidecars can
         // short-circuit rebuilding: every scute is rebuilt from cow + salt.
         let mut expanded_size = 0u64;
@@ -116,6 +117,7 @@ impl OciLayout {
             store,
             manifests: Vec::new(),
             roots: index.manifests.clone(),
+            incomplete: false,
             blobs: HashMap::new(),
             guest_verity: Vec::new(),
         };
@@ -148,6 +150,14 @@ impl OciLayout {
                 "invalid index artifact type"
             );
             ensure!(entry.size <= METADATA_CAP, "manifest exceeds metadata cap");
+            // Saved indexes retain descriptors for platforms that were not pulled.
+            // Root metadata and all content of each present manifest are required.
+            if !files.contains_key(&Self::blob_name(&entry.digest)?)
+                && !layout.roots.iter().any(|root| root.digest == entry.digest)
+            {
+                layout.incomplete = true;
+                continue;
+            }
             let digest = layout.copy_blob(&root, &entry.digest, entry.size, &mut expected)?;
             let bytes = std::fs::read(layout.store.blob_path(&digest))?;
             let value: serde_json::Value = serde_json::from_slice(&bytes)?;
@@ -237,6 +247,10 @@ impl OciLayout {
             }
             layout.manifests.push((digest, manifest));
         }
+        ensure!(
+            !layout.manifests.is_empty(),
+            "image has no cached platforms"
+        );
         for path in files.keys() {
             ensure!(
                 expected.contains(path),
@@ -430,6 +444,7 @@ impl OciLayout {
         db: &FilesystemTagDb,
         tag: &str,
     ) -> Result<Digest> {
+        ensure!(!self.incomplete, "build OCI layout must be complete");
         ensure!(
             self.manifests.len() == 1,
             "build OCI index must contain exactly one manifest"
@@ -791,6 +806,7 @@ pub(super) mod tests {
             "entry digest",
             "entry size",
             "missing manifest",
+            "partial index",
             "manifest schema",
             "manifest type",
             "artifact type",
@@ -970,6 +986,18 @@ pub(super) mod tests {
                 "entry size" => index["manifests"][0]["size"] = 1.into(),
                 "missing manifest" => {
                     std::fs::remove_file(output.join("blobs/sha256").join(digest.hex())).unwrap()
+                }
+                "partial index" => {
+                    let mut absent = index["manifests"][0].clone();
+                    absent["digest"] = format!("sha256:{}", "ab".repeat(32)).into();
+                    index["manifests"].as_array_mut().unwrap().push(absent);
+                    let bytes = serde_json::to_vec(&index).unwrap();
+                    let nested = Digest::Sha256(Sha256::digest(&bytes).into());
+                    std::fs::write(output.join("blobs/sha256").join(nested.hex()), &bytes).unwrap();
+                    index["manifests"] = json!([{
+                        "mediaType": INDEX_TYPE,
+                        "digest": nested.to_string(), "size": bytes.len(),
+                    }]);
                 }
                 "missing cow" => std::fs::remove_file(&cow).unwrap(),
                 "tampered cow" => {

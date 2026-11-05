@@ -84,7 +84,7 @@ impl Fixture {
             entries.push(json!({
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "digest": format!("sha256:{}", "ab".repeat(32)), "size": 123,
-                "platform": {"os": "pichi", "architecture": "arm64"}
+                "platform": {"os": "pichi", "architecture": if std::env::consts::ARCH == "aarch64" { "amd64" } else { "arm64" }}
             }));
         }
         let bytes = serde_json::to_vec(&json!({
@@ -220,63 +220,164 @@ async fn inconsistent_index_descriptors_abort_collection() {
 
 #[tokio::test]
 async fn index_export_and_import_preserve_original_bytes() {
-    let fixture = Fixture::new().await;
-    let tag = "registry.example/image:one";
-    let index = fixture.index(tag, false).await;
-    let bytes = fixture.store.get_blob(&index).await.unwrap();
-    let layout = fixture.directory.path().join("export");
-    let output = fixture.run(&["save", tag, "-o", layout.to_str().unwrap()]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        std::fs::read(layout.join("blobs/sha256").join(index.hex())).unwrap(),
-        bytes
-    );
-    let destination = TempDir::new().unwrap();
-    let output = Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
-        .env("XDG_DATA_HOME", destination.path())
-        .args(["load", layout.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let store = FilesystemBlobStore::new(destination.path().join("pichi/storage"));
-    let tags = FilesystemTagDb::open(destination.path().join("pichi/storage")).unwrap();
-    assert_eq!(tags.resolve_tag(tag).await.unwrap(), Some(index.clone()));
-    assert_eq!(store.get_blob(&index).await.unwrap(), bytes);
-    assert!(store.blob_exists(&fixture.layer).await);
+    for availability in ["single", "partial", "complete"] {
+        let fixture = Fixture::new().await;
+        let tag = "registry.example/image:one";
+        let mut index = fixture.index(tag, availability != "single").await;
+        let mut content = vec![fixture.manifest.clone(), fixture.layer.clone()];
+        if availability == "complete" {
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&fixture.store.get_blob(&fixture.manifest).await.unwrap())
+                    .unwrap();
+            manifest["annotations"]["org.opencontainers.image.title"] = json!("other platform");
+            let bytes = serde_json::to_vec(&manifest).unwrap();
+            let other = Fixture::put(&fixture.store, &bytes).await;
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&fixture.store.get_blob(&index).await.unwrap()).unwrap();
+            value["manifests"][1]["digest"] = json!(other.to_string());
+            value["manifests"][1]["size"] = json!(bytes.len());
+            index = Fixture::put(&fixture.store, &serde_json::to_vec(&value).unwrap()).await;
+            fixture.tags.set_tag(tag, &index).await.unwrap();
+            content.push(other);
+        }
+        let bytes = fixture.store.get_blob(&index).await.unwrap();
+        let layout = fixture.directory.path().join("export");
+        let output = fixture.run(&["save", tag, "-o", layout.to_str().unwrap()]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read(layout.join("blobs/sha256").join(index.hex())).unwrap(),
+            bytes
+        );
+        let destination = TempDir::new().unwrap();
+        let output = Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
+            .env("XDG_DATA_HOME", destination.path())
+            .args(["load", layout.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let store = FilesystemBlobStore::new(destination.path().join("pichi/storage"));
+        let tags = FilesystemTagDb::open(destination.path().join("pichi/storage")).unwrap();
+        assert_eq!(tags.resolve_tag(tag).await.unwrap(), Some(index.clone()));
+        assert_eq!(store.get_blob(&index).await.unwrap(), bytes);
+        for digest in &content {
+            assert_eq!(
+                store.get_blob(digest).await.unwrap(),
+                fixture.store.get_blob(digest).await.unwrap()
+            );
+        }
+        let output = Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
+            .env("XDG_DATA_HOME", destination.path())
+            .args(["inspect", tag])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["digest"], index.to_string());
+        assert_eq!(value["manifest_digest"], fixture.manifest.to_string());
+    }
 }
 
 #[tokio::test]
-async fn partial_index_export_fails_without_replacing_its_identity() {
+async fn save_rejects_missing_content_and_corrupt_metadata() {
+    for fault in [
+        "missing index",
+        "missing manifest",
+        "missing layer",
+        "corrupt index",
+        "corrupt manifest",
+    ] {
+        let fixture = Fixture::new().await;
+        let tag = "registry.example/image:one";
+        let index = fixture.index(tag, true).await;
+        let digest = if fault.ends_with("index") {
+            &index
+        } else if fault.ends_with("manifest") {
+            &fixture.manifest
+        } else {
+            &fixture.layer
+        };
+        let path = fixture.store.blob_path(digest);
+        if fault.starts_with("missing") {
+            std::fs::remove_file(path).unwrap();
+        } else {
+            std::fs::write(path, b"{}").unwrap();
+        }
+        let layout = fixture.directory.path().join("export");
+        let output = fixture.run(&["save", tag, "-o", layout.to_str().unwrap()]);
+        assert!(!output.status.success(), "accepted {fault}");
+        assert!(!layout.join("index.json").exists());
+        assert_eq!(fixture.tags.resolve_tag(tag).await.unwrap(), Some(index));
+    }
+}
+
+#[tokio::test]
+async fn partial_layout_load_rejects_missing_or_corrupt_included_content() {
+    for component in ["index", "manifest", "layer"] {
+        for missing in [false, true] {
+            let fixture = Fixture::new().await;
+            let tag = "registry.example/image:one";
+            let index = fixture.index(tag, true).await;
+            let layout = fixture.directory.path().join("export");
+            assert!(
+                fixture
+                    .run(&["save", tag, "-o", layout.to_str().unwrap()])
+                    .status
+                    .success()
+            );
+            let digest = match component {
+                "index" => &index,
+                "manifest" => &fixture.manifest,
+                _ => &fixture.layer,
+            };
+            let path = layout.join("blobs/sha256").join(digest.hex());
+            if missing {
+                std::fs::remove_file(path).unwrap();
+            } else {
+                let mut bytes = std::fs::read(&path).unwrap();
+                bytes[0] ^= 1;
+                std::fs::write(path, bytes).unwrap();
+            }
+            // Cached content must not conceal a damaged archive or change its tag.
+            let destination = Fixture::new().await;
+            let previous = destination.index(tag, false).await;
+            let output = destination.run(&["load", layout.to_str().unwrap()]);
+            assert!(
+                !output.status.success(),
+                "accepted {component}, missing={missing}"
+            );
+            assert_eq!(
+                destination.tags.resolve_tag(tag).await.unwrap(),
+                Some(previous)
+            );
+            assert!(!destination.store.blob_exists(&index).await);
+        }
+    }
+}
+
+#[tokio::test]
+async fn partial_index_push_fails_without_replacing_its_identity() {
     let fixture = Fixture::new().await;
     let tag = "registry.example/image:one";
     let index = fixture.index(tag, true).await;
     let bytes = fixture.store.get_blob(&index).await.unwrap();
-    let layout = fixture.directory.path().join("export");
-    for args in [
-        vec!["save", tag, "-o", layout.to_str().unwrap()],
-        vec!["push", tag],
-    ] {
-        let output = fixture.run(&args);
-        assert!(!output.status.success());
-        assert!(
-            String::from_utf8_lossy(&output.stderr)
-                .contains("all referenced platforms must be cached")
-        );
-        assert_eq!(
-            fixture.tags.resolve_tag(tag).await.unwrap(),
-            Some(index.clone())
-        );
-        assert_eq!(fixture.store.get_blob(&index).await.unwrap(), bytes);
-    }
-    assert!(!layout.exists());
+    let output = fixture.run(&["push", tag]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("all referenced platforms must be cached")
+    );
+    assert_eq!(
+        fixture.tags.resolve_tag(tag).await.unwrap(),
+        Some(index.clone())
+    );
+    assert_eq!(fixture.store.get_blob(&index).await.unwrap(), bytes);
 }
 
 #[tokio::test]

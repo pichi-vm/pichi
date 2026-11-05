@@ -59,7 +59,10 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
     tag_db: &FilesystemTagDb,
 ) -> Result<()> {
     let root = blob_store.resolve(&target, tag_db).await?;
-    let images = blob_store.export(&root).await?;
+    let images = blob_store
+        .export(&root, false)
+        .await
+        .context("all referenced platforms must be cached for push")?;
     for image in images {
         let destination = if image.digest == root {
             target.clone()
