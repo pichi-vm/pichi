@@ -71,6 +71,7 @@ image:
       kernel.selinux: "0"
       kernel.systemd.log_level: "warning"
       kernel.systemd.getty_auto: "no"
+      kernel.systemd.tty.term.console: "dumb"
 
 requirements:
   cpus: { recommended: 2 }
