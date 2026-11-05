@@ -200,6 +200,15 @@ async fn carapace_scutes_manifest(
     manifest
         .layers
         .retain(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)));
+    if let Some(root) = manifest.carapace_root()? {
+        manifest
+            .annotations
+            .remove("dev.pichi.carapace.verity.algo");
+        manifest.annotations.insert(
+            "dev.pichi.carapace.verity.hash".into(),
+            Digest::Sha256(root).to_string(),
+        );
+    }
     Ok(manifest)
 }
 
