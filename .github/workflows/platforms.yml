@@ -15,7 +15,25 @@ env:
 # Supported platforms are Linux x86_64/aarch64 (KVM), Windows x86_64 (WHP),
 # and macOS arm64 (HVF on bare-metal organization runners).
 jobs:
+  fixtures:
+    name: portable filesystem fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Create smoke root
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/root"
+          printf 'ID=fedora\nVERSION_ID=43\n' > "$RUNNER_TEMP/root/os-release"
+          mkfs.ext4 -q -F -b 4096 -d "$RUNNER_TEMP/root" "$RUNNER_TEMP/root.ext4" 16M
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: smoke-root
+          path: ${{ runner.temp }}/root.ext4
+          if-no-files-found: error
+
   ci:
+    needs: fixtures
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -51,6 +69,16 @@ jobs:
           # arma embeds native-arch tatu; snuffler is cross-built for the guest
           # musl triple matching this host's arch.
           rustup target add x86_64-unknown-none aarch64-unknown-none-softfloat "${{ matrix.guest_musl }}"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: smoke-root
+          path: ${{ runner.temp }}/fixtures
+
+      - name: Configure portable fixture tools
+        shell: bash
+        run: |
+          echo "PICHI_TEST_ROOT_FILESYSTEM=$RUNNER_TEMP/fixtures/root.ext4" >> "$GITHUB_ENV"
 
       # Supply fixture tools missing from the Nix-based runner's service PATH.
       - name: Install fixture tools (Linux arm64)
