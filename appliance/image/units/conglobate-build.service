@@ -10,7 +10,7 @@ After=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount
 After=network-online.target systemd-resolved.service
 # Sync and unmount output before powering off, without waiting on getty.
 SuccessAction=poweroff-force
-FailureAction=poweroff-force
+FailureAction=poweroff
 
 [Service]
 Type=oneshot
