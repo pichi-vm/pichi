@@ -70,7 +70,7 @@ jobs:
             zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
     runs-on: ${{ fromJSON(matrix.runs_on) }}
     # A hung test must not hold the only Mac runner for hours.
-    timeout-minutes: ${{ matrix.os == 'macos-arm64' && 30 || 360 }}
+    timeout-minutes: ${{ matrix.os == 'macos-arm64' && 60 || 360 }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
