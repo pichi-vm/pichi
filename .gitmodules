@@ -4,3 +4,6 @@
 [submodule "appliance/lsm"]
 	path = appliance/lsm
 	url = https://github.com/pichi-vm/lsm.git
+[submodule "appliance/dillo"]
+	path = appliance/dillo
+	url = https://github.com/pichi-vm/dillo
