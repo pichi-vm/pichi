@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Static virtiofs mount: tag `cache` → `/run/pichi/cache`.
+# Tags are image/unit config only — never parsed from appliance CBOR.
+
+[Unit]
+Description=Pichi build virtiofs (cache → /run/pichi/cache)
+DefaultDependencies=no
+Conflicts=umount.target
+Before=local-fs.target conglobate-build.service
+After=systemd-remount-fs.service systemd-modules-load.service
+
+[Mount]
+What=cache
+Where=/run/pichi/cache
+Type=virtiofs
+Options=ro
+
+[Install]
+WantedBy=local-fs.target

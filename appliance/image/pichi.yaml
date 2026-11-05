@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+version: 1
+
+stages:
+  tools:
+    extend: ghcr.io/pichi-vm/fedora:43
+    steps:
+      - exec:
+          command: >-
+            dnf -y --setopt=install_weak_deps=False install
+            gcc rust cargo rust-src llvm-devel
+          network: true
+      - exec:
+          command: >-
+            cargo install --locked --version '=0.13.0' --root /usr
+            --no-default-features --features llvm-21 bpf-linker
+          network: true
+  engine:
+    use: tools
+    steps:
+      - copy: { path: deps/conglobate, into: /build/conglobate/ }
+      - exec:
+          command: >-
+            cargo install --locked --path /build/conglobate
+            --features cli --root /mnt
+          network: true
+  policy:
+    use: tools
+    steps:
+      - copy: { path: appliance/lsm, into: /build/lsm/ }
+      - exec:
+          command: >-
+            RUSTC_BOOTSTRAP=1 cargo install --locked --path /build/lsm --root /mnt
+          network: true
+  appliance:
+    extend: ghcr.io/pichi-vm/fedora:43
+    mounts:
+      /run: tmpfs
+      /tmp: tmpfs
+      /var: tmpfs
+    steps:
+      - exec:
+          command: >-
+            dnf -y --setopt=install_weak_deps=False --exclude='kernel*' install
+            systemd-networkd systemd-resolved e2fsprogs dosfstools
+          network: true
+      - copy: { from: engine, path: /bin/conglobate, into: /usr/bin/conglobate }
+      - copy: { from: policy, path: /bin/lsm, into: /usr/libexec/conglobate-lsm }
+      - copy: { path: appliance/image/units, into: /usr/lib/systemd/system/ }
+      - copy: { path: appliance/image/10-build.network, into: /usr/lib/systemd/network/10-build.network }
+      - exec:
+          command: >-
+            systemctl --root=/ enable conglobate-build.service
+            run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount
+            systemd-networkd.service systemd-resolved.service
+            systemd-networkd-wait-online.service
+      - exec:
+          command: touch /etc/resolv.conf
+      - exec:
+          command: touch /usr/lib/clock-epoch
+
+image:
+  root: appliance
+  boot:
+    inherit: ghcr.io/pichi-vm/fedora:43
+    extend:
+      kernel.selinux: "0"
+
+requirements:
+  cpus: { recommended: 2 }
+  memory: { required: 2048, recommended: 4096 }
