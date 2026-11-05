@@ -221,22 +221,24 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn prepared_listing_and_cleanup_do_not_follow_symlinks() {
-        use std::os::unix::fs::symlink;
+        #[cfg(unix)]
+        use std::os::unix::fs::{symlink as symlink_dir, symlink as symlink_file};
+        #[cfg(windows)]
+        use std::os::windows::fs::{symlink_dir, symlink_file};
         let dir = tempfile::tempdir().unwrap();
         let external = tempfile::tempdir().unwrap();
         let outside = external.path().join("keep");
         std::fs::write(&outside, b"untouched").unwrap();
         let source = dir.path().join("aaa");
         std::fs::create_dir(source.prepared_dir()).unwrap();
-        symlink(&outside, source.prepared_dir().join("link.verity")).unwrap();
+        symlink_file(&outside, source.prepared_dir().join("link.verity")).unwrap();
         assert!(source.prepared_files().unwrap().is_empty());
         assert_eq!(source.sidecar_bytes().unwrap(), 0);
         source.unlink_with_sidecars().await.unwrap();
         assert_eq!(std::fs::read(&outside).unwrap(), b"untouched");
-        symlink(external.path(), source.prepared_dir()).unwrap();
+        symlink_dir(external.path(), source.prepared_dir()).unwrap();
         assert!(source.prepared_files().is_err());
         source.unlink_with_sidecars().await.unwrap();
         assert_eq!(std::fs::read(outside).unwrap(), b"untouched");
