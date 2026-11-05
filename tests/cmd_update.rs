@@ -198,16 +198,17 @@ fn plan_and_lock_paths_stay_in_the_project() {
     );
     assert!(!project.0.path().join("pichi.lock").exists());
 
-    #[cfg(unix)]
     {
-        use std::os::unix::fs::symlink;
-        use wait_timeout::ChildExt as _;
+        #[cfg(unix)]
+        use std::os::unix::fs::{symlink as symlink_dir, symlink as symlink_file};
+        #[cfg(windows)]
+        use std::os::windows::fs::{symlink_dir, symlink_file};
 
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("plan.yaml"), &before).unwrap();
         fs::write(outside.path().join("lock.yaml"), "outside sentinel").unwrap();
-        symlink(outside.path(), project.0.path().join("escape")).unwrap();
-        symlink(
+        symlink_dir(outside.path(), project.0.path().join("escape")).unwrap();
+        symlink_file(
             outside.path().join("lock.yaml"),
             project.0.path().join("pichi.lock"),
         )
@@ -224,8 +225,13 @@ fn plan_and_lock_paths_stay_in_the_project() {
             "outside sentinel"
         );
         fs::remove_file(project.0.path().join("pichi.lock")).unwrap();
-        symlink("pichi.yaml", project.0.path().join("selected.yaml")).unwrap();
+        symlink_file("pichi.yaml", project.0.path().join("selected.yaml")).unwrap();
         Project::success(project.run(&["update", "--pull=never", "--plan", "selected.yaml"]));
+    }
+    #[cfg(unix)]
+    {
+        use wait_timeout::ChildExt as _;
+
         // Invalid file kinds must fail before any potentially blocking read.
         let fifo = project.0.path().join("fifo");
         nix::unistd::mkfifo(
