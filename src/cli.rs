@@ -59,8 +59,8 @@ pub struct InspectArgs {
     /// Image reference: `image:tag`, `image@sha256:...`, full registry path,
     /// or dockerhub shorthand (LOCAL-05).
     pub reference: String,
-    /// Output format: `json` (default, pretty-printed) or a minijinja (Jinja2)
-    /// template. Dotted annotation keys use subscripts, e.g.
+    /// Output format: `json` (default), `layers`, `annotations`, or a minijinja
+    /// (Jinja2) template. Dotted annotation keys use subscripts, e.g.
     /// `{{ manifest.annotations["dev.pichi.carapace.verity.algo"] }}`.
     #[arg(long)]
     pub format: Option<String>,
@@ -316,6 +316,9 @@ pub struct BuildArgs {
     /// vCPUs for the build VM (forwarded to dillo).
     #[arg(long)]
     pub cpus: Option<u32>,
+    /// Stream the build VM console instead of saving it to a diagnostic log.
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
 }
 
 /// Update the lock for a working-tree plan.

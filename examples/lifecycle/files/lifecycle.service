@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Pichi lifecycle demo
+SuccessAction=poweroff
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/printf "Hello from Pichi.\nWorkload complete. Shutting down.\n"
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/hvc0
+
+[Install]
+WantedBy=multi-user.target

@@ -11,7 +11,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -39,6 +39,16 @@ const CACHE_TAG: &str = "cache";
 const OUTPUT_TAG: &str = "output";
 
 pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
+    let started = Instant::now();
+    let tag = args
+        .tag
+        .as_deref()
+        .ok_or_else(|| anyhow!("pichi build requires -t <tag> to name the result"))?;
+    eprintln!(
+        "{}",
+        super::presentation::Presentation::stderr().heading(&format!("Building {tag}"))
+    );
+    eprintln!("  Preparing source and build image");
     let build_image_ref = resolve_build_image(args.build_image.as_deref());
 
     // Thin-launcher build-input (BUILD.md §2.4): `ref` is required; plan
@@ -135,21 +145,33 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         cpus,
     );
 
-    let tag = args
-        .tag
-        .as_deref()
-        .ok_or_else(|| anyhow!("pichi build requires -t <tag> to name the result"))?;
-
     let dillo = find_dillo();
-    boot_serve_and_wait(&dillo, &argv, pipes, response).await?;
-
-    // Successful guest exit is required before opening its OCI output.
-    let imported = crate::cmd::load::OciLayout::read(output_dir.path(), &blob_store).await?;
-    let digest = imported
-        .import_build(&blob_store, &db, tag)
-        .await
-        .context("importing build output")?;
-    println!("pichi build: imported {tag} -> {digest}");
+    let log = (!args.verbose)
+        .then(|| super::build_output::BuildLog::create(&layout.runroot))
+        .transpose()?;
+    let result: Result<_> = async {
+        eprintln!("  Building in VM");
+        boot_serve_and_wait(&dillo, &argv, pipes, response, log.as_ref()).await?;
+        // Successful guest exit is required before opening its OCI output.
+        eprintln!("  Importing image");
+        let imported = crate::cmd::load::OciLayout::read(output_dir.path(), &blob_store).await?;
+        imported
+            .import_build(&blob_store, &db, tag)
+            .await
+            .context("importing build output")
+    }
+    .await;
+    let digest = result.map_err(|err| match &log {
+        Some(log) => log.failure(err),
+        None => err,
+    })?;
+    println!(
+        "{}\n  {digest}",
+        super::presentation::Presentation::stdout().success(&format!(
+            "Built {tag} in {:.1}s",
+            started.elapsed().as_secs_f64()
+        ))
+    );
     Ok(())
 }
 
@@ -317,6 +339,7 @@ async fn boot_serve_and_wait(
     args: &[String],
     pipes: build_port::BuildPortPipes,
     response: Vec<u8>,
+    log: Option<&super::build_output::BuildLog>,
 ) -> Result<()> {
     log::info!("boot build VM: {} {}", dillo.display(), args.join(" "));
 
@@ -331,6 +354,9 @@ async fn boot_serve_and_wait(
 
     let mut cmd = tokio::process::Command::new(dillo);
     cmd.args(args);
+    if let Some(log) = log {
+        log.attach(&mut cmd)?;
+    }
     // Tear down dillo if the host drops the child (exchange/error paths).
     cmd.kill_on_drop(true);
 
@@ -430,6 +456,44 @@ mod tests {
     use conglobate::artifact::ReferenceKind;
     use dillo_config::FsSpec;
     use pichi_storage::TagDb as _;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launcher_failure_keeps_diagnostics_and_fails() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let temp = tempfile::tempdir().unwrap();
+        let launcher = temp.path().join("dillo");
+        std::fs::write(
+            &launcher,
+            "#!/bin/sh\necho 'cannot open VM device: test diagnostic' >&2\nexit 12\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let log = super::super::build_output::BuildLog::create(temp.path()).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            boot_serve_and_wait(
+                &launcher,
+                &[],
+                create_build_port_pipes().unwrap(),
+                vec![],
+                Some(&log),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.is_err(),
+            "launcher failure must never report a successful build"
+        );
+        let logs = std::fs::read_dir(temp.path().join("builds")).unwrap();
+        let path = logs.into_iter().next().unwrap().unwrap().path();
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("cannot open VM device: test diagnostic")
+        );
+    }
 
     fn parse_fs(value: &str) -> FsSpec {
         serde_keyvalue::from_key_values(value).expect("--fs value parses as dillo FsSpec")

@@ -21,6 +21,7 @@ use anyhow::{Context, Result, anyhow};
 use minijinja::Environment;
 use serde::Serialize;
 use serde_json::Value;
+use std::fmt::Write as _;
 
 use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
@@ -47,6 +48,8 @@ struct IndexInspectOutput {
     media_type: String,
     entries: Vec<IndexEntryInfo>,
     note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annotations: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     manifest: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -159,6 +162,7 @@ fn inspect_index(
         media_type: OCI_IMAGE_INDEX_MEDIA_TYPE.to_string(),
         entries,
         note,
+        annotations: value.get("annotations").cloned(),
         manifest_digest: selected.as_ref().map(|image| image.digest.to_string()),
         manifest: selected.map(|image| image.value),
     };
@@ -177,6 +181,21 @@ impl InspectArgs {
         match &self.format {
             None => println!("{}", serde_json::to_string_pretty(value)?),
             Some(t) if t == "json" => println!("{}", serde_json::to_string_pretty(value)?),
+            Some(t) if t == "layers" || t == "annotations" => {
+                let document = serde_json::to_value(value)?;
+                let view = InspectionView {
+                    reference: &self.reference,
+                    document: &document,
+                };
+                print!(
+                    "{}",
+                    if t == "layers" {
+                        view.layers()?
+                    } else {
+                        view.annotations()?
+                    }
+                );
+            }
             Some(template_in) => {
                 let template = normalize_template_syntax(template_in);
                 let env = Environment::new();
@@ -194,9 +213,172 @@ impl InspectArgs {
     }
 }
 
+#[derive(Debug)]
+struct InspectionView<'a> {
+    reference: &'a str,
+    document: &'a Value,
+}
+
+impl InspectionView<'_> {
+    fn manifest(&self) -> Result<&Value> {
+        self.document.get("manifest").context(
+            "platform manifest is not cached; use pichi pull on a platform digest from pichi inspect",
+        )
+    }
+
+    fn layers(&self) -> Result<String> {
+        let layers = self.manifest()?["layers"]
+            .as_array()
+            .context("manifest has no layers")?;
+        let mut output = format!(
+            "{}\n\n  {:<3} {:<19} {:>12}  DIGEST\n",
+            super::presentation::Presentation::stdout()
+                .heading(&format!("Layers · {}", self.reference)),
+            "#",
+            "LAYER",
+            "SIZE"
+        );
+        let mut filesystem = 0;
+        let mut total = 0u64;
+        for (index, layer) in layers.iter().enumerate() {
+            let kind = match layer["mediaType"].as_str().unwrap_or("") {
+                "application/vnd.pichi.scute.v1" => {
+                    filesystem += 1;
+                    format!("Filesystem {filesystem}")
+                }
+                "application/vnd.pichi.pmi.v1" => "Boot payload".into(),
+                "application/vnd.pichi.bootconfig.v1+zstd" => "Boot configuration".into(),
+                "application/vnd.pichi.dtb.v1" => "Device tree".into(),
+                other => other.chars().flat_map(char::escape_debug).collect(),
+            };
+            let size = layer["size"].as_u64().context("layer has no size")?;
+            total = total
+                .checked_add(size)
+                .context("combined layer size exceeds u64")?;
+            let digest = layer["digest"].as_str().context("layer has no digest")?;
+            let short: String = digest.chars().take(19).collect();
+            writeln!(
+                output,
+                "  {:<3} {kind:<19} {:>12}  {short}",
+                index + 1,
+                humansize::format_size(size, humansize::BINARY)
+            )?;
+        }
+        writeln!(
+            output,
+            "\n{} layers · {}\nDigests abbreviated; use --format json for full values.",
+            layers.len(),
+            humansize::format_size(total, humansize::BINARY)
+        )?;
+        Ok(output)
+    }
+
+    fn annotations(&self) -> Result<String> {
+        let mut output = format!(
+            "{}\n",
+            super::presentation::Presentation::stdout()
+                .heading(&format!("Annotations · {}", self.reference))
+        );
+        if let Some(index) = self.document["annotations"]
+            .as_object()
+            .filter(|a| !a.is_empty())
+        {
+            writeln!(output, "\nIndex")?;
+            Self::annotation_rows(&mut output, index.iter(), "")?;
+        }
+        let annotations = self.manifest()?["annotations"]
+            .as_object()
+            .context("manifest has no annotations")?;
+        for (heading, prefix) in [
+            ("Build provenance", "dev.pichi.build."),
+            ("Image metadata", "org.opencontainers.image."),
+            ("Filesystem integrity", "dev.pichi.carapace.verity."),
+        ] {
+            let selected: Vec<_> = annotations
+                .iter()
+                .filter(|(key, _)| key.starts_with(prefix))
+                .collect();
+            if !selected.is_empty() {
+                writeln!(output, "\n{heading} ({prefix}*)")?;
+                Self::annotation_rows(&mut output, selected.into_iter(), prefix)?;
+            }
+        }
+        let other: Vec<_> = annotations
+            .iter()
+            .filter(|(key, _)| {
+                ![
+                    "dev.pichi.build.",
+                    "org.opencontainers.image.",
+                    "dev.pichi.carapace.verity.",
+                ]
+                .iter()
+                .any(|p| key.starts_with(p))
+            })
+            .collect();
+        if !other.is_empty() {
+            writeln!(output, "\nOther annotations")?;
+            Self::annotation_rows(&mut output, other.into_iter(), "")?;
+        }
+        if annotations.is_empty() {
+            writeln!(output, "\nNo manifest annotations.")?;
+        }
+        Ok(output)
+    }
+
+    fn annotation_rows<'a>(
+        output: &mut String,
+        rows: impl Iterator<Item = (&'a String, &'a Value)>,
+        prefix: &str,
+    ) -> Result<()> {
+        for (key, value) in rows {
+            let name: String = key
+                .strip_prefix(prefix)
+                .unwrap_or(key)
+                .chars()
+                .flat_map(char::escape_debug)
+                .collect();
+            let value: String = value
+                .as_str()
+                .context("annotation value is not a string")?
+                .chars()
+                .flat_map(char::escape_debug)
+                .collect();
+            if name.chars().count().max(17) + value.chars().count() + 4 > 80 {
+                writeln!(output, "  {name}\n    {value}")?;
+            } else {
+                writeln!(output, "  {name:<17}  {value}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Accept docker-style `{{.Field}}` by normalising the leading dot to Jinja's
 /// `{{ Field }}`. Annotation subscripts (`["key"]`) are native minijinja and
 /// pass through untouched.
 fn normalize_template_syntax(user: &str) -> String {
     user.replace("{{.", "{{ ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layer_size_overflow_is_an_error() {
+        let document = serde_json::json!({"manifest": {"layers": [
+            {"mediaType": "application/vnd.pichi.pmi.v1", "digest": "sha256:aaaa", "size": u64::MAX},
+            {"mediaType": "application/vnd.pichi.pmi.v1", "digest": "sha256:bbbb", "size": 1}
+        ]}});
+        let view = InspectionView {
+            reference: "oversized:demo",
+            document: &document,
+        };
+        assert!(
+            view.layers()
+                .unwrap_err()
+                .to_string()
+                .contains("combined layer size")
+        );
+    }
 }

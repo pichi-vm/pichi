@@ -9,6 +9,7 @@
 
 mod boot_config;
 pub mod build;
+mod build_output;
 mod build_port;
 mod cache;
 pub mod images;
@@ -19,6 +20,7 @@ pub mod load;
 pub mod manifest;
 pub mod manifest_ext;
 mod platform;
+mod presentation;
 pub mod prune;
 pub mod pull;
 pub mod push;

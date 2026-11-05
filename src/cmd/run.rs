@@ -86,6 +86,11 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
 
     // Locate dillo and hand off.
     let dillo = find_dillo();
+    eprintln!(
+        "{}",
+        super::presentation::Presentation::stderr()
+            .heading(&format!("Starting {}", args.reference))
+    );
     exec_dillo(&dillo, &dillo_args)
 }
 
@@ -245,6 +250,10 @@ fn exec_dillo(dillo: &Path, args: &[String]) -> Result<()> {
     log::info!("exec dillo: {} {}", dillo.display(), args.join(" "));
     let mut cmd = Command::new(dillo);
     cmd.args(args);
+    // Library/VMM tracing is opt-in; keep actionable warnings on stderr.
+    if std::env::var_os("RUST_LOG").is_none() {
+        cmd.env("RUST_LOG", "warn");
+    }
 
     #[cfg(unix)]
     {

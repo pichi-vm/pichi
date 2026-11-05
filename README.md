@@ -40,6 +40,16 @@ is still a valid image — a base others derive from.
 
 Run `pichi <command> --help` for details.
 
+For a short build → inspect → run walkthrough, see the
+[lifecycle demo](examples/lifecycle/README.md). `pichi inspect IMAGE --format layers`
+shows a compact layer table; `--format annotations` groups provenance and
+integrity metadata. The default inspection output remains JSON.
+
+Builds show concise phases and save appliance output in a private log under
+the configured runroot. A failure shows the log's tail and full path. Use
+`pichi build --verbose` to stream the console instead. `pichi run` keeps VMM
+diagnostics at warning level unless `RUST_LOG` is explicitly set.
+
 ## Build
 
 `pichi build <dir> --ref <ref> -t <tag>` is a specialization of `pichi run`:

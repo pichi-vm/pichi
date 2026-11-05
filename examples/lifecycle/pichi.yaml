@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+version: 1
+stages:
+  workload:
+    extend: ghcr.io/pichi-vm/fedora:43
+    mounts:
+      /run: tmpfs
+      /tmp: tmpfs
+      /var: tmpfs
+    steps:
+      - copy: { path: files, into: /tmp/demo }
+      - exec:
+          command: |
+            install -Dm0644 /tmp/demo/lifecycle.service /etc/systemd/system/lifecycle.service
+            systemctl --root=/ enable lifecycle.service
+image:
+  root: workload
+  boot:
+    inherit: workload
+    extend:
+      # Keep the boot console separate from the workload's hvc0 output.
+      kernel.console: "tty0"
+      kernel.systemd.show_status: "false"
+      kernel.systemd.log_level: "warning"
+      kernel.systemd.getty_auto: "no"
+      kernel.systemd.tty.term.hvc0: "dumb"
+requirements:
+  cpus: { recommended: 2 }
+  memory: { required: 512, recommended: 1024 }
