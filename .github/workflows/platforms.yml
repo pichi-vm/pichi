@@ -64,7 +64,7 @@ jobs:
       - name: Install toolchain
         shell: bash
         run: |
-          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src,clippy
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src,clippy,llvm-tools
           rustup default "$NIGHTLY"
           # arma embeds native-arch tatu; snuffler is cross-built for the guest
           # musl triple matching this host's arch.
@@ -78,21 +78,13 @@ jobs:
       - name: Configure portable fixture tools
         shell: bash
         run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          suffix=''
+          if [ "$RUNNER_OS" = Windows ]; then suffix='.exe'; fi
+          echo "PICHI_TEST_STRIP=$(rustc --print sysroot)/lib/rustlib/$host/bin/llvm-objcopy$suffix" >> "$GITHUB_ENV"
           echo "PICHI_TEST_ROOT_FILESYSTEM=$RUNNER_TEMP/fixtures/root.ext4" >> "$GITHUB_ENV"
           git config --global core.longpaths true
           git config --global core.autocrlf false
-
-      # Supply fixture tools missing from the Nix-based runner's service PATH.
-      - name: Install fixture tools (Linux arm64)
-        if: matrix.os == 'linux-arm64'
-        shell: bash
-        run: |
-          if ! command -v strip >/dev/null; then
-            binutils_path=$(nix --extra-experimental-features 'nix-command flakes' build \
-              github:NixOS/nixpkgs/08d3a97586f6b6343b3b5e799980773629432610#binutils \
-              --no-link --print-out-paths)
-            echo "$binutils_path/bin" >> "$GITHUB_PATH"
-          fi
 
       # The boot step (`--features vm-tests`) consumes arma/dillo/conglobate/corium
       # as git artifact deps, whose transitive tatu/snuffler artifact deps target
@@ -187,7 +179,6 @@ jobs:
           grep -i huge /proc/meminfo
 
       - name: Build guest tools for staged images
-        if: runner.os == 'Linux'
         shell: bash
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
