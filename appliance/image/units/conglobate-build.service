@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [Unit]
-Description=Conglobate build appliance (build-port CBOR on dev.pichi.build)
+Description=Pichi build appliance (build-port CBOR on dev.pichi.build)
 Requires=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount
 Requires=systemd-resolved.service
 Wants=network-online.target
@@ -16,7 +16,7 @@ FailureAction=poweroff
 Type=oneshot
 BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf
 ExecStartPre=/usr/libexec/conglobate-lsm /sys/fs/bpf/conglobate-label-policy
-ExecStart=/usr/bin/conglobate appliance
+ExecStart=/usr/bin/pichi-build
 # Image cmdline is console=hvc0, so the console copy is the build console.
 StandardOutput=journal+console
 
