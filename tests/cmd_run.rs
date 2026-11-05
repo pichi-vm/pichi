@@ -436,3 +436,23 @@ async fn run_missing_ref_auto_pulls() {
         "dillo should not be invoked when the auto-pull fails"
     );
 }
+
+#[tokio::test]
+async fn run_propagates_dillo_exit_status_with_spaced_paths() {
+    let tmp = tempfile::Builder::new()
+        .prefix("pichi run ")
+        .tempdir()
+        .unwrap();
+    populate_bootable(&graphroot(&tmp), "exit-status:1").await;
+    let record = tmp.path().join("argv.txt");
+    let stub = make_stub_dillo(tmp.path());
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .env("PICHI_DILLO", stub)
+        .env("PICHI_TEST_DILLO_EXIT", "7")
+        .args(["run", "exit-status:1"])
+        .assert()
+        .code(7);
+    assert!(record.is_file());
+}
