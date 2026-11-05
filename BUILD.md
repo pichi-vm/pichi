@@ -341,9 +341,9 @@ from the committed lock. `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a rebuilt
 OCI appliance layout for cross-project qualification; otherwise the smoke
 uses the shipping default. Staged plans require an appliance built with the
 matching Conglobate engine; `--build-image` selects it explicitly. The default image is
-`ghcr.io/pichi-vm/conglobate@sha256:278ca85b9c06639592db961ee1c8e78827a768f452838f2d03e683b5f8cf7095`.
+`ghcr.io/pichi-vm/conglobate@sha256:2239264c3281d53beedabdbfe8b3c587ac8ff8f2e87d4642e192f943f6cd5c45`.
 This amd64/arm64 index is built from Conglobate revision
-`f63474a47bc94316fcf662493d0cf8f7036777d0` and uses the staged plan, GPT
+`39b8706055dd79f00195e256efb4b2536d586b00` and uses the staged plan, GPT
 root, embedded-DTB PMI and native bootconfig contracts described here.
 The default appliance and the library in `deps/conglobate` both require
 `version: 1` in plans and the flat digest lock shown above.
