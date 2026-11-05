@@ -7,3 +7,6 @@
 [submodule "appliance/dillo"]
 	path = appliance/dillo
 	url = https://github.com/pichi-vm/dillo
+[submodule "appliance/fedora"]
+	path = appliance/fedora
+	url = https://github.com/pichi-vm/fedora
