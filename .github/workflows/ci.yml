@@ -106,3 +106,53 @@ jobs:
       contents: read
       packages: write
     secrets: inherit
+
+  publish-appliance:
+    name: publish appliance
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [appliance, ci, checks, copr-spec, copr-srpm, registry]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      NIGHTLY: nightly-2026-07-06
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build Pichi
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          cargo "+$NIGHTLY" build --locked --release --bin pichi
+          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
+
+      - name: Download native OCI layouts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: appliance-oci-*
+
+      - name: Authenticate to ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$HOME/.docker"
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
+            "$(printf '%s:%s' '${{ github.actor }}' "$GHCR_TOKEN" | base64 -w0)" \
+            > "$HOME/.docker/config.json"
+
+      - name: Publish the multi-arch appliance
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml)
+          image="ghcr.io/pichi-vm/pichi-build:$version"
+          pichi load appliance-oci-amd64 --tag "${image}-amd64"
+          pichi load appliance-oci-arm64 --tag "${image}-arm64"
+          pichi manifest create "$image" "${image}-amd64" "${image}-arm64" \
+            -a "org.opencontainers.image.source=https://github.com/pichi-vm/pichi" \
+            -a "org.opencontainers.image.revision=${{ github.sha }}" \
+            -a "org.opencontainers.image.version=$version"
+          pichi manifest annotate "$image" "${image}-amd64" --os pichi --arch amd64
+          pichi manifest annotate "$image" "${image}-arm64" --os pichi --arch arm64
+          pichi manifest push "$image" "$image"
