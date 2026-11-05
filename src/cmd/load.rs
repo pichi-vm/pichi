@@ -297,6 +297,15 @@ impl OciLayout {
                 use cap_std::fs::MetadataExt as _;
                 ensure!(metadata.nlink() == 1, "OCI hard links are not allowed");
             }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt as _;
+                let metadata = root.open(&name)?.into_std().metadata()?;
+                ensure!(
+                    metadata.number_of_links() == Some(1),
+                    "OCI hard links are not allowed"
+                );
+            }
             let cap = match name.to_str() {
                 Some("oci-layout") => 4096,
                 Some("index.json") => METADATA_CAP,
@@ -1128,12 +1137,23 @@ pub(super) mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn rejects_symlinks_hardlinks_and_special_files() {
-        use std::os::unix::fs::symlink;
+        #[cfg(unix)]
+        use std::os::unix::fs::{symlink as symlink_dir, symlink as symlink_file};
+        #[cfg(windows)]
+        use std::os::windows::fs::{symlink_dir, symlink_file};
         for case in [
-            "root", "blobs", "sha256", "cow", "index", "marker", "yaml", "hardlink", "fifo",
+            "root",
+            "blobs",
+            "sha256",
+            "cow",
+            "index",
+            "marker",
+            "yaml",
+            "hardlink",
+            #[cfg(unix)]
+            "fifo",
         ] {
             let dir = tempfile::tempdir().unwrap();
             let output = dir.path().join("output");
@@ -1166,8 +1186,10 @@ pub(super) mod tests {
             }
             match case {
                 "hardlink" => std::fs::hard_link(&external, &path).unwrap(),
+                #[cfg(unix)]
                 "fifo" => nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRUSR).unwrap(),
-                _ => symlink(&external, &path).unwrap(),
+                _ if external.is_dir() => symlink_dir(&external, &path).unwrap(),
+                _ => symlink_file(&external, &path).unwrap(),
             }
             assert!(
                 OciLayout::read(&output, &store).await.is_err(),
