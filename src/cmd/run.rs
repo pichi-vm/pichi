@@ -304,7 +304,10 @@ mod tests {
 
     fn chain_annotations() -> BTreeMap<String, String> {
         [
-            ("dev.pichi.carapace.verity.algo", "sha256"),
+            (
+                "dev.pichi.carapace.verity.hash",
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            ),
             ("dev.pichi.carapace.verity.data-block-size", "4096"),
             ("dev.pichi.carapace.verity.hash-block-size", "4096"),
             ("dev.pichi.carapace.verity.version", "1"),
@@ -501,6 +504,7 @@ mod tests {
                     salt: hex::encode(tip),
                 },
             };
+            manifest.layers.push(Layer::Scute(scute.clone()));
             let header = manifest.verity_header(&scute, Some(scute.size)).unwrap();
             tip = header
                 .format_padded(data.as_slice(), &mut std::io::Cursor::new(Vec::new()))
@@ -508,9 +512,10 @@ mod tests {
             scutes.push(scute);
         }
         manifest.layers = scutes.iter().cloned().map(Layer::Scute).collect();
-        manifest
-            .annotations
-            .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(tip));
+        manifest.annotations.insert(
+            "dev.pichi.carapace.verity.hash".into(),
+            format!("sha256:{}", hex::encode(tip)),
+        );
         let refs = manifest.scute_layers();
         let mut prepared = Vec::new();
         for layer in &refs {
@@ -570,8 +575,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        m.annotations
-            .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
+        m.annotations.insert(
+            "dev.pichi.carapace.verity.hash".into(),
+            format!("sha256:{}", hex::encode(root)),
+        );
 
         let spec = build_gpt_spec(&m, &m.scute_layers(), &blob_store)
             .await
@@ -657,7 +664,7 @@ mod tests {
                 .root_hash;
                 manifest.annotations.insert(
                     "dev.pichi.carapace.verity.hash".into(),
-                    hex::encode(expected_root),
+                    format!("sha256:{}", hex::encode(expected_root)),
                 );
                 // Initial preparation and either missing sidecar use the same
                 // bounded preparation path before Dillo receives any files.

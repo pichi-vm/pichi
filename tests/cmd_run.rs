@@ -25,7 +25,10 @@ fn graphroot(tmp: &TempDir) -> PathBuf {
 
 fn chain_annotations() -> std::collections::BTreeMap<String, String> {
     [
-        ("dev.pichi.carapace.verity.algo", "sha256"),
+        (
+            "dev.pichi.carapace.verity.hash",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        ),
         ("dev.pichi.carapace.verity.data-block-size", "4096"),
         ("dev.pichi.carapace.verity.hash-block-size", "4096"),
         ("dev.pichi.carapace.verity.version", "1"),
@@ -84,9 +87,10 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
         .await
         .unwrap()
         .unwrap();
-    manifest
-        .annotations
-        .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
+    manifest.annotations.insert(
+        "dev.pichi.carapace.verity.hash".into(),
+        format!("sha256:{}", hex::encode(root)),
+    );
     let bytes = serde_json::to_vec(&manifest).unwrap();
     let digest =
         conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
@@ -256,9 +260,10 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 .await
                 .unwrap()
                 .unwrap();
-            manifest
-                .annotations
-                .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
+            manifest.annotations.insert(
+                "dev.pichi.carapace.verity.hash".into(),
+                format!("sha256:{}", hex::encode(root)),
+            );
             let bytes = serde_json::to_vec(&manifest).unwrap();
             let manifest_digest = sha256_digest(&bytes);
             store.put_blob(&manifest_digest, &bytes).await.unwrap();

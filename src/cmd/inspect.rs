@@ -8,7 +8,7 @@
 //! about itself); everything else is derivable from the manifest. `--format`
 //! renders a minijinja (Jinja2) template — dotted OCI annotation keys are
 //! reached with subscripts, e.g.
-//! `{{ manifest.annotations["dev.pichi.carapace.verity.algo"] }}`. When the
+//! `{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}`. When the
 //! resolved digest's blob is an OCI Image Index (D-20), drills into the
 //! pichi-artifactType entry; if absent from the cache, lists the index
 //! entries and points at `pichi pull`.
@@ -170,7 +170,7 @@ impl InspectArgs {
     ///
     /// Templates are rendered with minijinja (Jinja2). Dotted OCI annotation
     /// keys are reached with subscript syntax — no data reshaping needed:
-    /// `{{ manifest.annotations["dev.pichi.carapace.verity.algo"] }}`. For
+    /// `{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}`. For
     /// docker familiarity, a leading `{{.field}}` is accepted and normalised to
     /// `{{ field }}`.
     fn emit<T: Serialize>(&self, value: &T) -> Result<()> {

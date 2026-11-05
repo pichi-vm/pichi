@@ -542,3 +542,9 @@ Plan and lock formats are Conglobate's, not redefined here.
 - Host vGPT loops over source carapaces as the build product API
 - Mid-build registry pulls inside `pichi build` (cache is prepared first)
 - Reintroducing Conglobate-as-`/init` or `$DIR`→erofs host packaging
+
+Carapace manifest roots use `sha256:<64 lowercase hex digits>` in
+`dev.pichi.carapace.verity.hash`; `verity.algo` is retired. Bare roots and
+unsupported algorithms are rejected. Boot configuration continues to carry
+the verified raw root bytes as hexadecimal. Rebuild old images with the
+updated producers before using them with the updated consumer.

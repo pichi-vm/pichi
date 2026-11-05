@@ -707,7 +707,6 @@ mod tests {
         is_zstd: bool,
     ) -> (Bytes, Digest) {
         let mut annotations = BTreeMap::new();
-        annotations.insert("dev.pichi.carapace.verity.algo".into(), "sha256".into());
         annotations.insert(
             "dev.pichi.carapace.verity.data-block-size".into(),
             "4096".into(),
@@ -720,7 +719,10 @@ mod tests {
         annotations.insert("dev.pichi.carapace.verity.hash-type".into(), "1".into());
         annotations.insert(
             "dev.pichi.carapace.verity.hash".into(),
-            hex::encode(pull_side_verity_params().compute(data).unwrap().root_hash),
+            format!(
+                "sha256:{}",
+                hex::encode(pull_side_verity_params().compute(data).unwrap().root_hash)
+            ),
         );
         let scute_desc = ScuteDescriptor {
             digest: scute_digest.to_string(),
@@ -1107,9 +1109,10 @@ mod tests {
                 registry.insert_blob("ghcr.io", "example/foo", digest, Bytes::from(wire));
             }
             let mut manifest = manifest.unwrap();
-            manifest
-                .annotations
-                .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(parent));
+            manifest.annotations.insert(
+                "dev.pichi.carapace.verity.hash".into(),
+                format!("sha256:{}", hex::encode(parent)),
+            );
             manifest.layers = order
                 .into_iter()
                 .map(|index| layers[index].clone())
@@ -1172,7 +1175,10 @@ mod tests {
                 scute.annotations.salt = hex::encode(&params.salt);
                 manifest.annotations.insert(
                     "dev.pichi.carapace.verity.hash".into(),
-                    hex::encode(params.compute(&data).unwrap().root_hash),
+                    format!(
+                        "sha256:{}",
+                        hex::encode(params.compute(&data).unwrap().root_hash)
+                    ),
                 );
                 let registry = MockRegistry::new();
                 registry.insert_manifest(

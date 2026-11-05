@@ -564,7 +564,6 @@ pub(super) mod tests {
                     "config": conglobate::artifact::ConfigDescriptor::canonical(),
                     "layers": [],
                     "annotations": {
-                        "dev.pichi.carapace.verity.algo": "sha256",
                         "dev.pichi.carapace.verity.data-block-size": "4096",
                         "dev.pichi.carapace.verity.hash-block-size": "4096",
                         "dev.pichi.carapace.verity.version": "1",
@@ -614,7 +613,7 @@ pub(super) mod tests {
             self.trees.push(output.blob);
             self.tip = output.root_hash;
             self.manifest["annotations"]["dev.pichi.carapace.verity.hash"] =
-                hex::encode(self.tip).into();
+                format!("sha256:{}", hex::encode(self.tip)).into();
         }
 
         pub(crate) fn write(&self, dir: &Path) -> Digest {
@@ -674,7 +673,7 @@ pub(super) mod tests {
             let parent = fixture.tip;
             fixture.add_cow(shared.clone(), false);
             fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash"] =
-                hex::encode(fixture.tip).into();
+                format!("sha256:{}", hex::encode(fixture.tip)).into();
             let manifest: Manifest = serde_json::from_value(fixture.manifest.clone()).unwrap();
             let layer = manifest.layers.last().unwrap();
             assert_eq!(layer.digest_str(), digest.to_string());
@@ -879,8 +878,8 @@ pub(super) mod tests {
                 "zero root" | "wrong root" | "malformed root" => {
                     fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash"] =
                         match case {
-                            "zero root" => hex::encode([0; 32]),
-                            "wrong root" => hex::encode([42; 32]),
+                            "zero root" => format!("sha256:{}", hex::encode([0; 32])),
+                            "wrong root" => format!("sha256:{}", hex::encode([42; 32])),
                             _ => "not a root".into(),
                         }
                         .into();

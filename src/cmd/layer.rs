@@ -386,11 +386,11 @@ mod tests {
                     "size": wire.len(), "annotations": annotations,
                 }],
                 "annotations": {
-                    "dev.pichi.carapace.verity.algo": "sha256",
                     "dev.pichi.carapace.verity.data-block-size": "4096",
                     "dev.pichi.carapace.verity.hash-block-size": "4096",
                     "dev.pichi.carapace.verity.version": "1",
                     "dev.pichi.carapace.verity.hash-type": "1",
+                    "dev.pichi.carapace.verity.hash": format!("sha256:{}", hex::encode(root)),
                 },
             });
             Self {
@@ -634,12 +634,11 @@ mod tests {
                 },
             }],
             "annotations": {
-                "dev.pichi.carapace.verity.algo": "sha256",
                 "dev.pichi.carapace.verity.data-block-size": "4096",
                 "dev.pichi.carapace.verity.hash-block-size": "4096",
                 "dev.pichi.carapace.verity.version": "1",
                 "dev.pichi.carapace.verity.hash-type": "1",
-                "dev.pichi.carapace.verity.hash": hex::encode([0; 32]),
+                "dev.pichi.carapace.verity.hash": format!("sha256:{}", hex::encode([1; 32])),
             },
         });
         let manifest: Manifest = serde_json::from_value(manifest).unwrap();
