@@ -101,18 +101,7 @@ fn spike_a5_zstd_write_decoder_sink_shape() {
     assert_eq!(decoded, original, "decoded bytes must match original");
 }
 
-// SPIKE A2 (oci-client TokenCache mid-pull 401 retry): documented as a
-// follow-up integration test in Plan 06 against zot+htpasswd. Cannot run
-// here without docker. We DOCUMENT the spike's plan in this comment so
-// Plan 06's cmd_pull_bearer integration test inherits the design
-// rationale:
-//
-//   1. Configure zot with htpasswd auth + JWT TTL = 5 seconds.
-//   2. Push a >= 50MiB blob (pre-loaded into zot).
-//   3. pichi pull with throttled stream (tc qdisc add dev lo … rate 5mbit)
-//      so the stream takes >= 10 seconds.
-//   4. Assert pull succeeds. If it fails with 401 mid-stream, oci-client's
-//      TokenCache does NOT cover this case and Plan 03 must add explicit
-//      retry-from-Range logic.
-//
-// PLAN 06 OWNS this test. Plan 01 documents A2 here so reviewers see the gap.
+// Authentication retry is covered by blob_auth.rs using real HTTP requests.
+// It rejects a token before the response body, requires a replacement token,
+// and checks that retries are bounded. Expiration during an already accepted
+// response body cannot turn that response into an HTTP 401.
