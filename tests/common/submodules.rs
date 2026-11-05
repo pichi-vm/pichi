@@ -27,6 +27,7 @@ impl GitRepo {
         std::fs::create_dir_all(&path).unwrap();
         let repo = Self { path };
         repo.git(&["init", "-q", "-b", "main"]);
+        repo.git(&["config", "core.symlinks", "true"]);
         repo
     }
 
