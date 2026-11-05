@@ -21,7 +21,6 @@ pub mod stages;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod submodules;
 
 pub const CORIUM_BIN: &str = env!("CARGO_BIN_FILE_CORIUM_corium");
@@ -57,6 +56,7 @@ pub fn build_image() -> &'static str {
 }
 
 pub fn prepare_build_image(graphroot: &Path) {
+    Hypervisor::prepare();
     if let Some(layout) = std::env::var_os("PICHI_TEST_BUILD_IMAGE_LAYOUT") {
         assert_pichi_ok(
             "load rebuilt appliance",
@@ -79,6 +79,42 @@ pub fn prepare_build_image(graphroot: &Path) {
     }
 }
 
+struct Hypervisor;
+
+impl Hypervisor {
+    fn prepare() {
+        #[cfg(target_os = "linux")]
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/kvm")
+            .expect("VM tests require usable /dev/kvm");
+
+        #[cfg(target_os = "macos")]
+        {
+            static SIGNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            SIGNED.get_or_init(|| {
+                let directory = tempfile::tempdir().unwrap();
+                let entitlements = directory.path().join("hypervisor.plist");
+                std::fs::write(
+                    &entitlements,
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
+"#,
+                )
+                .unwrap();
+                let output = Command::new("codesign")
+                    .args(["--force", "--sign", "-", "--entitlements"])
+                    .arg(&entitlements)
+                    .arg(DILLO_BIN)
+                    .output()
+                    .expect("codesign dillo for HVF");
+                assert!(output.status.success(), "codesign dillo: {output:?}");
+            });
+        }
+    }
+}
+
 /// Assert a `pichi` invocation succeeded, panicking with the labelled
 /// stdout+stderr otherwise.
 pub fn assert_pichi_ok(label: &str, out: &std::process::Output) {
@@ -91,23 +127,17 @@ pub fn assert_pichi_ok(label: &str, out: &std::process::Output) {
     );
 }
 
-/// Whether this host can run the boot lane (needs a usable `/dev/kvm`).
-pub fn kvm_available() -> bool {
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/kvm")
-        .is_ok()
-}
-
-/// Build a GPT disk containing a tiny ext4 root populated from `files`.
-pub fn make_root_disk(path: &Path, files: &[(&str, &str)]) {
+/// Build the tiny source root used by smoke and submodule tests. CI supplies
+/// the same ext4 bytes to every host; local Linux runs can generate them.
+pub fn make_root_disk(path: &Path) {
+    if let Some(filesystem) = std::env::var_os("PICHI_TEST_ROOT_FILESYSTEM") {
+        root_disk::RootDisk::write(Path::new(&filesystem), path);
+        return;
+    }
     let filesystem = path.with_extension("filesystem");
     let dir = path.with_extension("src");
     std::fs::create_dir_all(&dir).unwrap();
-    for (name, body) in files {
-        std::fs::write(dir.join(name), body).unwrap();
-    }
+    std::fs::write(dir.join("os-release"), "ID=fedora\nVERSION_ID=43\n").unwrap();
     let status = Command::new("mkfs.ext4")
         .args(["-q", "-F", "-b", "4096"])
         .arg("-d")
@@ -115,7 +145,7 @@ pub fn make_root_disk(path: &Path, files: &[(&str, &str)]) {
         .arg(&filesystem)
         .arg("16M")
         .status()
-        .expect("run mkfs.ext4");
+        .expect("run mkfs.ext4 or set PICHI_TEST_ROOT_FILESYSTEM to the CI fixture");
     assert!(status.success(), "mkfs.ext4 failed");
     root_disk::RootDisk::write(&filesystem, path);
 }
@@ -152,7 +182,7 @@ pub fn tag_digest(graphroot: &Path, reference: &str) -> String {
 /// Returns the index digest to record in the smoke repository's lock.
 pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) -> String {
     let src = tmp.join("qualification-fedora43.raw");
-    make_root_disk(&src, &[("os-release", "ID=fedora\nVERSION_ID=43\n")]);
+    make_root_disk(&src);
     assert_pichi_ok(
         "import smoke source carapace",
         &pichi(

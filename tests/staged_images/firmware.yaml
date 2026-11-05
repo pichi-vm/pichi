@@ -12,6 +12,7 @@ stages:
       - copy: {path: corium, into: /tmp/corium}
       - exec:
           command: |
+            chmod +x /tmp/arma /tmp/corium
             set -- /usr/lib/modules/*
             test "$#" -eq 1
             modules=$1

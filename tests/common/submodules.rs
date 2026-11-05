@@ -4,6 +4,7 @@
 //! Local Git fixtures for submodules (repositories recorded inside a parent).
 
 use std::fmt::Write as _;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -32,6 +33,10 @@ impl GitRepo {
     pub fn git(&self, args: &[&str]) -> String {
         let out = Command::new("git")
             .args([
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                "core.autocrlf=false",
                 "-c",
                 "protocol.allow=never",
                 "-c",
@@ -183,7 +188,10 @@ impl SubmoduleFixture {
             // A committed symlink reaches the submodule file through normal
             // context resolution.
             let alias = format!("{}-{index}", name.trim_end_matches(".yaml"));
+            #[cfg(unix)]
             std::os::unix::fs::symlink(source, self.repo.path.join(&alias)).unwrap();
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(source, self.repo.path.join(&alias)).unwrap();
             write!(
                 plan,
                 "    - copy:\n        path: {alias}\n        into: /payload-{index}\n"
@@ -198,8 +206,10 @@ impl SubmoduleFixture {
         let stdout = self.tmp.path().join(format!("{tag}.out"));
         let stderr = self.tmp.path().join(format!("{tag}.err"));
         let start = Instant::now();
-        let mut child = Command::new(PICHI_BIN)
-            .process_group(0)
+        let mut command = Command::new(PICHI_BIN);
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command
             .env("XDG_DATA_HOME", &self.graphroot)
             .env("PICHI_DILLO", DILLO_BIN)
             .stdin(Stdio::null())
@@ -227,8 +237,19 @@ impl SubmoduleFixture {
             .wait_timeout(Duration::from_secs(180))
             .unwrap()
             .unwrap_or_else(|| {
-                let group = nix::unistd::Pid::from_raw(child.id().try_into().unwrap());
-                nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL).unwrap();
+                #[cfg(unix)]
+                {
+                    let group = nix::unistd::Pid::from_raw(child.id().try_into().unwrap());
+                    nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL).unwrap();
+                }
+                #[cfg(windows)]
+                assert!(
+                    Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &child.id().to_string()])
+                        .status()
+                        .unwrap()
+                        .success()
+                );
                 child.wait().unwrap();
                 panic!(
                     "{plan} timed out:\n{}\n{}",

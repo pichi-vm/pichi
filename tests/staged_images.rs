@@ -1,13 +1,9 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Cross-project acceptance against a newly built appliance. Requires KVM;
-//! the absence of virtualization is a failure, never a successful skip.
-#![cfg(all(
-    feature = "vm-tests",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
+//! Cross-project acceptance against the shipping or explicitly rebuilt appliance.
+//! Every supported host runs the same builds and boots on its native hypervisor.
+#![cfg(feature = "vm-tests")]
 
 mod common;
 #[path = "staged_images/disk.rs"]

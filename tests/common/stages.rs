@@ -28,21 +28,18 @@ impl Builds {
     pub fn guest_binary(&self, name: &str, source: &Path) -> PathBuf {
         let path = self.directory.join(name);
         fs::copy(source, &path).unwrap();
-        let status = Command::new("strip")
-            .arg("--strip-debug")
-            .arg(&path)
-            .status()
-            .unwrap();
+        let status =
+            Command::new(std::env::var_os("PICHI_TEST_STRIP").unwrap_or_else(|| "strip".into()))
+                .arg("--strip-debug")
+                .arg(&path)
+                .status()
+                .unwrap();
         assert!(status.success(), "strip guest executable");
         assert!(fs::metadata(&path).unwrap().len() < 16 * 1024 * 1024);
         path
     }
 
     pub fn new(name: &str) -> Self {
-        assert!(
-            super::kvm_available(),
-            "staged-image tests require usable /dev/kvm"
-        );
         let temporary = if let Some(parent) = std::env::var_os("PICHI_TEST_EVIDENCE") {
             fs::create_dir_all(&parent).unwrap();
             tempfile::Builder::new()
