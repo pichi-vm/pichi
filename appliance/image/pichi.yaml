@@ -70,6 +70,7 @@ image:
     extend:
       kernel.selinux: "0"
       kernel.systemd.log_level: "warning"
+      kernel.systemd.getty_auto: "no"
 
 requirements:
   cpus: { recommended: 2 }
