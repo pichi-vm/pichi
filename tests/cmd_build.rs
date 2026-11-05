@@ -11,6 +11,21 @@ use clap::{Args, FromArgMatches};
 use pichi::cli::BuildArgs;
 
 #[test]
+fn build_console_capture_is_opt_in() {
+    for extra in [vec![], vec!["--quiet"], vec!["-q"]] {
+        let mut argv = vec!["build", ".", "--ref", "HEAD"];
+        argv.extend(&extra);
+        let matches = BuildArgs::augment_args(clap::Command::new("build"))
+            .try_get_matches_from(argv)
+            .unwrap();
+        assert_eq!(
+            BuildArgs::from_arg_matches(&matches).unwrap().quiet,
+            !extra.is_empty()
+        );
+    }
+}
+
+#[test]
 fn build_help_documents_plan_context_and_defaults() {
     let assert = Command::cargo_bin("pichi")
         .unwrap()
