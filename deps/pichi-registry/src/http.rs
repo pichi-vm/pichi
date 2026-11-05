@@ -350,10 +350,19 @@ impl Registry for HttpRegistry {
         // oci-client verifies sha256(stream) == descriptor.digest internally
         // (RESEARCH §"oci-client API Reference"); Plan 04's pipeline composes
         // a defence-in-depth sha256 in cmd/pull's sink — that's not duplication.
-        client
-            .pull_blob(&oci_ref, &descriptor, sink)
-            .await
-            .map_err(RegistryError::from)
+        let mut result = client.pull_blob(&oci_ref, &descriptor, &mut *sink).await;
+        // A 401 rejects the request before oci-client writes any body bytes.
+        // Refresh once; never replay a partially consumed stream or other error.
+        if matches!(&result, Err(OciDistributionError::RequestError(error))
+            if error.status() == Some(reqwest::StatusCode::UNAUTHORIZED))
+        {
+            client
+                .auth(&oci_ref, &auth, RegistryOperation::Pull)
+                .await
+                .map_err(RegistryError::from)?;
+            result = client.pull_blob(&oci_ref, &descriptor, sink).await;
+        }
+        result.map_err(RegistryError::from)
     }
 
     async fn pull_blob_stream(
@@ -380,10 +389,19 @@ impl Registry for HttpRegistry {
         // `SizedStream.stream` yields owned `Bytes` from reqwest's bytes_stream
         // (no copy). The caller hashes for defence-in-depth, so we don't rely
         // on oci-client's internal verification here.
-        let sized = client
-            .pull_blob_stream(&oci_ref, &descriptor)
-            .await
-            .map_err(RegistryError::from)?;
+        let mut result = client.pull_blob_stream(&oci_ref, &descriptor).await;
+        // Authentication can be rejected after the token was acquired. Retry
+        // only the initial response, before exposing the stream to the caller.
+        if matches!(&result, Err(OciDistributionError::RequestError(error))
+            if error.status() == Some(reqwest::StatusCode::UNAUTHORIZED))
+        {
+            client
+                .auth(&oci_ref, &auth, RegistryOperation::Pull)
+                .await
+                .map_err(RegistryError::from)?;
+            result = client.pull_blob_stream(&oci_ref, &descriptor).await;
+        }
+        let sized = result.map_err(RegistryError::from)?;
         // oci-client finalizes (and resets) its digest on EOF. Fuse the stream
         // so repeated EOF reads by adapters cannot finalize an empty digest.
         Ok(sized.stream.fuse().boxed())
