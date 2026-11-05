@@ -4,7 +4,6 @@
 //! Local Git fixtures for submodules (repositories recorded inside a parent).
 
 use std::fmt::Write as _;
-use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -14,6 +13,7 @@ use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore};
 use wait_timeout::ChildExt;
 
+use super::process::{ChildExt as _, CommandExt as _};
 use super::{DILLO_BIN, PICHI_BIN, SMOKE_SOURCE_REF};
 
 #[derive(Debug)]
@@ -199,7 +199,6 @@ impl SubmoduleFixture {
         let stderr = self.tmp.path().join(format!("{tag}.err"));
         let start = Instant::now();
         let mut child = Command::new(PICHI_BIN)
-            .process_group(0)
             .env("XDG_DATA_HOME", &self.graphroot)
             .env("PICHI_DILLO", DILLO_BIN)
             .stdin(Stdio::null())
@@ -221,15 +220,13 @@ impl SubmoduleFixture {
             ])
             .stdout(std::fs::File::create(&stdout).unwrap())
             .stderr(std::fs::File::create(&stderr).unwrap())
-            .spawn()
+            .spawn_vm()
             .unwrap();
         let status = child
             .wait_timeout(Duration::from_secs(180))
             .unwrap()
             .unwrap_or_else(|| {
-                let group = nix::unistd::Pid::from_raw(child.id().try_into().unwrap());
-                nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL).unwrap();
-                child.wait().unwrap();
+                child.kill_vm().unwrap();
                 panic!(
                     "{plan} timed out:\n{}\n{}",
                     std::fs::read_to_string(&stdout).unwrap(),
