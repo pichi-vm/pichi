@@ -90,6 +90,14 @@ plan and lock in the appliance.
 pichi uses the digest-pinned default. If that image is not already cached,
 the first build pulls it and continues. Full contract: [BUILD.md](BUILD.md).
 
+## Source checkout
+
+Initialize the pinned Conglobate source before building:
+
+```sh
+git submodule update --init --recursive
+```
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
