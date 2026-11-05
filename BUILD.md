@@ -544,7 +544,9 @@ Plan and lock formats are Conglobate's, not redefined here.
 - Reintroducing Conglobate-as-`/init` or `$DIR`→erofs host packaging
 
 Carapace manifest roots use `sha256:<64 lowercase hex digits>` in
-`dev.pichi.carapace.verity.hash`; `verity.algo` is retired. Bare roots and
-unsupported algorithms are rejected. Boot configuration continues to carry
-the verified raw root bytes as hexadecimal. Rebuild old images with the
-updated producers before using them with the updated consumer.
+`dev.pichi.carapace.verity.hash`; new output retires `verity.algo`.
+Currently pinned appliances remain readable through an input-only path for
+bare roots with an explicit `verity.algo=sha256`. Bare roots without that
+declaration, unsupported algorithms, and any separate algorithm declaration
+alongside a qualified root are rejected. Composition emits the qualified form.
+Boot configuration continues to carry the verified raw root bytes as hex.
