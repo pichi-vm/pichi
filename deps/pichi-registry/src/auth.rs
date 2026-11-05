@@ -103,7 +103,8 @@ pub struct AuthEnv {
     /// `$XDG_CONFIG_HOME` (e.g. `~/.config`); falls back to `$HOME/.config`
     /// when unset.
     pub xdg_config_home: Option<PathBuf>,
-    /// `$HOME` — used for both the XDG fallback and for `~/.docker/config.json`.
+    /// Native home directory (`HOME` on Unix, `USERPROFILE` on Windows), used
+    /// for both the XDG fallback and for `~/.docker/config.json`.
     pub home: Option<PathBuf>,
 }
 
@@ -115,7 +116,10 @@ impl AuthEnv {
             registry_auth_file: std::env::var_os("REGISTRY_AUTH_FILE").map(PathBuf::from),
             xdg_runtime_dir: std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
             xdg_config_home: std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+            #[cfg(unix)]
             home: std::env::var_os("HOME").map(PathBuf::from),
+            #[cfg(windows)]
+            home: std::env::home_dir(),
         }
     }
 
