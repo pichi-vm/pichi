@@ -45,7 +45,8 @@ zot_pid=$!
 trap 'kill "$zot_pid" 2>/dev/null || true; wait "$zot_pid" 2>/dev/null || true; cat "$fixture_dir/zot.log"' EXIT
 for _ in {1..30}; do
   kill -0 "$zot_pid"
-  if curl -fsS "http://$registry_address/v2/" >/dev/null; then break; fi
+  # Connection refusal is expected until Zot opens its listening socket.
+  if curl -fs "http://$registry_address/v2/" >/dev/null; then break; fi
   sleep 1
 done
 curl -fsS "http://$registry_address/v2/" >/dev/null
