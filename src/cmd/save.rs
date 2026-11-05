@@ -3,16 +3,11 @@
 
 //! `pichi save <ref> -o <dir>` — export a cached artifact to a portable OCI
 //! image layout directory (`oci-layout` + `index.json` + `blobs/sha256/`),
-//! mirroring `podman save`. The output is self-contained: manifest, config,
-//! and every layer blob. `pichi load` reads it back.
-//!
-//! Used to move per-architecture builds off their native runners so a final
-//! job can `load` them into one cache and assemble a multi-arch manifest — the
-//! platform is supplied later via `pichi manifest annotate`, not here (podman's
-//! save carries no platform either).
+//! preserving the original index and all cached platform manifests with their
+//! configs and layers. Uncached platforms stay absent. `pichi load` reads it back.
 
 use crate::cmd::cache::ImageStore as _;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use std::path::Path;
 
 use conglobate::artifact::{
@@ -37,7 +32,11 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
 
     let tag = reference.to_string();
     let digest = blob_store.resolve(&reference, &tag_db).await?;
-    let images = blob_store.export(&digest).await?;
+    let images = blob_store.export(&digest, true).await?;
+    ensure!(
+        images.iter().any(|image| !image.is_index()),
+        "image has no cached platforms"
+    );
     let root = images.last().context("image has no metadata")?;
 
     let out = &args.output;

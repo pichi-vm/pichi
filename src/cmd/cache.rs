@@ -306,14 +306,14 @@ pub(super) trait ImageStore: BlobStore {
         Ok(live)
     }
 
-    async fn export(&self, root: &Digest) -> Result<Vec<ImageMetadata>> {
+    async fn export(&self, root: &Digest, allow_missing: bool) -> Result<Vec<ImageMetadata>> {
         let mut metadata = Vec::new();
-        self.walk([root.clone()], false, |image| {
+        self.walk([root.clone()], allow_missing, |image| {
             metadata.push(image);
             Ok(())
         })
         .await
-        .context("all referenced platforms must be cached for export")?;
+        .context("reading image metadata for export")?;
         for image in &metadata {
             if !image.is_index() {
                 super::boot_config::BootConfigFile::validate_image(&image.manifest()?, self)
