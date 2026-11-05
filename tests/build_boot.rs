@@ -18,6 +18,7 @@
 
 mod common;
 
+use common::process::{ChildExt as _, CommandExt as _};
 use common::{
     SMOKE_CONTEXT, SMOKE_LOCK, SMOKE_PLAN, SMOKE_SOURCE_REF, assert_pichi_ok, kvm_available, pichi,
     prepare_build_image, prepare_smoke_repo, seed_smoke_source_carapace,
@@ -132,7 +133,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             "--cpus",
             "1",
         ])
-        .spawn()
+        .spawn_vm()
         .expect("spawn pichi build");
     let deadline = tokio::time::Instant::now() + OFFICIAL_SMOKE_TIMEOUT;
     let status = loop {
@@ -140,8 +141,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             break st;
         }
         if tokio::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.kill_vm().expect("kill timed-out build VM");
             panic!(
                 "official Conglobate smoke: guest did not power off within {}s after launch. Build image: {}. Appliance logs go to the journal and hvc0 console.",
                 OFFICIAL_SMOKE_TIMEOUT.as_secs(),

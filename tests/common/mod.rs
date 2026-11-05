@@ -15,6 +15,7 @@
 // in that binary.
 #![allow(dead_code, unreachable_pub)]
 
+pub mod process;
 mod root_disk;
 pub mod stages;
 

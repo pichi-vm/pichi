@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use super::process::{ChildExt as _, CommandExt as _};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -175,12 +176,11 @@ impl Builds {
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
-            .spawn()
+            .spawn_vm()
             .unwrap();
         let status = child.wait_timeout(Duration::from_secs(600)).unwrap();
         if status.is_none() {
-            child.kill().unwrap();
-            child.wait().unwrap();
+            child.kill_vm().unwrap();
             panic!("build timed out: {}", repo.join("build.log").display());
         }
         status.unwrap().success()
@@ -196,12 +196,11 @@ impl Builds {
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
-            .spawn()
+            .spawn_vm()
             .unwrap();
         let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
         if status.is_none() {
-            child.kill().unwrap();
-            child.wait().unwrap();
+            child.kill_vm().unwrap();
             panic!("boot timed out: {}", path.display());
         }
         let text = fs::read_to_string(&path).unwrap();
