@@ -112,24 +112,7 @@ jobs:
 
       - name: Build the matching native process monitor
         shell: bash
-        run: |
-          python3 - <<'PY'
-          import os, subprocess, tempfile, tomllib
-          from pathlib import Path
-          with open("Cargo.lock", "rb") as source:
-              packages = tomllib.load(source)["package"]
-          monitor = next(package for package in packages if package["name"] == "madrillo")
-          revision = monitor["source"].rsplit("#", 1)[1]
-          root = Path(tempfile.mkdtemp(prefix="pichi-monitor-", dir=os.environ["RUNNER_TEMP"]))
-          subprocess.run(["git", "clone", "--no-checkout", "https://github.com/pichi-vm/madrillo", str(root)], check=True)
-          subprocess.run(["git", "checkout", "--detach", revision], cwd=root, check=True)
-          environment = os.environ.copy()
-          environment["CARGO_TARGET_DIR"] = str(root / "target")
-          subprocess.run(["cargo", "+" + os.environ["NIGHTLY"], "build", "--locked", "--features", "qualification", "--bins"], cwd=root, env=environment, check=True)
-          binary = root / "target/debug" / ("madrillo.exe" if os.name == "nt" else "madrillo")
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
-              output.write(f"PICHI_MADRILLO={binary}\nMADRILLO_BIN={binary}\n")
-          PY
+        run: python3 .github/scripts/build_monitor.py
 
       - name: Versions
         shell: bash
@@ -263,3 +246,8 @@ jobs:
             ${{ runner.temp }}/staged-image-evidence/**/pichi.yaml
             ${{ runner.temp }}/staged-image-evidence/**/pichi.lock
             ${{ runner.temp }}/staged-image-evidence/**/PASS
+
+      - name: Remove the monitor build checkout
+        if: always()
+        shell: bash
+        run: python3 .github/scripts/build_monitor.py --cleanup

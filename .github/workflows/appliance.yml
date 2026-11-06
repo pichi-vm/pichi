@@ -52,6 +52,9 @@ jobs:
           cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
           echo "PICHI_DILLO=$PWD/target/release/dillo" >> "$GITHUB_ENV"
 
+      - name: Build the matching native process monitor
+        run: python3 .github/scripts/build_monitor.py
+
       - name: Build the appliance from Fedora
         run: |
           digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
@@ -83,3 +86,7 @@ jobs:
           name: appliance-oci-${{ matrix.arch }}
           path: ${{ runner.temp }}/appliance-layout
           if-no-files-found: error
+
+      - name: Remove the monitor build checkout
+        if: always()
+        run: python3 .github/scripts/build_monitor.py --cleanup
