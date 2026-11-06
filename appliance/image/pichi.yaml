@@ -6,6 +6,8 @@ version: 1
 stages:
   tools:
     extend: ghcr.io/pichi-vm/fedora:43
+    mounts:
+      /tmp: tmpfs
     steps:
       - exec:
           command: >-
