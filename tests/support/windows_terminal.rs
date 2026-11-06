@@ -137,10 +137,7 @@ impl Terminal {
                 }
             }
         });
-        let mut writer = pair.master.take_writer().unwrap();
-        // portable-pty requests the initial cursor position from its host.
-        // Supply the native terminal response before child creation can wait.
-        writer.write_all(b"\x1b[1;1R").unwrap();
+        let writer = pair.master.take_writer().unwrap();
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pichi"));
         command.args(arguments);
         command.env("XDG_DATA_HOME", workload.root.path());
@@ -163,6 +160,12 @@ impl Terminal {
     fn expect(&mut self, marker: &str) {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
+            // ConPTY requests its host's cursor position after startup. A
+            // response written before the request can be discarded as input.
+            while let Some(index) = self.received.windows(4).position(|part| part == b"\x1b[6n") {
+                self.received.drain(index..index + 4);
+                self.writer.write_all(b"\x1b[1;1R").unwrap();
+            }
             if let Some(index) = self
                 .received
                 .windows(marker.len())
@@ -249,6 +252,7 @@ impl Drop for Terminal {
 async fn interactive_resize_input_and_reattach() {
     let workload = Workload::new().await;
     let mut terminal = Terminal::start(&workload, &["run", "-i", "terminal:1"], 300, 77);
+    terminal.expect("<<<RESIZE-READY>>>");
     terminal.expect("<<<SIZE:300x77>>>");
     terminal.input();
     terminal.resize(120, 41);
@@ -297,12 +301,15 @@ fn workload() {
         .nonblocking(ListenerNonblockingMode::Accept)
         .create_sync()
         .unwrap();
+    println!("<<<RESIZE-READY>>>");
+    io::stdout().flush().unwrap();
     let done = Arc::new(AtomicBool::new(false));
     let finish = done.clone();
     let updates = std::thread::spawn(move || {
         while !finish.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok(mut stream) => {
+                    eprintln!("resize fixture accepted a connection");
                     let mut bytes = [0; 4];
                     stream.read_exact(&mut bytes).unwrap();
                     let size = dillo_config::ConsoleSize::try_from(bytes).unwrap();
