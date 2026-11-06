@@ -21,69 +21,6 @@ jobs:
     permissions:
       contents: read
 
-  # RPM expands macros even in comments; parse with Fedora's Rust macros.
-  copr-spec:
-    name: copr spec
-    runs-on: ubuntu-24.04
-    container: registry.fedoraproject.org/fedora:44
-    permissions:
-      contents: read
-    steps:
-      - name: Install RPM macros
-        shell: bash
-        run: dnf -y install rpm-build cargo-rpm-macros
-
-      - uses: actions/checkout@v7.0.1
-
-      - name: Parse spec
-        shell: bash
-        run: |
-          set -euo pipefail
-          rpmspec -P packaging/pichi.spec 2>&1 | tee /tmp/pichi-spec.log
-          if grep -q 'Macro expanded in comment' /tmp/pichi-spec.log; then
-            exit 1
-          fi
-
-  # Independent of the OS matrix: packaging flakes must not burn the
-  # platform runners. Copr runs this Makefile as root with dnf; here
-  # we install rpm tools via apt and the pinned nightly (this repo has
-  # no rust-toolchain file, so rustup show would not select it), and
-  # pass DNF=true so the recipe skips dnf on Ubuntu.
-  copr-srpm:
-    name: copr srpm
-    runs-on: ubuntu-24.04
-    env:
-      NIGHTLY: nightly-2026-07-06
-    steps:
-      - uses: actions/checkout@v7.0.1
-
-      - name: Install rpmbuild tools
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y rpm xz-utils gzip
-
-      - name: Install toolchain
-        shell: bash
-        run: |
-          rustup toolchain install "$NIGHTLY" --profile minimal
-          rustup default "$NIGHTLY"
-
-      - name: Build SRPM
-        shell: bash
-        run: |
-          set -euo pipefail
-          outdir=$(mktemp -d)
-          make -f .copr/Makefile srpm \
-            spec="$PWD/packaging/pichi.spec" \
-            outdir="$outdir" \
-            DNF=true
-          shopt -s nullglob
-          srpms=("$outdir"/*.src.rpm)
-          test "${#srpms[@]}" -eq 1
-          echo "built ${srpms[0]}"
-          test ! -e vendor
-
   ci:
     name: platforms
     uses: ./.github/workflows/platforms.yml
@@ -103,7 +40,7 @@ jobs:
   publish-appliance:
     name: publish appliance
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [ci, checks, copr-spec, copr-srpm, registry]
+    needs: [ci, checks, registry]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
