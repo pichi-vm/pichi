@@ -67,6 +67,10 @@ enum Command {
     Run(cli::RunArgs),
     /// Attach to a workload's live console.
     Attach(cli::AttachArgs),
+
+    /// Print retained console output for a workload.
+    Logs(cli::WorkloadArgs),
+
     /// Wait for a workload and print its exit status.
     Wait(cli::WorkloadArgs),
     /// List retained workloads, including unknown and completed workloads.
@@ -125,6 +129,11 @@ async fn main() -> anyhow::Result<NativeExit> {
                     .code()?
             );
             Ok(())
+        }
+        Command::Logs(args) => {
+            cmd::workload::Workload::open(args.id, &config)?
+                .logs()
+                .await
         }
         Command::Ps => cmd::workload::Workload::list(&config).await,
     }?;

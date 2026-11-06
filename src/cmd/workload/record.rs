@@ -314,6 +314,13 @@ impl Record {
         self.path.join("monitor")
     }
 
+    pub(super) fn console_log(&self) -> Result<std::fs::File> {
+        let monitor = self.directory.open_dir_nofollow("monitor")?;
+        Ok(Self::open_file(&monitor, "console.log")?
+            .context("workload has no retained console log")?
+            .into_std())
+    }
+
     pub(crate) fn create_build_output(&self) -> Result<PathBuf> {
         self.directory.create_dir("output")?;
         Ok(self.path.join("output"))
@@ -351,6 +358,18 @@ impl Record {
         name: &str,
         limit: u64,
     ) -> Result<Option<T>> {
+        let Some(file) = Self::open_file(directory, name)? else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        file.take(limit + 1).read_to_end(&mut bytes)?;
+        if u64::try_from(bytes.len())? > limit {
+            bail!("workload record exceeds size limit");
+        }
+        Ok(Some(serde_json::from_slice(&bytes)?))
+    }
+
+    fn open_file(directory: &Dir, name: &str) -> Result<Option<cap_std::fs::File>> {
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
         #[cfg(unix)]
@@ -366,12 +385,7 @@ impl Record {
         if !file.metadata()?.is_file() {
             bail!("workload record must be a regular file");
         }
-        let mut bytes = Vec::new();
-        file.take(limit + 1).read_to_end(&mut bytes)?;
-        if u64::try_from(bytes.len())? > limit {
-            bail!("workload record exceeds size limit");
-        }
-        Ok(Some(serde_json::from_slice(&bytes)?))
+        Ok(Some(file))
     }
 }
 

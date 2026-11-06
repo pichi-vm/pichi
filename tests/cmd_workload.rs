@@ -288,7 +288,38 @@ async fn detached_launch_is_discoverable_and_later_wait_reads_retained_exit() {
         .assert()
         .code(23)
         .stdout("");
+    fixture
+        .command()
+        .args(["logs", id])
+        .assert()
+        .success()
+        .stdout("detached output\n");
     let listed = fixture.command().arg("ps").assert().success();
     let rows = String::from_utf8(listed.get_output().stdout.clone()).unwrap();
     assert!(rows.contains(id) && rows.contains("exited"), "{rows}");
+}
+
+#[tokio::test]
+async fn logs_preserve_binary_console_streams_after_monitor_exit() {
+    let fixture = WorkloadFixture::new(
+        "import os\nos.write(1, b'first\\x00\\xff\\npartial')\nos.write(2, b'error\\x00\\xfe\\n')\nos._exit(37)",
+    ).await;
+    let output = fixture
+        .command()
+        .args(["run", "-d", "fixture:1"])
+        .assert()
+        .success();
+    let id = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    fixture
+        .command()
+        .args(["wait", id.trim()])
+        .assert()
+        .success();
+    fixture
+        .command()
+        .args(["logs", id.trim()])
+        .assert()
+        .success()
+        .stdout(b"first\0\xff\npartial".as_slice())
+        .stderr(b"error\0\xfe\n".as_slice());
 }

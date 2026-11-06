@@ -7,6 +7,7 @@
 
 mod client;
 mod console;
+mod logs;
 pub(crate) mod record;
 
 use anyhow::{Context, Result, bail};
@@ -478,6 +479,14 @@ impl Workload {
         let records =
             record::Records::existing(&layout.graphroot)?.context("no retained workloads")?;
         Ok(Self(records.get(id)?))
+    }
+
+    pub async fn logs(&self) -> Result<()> {
+        let snapshot = logs::Snapshot::try_from(self.0.console_log()?)?;
+        tokio::task::spawn_blocking(move || {
+            snapshot.write_to(&mut std::io::stdout().lock(), &mut std::io::stderr().lock())
+        })
+        .await?
     }
 
     pub async fn wait(&self) -> Result<Outcome> {

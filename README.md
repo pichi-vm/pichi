@@ -36,6 +36,7 @@ is still a valid image — a base others derive from.
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
 | `pichi run` | Boot an artifact under madrillo; `-d` prints a durable workload ID, `-i` forwards stdin |
 | `pichi attach` | Attach to live console output; `-i` also acquires input |
+| `pichi logs` | Print a snapshot of retained stdout/stderr for a workload ID |
 | `pichi wait` | Wait for a workload ID and print its native exit status |
 | `pichi ps` | List retained workload IDs and running/exited/unknown state |
 | `pichi update` | Update a working-tree plan’s image lock |
@@ -114,6 +115,11 @@ ID on stderr; detached run prints it on stdout. Host terminals use raw input wit
 `-i`; Ctrl-P Ctrl-Q detaches. Piped input remains binary. Input EOF releases
 ownership while madrillo keeps dillo's liveness pipe open. Attachment is live
 only; completed workloads retain their result and configured CRI console log.
+`pichi logs ID` prints a snapshot of that log to the original stdout/stderr
+streams, preserving binary bytes and partial-line fragments. It includes only
+complete CRI records present when the file is opened; a record still being
+written appears on a later invocation. Logs remain available after monitor exit
+or loss, independently of the live attachment endpoint.
 Missing results remain unknown and retain image pins. `rmi` may remove a tag
 without deleting images still needed by such workloads.
 
@@ -125,8 +131,8 @@ An active build retains the image cache because the guest selects its inputs.
 Native caller qualification passes on Linux and macOS. Real VM build
 qualification for the current guest protocol remains pending.
 
-Windows extra-handle inheritance, caller-managed process containment, stop/log
-presentation, native Windows caller qualification, and the full signal/resize
+Windows extra-handle inheritance, caller-managed process containment, stop,
+native Windows caller qualification, and the full signal/resize
 contract are not complete yet. Windows launch requires permission to break
 away from the caller's Job Object; the current hosted runner denies that
 operation. Pichi does not fall back to a monitor whose lifetime is tied to
