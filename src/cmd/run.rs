@@ -120,7 +120,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
         return Ok(0);
     }
     eprintln!("{}", record.id());
-    let result = running.view(args.interactive).await;
+    let result = running.view(&record, args.interactive).await;
     record.release_storage()?;
     result
 }

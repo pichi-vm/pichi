@@ -9,6 +9,7 @@ mod client;
 mod console;
 mod logs;
 pub(crate) mod record;
+mod resize;
 
 use anyhow::{Context, Result, bail};
 use client::Client;
@@ -552,10 +553,12 @@ impl Running {
         held: Vec<File>,
         input: bool,
     ) -> Result<Self> {
+        let mut arguments = arguments.to_vec();
+        arguments.extend(["--console-resize".into(), record.resize_endpoint().into()]);
         let mut running = Launch {
             monitor: &Self::executable(),
             program: &crate::cmd::run::find_dillo(),
-            arguments,
+            arguments: &arguments,
             state: &record.state(),
             endpoint: record.endpoint(),
             input,
@@ -575,9 +578,9 @@ impl Running {
         Ok(running)
     }
 
-    pub(crate) async fn view(&mut self, interactive: bool) -> Result<u32> {
+    pub(crate) async fn view(&mut self, record: &Record, interactive: bool) -> Result<u32> {
         console::Console::open(interactive)?
-            .view(&mut self.client)
+            .view(&mut self.client, &record.resize_endpoint())
             .await
     }
 
@@ -779,7 +782,9 @@ impl Workload {
                 ServerMessage::Attached { input } if input == interactive => {}
                 response => bail!("attachment rejected: {response:?}"),
             }
-            console::Console::open(interactive)?.view(&mut client).await
+            console::Console::open(interactive)?
+                .view(&mut client, &self.0.resize_endpoint())
+                .await
         }
         .await;
         match result {

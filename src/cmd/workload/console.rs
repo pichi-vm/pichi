@@ -119,9 +119,17 @@ impl Console {
         Ok(())
     }
 
-    pub(super) async fn view(mut self, client: &mut Client) -> Result<u32> {
+    pub(super) async fn view(
+        mut self,
+        client: &mut Client,
+        resize: &std::path::Path,
+    ) -> Result<u32> {
+        let resize = super::resize::Resize(resize);
+        let resize = resize.watch();
+        tokio::pin!(resize);
         loop {
             tokio::select! {
+                () = &mut resize, if self.terminal.0 && self.interactive => {},
                 response = client.next() => match response? {
                     ServerMessage::Output { stream, bytes } => {
                         Self::write(&stream, &bytes)?;

@@ -386,8 +386,39 @@ async fn caller_group_loss_preserves_workload_and_reconnection() {
 #[tokio::test]
 async fn terminal_restoration_and_hangup_preserve_workload() {
     let fixture = WorkloadFixture::new(
-        "import os, signal\nsignal.alarm(45)\nos.write(1, b'console-ready\\n')\nwhile data := os.read(0, 8192): os.write(1, data)",
-    ).await;
+        r"
+import os, select, signal, socket, struct, sys
+signal.alarm(45)
+endpoint = sys.argv[sys.argv.index('--console-resize') + 1]
+listener = socket.socket(socket.AF_UNIX)
+listener.bind(endpoint)
+os.chmod(endpoint, 0o600)
+listener.listen(2)
+os.write(1, b'console-ready\n')
+try:
+    while True:
+        ready, _, _ = select.select([0, listener], [], [])
+        if 0 in ready:
+            data = os.read(0, 8192)
+            if not data: break
+            os.write(1, data)
+        if listener in ready:
+            client, _ = listener.accept()
+            with client:
+                client.settimeout(1)
+                data = b''
+                while len(data) < 4:
+                    chunk = client.recv(4 - len(data))
+                    assert chunk, 'incomplete terminal size'
+                    data += chunk
+                cols, rows = struct.unpack('<HH', data)
+                os.write(1, f'size={cols}x{rows}\n'.encode())
+finally:
+    listener.close()
+    os.unlink(endpoint)
+",
+    )
+    .await;
     Command::new("python3")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),

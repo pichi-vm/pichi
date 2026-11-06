@@ -159,6 +159,13 @@ ID on stderr; detached run prints it on stdout. Host terminals use raw input wit
 `-i`; Ctrl-P Ctrl-Q detaches. Piped input remains binary. Input EOF releases
 ownership while madrillo keeps dillo's liveness pipe open. Attachment is live
 only; completed workloads retain their result and configured CRI console log.
+An interactive terminal sends its initial dimensions and subsequent changes
+directly to Dillo's private resize endpoint. Reattachment supplies the new
+terminal's dimensions, including after a detached launch. Only the input owner
+can resize; output-only attachments and piped input do not change guest size.
+Madrillo does not interpret these updates. Guest resize requires Linux's
+[virtio-console cols/rows fix](https://github.com/torvalds/linux/commit/5326ab737a47278dbd16ed3ee7380b26c7056ddd)
+or a backport; older kernels interpret the standard dimensions in reverse.
 `pichi logs ID` prints a snapshot of that log to the original stdout/stderr
 streams, preserving binary bytes and partial-line fragments. It includes only
 complete CRI records present when the file is opened; a record still being
@@ -183,8 +190,8 @@ launched outside the runner/Cargo Jobs that forbid breakaway. Full native VM bui
 qualification remains pending.
 
 Windows extra-handle inheritance, caller-managed process containment,
-and the full signal/resize
-contract are not complete yet. Windows launch requires permission to break
+and full native signal/resize qualification are not complete yet.
+Windows launch requires permission to break
 away from the caller's Job Object; the current hosted runner denies that
 operation. Pichi does not fall back to a monitor whose lifetime is tied to
 that Job. Current external

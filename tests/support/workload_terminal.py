@@ -8,6 +8,7 @@ from pathlib import Path
 import pty
 import select
 import signal
+import struct
 import subprocess
 import sys
 import termios
@@ -38,8 +39,10 @@ sys.exit(code)
 
 
 class Terminal:
-    def __init__(self, arguments, check_restoration=True):
+    def __init__(self, arguments, check_restoration=True, size=(300, 77)):
         self.master, self.slave = pty.openpty()
+        self.output = bytearray()
+        self.resize(*size)
         self.process = subprocess.Popen(
             [sys.executable, "-c", SESSION,
              "restore" if check_restoration else "hangup", os.environ["PICHI_BIN"], *arguments],
@@ -75,16 +78,21 @@ class Terminal:
             time.sleep(0.005)
         assert os.write(self.master, data) == len(data)
 
+    def resize(self, cols, rows):
+        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+
     def receive(self, expected):
-        output = bytearray()
         deadline = time.monotonic() + 5
-        while expected not in output:
-            assert time.monotonic() < deadline, (expected, output)
-            assert self.process.poll() is None, (self.process.returncode, output)
+        while expected not in self.output:
+            assert time.monotonic() < deadline, (expected, self.output)
+            assert self.process.poll() is None, (self.process.returncode, self.output)
             if select.select([self.master], [], [], 0.05)[0]:
-                output.extend(os.read(self.master, 8192))
-                assert len(output) <= 65536, "unbounded terminal fixture output"
-        return bytes(output)
+                self.output.extend(os.read(self.master, 8192))
+                assert len(self.output) <= 65536, "unbounded terminal fixture output"
+        end = self.output.index(expected) + len(expected)
+        output = bytes(self.output[:end])
+        del self.output[:end]
+        return output
 
     def restored(self, code):
         # The live session owner checks native settings before returning this
@@ -96,6 +104,9 @@ records = Path(os.environ["XDG_DATA_HOME"]) / "pichi/storage.workloads"
 try:
     with Terminal(["run", "-i", "fixture:1"]) as terminal:
         terminal.receive(b"console-ready")
+        terminal.receive(b"size=300x77")
+        terminal.resize(120, 41)
+        terminal.receive(b"size=120x41")
         record, = records.iterdir()
         identity = record.name
         flags = termios.tcgetattr(terminal.slave)[3]
@@ -109,7 +120,8 @@ try:
         terminal.restored(0)
     assert not (record / "monitor/result.json").exists(), "detach stopped the workload"
 
-    with Terminal(["attach", "-i", identity]) as terminal:
+    with Terminal(["attach", "-i", identity], size=(81, 25)) as terminal:
+        terminal.receive(b"size=81x25")
         terminal.send(b"after-detach\n")
         terminal.receive(b"after-detach")
         os.killpg(terminal.process.pid, signal.SIGTERM)
@@ -132,7 +144,18 @@ try:
                                  capture_output=True, timeout=10)
         assert stopped.returncode == 0, stopped.stderr
         terminal.restored(0)
-    print("native terminal: control bytes, detach, signal restoration, hangup survival, reattach and normal-exit restoration passed")
+    # A workload launched detached acquires its first size on later attachment.
+    started = subprocess.run([os.environ["PICHI_BIN"], "run", "-d", "fixture:1"],
+                             capture_output=True, timeout=5)
+    assert started.returncode == 0, started.stderr
+    identity = started.stdout.decode().strip()
+    with Terminal(["attach", "-i", identity], size=(132, 43)) as terminal:
+        terminal.receive(b"size=132x43")
+        stopped = subprocess.run([os.environ["PICHI_BIN"], "stop", identity],
+                                 capture_output=True, timeout=10)
+        assert stopped.returncode == 0, stopped.stderr
+        terminal.restored(0)
+    print("native terminal: initial size, resize, detached start, control bytes, detach, signal restoration, hangup survival, reattach and normal-exit restoration passed")
 finally:
     # Only records in this test's private storage root are eligible for cleanup.
     for record in records.glob("*"):

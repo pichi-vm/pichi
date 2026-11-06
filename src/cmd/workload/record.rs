@@ -345,6 +345,11 @@ impl Record {
     pub(super) fn endpoint(&self) -> &Path {
         &self.identity.endpoint
     }
+    pub(super) fn resize_endpoint(&self) -> PathBuf {
+        let mut endpoint = self.identity.endpoint.as_os_str().to_os_string();
+        endpoint.push(".resize");
+        endpoint.into()
+    }
     pub(super) fn state(&self) -> PathBuf {
         self.path.join("monitor")
     }
