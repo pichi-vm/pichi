@@ -55,11 +55,12 @@ impl OciLayout {
         capacity: u64,
     ) -> Result<Self> {
         let staging = tempfile::tempdir_in(destination.scratch_dir().await?)?;
-        let dir = dir.to_owned();
-        let layout = tokio::task::spawn_blocking(move || Self::snapshot(&dir, staging, capacity))
-            .await
-            .context("OCI snapshot task panicked")?
-            .context("reading OCI image layout")?;
+        let source = dir.to_owned();
+        let layout =
+            tokio::task::spawn_blocking(move || Self::snapshot(&source, staging, capacity))
+                .await
+                .context("OCI snapshot task panicked")?
+                .context("reading OCI image layout")?;
         // The snapshot contains only OCI blobs. No pre-existing sidecars can
         // short-circuit rebuilding: every scute is rebuilt from cow + salt.
         let mut expanded_size = 0u64;
@@ -67,9 +68,19 @@ impl OciLayout {
             super::boot_config::BootConfigFile::validate_image(manifest, &layout.store).await?;
             let mut roots = ScuteRoots::default();
             for layer in &manifest.layers {
-                if let Some(root) =
-                    PreparedLayer::prepare_cached(manifest, layer, &layout.store).await?
+                let prepared = PreparedLayer::prepare_cached(manifest, layer, &layout.store).await;
+                if let Err(error) = &prepared
+                    && error.to_string().starts_with("layer digest mismatch:")
                 {
+                    let root = Dir::open_ambient_dir(dir, cap_std::ambient_authority())?;
+                    layout.preserve_mismatch(
+                        &root,
+                        layer.digest_str(),
+                        layer.size(),
+                        &format!("prepare_cached: {error:#}"),
+                    )?;
+                }
+                if let Some(root) = prepared? {
                     let files = ScuteFiles::new(manifest, layer, &layout.store)?;
                     let size = std::fs::metadata(files.data)?.len();
                     expanded_size = expanded_size
@@ -369,12 +380,40 @@ impl OciLayout {
             return Ok(digest);
         }
         let output = File::create(self.store.blob_path(&digest))?;
-        ensure!(
-            Self::copy_content(root, &path, size, output)? == digest,
-            "OCI blob digest mismatch: {digest}"
-        );
+        let actual = Self::copy_content(root, &path, size, output)?;
+        if actual != digest {
+            self.preserve_mismatch(
+                root,
+                value,
+                size,
+                &format!("copy_blob: expected={digest} actual={actual}"),
+            )?;
+        }
+        ensure!(actual == digest, "OCI blob digest mismatch: {digest}");
         self.blobs.insert(digest.clone(), size);
         Ok(digest)
+    }
+
+    fn preserve_mismatch(&self, root: &Dir, value: &str, size: u64, failure: &str) -> Result<()> {
+        eprintln!("OCI_DIGEST_FAILURE {failure} size={size}");
+        let Some(directory) = std::env::var_os("PICHI_DIGEST_EVIDENCE") else {
+            return Ok(());
+        };
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory)?;
+        std::fs::write(
+            directory.join("identity.txt"),
+            format!("expected={value}\nsize={size}\nfailure={failure}\n"),
+        )?;
+        std::fs::copy(
+            self.store.blob_path(&value.parse()?),
+            directory.join("snapshot"),
+        )?;
+        std::io::copy(
+            &mut root.open(Self::blob_name(value)?)?,
+            &mut File::create(directory.join("source"))?,
+        )?;
+        Ok(())
     }
 
     fn copy_content(
