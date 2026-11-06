@@ -34,7 +34,7 @@ dillo-config.workspace = true
 dillo-devtree.workspace = true
 object.workspace = true
 pmi.workspace = true
-madrillo = { git = "https://github.com/pichi-vm/madrillo", rev = "2a7993d2bdb7a92aea49794d31ede09ce49a0d69", default-features = false }
+madrillo = { git = "https://github.com/pichi-vm/madrillo", rev = "0e860df8ec6414d28d87908a4da775cfdf5bc047", default-features = false }
 interprocess = { version = "=2.4.7", features = ["tokio"] }
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true
