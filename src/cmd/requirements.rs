@@ -205,4 +205,21 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn memory_max_exercises_native_detection() {
+        // Use the real host probe without allocating guest RAM or allowing an
+        // operator setting to bypass discovery. Availability can change while
+        // the test runs; exact value selection is checked with controlled inputs.
+        match Sizing::Memory.resolve(None, Some(2), Some(Recommendation::Max)) {
+            Ok(Some(mib)) => assert!(mib >= 2 && mib.is_multiple_of(2), "{mib}"),
+            // Linux developer hosts can have no unreserved hugepages. Verify
+            // the explicit rejection; every other discovery failure is a bug.
+            Err(error) if cfg!(target_os = "linux") => assert_eq!(
+                error.to_string(),
+                "requested memory (MiB) (0) is below the image's required minimum (2)"
+            ),
+            other => panic!("native memory discovery: {other:?}"),
+        }
+    }
 }
