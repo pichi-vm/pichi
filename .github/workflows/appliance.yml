@@ -14,13 +14,13 @@ env:
 jobs:
   build:
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - arch: amd64
             runner: ubuntu-24.04
           - arch: arm64
-            runner: [ self-hosted, Linux, ARM64, bare-metal, aarch64, kvm ]
+            runner: avrea-ubuntu-latest-arm-4-vcpu
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -32,10 +32,15 @@ jobs:
 
       - name: Reserve build VM memory
         run: |
-          if [ "${{ matrix.arch }}" = amd64 ]; then
-            sudo chmod a+rw /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          for attempt in 1 2 3 4 5 6; do
+            if [ "$(cat /proc/sys/vm/nr_hugepages)" -ge 4096 ]; then break; fi
+            sync
+            echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+            echo 1 | sudo tee /proc/sys/vm/compact_memory >/dev/null
             sudo sysctl -w vm.nr_hugepages=4096
-          fi
+            sleep 3
+          done
           test -r /dev/kvm && test -w /dev/kvm
           test "$(cat /proc/sys/vm/nr_hugepages)" -ge 4096
 

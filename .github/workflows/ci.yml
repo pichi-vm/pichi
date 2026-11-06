@@ -122,10 +122,19 @@ jobs:
           cargo "+$NIGHTLY" build --locked --release --bin pichi
           echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
 
-      - name: Download native OCI layouts
+      - name: Download x86 Linux OCI layout
         uses: actions/download-artifact@v4
+        timeout-minutes: 3
         with:
-          pattern: appliance-oci-*
+          name: appliance-oci-amd64
+          path: appliance-oci-amd64
+
+      - name: Download ARM Linux OCI layout
+        uses: actions/download-artifact@v4
+        timeout-minutes: 3
+        with:
+          name: appliance-oci-arm64
+          path: appliance-oci-arm64
 
       - name: Authenticate to ghcr.io
         env:

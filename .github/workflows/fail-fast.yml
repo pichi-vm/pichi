@@ -1,0 +1,65 @@
+name: Cancel failed CI runs
+
+on:
+  workflow_run:
+    workflows: [CI, platforms, checks, registry, appliance]
+    types: [in_progress]
+
+# Keep cancellation privileges out of the build jobs, including fork PRs.
+# This workflow runs trusted default-branch code and never checks out PR code.
+permissions:
+  actions: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Cancel remaining jobs after the first failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          with open(os.environ['GITHUB_EVENT_PATH']) as stream:
+              event = json.load(stream)
+          watched = event['workflow_run']
+          base = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{watched['id']}"
+          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                     'Accept': 'application/vnd.github+json'}
+
+          def request(path='', method='GET'):
+              req = urllib.request.Request(base + path, headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  body = response.read()
+                  return json.loads(body) if body else None
+
+          while True:
+              run = request()
+              if run['status'] == 'completed' or run['run_attempt'] != watched['run_attempt']:
+                  break
+              page = 1
+              failed = None
+              while True:
+                  jobs = request(f"/attempts/{watched['run_attempt']}/jobs?per_page=100&page={page}")['jobs']
+                  failed = next((job for job in jobs if job['conclusion'] in ('failure', 'timed_out')
+                                 or any(step['conclusion'] == 'failure' for step in job.get('steps', []))), None)
+                  if failed or len(jobs) < 100:
+                      break
+                  page += 1
+              if failed:
+                  print(f"Cancelling run {watched['id']}: {failed['name']} failed", flush=True)
+                  try:
+                      request('/cancel', 'POST')
+                  except urllib.error.HTTPError as error:
+                      if error.code != 409:
+                          raise
+                  break
+              time.sleep(15)
+          PY
