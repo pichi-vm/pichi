@@ -87,6 +87,19 @@ fn staged_images_create_extend_and_compose() {
         &[("host.txt", &host)],
     );
     assert_eq!(base.layers("scute").len(), 1);
+    let descriptor = &base.layers("scute")[0];
+    assert_eq!(
+        descriptor["mediaType"],
+        "application/vnd.pichi.scute.v1+zstd"
+    );
+    let encoded = descriptor["size"].as_u64().unwrap();
+    let decoded = descriptor["annotations"]["dev.pichi.scute.verity.data-blocks"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        * 4096;
+    eprintln!("COMPRESSED_SCUTE_SIZE encoded={encoded} decoded={decoded}");
     assert!(!builds.directory.join("base/pichi.lock").exists());
     assert_eq!(
         base.manifest["annotations"]["dev.pichi.build.bootstrapped"],
