@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   probe:
-    runs-on: avrea-ubuntu-24.04-arm-2-vcpu
+    runs-on: avrea-ubuntu-latest-arm-2-vcpu
     timeout-minutes: 5
     steps:
       - name: Inspect runner and KVM
