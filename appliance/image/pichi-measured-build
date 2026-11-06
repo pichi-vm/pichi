@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+# Fresh runtime cgroup mounts must stay inside the measured service hierarchy.
+[ "$(cat /proc/self/cgroup)" = "0::/" ]
+printf 'PICHI_MEMORY_NAMESPACE service-root\n'
+exec /usr/bin/conglobate appliance

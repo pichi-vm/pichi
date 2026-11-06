@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Sample whole-guest used memory during the build
+Before=conglobate-build.service
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStart=/usr/libexec/pichi-guest-memory

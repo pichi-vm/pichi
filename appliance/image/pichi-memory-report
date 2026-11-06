@@ -1,0 +1,23 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+# ExecStopPost runs outside ExecStart's private cgroup namespace.
+IFS=: read -r measured_id measured_controllers measured_group < /proc/self/cgroup
+[ "$measured_id" = 0 ]
+measured_path=/sys/fs/cgroup$measured_group
+read -r measured_peak < "$measured_path/memory.peak"
+[ "$measured_peak" -gt 0 ]
+printf 'PICHI_MEMORY_PEAK_BYTES %s result=%s\n' "$measured_peak" "$SERVICE_RESULT"
+while IFS= read -r measured_line; do
+    printf 'PICHI_MEMORY_FINAL_STAT %s\n' "$measured_line"
+done < "$measured_path/memory.stat"
+while IFS= read -r measured_line; do
+    printf 'PICHI_MEMORY_EVENTS %s\n' "$measured_line"
+done < "$measured_path/memory.events"
+systemctl is-active --quiet pichi-guest-memory.service
+read -r guest_peak_bytes guest_peak_sample guest_total_bytes < /run/pichi-guest-memory-peak
+[ "$guest_peak_bytes" -gt 0 ]
+[ "$guest_peak_bytes" -le "$guest_total_bytes" ]
+printf 'PICHI_GUEST_MEMORY_PEAK_SAMPLED_BYTES %s nominal_interval_ms=100 sample_at_peak=%s total_bytes=%s source=MemTotal-MemFree\n' \
+    "$guest_peak_bytes" "$guest_peak_sample" "$guest_total_bytes"

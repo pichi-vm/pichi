@@ -4,19 +4,21 @@
 [Unit]
 Description=Conglobate build appliance (build-port CBOR on dev.pichi.build)
 Requires=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount
-Requires=systemd-resolved.service
+Requires=systemd-resolved.service pichi-guest-memory.service
 Wants=network-online.target
 After=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount
-After=network-online.target systemd-resolved.service
+After=network-online.target systemd-resolved.service pichi-guest-memory.service
 # Sync and unmount output before powering off, without waiting on getty.
 SuccessAction=poweroff-force
 FailureAction=poweroff
 
 [Service]
 Type=oneshot
+MemoryAccounting=yes
 BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf
 ExecStartPre=/usr/libexec/conglobate-lsm /sys/fs/bpf/conglobate-label-policy
-ExecStart=/usr/bin/conglobate appliance
+ExecStart=/usr/bin/unshare --cgroup /usr/libexec/pichi-measured-build
+ExecStopPost=/usr/libexec/pichi-memory-report
 # Image cmdline is console=hvc0, so the console copy is the build console.
 StandardOutput=journal+console
 

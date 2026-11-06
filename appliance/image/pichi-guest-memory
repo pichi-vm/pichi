@@ -1,0 +1,30 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+guest_peak_bytes=0
+guest_samples=0
+while :; do
+    guest_total_kib=0
+    guest_free_kib=0
+    while read -r guest_key guest_value guest_unit; do
+        case "$guest_key" in
+            MemTotal:) guest_total_kib=$guest_value ;;
+            MemFree:) guest_free_kib=$guest_value ;;
+        esac
+    done < /proc/meminfo
+    [ "$guest_total_kib" -gt 0 ]
+    [ "$guest_free_kib" -le "$guest_total_kib" ]
+    guest_used_bytes=$(((guest_total_kib - guest_free_kib) * 1024))
+    guest_samples=$((guest_samples + 1))
+    if [ "$guest_used_bytes" -gt "$guest_peak_bytes" ]; then
+        guest_peak_bytes=$guest_used_bytes
+        printf '%s %s %s\n' "$guest_peak_bytes" "$guest_samples" "$((guest_total_kib * 1024))" \
+            > /run/pichi-guest-memory-peak.next
+        mv /run/pichi-guest-memory-peak.next /run/pichi-guest-memory-peak
+    fi
+    if [ "$guest_samples" -eq 1 ]; then
+        systemd-notify --ready
+    fi
+    sleep 0.1
+done
