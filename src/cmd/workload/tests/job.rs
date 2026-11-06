@@ -143,7 +143,7 @@ async fn caller_loss_preserves_workload() -> Result<()> {
             let script = r#"
 $ErrorActionPreference = 'Stop'
 $windows = @(Get-Process -Name conhost -ErrorAction SilentlyContinue | Where-Object {
-    $_.MainWindowTitle -eq $env:PICHI_CONSOLE_TEST_TITLE
+    $_.MainWindowTitle.EndsWith($env:PICHI_CONSOLE_TEST_TITLE, [StringComparison]::Ordinal)
 })
 if ($windows.Count -ne 1) { throw "Expected one owned console window, got $($windows.Count)" }
 if (-not $windows[0].CloseMainWindow()) { throw 'Console window rejected WM_CLOSE' }
