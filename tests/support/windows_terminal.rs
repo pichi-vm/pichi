@@ -77,7 +77,7 @@ impl Drop for Workload {
             let id = entry.file_name();
             let mut command = self.command();
             command
-                .args(["stop", "--force"])
+                .args(["stop", "--time", "0"])
                 .arg(id)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
