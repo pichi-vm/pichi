@@ -16,9 +16,6 @@ use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use sha2::{Digest as _, Sha256};
 use std::{os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
 
-#[path = "support/pmi.rs"]
-mod pmi;
-
 struct WorkloadFixture {
     root: tempfile::TempDir,
     program: PathBuf,
@@ -31,9 +28,9 @@ impl WorkloadFixture {
         let graphroot = root.path().join("pichi/storage");
         let tags = FilesystemTagDb::open(&graphroot).unwrap();
         let blobs = FilesystemBlobStore::new(&graphroot);
-        let pmi = pmi::Pmi::native();
-        let digest = Digest::Sha256(Sha256::digest(&pmi).into());
-        blobs.put_blob(&digest, &pmi).await.unwrap();
+        let pmi = b"PMI\0";
+        let digest = Digest::Sha256(Sha256::digest(pmi).into());
+        blobs.put_blob(&digest, pmi).await.unwrap();
         let manifest = Manifest {
             schema_version: 2,
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),

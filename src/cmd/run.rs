@@ -8,10 +8,11 @@
 //! does not choose it. The PMI layer becomes `--pmi`; the scute layers become
 //! one virtualized-GPT (`--gpt`) carapace disk whose partition PARTUUIDs and
 //! labels are a pure function of each scute's verity root; a stdio console is
-//! dillo's default. The guest verifies itself against exactly those PARTUUIDs
+//! specified explicitly. The guest verifies itself against exactly those PARTUUIDs
 //! (the carapace trust contract), so the values must be reproduced precisely
-//! — there is no freedom here. The only runtime knobs are cpus/memory, taken
-//! from the CLI, then pichi config, then dillo's built-in defaults.
+//! — there is no freedom here. CPU, memory and writable-storage allocations
+//! come from CLI values, operator config and image requirements. The image's
+//! transport declarations, including its MMIO default, become explicit buses.
 //!
 //! dillo's `--gpt` derives the disk device-id/disk-guid from the partition
 //! PARTUUIDs (`sha256(concat(partuuids))[..20]`/`[..16]`), which is exactly
@@ -34,6 +35,7 @@ use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
 use crate::cmd::layer::ScuteFiles;
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 use crate::cmd::requirements;
+use crate::cmd::requirements::SlotArgument as _;
 use crate::cmd::workload::{Running, record::Records};
 use crate::cmd::writable_storage::WritableStorage;
 use crate::config::Config;
@@ -69,7 +71,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
             manifest.check_architecture()?;
 
             // Derive the dillo argv from the manifest + runtime resources, applying
-            // the artifact's requirements.yaml floors (BUILD.md §7) when present.
+            // the artifact config's required floors (BUILD.md §7) when present.
             let reqs = requirements::load_requirements(&manifest, &blob_store).await?;
             let cpus = requirements::Sizing::Cpus.resolve(
                 args.cpus.or(config.run.cpus),
@@ -94,16 +96,17 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
                 &record.storage_directory(),
             )?;
             if let Some(backing) = &storage {
-                dillo_args.extend(["--blk".into(), backing.argument()]);
+                dillo_args.extend([
+                    "--blk".into(),
+                    backing.argument(
+                        requirements
+                            .storage
+                            .as_ref()
+                            .and_then(|r| r.slot)
+                            .unwrap_or(requirements.slot),
+                    ),
+                ]);
             }
-            super::device_buses::DeviceBuses::prepare(
-                &mut dillo_args,
-                &requirements,
-                requirements
-                    .interfaces
-                    .values()
-                    .map(|interface| interface.slot),
-            )?;
             Ok((record, dillo_args, storage))
         })
         .await?;
@@ -163,6 +166,10 @@ async fn build_dillo_args(
     let pmi_path = blob_store.blob_path(&pmi_digest);
 
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(&pmi_path)];
+    argv.extend([
+        "--console".into(),
+        format!("endpoint=stdio,bus={}", requirements.slot.as_argument()),
+    ]);
     // Boot configuration accompanies the immutable PMI. Its native text is
     // supplied to Dillo without changing firmware or the embedded command line.
     if let Some(path) =
@@ -181,11 +188,19 @@ async fn build_dillo_args(
     }
     if !scutes.is_empty() {
         argv.push("--gpt".to_string());
-        argv.push(build_gpt_spec(manifest, &scutes, blob_store).await?);
+        argv.push(format!(
+            "{},bus={}",
+            build_gpt_spec(manifest, &scutes, blob_store).await?,
+            requirements.slot.as_argument()
+        ));
     }
-    for _ in requirements.interfaces.values() {
+    for interface in requirements.interfaces.values() {
         argv.push("--net".to_string());
-        argv.push(crate::cmd::build::USER_NET_SPEC.to_string());
+        argv.push(format!(
+            "{},bus={}",
+            crate::cmd::build::USER_NET_SPEC,
+            interface.slot.unwrap_or(requirements.slot).as_argument()
+        ));
     }
     Ok(argv)
 }
@@ -704,7 +719,7 @@ mod tests {
                     let build_spec = build_gpt_spec(&manifest, &manifest.scute_layers(), &store)
                         .await
                         .unwrap();
-                    assert_eq!(spec, &build_spec);
+                    assert_eq!(spec, &format!("{build_spec},bus=mmio"));
                     assert_eq!(gpt.partitions.len(), 2);
                     assert_eq!(gpt.partitions[0].path, expected_data);
                     assert_eq!(gpt.partitions[1].path, files.verity.clone());

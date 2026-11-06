@@ -12,7 +12,6 @@ pub mod build;
 mod build_output;
 mod build_port;
 mod cache;
-mod device_buses;
 pub mod images;
 pub mod import;
 pub mod inspect;

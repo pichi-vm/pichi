@@ -76,12 +76,10 @@ locks retained storage against concurrent use, preserves existing contents,
 and refuses to shrink it. A supplied file's existing capacity is an operator
 allocation when no explicit size is set.
 
-The global `requirements.slot` supplies a preferred PCI or virtio-MMIO
-transport; interface and storage preferences override it. Pichi reads the
-bundled PMI base device tree and selects explicit buses within its declared
-capacity, falling back when the preferred bus is absent or full. Dillo assigns
-the actual slots on those buses. An exhausted device set is rejected before
-launch; the host does not add undeclared hardware.
+The image's `requirements.slot` defaults to `mmio`; interface and storage
+slot declarations override it. Pichi supplies an explicit bus for every device.
+Dillo allocates numeric slots within that bus and fails if the declared
+platform cannot satisfy the request.
 
 `pichi inspect` includes the decoded image config beside its manifest. Templates
 can access it directly, for example
@@ -193,18 +191,17 @@ Its named guest API pipes pass directly through to dillo: the guest requests
 input before the host responds, and successful guest exit precedes OCI import.
 Output is removed only after import and confirmed complete workload cleanup.
 An active build retains the image cache because the guest selects its inputs.
-Native caller qualification passes on Linux and macOS, and on Windows when
-launched outside the runner/Cargo Jobs that forbid breakaway. Full native VM build
-qualification remains pending.
+Native caller qualification uses ordinary processes on public Linux, macOS and
+Windows MSVC runners. It covers exact handle inheritance, independent caller
+lifetime, terminal input and resize, and the opaque build channel. The pinned
+source revisions and completed rounds are recorded in
+[Madrillo's conformance status](https://github.com/pichi-vm/madrillo/blob/main/docs/STATUS.md).
+Real VM build tests remain separate.
 
-Windows extra-handle inheritance, caller-managed process containment,
-and full native signal/resize qualification are not complete yet.
-Windows launch requires permission to break
-away from the caller's Job Object; the current hosted runner denies that
-operation. Pichi does not fall back to a monitor whose lifetime is tied to
-that Job. Current external
+Windows launch requires permission to break away from the caller's Job Object.
+If that permission is denied, launch fails rather than tying the monitor's
+lifetime to the caller's Job. External
 termination signals end the foreground attachment; they are not proxied to
 dillo. Workload state lives beside the canonical image cache, in a directory
 whose name appends `.workloads` (for example `storage.workloads`). This keeps
-console data outside the build guest's cache mount. No full conformance pass
-is claimed.
+console data outside the build guest's cache mount.

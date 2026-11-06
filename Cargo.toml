@@ -31,9 +31,6 @@ devmap-verity.workspace = true
 conglobate = { workspace = true, features = ["yaml"] }
 pichi-launch.workspace = true
 dillo-config.workspace = true
-dillo-devtree.workspace = true
-object.workspace = true
-pmi.workspace = true
 madrillo = { git = "https://github.com/pichi-vm/madrillo", rev = "0e860df8ec6414d28d87908a4da775cfdf5bc047", default-features = false }
 interprocess = { version = "=2.4.7", features = ["tokio"] }
 pichi-registry = { workspace = true, features = ["http-client"] }
@@ -156,9 +153,8 @@ devtree = { git = "https://github.com/pichi-vm/devtree" }
 # Dev-only caching URL downloader (shared by arma/dillo/e2e tests).
 burrow = { git = "https://github.com/pichi-vm/burrow" }
 
-# Use Dillo's device schema and DT survey without linking its VM backends.
+# Use Dillo's console schema without linking its VM backends.
 dillo-config = { git = "https://github.com/pichi-vm/dillo", rev = "88d507c8fb3c2c46c10298c07c572fa95ea307e1" }
-dillo-devtree = { git = "https://github.com/pichi-vm/dillo", rev = "88d507c8fb3c2c46c10298c07c572fa95ea307e1" }
 
 # pichi-internal crates
 pichi-launch = { path = "deps/pichi-launch" }

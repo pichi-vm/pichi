@@ -17,9 +17,6 @@ use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
-#[path = "support/pmi.rs"]
-mod pmi;
-
 #[path = "common/process.rs"]
 mod process;
 
@@ -73,7 +70,8 @@ async fn populate_bootable_with_requirements(
     let cow_digest = sha256_digest(&cow_bytes);
     blob_store.put_blob(&cow_digest, &cow_bytes).await.unwrap();
 
-    let pmi_bytes = pmi::Pmi::native();
+    // PMI contents are opaque to the launcher; this fixture records arguments.
+    let pmi_bytes = b"PMI\0".to_vec();
     let pmi_digest = sha256_digest(&pmi_bytes);
     blob_store.put_blob(&pmi_digest, &pmi_bytes).await.unwrap();
 
@@ -622,9 +620,18 @@ async fn image_config_defaults_and_manual_allocations_are_enforced() {
         let value = |flag| args[args.iter().position(|a| *a == flag).unwrap() + 1];
         assert_eq!(value("--cpus"), cpus);
         assert_eq!(value("--memory"), memory);
-        assert!(!args.contains(&"--bus"));
-        assert_eq!(value("--console"), "endpoint=stdio,bus=pci");
-        assert_eq!(value("--net"), "backend=user,bus=mmio");
+        assert!(!args.contains(&"--bus"), "Dillo has no global bus setting");
+        let console: dillo_config::ConsoleSpec =
+            serde_keyvalue::from_key_values(value("--console")).unwrap();
+        let disk: dillo_config::GptSpec = serde_keyvalue::from_key_values(value("--gpt")).unwrap();
+        let network: dillo_config::NetSpec =
+            serde_keyvalue::from_key_values(value("--net")).unwrap();
+        assert_eq!(console.bus, Some(dillo_config::Bus::Pci));
+        assert_eq!(disk.bus, Some(dillo_config::Bus::Pci));
+        assert_eq!(network.bus, Some(dillo_config::Bus::Mmio));
+        assert_eq!(console.slot, None);
+        assert_eq!(disk.slot, None);
+        assert_eq!(network.slot, None);
     }
     let output = Command::cargo_bin("pichi")
         .unwrap()
@@ -797,41 +804,51 @@ async fn vm_timeout_cleanup_stops_workloads_after_client_exit() {
 
 #[tokio::test]
 async fn writable_storage_lives_through_the_child_and_is_cleaned_on_exit() {
-    for exit in [0, 7] {
-        let tmp = TempDir::new().unwrap();
-        let root = graphroot(&tmp);
-        populate_bootable_with_requirements(
-            &root,
-            "storage:1",
-            Some(serde_json::json!({
-                "storage":{"required":1,"recommended":2,"slot":"mmio"}
-            })),
-        )
-        .await;
-        let stub = make_stub_dillo(tmp.path());
-        let mut command = Command::cargo_bin("pichi").unwrap();
-        command
-            .env("XDG_DATA_HOME", tmp.path())
-            .env("PICHI_DILLO", &stub)
-            .env("PICHI_TEST_STORAGE", "1")
-            .env("PICHI_TEST_DILLO_EXIT", exit.to_string())
-            .args(["run", "storage:1"]);
-        command.assert().code(exit);
-        assert_eq!(
-            std::fs::read_to_string(tmp.path().join("storage-capacity.txt")).unwrap(),
-            (2 * 1024 * 1024).to_string()
-        );
-        let path = std::fs::read_to_string(tmp.path().join("storage-path.txt")).unwrap();
-        assert!(!Path::new(&path).exists());
-        let argv = std::fs::read_to_string(tmp.path().join("argv.txt")).unwrap();
-        let args: Vec<_> = argv.lines().collect();
-        let spec: dillo_config::BlkSpec = serde_keyvalue::from_key_values(
-            args[args.iter().position(|a| *a == "--blk").unwrap() + 1],
-        )
-        .unwrap();
-        assert_eq!(spec.path, PathBuf::from(path));
-        assert!(!spec.readonly);
-        assert_eq!(spec.bus, Some(dillo_config::Bus::Mmio));
+    for (requirements, expected_bus) in [
+        (
+            serde_json::json!({"storage":{"required":1,"recommended":2}}),
+            dillo_config::Bus::Mmio,
+        ),
+        (
+            serde_json::json!({"slot":"pci","storage":{"required":1,"recommended":2}}),
+            dillo_config::Bus::Pci,
+        ),
+        (
+            serde_json::json!({"slot":"pci","storage":{"required":1,"recommended":2,"slot":"mmio"}}),
+            dillo_config::Bus::Mmio,
+        ),
+    ] {
+        for exit in [0, 7] {
+            let tmp = TempDir::new().unwrap();
+            let root = graphroot(&tmp);
+            populate_bootable_with_requirements(&root, "storage:1", Some(requirements.clone()))
+                .await;
+            let stub = make_stub_dillo(tmp.path());
+            let mut command = Command::cargo_bin("pichi").unwrap();
+            command
+                .env("XDG_DATA_HOME", tmp.path())
+                .env("PICHI_DILLO", &stub)
+                .env("PICHI_TEST_STORAGE", "1")
+                .env("PICHI_TEST_DILLO_EXIT", exit.to_string())
+                .args(["run", "storage:1"]);
+            command.assert().code(exit);
+            assert_eq!(
+                std::fs::read_to_string(tmp.path().join("storage-capacity.txt")).unwrap(),
+                (2 * 1024 * 1024).to_string()
+            );
+            let path = std::fs::read_to_string(tmp.path().join("storage-path.txt")).unwrap();
+            assert!(!Path::new(&path).exists());
+            let argv = std::fs::read_to_string(tmp.path().join("argv.txt")).unwrap();
+            let args: Vec<_> = argv.lines().collect();
+            let spec: dillo_config::BlkSpec = serde_keyvalue::from_key_values(
+                args[args.iter().position(|a| *a == "--blk").unwrap() + 1],
+            )
+            .unwrap();
+            assert_eq!(spec.path, PathBuf::from(path));
+            assert!(!spec.readonly);
+            assert_eq!(spec.bus, Some(expected_bus));
+            assert_eq!(spec.slot, None);
+        }
     }
 }
 
