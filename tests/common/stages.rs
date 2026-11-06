@@ -50,6 +50,16 @@ impl Builds {
         } else {
             tempfile::Builder::new().prefix(name).tempdir().unwrap()
         };
+        #[cfg(windows)]
+        {
+            // Retained evidence may live beneath a shared runner directory.
+            // Protect this new, empty fixture before creating workload state.
+            let user = win_custody::current_user_sid_string().unwrap();
+            win_custody::SecurityDescriptor::from_sddl(&format!("D:P(A;OICI;FA;;;{user})"))
+                .unwrap()
+                .apply_to_tree(temporary.path(), true)
+                .unwrap();
+        }
         let (directory, temporary) = if std::env::var_os("PICHI_TEST_EVIDENCE").is_some() {
             (temporary.keep(), None)
         } else {
