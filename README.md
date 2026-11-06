@@ -136,8 +136,8 @@ input before the host responds, and successful guest exit precedes OCI import.
 Output is removed only after import and confirmed complete workload cleanup.
 An active build retains the image cache because the guest selects its inputs.
 Native caller qualification passes on Linux and macOS, and on Windows when
-launched outside the runner/Cargo Jobs that forbid breakaway. Real VM build
-qualification for the current guest protocol remains pending.
+launched outside the runner/Cargo Jobs that forbid breakaway. Full native VM build
+qualification remains pending.
 
 Windows extra-handle inheritance, caller-managed process containment,
 and the full signal/resize

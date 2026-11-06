@@ -30,7 +30,7 @@ devmap-core.workspace = true
 devmap-verity.workspace = true
 conglobate = { workspace = true, features = ["yaml"] }
 pichi-launch.workspace = true
-madrillo = { git = "https://github.com/pichi-vm/madrillo", rev = "c83b373472c3342f320460efbcc11a0e1e4a071e", default-features = false }
+madrillo = { git = "https://github.com/pichi-vm/madrillo", rev = "30437e1cc1089057e7a14d973723e27dc8e65876", default-features = false }
 interprocess = { version = "=2.4.7", features = ["tokio"] }
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true
