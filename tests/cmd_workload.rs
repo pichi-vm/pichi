@@ -16,6 +16,9 @@ use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use sha2::{Digest as _, Sha256};
 use std::{os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
 
+#[path = "support/pmi.rs"]
+mod pmi;
+
 struct WorkloadFixture {
     root: tempfile::TempDir,
     program: PathBuf,
@@ -28,9 +31,9 @@ impl WorkloadFixture {
         let graphroot = root.path().join("pichi/storage");
         let tags = FilesystemTagDb::open(&graphroot).unwrap();
         let blobs = FilesystemBlobStore::new(&graphroot);
-        let pmi = b"PMI fixture";
-        let digest = Digest::Sha256(Sha256::digest(pmi).into());
-        blobs.put_blob(&digest, pmi).await.unwrap();
+        let pmi = pmi::Pmi::native();
+        let digest = Digest::Sha256(Sha256::digest(&pmi).into());
+        blobs.put_blob(&digest, &pmi).await.unwrap();
         let manifest = Manifest {
             schema_version: 2,
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
@@ -160,7 +163,7 @@ while True:
     if not chunk: break
     response += chunk
 assert response == bytes.fromhex(os.environ['BUILD_RESPONSE']), response.hex()
-output = next(arg.removeprefix('tag=output,source=') for arg in sys.argv if arg.startswith('tag=output,source='))
+output = next(arg.removeprefix('tag=output,source=').rsplit(',bus=', 1)[0] for arg in sys.argv if arg.startswith('tag=output,source='))
 shutil.copytree(os.environ['BUILD_PRODUCT'], output, dirs_exist_ok=True)
 os.write(1, b'opaque build port\n')
 ").await;

@@ -29,7 +29,6 @@ use crate::cmd::build_port::{
 };
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
-use crate::cmd::requirements::SlotArgument as _;
 use crate::cmd::run::{DevicePath as _, build_gpt_spec, path_arg};
 use crate::cmd::workload::{
     Outcome, Running,
@@ -159,9 +158,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         memory,
         cpus,
     );
-    if let Some(slot) = reqs.as_ref().and_then(|r| r.slot) {
-        argv.extend(["--bus".into(), slot.as_argument().into()]);
-    }
     let storage = WritableStorage::prepare(
         reqs.as_ref().and_then(|r| r.storage.as_ref()),
         args.storage,
@@ -169,15 +165,13 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         &record.storage_directory(),
     )?;
     if let Some(backing) = &storage {
-        argv.extend([
-            "--blk".into(),
-            backing.argument(
-                reqs.as_ref()
-                    .and_then(|r| r.storage.as_ref())
-                    .and_then(|r| r.slot),
-            ),
-        ]);
+        argv.extend(["--blk".into(), backing.argument()]);
     }
+    super::device_buses::DeviceBuses::prepare(
+        &mut argv,
+        &reqs.unwrap_or_default(),
+        std::iter::empty(),
+    )?;
 
     let tag = args
         .tag

@@ -17,6 +17,9 @@ use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
+#[path = "support/pmi.rs"]
+mod pmi;
+
 #[cfg(windows)]
 #[path = "support/windows_terminal.rs"]
 mod windows_terminal;
@@ -67,9 +70,7 @@ async fn populate_bootable_with_requirements(
     let cow_digest = sha256_digest(&cow_bytes);
     blob_store.put_blob(&cow_digest, &cow_bytes).await.unwrap();
 
-    // PMI blob contents are opaque to `pichi run` (it only formats the path),
-    // but store something so the artifact is realistic.
-    let pmi_bytes = b"PMI\0".to_vec();
+    let pmi_bytes = pmi::Pmi::native();
     let pmi_digest = sha256_digest(&pmi_bytes);
     blob_store.put_blob(&pmi_digest, &pmi_bytes).await.unwrap();
 
@@ -547,8 +548,9 @@ async fn image_config_defaults_and_manual_allocations_are_enforced() {
         let value = |flag| args[args.iter().position(|a| *a == flag).unwrap() + 1];
         assert_eq!(value("--cpus"), cpus);
         assert_eq!(value("--memory"), memory);
-        assert_eq!(value("--bus"), "pci");
-        assert_eq!(value("--net"), "backend=user,preferred-bus=mmio");
+        assert!(!args.contains(&"--bus"));
+        assert_eq!(value("--console"), "endpoint=stdio,bus=pci");
+        assert_eq!(value("--net"), "backend=user,bus=mmio");
     }
     let output = Command::cargo_bin("pichi")
         .unwrap()
@@ -696,7 +698,7 @@ async fn writable_storage_lives_through_the_child_and_is_cleaned_on_exit() {
         .unwrap();
         assert_eq!(spec.path, PathBuf::from(path));
         assert!(!spec.readonly);
-        assert_eq!(spec.preferred_bus, Some(dillo_config::Bus::Mmio));
+        assert_eq!(spec.bus, Some(dillo_config::Bus::Mmio));
     }
 }
 

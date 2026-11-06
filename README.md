@@ -77,9 +77,11 @@ and refuses to shrink it. A supplied file's existing capacity is an operator
 allocation when no explicit size is set.
 
 The global `requirements.slot` supplies a preferred PCI or virtio-MMIO
-transport; interface and storage preferences override it. Dillo assigns actual
-slots within the platform's declared capacity and can fall back to another
-transport when a preference cannot be met.
+transport; interface and storage preferences override it. Pichi reads the
+bundled PMI base device tree and selects explicit buses within its declared
+capacity, falling back when the preferred bus is absent or full. Dillo assigns
+the actual slots on those buses. An exhausted device set is rejected before
+launch; the host does not add undeclared hardware.
 
 `pichi inspect` includes the decoded image config beside its manifest. Templates
 can access it directly, for example

@@ -3,9 +3,9 @@
 
 //! One writable block device. Formatting and mounting belong to the image.
 
-use super::{requirements::SlotArgument as _, run::DevicePath as _};
+use super::run::DevicePath as _;
 use anyhow::{Context, Result, bail, ensure};
-use conglobate::artifact::{Recommendation, Slot, Storage};
+use conglobate::artifact::{Recommendation, Storage};
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -120,13 +120,8 @@ impl WritableStorage {
         }))
     }
 
-    pub(super) fn argument(&self, slot: Option<Slot>) -> String {
-        let mut argument = format!("path={}", self.path.key_value_arg());
-        if let Some(slot) = slot {
-            argument.push_str(",preferred-bus=");
-            argument.push_str(slot.as_argument());
-        }
-        argument
+    pub(super) fn argument(&self) -> String {
+        format!("path={}", self.path.key_value_arg())
     }
 
     /// Retain temporary backing in the workload record; its exit callback
@@ -155,11 +150,7 @@ mod tests {
             .unwrap();
         let path = storage.path.clone();
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 2 * MIB);
-        assert!(
-            storage
-                .argument(requirement.slot)
-                .ends_with("preferred-bus=mmio")
-        );
+        assert_eq!(storage.argument(), format!("path={}", path.key_value_arg()));
         assert!(
             WritableStorage::prepare(Some(&requirement), None, Some(&path), directory.path())
                 .is_err()

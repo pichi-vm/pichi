@@ -34,7 +34,6 @@ use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
 use crate::cmd::layer::ScuteFiles;
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 use crate::cmd::requirements;
-use crate::cmd::requirements::SlotArgument as _;
 use crate::cmd::workload::{Running, record::Records};
 use crate::cmd::writable_storage::WritableStorage;
 use crate::config::Config;
@@ -95,11 +94,16 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
                 &record.storage_directory(),
             )?;
             if let Some(backing) = &storage {
-                dillo_args.extend([
-                    "--blk".into(),
-                    backing.argument(requirements.storage.as_ref().and_then(|r| r.slot)),
-                ]);
+                dillo_args.extend(["--blk".into(), backing.argument()]);
             }
+            super::device_buses::DeviceBuses::prepare(
+                &mut dillo_args,
+                &requirements,
+                requirements
+                    .interfaces
+                    .values()
+                    .map(|interface| interface.slot),
+            )?;
             Ok((record, dillo_args, storage))
         })
         .await?;
@@ -159,9 +163,6 @@ async fn build_dillo_args(
     let pmi_path = blob_store.blob_path(&pmi_digest);
 
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(&pmi_path)];
-    if let Some(slot) = requirements.slot {
-        argv.extend(["--bus".into(), slot.as_argument().into()]);
-    }
     // Boot configuration accompanies the immutable PMI. Its native text is
     // supplied to Dillo without changing firmware or the embedded command line.
     if let Some(path) =
@@ -182,14 +183,9 @@ async fn build_dillo_args(
         argv.push("--gpt".to_string());
         argv.push(build_gpt_spec(manifest, &scutes, blob_store).await?);
     }
-    for interface in requirements.interfaces.values() {
+    for _ in requirements.interfaces.values() {
         argv.push("--net".to_string());
-        let mut spec = crate::cmd::build::USER_NET_SPEC.to_string();
-        if let Some(slot) = interface.slot {
-            spec.push_str(",preferred-bus=");
-            spec.push_str(slot.as_argument());
-        }
-        argv.push(spec);
+        argv.push(crate::cmd::build::USER_NET_SPEC.to_string());
     }
     Ok(argv)
 }
