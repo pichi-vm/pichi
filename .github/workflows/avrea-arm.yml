@@ -1,0 +1,11 @@
+name: Avrea ARM qualification
+on:
+  push:
+    branches: [probe/avrea-arm-ci]
+permissions:
+  contents: read
+jobs:
+  platforms:
+    uses: ./.github/workflows/platforms.yml
+    with:
+      appliance-artifacts: true
