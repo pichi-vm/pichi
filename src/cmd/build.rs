@@ -380,8 +380,8 @@ pub(crate) async fn resolve_manifest(
 }
 
 /// Boot the build VM, serve the build-port request/response on
-/// `dev.pichi.build`, and wait for power-off. Unlike `pichi run` (which
-/// Build adds its direct named-port exchange to the shared monitor launch.
+/// `dev.pichi.build`, and wait for power-off. Build adds its direct named-port
+/// exchange to the shared monitor launch, including its RUST_LOG default.
 async fn boot_serve_and_wait(
     record: &Record,
     args: &[String],
