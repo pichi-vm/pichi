@@ -384,6 +384,21 @@ async fn caller_group_loss_preserves_workload_and_reconnection() {
 }
 
 #[tokio::test]
+async fn terminal_restoration_and_hangup_preserve_workload() {
+    let fixture = WorkloadFixture::new(
+        "import os, signal\nsignal.alarm(45)\nos.write(1, b'console-ready\\n')\nwhile data := os.read(0, 8192): os.write(1, data)",
+    ).await;
+    Command::new("python3")
+        .args(["-c", include_str!("support/workload_terminal.py")])
+        .env("XDG_DATA_HOME", fixture.root.path())
+        .env("PICHI_DILLO", &fixture.program)
+        .env("PICHI_BIN", env!("CARGO_BIN_EXE_pichi"))
+        .timeout(Duration::from_secs(35))
+        .assert()
+        .success();
+}
+
+#[tokio::test]
 async fn logs_preserve_binary_console_streams_after_monitor_exit() {
     let fixture = WorkloadFixture::new(
         "import os\nos.write(1, b'first\\x00\\xff\\npartial')\nos.write(2, b'error\\x00\\xfe\\n')\nos._exit(37)",
