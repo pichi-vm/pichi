@@ -95,6 +95,9 @@ wait-timeout = "0.2"
 hex = "0.4"
 burrow = { workspace = true }
 
+[target.'cfg(windows)'.dev-dependencies]
+win32job = "=2.0.3"
+
 [workspace]
 resolver = "2"
 exclude = ["deps/conglobate"]

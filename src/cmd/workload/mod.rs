@@ -187,6 +187,9 @@ impl Launch<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    mod job;
+
     use super::*;
     use madrillo::LeaderResult;
 
