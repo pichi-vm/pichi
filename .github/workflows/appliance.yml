@@ -63,7 +63,7 @@ jobs:
           digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
           pichi tag "ghcr.io/pichi-vm/fedora@$digest" ghcr.io/pichi-vm/fedora:43
           pichi build . --ref HEAD --context appliance/fedora \
-            --build-image qualification.local/appliance:build --memory 8192 \
+            --build-image qualification.local/appliance:build --memory 2048 \
             -t qualification.local/fedora:build 2>&1 | tee "$RUNNER_TEMP/fedora-build.log"
           pichi inspect qualification.local/fedora:build > "$RUNNER_TEMP/fedora-output.json"
 
