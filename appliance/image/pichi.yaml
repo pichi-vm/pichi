@@ -49,6 +49,7 @@ stages:
       - copy: { from: policy, path: /bin/lsm, into: /usr/libexec/conglobate-lsm }
       - copy: { path: appliance/image/pichi-measured-build, into: /usr/libexec/pichi-measured-build }
       - copy: { path: appliance/image/pichi-memory-report, into: /usr/libexec/pichi-memory-report }
+      - copy: { path: appliance/image/pichi-guest-memory, into: /usr/libexec/pichi-guest-memory }
       - copy: { path: appliance/image/units, into: /usr/lib/systemd/system/ }
       - copy: { path: appliance/image/10-build.network, into: /usr/lib/systemd/network/10-build.network }
       - exec:

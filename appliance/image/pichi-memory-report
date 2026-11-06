@@ -15,3 +15,9 @@ done < "$measured_path/memory.stat"
 while IFS= read -r measured_line; do
     printf 'PICHI_MEMORY_EVENTS %s\n' "$measured_line"
 done < "$measured_path/memory.events"
+systemctl is-active --quiet pichi-guest-memory.service
+read -r guest_peak_bytes guest_peak_sample guest_total_bytes < /run/pichi-guest-memory-peak
+[ "$guest_peak_bytes" -gt 0 ]
+[ "$guest_peak_bytes" -le "$guest_total_bytes" ]
+printf 'PICHI_GUEST_MEMORY_PEAK_SAMPLED_BYTES %s nominal_interval_ms=100 sample_at_peak=%s total_bytes=%s source=MemTotal-MemFree\n' \
+    "$guest_peak_bytes" "$guest_peak_sample" "$guest_total_bytes"
