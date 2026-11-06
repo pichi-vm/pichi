@@ -38,6 +38,7 @@ is still a valid image — a base others derive from.
 | `pichi attach` | Attach to live console output; `-i` also acquires input |
 | `pichi logs` | Print a snapshot of retained stdout/stderr for a workload ID |
 | `pichi wait` | Wait for a workload ID and print its native exit status |
+| `pichi stop` | Request console shutdown; force cleanup after `--time` seconds (default 10) |
 | `pichi ps` | List retained workload IDs and running/exited/unknown state |
 | `pichi update` | Update a working-tree plan’s image lock |
 | `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |
@@ -120,6 +121,12 @@ streams, preserving binary bytes and partial-line fragments. It includes only
 complete CRI records present when the file is opened; a record still being
 written appears on a later invocation. Logs remain available after monitor exit
 or loss, independently of the live attachment endpoint.
+`pichi stop ID` closes Dillo's console input to request clean shutdown, even
+while another client owns input. After 10 seconds it asks madrillo to force
+workload cleanup; `--time SECONDS` changes that grace period and `--time 0`
+forces immediately. It prints the ID after confirmed exit. Stopping an exited
+workload succeeds using its retained result. The original workload exit status
+remains available through `pichi wait ID`.
 Missing results remain unknown and retain image pins. `rmi` may remove a tag
 without deleting images still needed by such workloads.
 
@@ -132,7 +139,7 @@ Native caller qualification passes on Linux and macOS, and on Windows when
 launched outside the runner/Cargo Jobs that forbid breakaway. Real VM build
 qualification for the current guest protocol remains pending.
 
-Windows extra-handle inheritance, caller-managed process containment, stop,
+Windows extra-handle inheritance, caller-managed process containment,
 and the full signal/resize
 contract are not complete yet. Windows launch requires permission to break
 away from the caller's Job Object; the current hosted runner denies that

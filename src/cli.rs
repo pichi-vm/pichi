@@ -374,6 +374,16 @@ pub struct WorkloadArgs {
     pub id: uuid::Uuid,
 }
 
+/// Stop a workload through its console shutdown contract.
+#[derive(Debug, ClapArgs)]
+pub struct StopArgs {
+    pub id: uuid::Uuid,
+
+    /// Seconds to wait for clean shutdown before forcing cleanup (0 forces immediately).
+    #[arg(long, short = 't', default_value_t = 10)]
+    pub time: u32,
+}
+
 /// Validate annotation arguments before dispatching the import.
 impl TryFrom<ImportRawArgs> for crate::cmd::import::raw::ImportArgs {
     type Error = anyhow::Error;

@@ -323,3 +323,70 @@ async fn logs_preserve_binary_console_streams_after_monitor_exit() {
         .stdout(b"first\0\xff\npartial".as_slice())
         .stderr(b"error\0\xfe\n".as_slice());
 }
+
+#[tokio::test]
+async fn stop_requests_console_eof_and_preserves_the_original_exit_status() {
+    let fixture = WorkloadFixture::new(
+        "import os, signal\nsignal.alarm(5)\nwhile os.read(0, 4096): pass\nos._exit(37)",
+    )
+    .await;
+    let output = fixture
+        .command()
+        .args(["run", "-d", "fixture:1"])
+        .assert()
+        .success();
+    let id = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    for _ in 0..2 {
+        fixture
+            .command()
+            .args(["stop", id.trim()])
+            .assert()
+            .success()
+            .stdout(id.clone());
+    }
+    fixture
+        .command()
+        .args(["wait", id.trim()])
+        .assert()
+        .success()
+        .stdout("37\n");
+    let result: madrillo::Completion = serde_json::from_slice(
+        &std::fs::read(fixture.record().join("monitor/result.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result.cause, madrillo::CompletionCause::LeaderExit);
+}
+
+#[tokio::test]
+async fn stop_forces_after_grace_and_zero_forces_immediately() {
+    for seconds in ["1", "0"] {
+        let fixture =
+            WorkloadFixture::new("import signal\nsignal.alarm(5)\nwhile True: signal.pause()")
+                .await;
+        let output = fixture
+            .command()
+            .args(["run", "-d", "fixture:1"])
+            .assert()
+            .success();
+        let id = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+        let started = std::time::Instant::now();
+        fixture
+            .command()
+            .args(["stop", "--time", seconds, id.trim()])
+            .assert()
+            .success()
+            .stdout(id);
+        if seconds == "1" {
+            assert!(started.elapsed() >= Duration::from_secs(1));
+        }
+        let result: madrillo::Completion = serde_json::from_slice(
+            &std::fs::read(fixture.record().join("monitor/result.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result.cause, madrillo::CompletionCause::Forced);
+        assert!(matches!(
+            result.leader,
+            madrillo::LeaderResult::Signal { signal: 9, .. }
+        ));
+    }
+}

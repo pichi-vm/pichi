@@ -224,6 +224,26 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn stop_without_monitor_or_result_preserves_unknown_state_and_pins() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let records = record::Records::open(&graphroot)?;
+        let id = uuid::Uuid::new_v4();
+        #[cfg(unix)]
+        let endpoint = root.path().join("missing.sock");
+        #[cfg(windows)]
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-missing-{id}"));
+        let image = format!("sha256:{}", "0".repeat(64)).parse()?;
+        let workload = Workload(records.create(vec![image], endpoint, id)?);
+        let error = workload.stop(Duration::ZERO).await.unwrap_err();
+        assert!(error.to_string().contains("workload state is unknown"));
+        assert!(workload.0.completion()?.is_none());
+        assert_eq!(records.pins()?, workload.0.images());
+        Ok(())
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires MADRILLO_BIN and a containing Job that forbids breakaway"]
@@ -337,7 +357,11 @@ mod tests {
             attached.next().await?,
             ServerMessage::Attached { input: true }
         );
-        attached.send(ClientMessage::CloseInput).await?;
+        // Administrative shutdown must work while this attachment still owns input.
+        let workload = Workload(records.get(record.id())?);
+        let stopped = workload.stop(Duration::from_secs(5)).await?;
+        assert_eq!(stopped.0.leader, LeaderResult::Exit { code: 0 });
+        assert_eq!(stopped.0.cause, madrillo::CompletionCause::LeaderExit);
         let reply = tokio::time::timeout(Duration::from_secs(5), attached.next()).await??;
         assert!(
             matches!(reply, ServerMessage::Completed { result } if result.leader == (LeaderResult::Exit { code: 0 }))
@@ -352,10 +376,53 @@ mod tests {
             .completion()?
             .context("missing retained completion")?;
         assert_eq!(completion.leader, LeaderResult::Exit { code: 0 });
+        // After the monitor has exited, repeated stop reads the durable result.
+        assert_eq!(workload.stop(Duration::ZERO).await?.0, completion);
         if completion.cleanup == madrillo::CleanupResult::Complete {
             assert_eq!(records.pins()?, Vec::new());
         } else {
             assert_eq!(records.pins()?, record.images());
+        }
+        drop(attached);
+        drop(running);
+        // Exercise forced stop through the same native transport on every host.
+        for grace in [Duration::from_millis(50), Duration::ZERO] {
+            let workload = Workload(records.create(
+                record.images().to_vec(),
+                endpoint.clone(),
+                uuid::Uuid::new_v4(),
+            )?);
+            let mut running = ReapMonitor(
+                Launch {
+                    monitor: &monitor,
+                    program: &fixture,
+                    arguments: &["sleep".into()],
+                    state: &workload.0.state(),
+                    endpoint: &endpoint,
+                    input: true,
+                    inherited: Vec::new(),
+                }
+                .spawn()
+                .await?,
+            );
+            running.started().await?;
+            let started = std::time::Instant::now();
+            let result = workload.stop(grace).await?.0;
+            assert!(started.elapsed() >= grace);
+            assert_eq!(result.cause, madrillo::CompletionCause::Forced);
+            #[cfg(unix)]
+            assert!(matches!(
+                result.leader,
+                LeaderResult::Signal { signal: 9, .. }
+            ));
+            #[cfg(windows)]
+            assert!(matches!(result.leader, LeaderResult::Exit { code } if code != 0));
+            assert_eq!(workload.0.completion()?, Some(result));
+            #[cfg(unix)]
+            let status = running.monitor.inner_mut().wait()?;
+            #[cfg(windows)]
+            let status = running.monitor.wait()?;
+            assert!(status.success());
         }
         Ok(())
     }
@@ -414,13 +481,7 @@ impl Running {
         if let Some(result) = record.completion()? {
             return Ok(result);
         }
-        let result = tokio::time::timeout(Duration::from_secs(30), async {
-            self.client.send(ClientMessage::Terminate).await?;
-            self.client.wait(false).await
-        })
-        .await
-        .context("workload termination deadline; cleanup remains unknown")?;
-        match result {
+        match self.client.terminate().await {
             Ok(result) => Ok(result),
             Err(error) => record.completion()?.ok_or(error),
         }
@@ -463,6 +524,25 @@ impl Running {
 }
 
 impl Client {
+    async fn terminate(&mut self) -> Result<Completion> {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            self.send(ClientMessage::Terminate).await?;
+            self.wait(false).await
+        })
+        .await
+        .context("workload termination deadline; cleanup remains unknown")?
+    }
+
+    async fn stop(&mut self, grace: Duration) -> Result<Completion> {
+        if !grace.is_zero() {
+            self.send(ClientMessage::CloseInput).await?;
+            if let Ok(result) = tokio::time::timeout(grace, self.wait(false)).await {
+                return result;
+            }
+        }
+        self.terminate().await
+    }
+
     async fn wait(&mut self, output: bool) -> Result<Completion> {
         self.wait_with(|stream, bytes| {
             if output {
@@ -547,6 +627,14 @@ impl Workload {
             client.wait(false).await
         }
         .await;
+        self.retained_or_error(result).map(Outcome)
+    }
+
+    pub async fn stop(&self, grace: Duration) -> Result<Outcome> {
+        if let Some(result) = self.0.completion()? {
+            return Ok(Outcome(result));
+        }
+        let result = async { Client::connect(self.0.endpoint()).await?.stop(grace).await }.await;
         self.retained_or_error(result).map(Outcome)
     }
 

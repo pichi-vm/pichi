@@ -2114,7 +2114,7 @@ dependencies = [
 [[package]]
 name = "madrillo"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/madrillo?rev=f9ebaf168999bbc2dc710ec41c4db5252ce4ec00#f9ebaf168999bbc2dc710ec41c4db5252ce4ec00"
+source = "git+https://github.com/pichi-vm/madrillo?rev=5c660ce9006a1a8e8273330fc12bec7a1367be19#5c660ce9006a1a8e8273330fc12bec7a1367be19"
 dependencies = [
  "serde",
 ]

@@ -73,6 +73,10 @@ enum Command {
 
     /// Wait for a workload and print its exit status.
     Wait(cli::WorkloadArgs),
+
+    /// Shut down a workload, forcing cleanup after the grace period.
+    Stop(cli::StopArgs),
+
     /// List retained workloads, including unknown and completed workloads.
     Ps,
 }
@@ -134,6 +138,14 @@ async fn main() -> anyhow::Result<NativeExit> {
             cmd::workload::Workload::open(args.id, &config)?
                 .logs()
                 .await
+        }
+        Command::Stop(args) => {
+            cmd::workload::Workload::open(args.id, &config)?
+                .stop(std::time::Duration::from_secs(u64::from(args.time)))
+                .await?
+                .code()?;
+            println!("{}", args.id);
+            Ok(())
         }
         Command::Ps => cmd::workload::Workload::list(&config).await,
     }?;
