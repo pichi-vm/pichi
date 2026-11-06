@@ -197,7 +197,7 @@ impl PreparedLayer {
                 );
                 None
             }
-            Layer::Pmi(_) => {
+            Layer::Pmi(_) | Layer::PmiZstd(_) => {
                 io::copy(&mut wire, &mut io::sink())?;
                 None
             }

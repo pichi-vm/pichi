@@ -3,9 +3,9 @@
 
 //! `pichi inspect <ref>` (LOCAL-02 / D-20 image-index aware).
 //!
-//! Outputs the manifest verbatim as pretty-printed JSON plus the resolved
+//! Outputs the manifest and decoded launch config as JSON plus the resolved
 //! content `digest` (the one datum a content-addressed manifest can't carry
-//! about itself); everything else is derivable from the manifest. `--format`
+//! about itself). `--format`
 //! renders a minijinja (Jinja2) template — dotted OCI annotation keys are
 //! reached with subscripts, e.g.
 //! `{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}`. When the
@@ -39,6 +39,8 @@ use conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1 as OCI_IMAGE_INDEX_MEDIA_TYPE;
 struct InspectOutput {
     digest: String,
     manifest: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config: Option<conglobate::artifact::Config>,
 }
 
 #[derive(Serialize)]
@@ -51,6 +53,8 @@ struct IndexInspectOutput {
     manifest: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     manifest_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config: Option<conglobate::artifact::Config>,
 }
 
 #[derive(Serialize)]
@@ -63,7 +67,7 @@ struct IndexEntryInfo {
 }
 
 /// `pichi inspect <ref>` entry point — print the cached manifest as
-/// pretty-printed JSON augmented with a `_pichi` sidecar (LOCAL-02).
+/// pretty-printed JSON with the decoded launch config when present.
 pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
@@ -91,18 +95,26 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
             }
             Err(_) => None,
         };
-        return inspect_index(args, &digest, &metadata.value, selected);
+        let config = match &selected {
+            Some(image) => {
+                super::requirements::load_config(&image.manifest()?, &blob_store).await?
+            }
+            None => None,
+        };
+        return inspect_index(args, &digest, &metadata.value, selected, config);
     }
     let bytes = metadata.bytes;
     let value = metadata.value;
 
     // Bare manifest path. Validate defensively, then emit the manifest verbatim
     // plus its resolved digest.
-    Manifest::decode_json(bytes.as_slice())
+    let manifest = Manifest::decode_json(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
+    let launch_config = super::requirements::load_config(&manifest, &blob_store).await?;
     let output = InspectOutput {
         digest: digest.to_string(),
         manifest: value,
+        config: launch_config,
     };
     args.emit(&output)
 }
@@ -112,6 +124,7 @@ fn inspect_index(
     digest: &Digest,
     value: &Value,
     selected: Option<super::cache::ImageMetadata>,
+    config: Option<conglobate::artifact::Config>,
 ) -> Result<()> {
     let mut entries = Vec::new();
     let manifests = value
@@ -161,6 +174,7 @@ fn inspect_index(
         note,
         manifest_digest: selected.as_ref().map(|image| image.digest.to_string()),
         manifest: selected.map(|image| image.value),
+        config,
     };
     args.emit(&output)
 }

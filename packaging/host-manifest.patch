@@ -15,12 +15,12 @@
 
  [dependencies]
  anyhow.workspace = true
-@@ -53,38 +45,14 @@
+@@ -54,17 +46,9 @@
  ruzstd = "0.9.1"
  # Product binaries the boot tests orchestrate (host target). Optional so only
  # `vm-tests` resolves them; a plain `cargo test` pulls zero product artifacts.
 -arma = { git = "https://github.com/pichi-vm/arma", rev = "3297920b46122689fb13ca41acd61cbe94ac1de7", artifact = "bin", optional = true }
--dillo = { git = "https://github.com/pichi-vm/dillo", rev = "4afc85c8580f763f0cb68472701e1ff9e261e250", artifact = "bin", optional = true }
+-dillo = { git = "https://github.com/pichi-vm/dillo", rev = "87d12aa0628fdaba27c51aa7b72c6bdf2a508ab4", artifact = "bin", optional = true }
 
  # Optional guest Corium binaries for `vm-tests` only. Production builds launch
  # Conglobate's shipped appliance; the host consumes its types-only library.
@@ -30,8 +30,10 @@
 -[target.'cfg(target_arch = "aarch64")'.dependencies]
 -corium = { git = "https://github.com/pichi-vm/corium", rev = "c33ae0e01d58b657f8f62cb91672885326a903b9", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 -
- [target.'cfg(unix)'.dependencies]
- nix = { workspace = true }
+ [target.'cfg(not(target_os = "linux"))'.dependencies]
+ sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+
+@@ -73,22 +57,6 @@
 
  [target.'cfg(windows)'.dependencies]
  windows-sys = { workspace = true, features = ["Win32_Foundation"] }
