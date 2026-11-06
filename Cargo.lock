@@ -885,7 +885,7 @@ dependencies = [
 [[package]]
 name = "dillo"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "anyhow",
  "argh",
@@ -921,7 +921,7 @@ dependencies = [
 [[package]]
 name = "dillo-config"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "anyhow",
  "argh",
@@ -936,7 +936,7 @@ dependencies = [
 [[package]]
 name = "dillo-devtree"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "devtree",
  "thiserror 2.0.18",
@@ -945,7 +945,7 @@ dependencies = [
 [[package]]
 name = "dillo-machine"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-mmio",
  "pmi",
@@ -954,7 +954,7 @@ dependencies = [
 [[package]]
 name = "dillo-machine-hvf"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "applevisor",
  "applevisor-sys",
@@ -971,7 +971,7 @@ dependencies = [
 [[package]]
 name = "dillo-machine-kvm"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "anyhow",
  "dillo-devtree",
@@ -991,7 +991,7 @@ dependencies = [
 [[package]]
 name = "dillo-machine-whp"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-devtree",
  "dillo-machine",
@@ -1006,7 +1006,7 @@ dependencies = [
 [[package]]
 name = "dillo-mmio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "log",
  "thiserror 2.0.18",
@@ -1016,7 +1016,7 @@ dependencies = [
 [[package]]
 name = "dillo-mmio-uart"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-mmio",
  "vm-superio",
@@ -1025,7 +1025,7 @@ dependencies = [
 [[package]]
 name = "dillo-mmio-virtio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -1036,7 +1036,7 @@ dependencies = [
 [[package]]
 name = "dillo-pci"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-mmio",
  "log",
@@ -1045,7 +1045,7 @@ dependencies = [
 [[package]]
 name = "dillo-pci-virtio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-mmio",
  "dillo-pci",
@@ -1057,7 +1057,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-mmio",
  "log",
@@ -1068,7 +1068,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-blk"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -1080,7 +1080,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-console"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -1095,7 +1095,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-fs"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -1110,7 +1110,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-gpt"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "anyhow",
  "dillo-virtio-blk",
@@ -1123,7 +1123,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-net"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "block2",
  "dillo-mmio",
@@ -1138,7 +1138,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-vsock"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?rev=a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9#a75f0e3fb3eb274c4c84f36c18e3a9469f65d6e9"
+source = "git+https://github.com/pichi-vm/dillo?rev=dfc241e36ee10eef01b23272c6e9b60df43b08fa#dfc241e36ee10eef01b23272c6e9b60df43b08fa"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -2114,7 +2114,7 @@ dependencies = [
 [[package]]
 name = "madrillo"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/madrillo?rev=5c660ce9006a1a8e8273330fc12bec7a1367be19#5c660ce9006a1a8e8273330fc12bec7a1367be19"
+source = "git+https://github.com/pichi-vm/madrillo?rev=03d15a94a20d1f5581013ad80d134f800163f1b2#03d15a94a20d1f5581013ad80d134f800163f1b2"
 dependencies = [
  "serde",
 ]
@@ -3335,7 +3335,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

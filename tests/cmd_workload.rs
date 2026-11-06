@@ -129,11 +129,16 @@ impl WorkloadFixture {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::cargo_bin("pichi").unwrap();
+        let mut command = Command::from_std(self.native_command());
+        command.timeout(Duration::from_secs(15));
+        command
+    }
+
+    fn native_command(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"));
         command
             .env("XDG_DATA_HOME", self.root.path())
-            .env("PICHI_DILLO", &self.program)
-            .timeout(Duration::from_secs(15));
+            .env("PICHI_DILLO", &self.program);
         command
     }
 }
@@ -297,6 +302,85 @@ async fn detached_launch_is_discoverable_and_later_wait_reads_retained_exit() {
     let listed = fixture.command().arg("ps").assert().success();
     let rows = String::from_utf8(listed.get_output().stdout.clone()).unwrap();
     assert!(rows.contains(id) && rows.contains("exited"), "{rows}");
+}
+
+#[tokio::test]
+async fn caller_group_loss_preserves_workload_and_reconnection() {
+    use nix::{
+        sys::signal::{Signal, killpg},
+        unistd::Pid,
+    };
+    use std::{fs::File, os::unix::process::CommandExt, process::Stdio, time::Instant};
+    use wait_timeout::ChildExt;
+
+    struct Caller(std::process::Child);
+    impl Drop for Caller {
+        fn drop(&mut self) {
+            if matches!(self.0.try_wait(), Ok(None)) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+
+    for signal in [Signal::SIGKILL, Signal::SIGTERM, Signal::SIGHUP] {
+        let fixture = WorkloadFixture::new(
+            "import os, signal\nsignal.alarm(30)\nos.write(1, b'ready\\n')\nassert os.read(0, 6) == b'again\\n'\nos.write(1, b'reconnected\\n')\nos._exit(37)",
+        ).await;
+        let output = fixture.root.path().join("caller.out");
+        let diagnostics = fixture.root.path().join("caller.err");
+        let (input, writer) = std::io::pipe().unwrap();
+        let mut caller = Caller(
+            fixture
+                .native_command()
+                .args(["run", "-i", "fixture:1"])
+                .process_group(0)
+                .stdin(Stdio::from(input))
+                .stdout(File::create(&output).unwrap())
+                .stderr(File::create(&diagnostics).unwrap())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::fs::read(&output).unwrap() != b"ready\n" {
+            assert!(
+                caller.0.try_wait().unwrap().is_none(),
+                "{}",
+                std::fs::read_to_string(&diagnostics).unwrap()
+            );
+            assert!(Instant::now() < deadline, "foreground output deadline");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let record = fixture.record();
+        let id = record.file_name().unwrap().to_str().unwrap();
+        // The caller is still our unreaped child, so its process-group ID
+        // cannot have been reused. Madrillo must have its own session.
+        killpg(Pid::from_raw(i32::try_from(caller.0.id()).unwrap()), signal).unwrap();
+        let status = caller
+            .0
+            .wait_timeout(Duration::from_secs(5))
+            .unwrap()
+            .expect("caller did not exit after group signal");
+        assert!(!status.success());
+        drop(writer);
+        assert!(
+            !record.join("monitor/result.json").exists(),
+            "caller death ended workload"
+        );
+        fixture
+            .command()
+            .args(["attach", "-i", id])
+            .write_stdin(b"again\n")
+            .assert()
+            .code(37)
+            .stdout("reconnected\n");
+        fixture
+            .command()
+            .args(["wait", id])
+            .assert()
+            .success()
+            .stdout("37\n");
+    }
 }
 
 #[tokio::test]
