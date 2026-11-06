@@ -1,5 +1,9 @@
 #!/usr/bin/make -f
 
+# Noble supplies newer Rust as versioned packages; newer Ubuntu uses its default.
+export PATH := /usr/lib/rust-1.91/bin:$(PATH)
+export CARGO_HOME = $(CURDIR)/debian/cargo-home
+export RUSTC_BOOTSTRAP = 1
 export CARGO_NET_OFFLINE = true
 export CARGO_TARGET_DIR = $(CURDIR)/target
 
@@ -23,7 +27,7 @@ override_dh_installdocs:
 		-exec cp --parents -t debian/pichi/usr/share/doc/pichi/dependency-licenses {} +
 
 override_dh_auto_clean:
-	rm -rf target
+	rm -rf target debian/cargo-home
 
 # Cargo checksums cover vendored Cargo.toml.orig files.
 override_dh_clean:
