@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       sample:
-        description: Measurement label (seed, warm-1, warm-2)
+        description: Measurement label (host tools, private-pair, workspace-*)
         required: true
         type: string
 
-run-name: Cache 157 measurement ${{ inputs.sample }}
+run-name: CI measurement ${{ inputs.sample }}
 
 defaults:
   run:
@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   build:
-    if: inputs.sample != 'private-pair'
+    if: inputs.sample != 'private-pair' && !startsWith(inputs.sample, 'workspace-')
     name: ${{ matrix.runner }} / ${{ matrix.mode }}
     strategy:
       fail-fast: false
@@ -90,3 +90,49 @@ jobs:
         env:
           CARGO_HOME: ${{ runner.temp }}/measure-157-cargo
         uses: ./.github/actions/measure-cache
+
+  workspace:
+    if: startsWith(inputs.sample, 'workspace-')
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    timeout-minutes: 30
+    name: workspace checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            zot_asset: zot-linux-arm64-minimal
+            zot_sha256: 931d687899cc4b1fcad4c026d2792df6132e6de1b2f329aa730dccee14ec0395
+          - os: macos-15
+            zot_asset: zot-darwin-arm64-minimal
+            zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src,clippy,llvm-tools
+          rustup default "$NIGHTLY"
+          rustup target add x86_64-unknown-none aarch64-unknown-none-softfloat aarch64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: measure-111-workspace
+
+      - name: Clippy
+        shell: bash
+        run: cargo clippy --locked --workspace --all-targets --all-features
+
+      - name: Test full workspace and registry
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+          ZOT_ASSET: ${{ matrix.zot_asset }}
+          ZOT_SHA256: ${{ matrix.zot_sha256 }}
+        run: bash .github/scripts/test-registry.sh
