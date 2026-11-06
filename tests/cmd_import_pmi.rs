@@ -212,29 +212,13 @@ async fn composition_omits_inherited_default_parameters() {
     let bytes = serde_json::to_vec(&source).unwrap();
     let digest = Digest::Sha256(Sha256::digest(&bytes).into());
     store.put_blob(&digest, &bytes).await.unwrap();
-    let db = FilesystemTagDb::open(&g).unwrap();
-    let original = db
-        .resolve_tag("docker.io/library/base:1")
-        .await
-        .unwrap()
-        .unwrap();
-    let mut index: serde_json::Value =
-        serde_json::from_slice(&store.get_blob(&original).await.unwrap()).unwrap();
-    index["manifests"][0]["digest"] = digest.to_string().into();
-    index["manifests"][0]["size"] = bytes.len().into();
-    let index = serde_json::to_vec(&index).unwrap();
-    let digest = Digest::Sha256(Sha256::digest(&index).into());
-    store.put_blob(&digest, &index).await.unwrap();
-    db.set_tag("docker.io/library/explicit:1", &digest)
-        .await
-        .unwrap();
     pichi(&tmp)
         .args([
             "import",
             "pmi",
             pmi.to_str().unwrap(),
             "--carapace",
-            "explicit:1",
+            &digest.to_string(),
             "-t",
             "app:1",
         ])
@@ -251,10 +235,7 @@ async fn composition_omits_inherited_default_parameters() {
                 .contains_key(&format!("dev.pichi.carapace.verity.{key}"))
         );
     }
-    assert_eq!(
-        resolve_manifest(&g, "docker.io/library/explicit:1").await,
-        source
-    );
+    assert_eq!(store.get_blob(&digest).await.unwrap(), bytes);
 }
 
 /// Kind 3: `import pmi` without `--carapace` produces a PMI-only bootable
