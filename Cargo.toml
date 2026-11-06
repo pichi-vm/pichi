@@ -97,6 +97,7 @@ burrow = { workspace = true }
 
 [target.'cfg(windows)'.dev-dependencies]
 win32job = "=2.0.3"
+winsafe = { version = "=0.0.29", features = ["user"] }
 
 [workspace]
 resolver = "2"

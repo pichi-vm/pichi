@@ -138,6 +138,21 @@ async fn caller_loss_preserves_workload() -> Result<()> {
         assert_eq!(monitor.wait(Some(Duration::ZERO))?, WaitOutcome::TimedOut);
         assert!(caller.process.try_wait()?.is_none());
         if console {
+            // WMI-created consoles can exist with WS_VISIBLE unset. .NET's
+            // MainWindowHandle deliberately excludes hidden windows. Reveal
+            // only our uniquely titled fixture before using its WM_CLOSE API.
+            let mut matches = 0;
+            winsafe::EnumWindows(|window| {
+                if window
+                    .GetWindowText()
+                    .is_ok_and(|text| text.ends_with(&title))
+                {
+                    window.ShowWindow(winsafe::co::SW::SHOW);
+                    matches += 1;
+                }
+                true
+            })?;
+            assert_eq!(matches, 1, "owned console window absent from this desktop");
             // Close the uniquely titled native console window through .NET's
             // WM_CLOSE wrapper. Only the console created by this fixture matches.
             let script = r#"
