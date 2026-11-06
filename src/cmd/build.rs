@@ -67,11 +67,8 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let (pmi, build_scutes) = build_manifest
         .partition_layers()
         .with_context(|| format!("build image {build_image_ref} is not bootable"))?;
-    let pmi_digest: Digest = pmi
-        .digest
-        .parse()
-        .context("invalid build-image PMI digest")?;
-    let pmi_path = blob_store.blob_path(&pmi_digest);
+    let pmi_path =
+        super::layer::PreparedLayer::prepare_pmi(&build_manifest, pmi, &blob_store).await?;
     let bootconfig_path =
         super::boot_config::BootConfigFile::prepare_image(&build_manifest, &blob_store).await?;
 
