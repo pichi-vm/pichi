@@ -44,9 +44,12 @@ elif not sys.argv[1:]:
             output.write(f"PICHI_MONITOR_SOURCE={root}\n")
         subprocess.run(["git", "clone", "--no-checkout", "https://github.com/pichi-vm/madrillo", str(root)], check=True)
         subprocess.run(["git", "checkout", "--detach", revision], cwd=root, check=True)
+        with (root / "rust-toolchain.toml").open("rb") as source:
+            toolchain = tomllib.load(source)["toolchain"]["channel"]
+        subprocess.run(["rustup", "toolchain", "install", toolchain, "--profile", "minimal", "--no-self-update"], check=True)
         environment = os.environ.copy()
         environment["CARGO_TARGET_DIR"] = str(root / "target")
-        subprocess.run(["cargo", "+" + os.environ["NIGHTLY"], "build", "--locked", "--features", "qualification", "--bins"], cwd=root, env=environment, check=True)
+        subprocess.run(["cargo", "+" + toolchain, "build", "--locked", "--features", "qualification", "--bins"], cwd=root, env=environment, check=True)
         binary = root / "target/debug" / ("madrillo.exe" if os.name == "nt" else "madrillo")
         with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
             output.write(f"PICHI_MADRILLO={binary}\nMADRILLO_BIN={binary}\n")
