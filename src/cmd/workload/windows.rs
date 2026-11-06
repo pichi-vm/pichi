@@ -32,10 +32,6 @@ use windows_sys::Win32::{
 #[derive(Debug)]
 pub(super) struct Monitor {
     // Owning the native handle keeps identity stable through the final wait.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "RAII lifetime; waited only by tests")
-    )]
     handle: OwnedHandle,
     id: u32,
 }
@@ -110,7 +106,6 @@ impl Monitor {
         self.id
     }
 
-    #[cfg(test)]
     pub(super) fn try_wait(&self) -> io::Result<Option<std::process::ExitStatus>> {
         self.observe(0)
     }
@@ -121,7 +116,6 @@ impl Monitor {
             .ok_or_else(|| io::Error::other("infinite monitor wait timed out"))
     }
 
-    #[cfg(test)]
     fn observe(&self, timeout: u32) -> io::Result<Option<std::process::ExitStatus>> {
         use std::os::windows::process::ExitStatusExt;
         use windows_sys::Win32::{

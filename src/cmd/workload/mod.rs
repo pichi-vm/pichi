@@ -320,6 +320,32 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires PICHI_MADRILLO; no workload is executed"]
+    async fn startup_failure_reports_monitor_diagnostic() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let records = record::Records::open(&graphroot)?;
+        let image = format!("sha256:{}", "0".repeat(64)).parse()?;
+        let record = records.reserve(vec![image])?;
+        // A preexisting state file fails before the monitor can prepare its
+        // endpoint or execute any workload, including the default Dillo path.
+        std::fs::write(record.state(), b"reserved")?;
+        let error = Running::start(&record, &[], Vec::new(), Vec::new(), false)
+            .await
+            .expect_err("preexisting monitor state must fail");
+        let diagnostic = record.monitor_diagnostic()?;
+        assert!(diagnostic.contains("madrillo [Error]"), "{diagnostic:?}");
+        assert!(error.to_string().contains(&diagnostic), "{error:#}");
+        assert!(format!("{error:#}").contains("monitor disconnected without completion"));
+        assert!(!record.state().join("result.json").exists());
+        println!(
+            "native startup failure: retained monitor diagnostic reported without executing a workload"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     #[ignore = "requires MADRILLO_BIN and its qualification fixture; run explicitly"]
     async fn monitor_crash_preserves_unknown_state_and_cleanup_inputs() -> Result<()> {
         let monitor = PathBuf::from(std::env::var_os("MADRILLO_BIN").context("set MADRILLO_BIN")?);
@@ -641,8 +667,37 @@ impl Running {
                 record.id()
             )
         })?;
-        running.started().await?;
+        if let Err(error) = running.started().await {
+            return Err(running.startup_error(record, error).await);
+        }
         Ok(running)
+    }
+
+    async fn startup_error(&mut self, record: &Record, error: anyhow::Error) -> anyhow::Error {
+        // EOF can precede the monitor's final diagnostic flush. Await only our
+        // own process, with a bound; a launch timeout must not kill a workload
+        // whose startup state is still unknown.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            #[cfg(unix)]
+            let status = self.monitor.inner_mut().try_wait();
+            #[cfg(windows)]
+            let status = self.monitor.try_wait();
+            if !matches!(status, Ok(None)) || tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let diagnostic = match record.monitor_diagnostic() {
+            Ok(text) if !text.is_empty() => text,
+            Ok(_) => "no monitor diagnostic was recorded".into(),
+            Err(error) => format!("could not read monitor diagnostic: {error:#}"),
+        };
+        error.context(format!(
+            "launch workload {}; monitor diagnostic ({}): {diagnostic}",
+            record.id(),
+            record.path().join("monitor.err").display()
+        ))
     }
 
     pub(crate) async fn view(&mut self, record: &Record, interactive: bool) -> Result<u32> {

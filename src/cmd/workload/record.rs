@@ -383,6 +383,21 @@ impl Record {
             .into_std())
     }
 
+    pub(super) fn monitor_diagnostic(&self) -> Result<String> {
+        let Some(file) = Self::open_file(&self.directory, "monitor.err")? else {
+            return Ok(String::new());
+        };
+        let mut bytes = Vec::new();
+        file.take(8193).read_to_end(&mut bytes)?;
+        let truncated = bytes.len() > 8192;
+        bytes.truncate(8192);
+        let mut text = String::from_utf8_lossy(&bytes).trim().to_owned();
+        if truncated {
+            text.push_str(" [truncated]");
+        }
+        Ok(text)
+    }
+
     pub(crate) fn create_build_output(&self) -> Result<PathBuf> {
         self.directory.create_dir("output")?;
         Ok(self.path.join("output"))
