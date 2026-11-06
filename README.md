@@ -139,3 +139,11 @@ git submodule update --init --recursive
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+## COPR packages
+
+The `npmccallum/pichi` COPR project builds `main` for Fedora on x86_64 and
+aarch64. `.copr/Makefile` creates one source RPM; COPR builds the native
+packages using the spec in `packaging/`. Binary builds need network access
+for Cargo's locked dependencies. The unreleased RPM version is `0.1.0~dev`;
+COPR's build ID in `Release` makes successive builds of that version upgrades.

@@ -1,76 +1,44 @@
-# Copr SCM: method "make srpm" (.copr/Makefile), spec packaging/pichi.spec.
-# Vendor is generated at SRPM time (not committed): see .copr/Makefile.
-#
-# Scaffolded from rust2rpm 28, hand-tuned for this workspace app:
-# - package name pichi; CLI only (no library install)
-# - Source0 is the git tree; Source1 is the SRPM-time vendor/ tarball
-# - %%cargo_prep -v vendor; git/crates.io replacements come from the vendor step
-# - host-manifest.patch and lock pruning drop vm-tests deps for the host CLI
-# - EPEL / CentOS Stream: rust-toolset; Fedora: cargo-rpm-macros
-
-%bcond_with check
-
-%global cargo_install_lib 0
-%global crate pichi
-
 Name:           pichi
-Version:        0.1.0
-Release:        1%{?dist}
-Summary:        Front-end for pichi VM images
+Version:        0.1.0~dev
+Release:        1%{?buildtag}%{?dist}
+Summary:        Front-end for Pichi VM images
 
 License:        Apache-2.0 AND MIT AND Unicode-3.0 AND Zlib AND ISC AND BSD-3-Clause AND Unlicense AND BSL-1.0 AND CDLA-Permissive-2.0
 URL:            https://github.com/pichi-vm/pichi
-Source0:        %{crate}-%{version}.tar.gz
-Source1:        %{crate}-%{version}-vendor.tar.xz
-
-%if 0%{?rhel}
-BuildRequires:  rust-toolset
-%else
-BuildRequires:  cargo-rpm-macros >= 26
-%endif
-BuildRequires:  cmake
-BuildRequires:  gcc
-BuildRequires:  gcc-c++
-BuildRequires:  make
-# Installing pichi also pulls in the dillo-vm VMM package.
-Requires:       dillo-vm
-
+Source0:        %{name}-%{version}.tar.gz
 ExclusiveArch:  x86_64 aarch64
 
-%global _description %{expand:
-Host CLI that manages pichi VM images as OCI artifacts and launches them.
-This package does not ship guest images.}
+BuildRequires:  cargo
+BuildRequires:  rust
+BuildRequires:  gcc
+BuildRequires:  git
+BuildRequires:  cmake
+BuildRequires:  gcc-c++
+BuildRequires:  make
+Requires:       dillo-vm
+Requires:       ca-certificates
 
-%description %{_description}
+%description
+Front-end for Pichi VM images.
 
 %prep
-# Source0 is already patch-applied in .copr/Makefile before cargo vendor.
-%autosetup -n %{crate}-%{version} -p1 -a1
-%cargo_prep -v vendor
-# Fedora cargo-rpm-macros already set [net] offline; EL
-# may not. Skip a second [net] table if offline is present.
-grep -q '^offline' .cargo/config.toml || printf '\n[net]\noffline = true\n' >> .cargo/config.toml
+%autosetup
 
 %build
-export CARGO_NET_OFFLINE=true
-# Merge the generated source map separately from RPM's build configuration.
-%cargo_build -- --locked --config packaging/cargo-vendor-config.toml
+export CARGO_HOME="$PWD/.cargo-home"
+export RUSTC_BOOTSTRAP=1
+cargo build --locked --release --bin pichi
 
 %install
-export CARGO_NET_OFFLINE=true
-%cargo_install -- --locked --config packaging/cargo-vendor-config.toml
+install -Dpm0755 target/release/pichi %{buildroot}%{_bindir}/pichi
 
-%if %{with check}
-%check
-export CARGO_NET_OFFLINE=true
-%cargo_test -- --locked --config packaging/cargo-vendor-config.toml
-%endif
+# Preserve license and notice files from the fetched dependencies.
+find .cargo-home -type f \( -iname 'license*' -o -iname 'licence*' -o \
+    -iname 'copying*' -o -iname 'notice*' -o -iname 'copyright*' \) \
+    -exec install -Dm0644 '{}' '%{buildroot}%{_licensedir}/%{name}/dependencies/{}' \;
 
 %files
+%license %{_licensedir}/%{name}/dependencies/
 %license LICENSE
 %doc README.md
 %{_bindir}/pichi
-
-%changelog
-* Tue Oct 27 2026 Nathaniel McCallum <nathaniel@mccallum.life> - 0.1.0-1
-- Add Copr packaging; vendor generated at SRPM time
