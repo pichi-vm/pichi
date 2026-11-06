@@ -169,6 +169,77 @@ fn make_stub_dillo(dir: &Path) -> PathBuf {
 }
 
 #[tokio::test]
+#[ignore = "requires MADRILLO_BIN and its native port-exchange fixture"]
+async fn build_channel_preserves_guest_first_exchange() {
+    let monitor = PathBuf::from(std::env::var_os("MADRILLO_BIN").unwrap());
+    let fixture =
+        monitor.with_file_name(format!("madrillo-fixture{}", std::env::consts::EXE_SUFFIX));
+    let root = TempDir::new().unwrap();
+    populate_bootable(&graphroot(&root), "contract:1").await;
+    let marker = root.path().join("port-exchange.json");
+    let mut request = Vec::new();
+    ciborium::into_writer(
+        &pichi_launch::Request::from(pichi_launch::Build::default()),
+        &mut request,
+    )
+    .unwrap();
+    let mut response = Vec::new();
+    ciborium::into_writer(
+        &pichi_launch::Response::Ok(pichi_launch::Input {
+            r#ref: "HEAD".into(),
+            plan: "pichi.yaml".into(),
+            lock: "pichi.lock".into(),
+            context: ".".into(),
+            location: None,
+        }),
+        &mut response,
+    )
+    .unwrap();
+    let result = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", root.path())
+        .env("PICHI_DILLO", fixture)
+        .env("PICHI_MADRILLO", monitor)
+        .env(
+            "MADRILLO_FIXTURE_PORT_EXCHANGE",
+            serde_json::json!({"request":request,"response":response,"marker":marker}).to_string(),
+        )
+        .arg("build")
+        .arg(root.path())
+        .args(["--ref", "HEAD", "-b", "contract:1", "-t", "built:1"])
+        .timeout(std::time::Duration::from_secs(15))
+        .assert()
+        .failure();
+    let console_logs: Vec<_> = std::fs::read_dir(root.path().join("pichi/storage.workloads"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path().join("monitor/console.log")))
+        .collect();
+    assert!(
+        String::from_utf8_lossy(&result.get_output().stderr)
+            .contains("build VM exited with status 37"),
+        "{result:?}; console logs: {console_logs:?}"
+    );
+    // The ordinary child creates this marker only after checking that no host
+    // bytes precede its request and the full CBOR response matches exactly.
+    let arguments: Vec<String> = serde_json::from_slice(&std::fs::read(marker).unwrap()).unwrap();
+    assert!(arguments.iter().any(|argument| {
+        argument.contains("name=dev.pichi.build")
+            && argument.contains("rx=pipe:")
+            && argument.contains("tx=pipe:")
+    }));
+    for tag in ["repo", "cache", "output"] {
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| { argument.starts_with(&format!("tag={tag},source=")) })
+        );
+    }
+    println!(
+        "native build channel: direct inherited pipes, guest-first CBOR and mount arguments preserved"
+    );
+}
+
+#[tokio::test]
 async fn run_defaults_to_warnings_and_preserves_log_overrides() {
     let tmp = TempDir::new().unwrap();
     populate_bootable(&graphroot(&tmp), "myapp:1").await;
