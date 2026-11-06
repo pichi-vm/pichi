@@ -118,13 +118,15 @@ async fn caller_job_loss_preserves_workload() -> Result<()> {
     caller.monitor = Some(Process::open(pid, ProcessAccess::Terminate)?);
     let monitor = caller.monitor.as_ref().context("monitor handle missing")?;
     assert_eq!(monitor.wait(Some(Duration::ZERO))?, WaitOutcome::TimedOut);
+    assert!(caller.process.try_wait()?.is_none());
     // Closing the only Job handle terminates its members. The monitor must
     // have broken away before its own first instruction, as production requires.
     drop(caller.job.take());
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(status) = caller.process.try_wait()? {
-            assert!(!status.success(), "caller survived Job closure normally");
+        if caller.process.try_wait()?.is_some() {
+            // Job close can terminate with code zero. The fixture cannot
+            // return normally within this deadline, so waitability is proof.
             break;
         }
         if Instant::now() >= deadline {
