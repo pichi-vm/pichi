@@ -138,41 +138,36 @@ async fn caller_loss_preserves_workload() -> Result<()> {
         assert_eq!(monitor.wait(Some(Duration::ZERO))?, WaitOutcome::TimedOut);
         assert!(caller.process.try_wait()?.is_none());
         if console {
-            // WMI-created consoles can exist with WS_VISIBLE unset. .NET's
-            // MainWindowHandle deliberately excludes hidden windows. Reveal
-            // only our uniquely titled fixture before using its WM_CLOSE API.
-            let mut matches = 0;
+            use winsafe::prelude::Handle as _;
+            // Process.MainWindowHandle excludes some console windows on the
+            // WMI test desktop. Identify the actual owned native window, then
+            // use Windows UI Automation's safe close operation on that handle.
+            let mut windows = Vec::new();
             winsafe::EnumWindows(|window| {
                 if window
                     .GetWindowText()
                     .is_ok_and(|text| text.ends_with(&title))
                 {
-                    window.ShowWindow(winsafe::co::SW::SHOW);
-                    matches += 1;
+                    windows.push(window);
                 }
                 true
             })?;
-            assert_eq!(matches, 1, "owned console window absent from this desktop");
-            // Close the uniquely titled native console window through .NET's
-            // WM_CLOSE wrapper. Only the console created by this fixture matches.
+            let [window] = windows.as_slice() else {
+                bail!("expected one owned console window, got {}", windows.len());
+            };
+            window.ShowWindowAsync(winsafe::co::SW::SHOW)?;
             let script = r#"
 $ErrorActionPreference = 'Stop'
-$deadline = [DateTime]::UtcNow.AddSeconds(5)
-do {
-    # Console ownership can be attributed to the client or its console host.
-    # Match the owned title, not a particular host executable's name.
-    $windows = @(Get-Process | Where-Object {
-        $_.MainWindowTitle.EndsWith($env:PICHI_CONSOLE_TEST_TITLE, [StringComparison]::Ordinal)
-    } | Sort-Object MainWindowHandle -Unique)
-    if ($windows.Count -ne 0) { break }
-    Start-Sleep -Milliseconds 50
-} while ([DateTime]::UtcNow -lt $deadline)
-if ($windows.Count -ne 1) { throw "Expected one owned console window, got $($windows.Count)" }
-if (-not $windows[0].CloseMainWindow()) { throw 'Console window rejected WM_CLOSE' }
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$handle = [IntPtr]::new([long]$env:PICHI_CONSOLE_WINDOW)
+$window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+$pattern = $window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+$pattern.Close()
 "#;
             let closed = Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", script])
-                .env("PICHI_CONSOLE_TEST_TITLE", &title)
+                .env("PICHI_CONSOLE_WINDOW", (window.ptr() as usize).to_string())
                 .output()?;
             assert!(
                 closed.status.success(),
