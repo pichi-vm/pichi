@@ -271,6 +271,7 @@ async fn detached_launch_is_discoverable_and_later_wait_reads_retained_exit() {
     ).await;
     let output = fixture
         .command()
+        .env("TMPDIR", fixture.root.path())
         .args(["run", "-d", "fixture:1"])
         .assert()
         .success();
@@ -283,6 +284,14 @@ async fn detached_launch_is_discoverable_and_later_wait_reads_retained_exit() {
         .assert()
         .success()
         .stdout("23\n");
+    // A later caller uses the retained address even with a different TMPDIR.
+    // Launch must respect the configured native temp directory, which may be
+    // the only location writable inside the caller's filesystem sandbox.
+    let identity: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.record().join("identity.json")).unwrap())
+            .unwrap();
+    let endpoint: PathBuf = serde_json::from_value(identity["endpoint"].clone()).unwrap();
+    assert_eq!(endpoint.parent(), Some(fixture.root.path()));
     // The endpoint is gone after monitor exit; the same command uses state.
     fixture
         .command()

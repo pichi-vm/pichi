@@ -196,10 +196,10 @@ impl Records {
     pub(crate) fn reserve(&self, images: Vec<Digest>) -> Result<Record> {
         let id = Uuid::new_v4();
         #[cfg(unix)]
-        // Keep Unix socket names within native limits even for long image
-        // cache paths. Both peers authenticate the invoking UID.
-        let endpoint =
-            PathBuf::from("/tmp").join(format!("pichi-{}-{id}.sock", nix::unistd::geteuid()));
+        // Respect the caller's native temporary directory, including sandbox
+        // restrictions. A compact UUID leaves room for macOS socket paths and
+        // the resize suffix. Both peers authenticate the invoking UID.
+        let endpoint = std::path::absolute(std::env::temp_dir())?.join(id.simple().to_string());
         #[cfg(windows)]
         let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-{id}"));
         self.create(images, endpoint, id)

@@ -161,6 +161,10 @@ ID on stderr; detached run prints it on stdout. Host terminals use raw input wit
 `-i`; Ctrl-P Ctrl-Q detaches. Piped input remains binary. Input EOF releases
 ownership while madrillo keeps dillo's liveness pipe open. Attachment is live
 only; completed workloads retain their result and configured CRI console log.
+On Unix, control and resize sockets use the native temporary directory (`TMPDIR`
+when supplied). Their addresses are retained with the workload, so later clients
+can use a different environment. The directory must allow Unix sockets and leave
+room for their names within the operating system's socket-path limit.
 An interactive terminal sends its initial dimensions and subsequent changes
 directly to Dillo's private resize endpoint. Reattachment supplies the new
 terminal's dimensions, including after a detached launch. Only the input owner
