@@ -369,10 +369,24 @@ impl OciLayout {
             return Ok(digest);
         }
         let output = File::create(self.store.blob_path(&digest))?;
-        ensure!(
-            Self::copy_content(root, &path, size, output)? == digest,
-            "OCI blob digest mismatch: {digest}"
-        );
+        let actual = Self::copy_content(root, &path, size, output)?;
+        if actual != digest {
+            eprintln!("OCI_DIGEST_FAILURE expected={digest} actual={actual} size={size}");
+            if let Some(directory) = std::env::var_os("PICHI_DIGEST_EVIDENCE") {
+                let directory = PathBuf::from(directory);
+                std::fs::create_dir_all(&directory)?;
+                std::fs::write(
+                    directory.join("identity.txt"),
+                    format!("expected={digest}\nactual={actual}\nsize={size}\n"),
+                )?;
+                std::fs::copy(self.store.blob_path(&digest), directory.join("snapshot"))?;
+                std::io::copy(
+                    &mut root.open(&path)?,
+                    &mut File::create(directory.join("source"))?,
+                )?;
+            }
+        }
+        ensure!(actual == digest, "OCI blob digest mismatch: {digest}");
         self.blobs.insert(digest.clone(), size);
         Ok(digest)
     }
