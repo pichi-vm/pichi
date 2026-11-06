@@ -49,7 +49,9 @@ jobs:
       - name: Build Dillo
         working-directory: appliance/dillo
         run: |
-          cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
+          cargo "+$NIGHTLY" --config 'unstable.bindeps=true' \
+            --config 'env.SMOLTCP_IFACE_MAX_ADDR_COUNT="4"' \
+            build --locked --release --bin dillo
           echo "PICHI_DILLO=$PWD/target/release/dillo" >> "$GITHUB_ENV"
 
       - name: Build the appliance from Fedora
