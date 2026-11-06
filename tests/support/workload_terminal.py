@@ -9,16 +9,37 @@ import pty
 import select
 import signal
 import subprocess
+import sys
 import termios
 import time
 
+# Keep the controlling session alive while checking restoration. macOS revokes
+# the slave when its session leader exits, even if another process holds it open.
+# This fixture plays the terminal's shell; Madrillo is still launched by Pichi.
+SESSION = """
+import signal, subprocess, sys, termios
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+original = termios.tcgetattr(0)
+child = subprocess.Popen(sys.argv[2:])
+try:
+    code = child.wait(timeout=30)
+finally:
+    if child.poll() is None:
+        child.kill()
+        child.wait(timeout=5)
+if sys.argv[1] == 'restore':
+    assert termios.tcgetattr(0) == original, 'terminal modes not restored'
+sys.exit(code)
+"""
+
 
 class Terminal:
-    def __init__(self, arguments):
+    def __init__(self, arguments, check_restoration=True):
         self.master, self.slave = pty.openpty()
-        self.original = termios.tcgetattr(self.slave)
         self.process = subprocess.Popen(
-            [os.environ["PICHI_BIN"], *arguments],
+            [sys.executable, "-c", SESSION,
+             "restore" if check_restoration else "hangup", os.environ["PICHI_BIN"], *arguments],
             stdin=self.slave, stdout=self.slave, stderr=self.slave,
             start_new_session=True,
             preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
@@ -29,7 +50,8 @@ class Terminal:
 
     def __exit__(self, *error):
         if self.process.poll() is None:
-            self.process.kill()
+            # The unreaped session leader reserves this test-owned group ID.
+            os.killpg(self.process.pid, signal.SIGKILL)
         self.process.wait(timeout=5)
         self.disconnect()
         os.close(self.slave)
@@ -62,8 +84,9 @@ class Terminal:
         return bytes(output)
 
     def restored(self, code):
+        # The live session owner checks native settings before returning this
+        # status; revocation after session exit cannot hide a missing restore.
         assert self.process.wait(timeout=5) == code
-        assert termios.tcgetattr(self.slave) == self.original, "terminal modes not restored"
 
 
 records = Path(os.environ["XDG_DATA_HOME"]) / "pichi/storage.workloads"
@@ -86,11 +109,11 @@ try:
     with Terminal(["attach", "-i", identity]) as terminal:
         terminal.send(b"after-detach\n")
         terminal.receive(b"after-detach")
-        terminal.process.send_signal(signal.SIGTERM)
+        os.killpg(terminal.process.pid, signal.SIGTERM)
         terminal.restored(143)
     assert not (record / "monitor/result.json").exists(), "caller signal stopped the workload"
 
-    with Terminal(["attach", "-i", identity]) as terminal:
+    with Terminal(["attach", "-i", identity], check_restoration=False) as terminal:
         # A binary control byte cannot be satisfied by the host's cooked echo.
         terminal.send(b"terminal-loss\x03\n")
         terminal.receive(b"terminal-loss\x03")
