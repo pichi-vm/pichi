@@ -1,7 +1,5 @@
-pichi (0.1.0-1ppa1~resolute1) resolute; urgency=medium
+pichi (0.1.0~dev) UNRELEASED; urgency=medium
 
-  * Add Ubuntu Resolute packaging for ppa:nmccallum/pichi.
-  * Include vendored Cargo sources for offline builds.
-  * Require dillo-vm to launch virtual machines.
+  * Package unreleased Pichi snapshots for Launchpad.
 
- -- Nathaniel McCallum <nathaniel@mccallum.life>  Wed, 28 Oct 2026 10:00:00 -0400
+ -- Nathaniel McCallum <nathaniel@mccallum.life>  Fri, 06 Nov 2026 19:00:00 -0500
