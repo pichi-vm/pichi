@@ -3,6 +3,7 @@
 
 version: 1
 requirements:
+  slot: pci
   cpus: {recommended: 2}
   memory: {required: 1024, recommended: 2048}
 stages:
