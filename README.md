@@ -166,6 +166,8 @@ can resize; output-only attachments and piped input do not change guest size.
 Madrillo does not interpret these updates. Guest resize requires Linux's
 [virtio-console cols/rows fix](https://github.com/torvalds/linux/commit/5326ab737a47278dbd16ed3ee7380b26c7056ddd)
 or a backport; older kernels interpret the standard dimensions in reverse.
+Confirmed workload cleanup also removes a Unix resize socket left by an abrupt
+Dillo exit. Unknown or incomplete cleanup preserves runtime files.
 `pichi logs ID` prints a snapshot of that log to the original stdout/stderr
 streams, preserving binary bytes and partial-line fragments. It includes only
 complete CRI records present when the file is opened; a record still being

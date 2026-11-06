@@ -433,6 +433,55 @@ finally:
 }
 
 #[tokio::test]
+async fn detached_exit_removes_the_child_resize_socket() {
+    let fixture = WorkloadFixture::new(
+        r"
+import os, socket, sys
+endpoint = sys.argv[sys.argv.index('--console-resize') + 1]
+listener = socket.socket(socket.AF_UNIX)
+listener.bind(endpoint)
+os.write(1, b'resize-endpoint-created\n')
+# Abrupt process exit deliberately bypasses any endpoint-name cleanup.
+os._exit(37)
+",
+    )
+    .await;
+    let output = fixture
+        .command()
+        .args(["run", "-d", "fixture:1"])
+        .assert()
+        .success();
+    let id = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let record = fixture.record();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let identity: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(record.join("identity.json")).unwrap()).unwrap();
+        let endpoint = PathBuf::from(format!("{}.resize", identity["endpoint"].as_str().unwrap()));
+        if record.join("monitor/result.json").exists() && !endpoint.exists() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "exit callback retained resize endpoint"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    fixture
+        .command()
+        .args(["logs", id.trim()])
+        .assert()
+        .success()
+        .stdout("resize-endpoint-created\n");
+    fixture
+        .command()
+        .args(["wait", id.trim()])
+        .assert()
+        .success()
+        .stdout("37\n");
+}
+
+#[tokio::test]
 async fn logs_preserve_binary_console_streams_after_monitor_exit() {
     let fixture = WorkloadFixture::new(
         "import os\nos.write(1, b'first\\x00\\xff\\npartial')\nos.write(2, b'error\\x00\\xfe\\n')\nos._exit(37)",

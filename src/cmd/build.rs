@@ -216,7 +216,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         Some(log) => log.failure(error),
         None => error,
     })?;
-    record.release_storage()?;
+    record.release_runtime_files()?;
     record.release_build_output()?;
     if args.quiet {
         println!("{digest}");

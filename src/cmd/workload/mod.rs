@@ -563,7 +563,7 @@ impl Running {
             endpoint: record.endpoint(),
             input,
             inherited,
-            cleanup: (!held.is_empty()).then_some(record.path()),
+            cleanup: Some(record.path()),
             held,
         }
         .spawn()
@@ -723,9 +723,9 @@ impl Outcome {
 pub struct Workload(Record);
 
 impl Workload {
-    /// Idempotent exit callback. Missing or incomplete results retain storage.
+    /// Idempotent exit callback. Unknown/incomplete cleanup retains runtime files.
     pub fn cleanup(path: &Path) -> Result<()> {
-        Record::at(path)?.release_storage()
+        Record::at(path)?.release_runtime_files()
     }
     pub fn open(id: uuid::Uuid, config: &crate::config::Config) -> Result<Self> {
         let layout = config.resolve_layout()?;
@@ -743,7 +743,7 @@ impl Workload {
     }
 
     pub async fn wait(&self) -> Result<Outcome> {
-        self.0.release_storage()?;
+        self.0.release_runtime_files()?;
         if let Some(result) = self.0.completion()? {
             return Ok(Outcome(result));
         }
@@ -757,7 +757,7 @@ impl Workload {
     }
 
     pub async fn stop(&self, grace: Duration) -> Result<Outcome> {
-        self.0.release_storage()?;
+        self.0.release_runtime_files()?;
         if let Some(result) = self.0.completion()? {
             return Ok(Outcome(result));
         }
@@ -766,7 +766,7 @@ impl Workload {
     }
 
     pub async fn attach(&self, interactive: bool) -> Result<u32> {
-        self.0.release_storage()?;
+        self.0.release_runtime_files()?;
         if let Some(result) = self.0.completion()? {
             return Outcome(result).code();
         }
@@ -797,7 +797,7 @@ impl Workload {
     }
 
     fn retained_or_error(&self, result: Result<Completion>) -> Result<Completion> {
-        self.0.release_storage()?;
+        self.0.release_runtime_files()?;
         match result {
             Ok(result) => Ok(result),
             Err(error) => match self.0.completion()? {

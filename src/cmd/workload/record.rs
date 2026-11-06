@@ -325,8 +325,30 @@ impl Record {
         self.path.join("storage")
     }
 
-    pub(crate) fn release_storage(&self) -> Result<()> {
+    pub(crate) fn release_runtime_files(&self) -> Result<()> {
         if matches!(self.completion()?, Some(result) if result.cleanup == CleanupResult::Complete) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{FileTypeExt, MetadataExt};
+                // A forced Dillo exit cannot run its socket-name destructor.
+                // Remove only its owned socket, after confirmed scope cleanup.
+                let endpoint = self.resize_endpoint();
+                match std::fs::symlink_metadata(&endpoint) {
+                    Ok(metadata)
+                        if metadata.file_type().is_socket()
+                            && metadata.uid() == nix::unistd::geteuid().as_raw() =>
+                    {
+                        match std::fs::remove_file(endpoint) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    Ok(_) => bail!("unexpected file at console resize endpoint"),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
             match self.directory.remove_dir_all("storage") {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -449,10 +471,17 @@ mod tests {
         let cache = root.path().join("cache");
         std::fs::create_dir(&cache)?;
         let record = Records::open(&cache)?.reserve(vec![Digest::Sha256([1; 32])])?;
+        #[cfg(unix)]
+        let _resize = {
+            use interprocess::local_socket::{GenericFilePath, ListenerOptions, prelude::*};
+            ListenerOptions::new()
+                .name(record.resize_endpoint().to_fs_name::<GenericFilePath>()?)
+                .create_sync()?
+        };
         std::fs::create_dir(record.storage_directory())?;
         let backing = record.storage_directory().join("storage.raw");
         std::fs::write(&backing, b"guest data")?;
-        Record::at(record.path())?.release_storage()?;
+        Record::at(record.path())?.release_runtime_files()?;
         assert!(backing.exists(), "missing result must retain storage");
         std::fs::create_dir(record.state())?;
         for cleanup in [
@@ -479,8 +508,13 @@ mod tests {
                 serde_json::to_vec(&result)?,
             )?;
             for _ in 0..2 {
-                Record::at(record.path())?.release_storage()?;
+                Record::at(record.path())?.release_runtime_files()?;
                 assert_eq!(backing.exists(), result.cleanup != CleanupResult::Complete);
+                #[cfg(unix)]
+                assert_eq!(
+                    record.resize_endpoint().exists(),
+                    result.cleanup != CleanupResult::Complete
+                );
             }
         }
         Ok(())
