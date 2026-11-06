@@ -65,10 +65,10 @@ locks retained storage against concurrent use, preserves existing contents,
 and refuses to shrink it. A supplied file's existing capacity is an operator
 allocation when no explicit size is set.
 
-The global `requirements.slot` supplies a preferred PCI or virtio-MMIO
-transport; interface and storage preferences override it. Dillo assigns actual
-slots within the platform's declared capacity and can fall back to another
-transport when a preference cannot be met.
+The image's `requirements.slot` defaults to `mmio`; interface and storage
+slot declarations override it. Pichi supplies an explicit bus for every device.
+Dillo allocates numeric slots within that bus and fails if the declared
+platform cannot satisfy the request.
 
 `pichi inspect` includes the decoded image config beside its manifest. Templates
 can access it directly, for example

@@ -109,6 +109,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         reqs.as_ref().and_then(Requirements::memory_recommended_mib),
     )?;
 
+    let reqs = reqs.unwrap_or_default();
     let build_input = BuildInput {
         r#ref: git_ref,
         plan,
@@ -133,12 +134,10 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         Some(&console),
         memory,
         cpus,
+        &reqs,
     );
-    if let Some(slot) = reqs.as_ref().and_then(|r| r.slot) {
-        argv.extend(["--bus".into(), slot.as_argument().into()]);
-    }
     let storage = WritableStorage::prepare(
-        reqs.as_ref().and_then(|r| r.storage.as_ref()),
+        reqs.storage.as_ref(),
         args.storage,
         None,
         &layout.graphroot.join("writable"),
@@ -147,9 +146,10 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         argv.extend([
             "--blk".into(),
             backing.argument(
-                reqs.as_ref()
-                    .and_then(|r| r.storage.as_ref())
-                    .and_then(|r| r.slot),
+                reqs.storage
+                    .as_ref()
+                    .and_then(|r| r.slot)
+                    .unwrap_or(reqs.slot),
             ),
         ]);
     }
@@ -199,7 +199,9 @@ pub(crate) fn build_dillo_args(
     console: Option<&str>,
     memory_mib: Option<u32>,
     cpus: Option<u32>,
+    requirements: &Requirements,
 ) -> Vec<String> {
+    let bus = requirements.slot.as_argument();
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(pmi_path)];
     // Use the same native boot configuration as the image run path.
     if let Some(bootconfig) = bootconfig_path {
@@ -217,32 +219,41 @@ pub(crate) fn build_dillo_args(
     // Virtiofs tags by convention (BUILD.md §2.3).
     argv.push("--fs".to_string());
     argv.push(format!(
-        "tag={REPO_TAG},source={},readonly",
+        "tag={REPO_TAG},source={},readonly,bus={bus}",
         repo_dir.key_value_arg()
     ));
     argv.push("--fs".to_string());
     argv.push(format!(
-        "tag={CACHE_TAG},source={},readonly",
+        "tag={CACHE_TAG},source={},readonly,bus={bus}",
         cache_dir.key_value_arg()
     ));
     argv.push("--fs".to_string());
     argv.push(format!(
-        "tag={OUTPUT_TAG},source={}",
+        "tag={OUTPUT_TAG},source={},bus={bus}",
         output_dir.key_value_arg()
     ));
-    if let Some(console) = console {
-        argv.push("--console".to_string());
-        argv.push(console.to_string());
-    }
+    argv.push("--console".to_string());
+    argv.push(format!("{},bus={bus}", console.unwrap_or("endpoint=stdio")));
     // Attach the appliance carapace. Locked build inputs remain in the
     // cache; the guest output manifest owns their inherited layers.
     for spec in gpt_specs {
         argv.push("--gpt".to_string());
-        argv.push(spec.clone());
+        argv.push(format!("{spec},bus={bus}"));
     }
     // User-mode NIC for stages that opt in with `network: true`.
-    argv.push("--net".to_string());
-    argv.push(USER_NET_SPEC.to_string());
+    if requirements.interfaces.is_empty() {
+        argv.extend(["--net".into(), format!("{USER_NET_SPEC},bus={bus}")]);
+    } else {
+        for interface in requirements.interfaces.values() {
+            argv.extend([
+                "--net".into(),
+                format!(
+                    "{USER_NET_SPEC},bus={}",
+                    interface.slot.unwrap_or(requirements.slot).as_argument()
+                ),
+            ]);
+        }
+    }
     argv
 }
 
@@ -254,7 +265,7 @@ pub(crate) const USER_NET_SPEC: &str = "backend=user";
 /// Built from 9b15826d03da60b34ee39097a298b342a6ea17cf for amd64 and arm64.
 /// It consumes versioned staged plans and boots its GPT root with native bootconfig.
 /// Official-image smoke verifies guest output, poweroff, and host import.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a";
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946";
 
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
@@ -485,13 +496,14 @@ mod tests {
         let argv = build_dillo_args(
             Path::new("/cache/blobs/sha256/deadbeef"),
             None,
-            &["partitions=[[path=/c,partuuid=u,typeguid=t,label=c:x]]".to_string()],
+            &["partitions=[[path=/c,partuuid=11111111-2222-3333-4444-555555555555,typeguid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,label=c:x]]".to_string()],
             Path::new("/proj"),
             Path::new("/var/cache/pichi"),
             Path::new("/run/out"),
             Some(&console),
             Some(4096),
             Some(8),
+            &Requirements::default(),
         );
 
         // --pmi <path>
@@ -519,6 +531,12 @@ mod tests {
         let net: dillo_config::NetSpec =
             serde_keyvalue::from_key_values(net_values[0]).expect("--net parses as NetSpec");
         assert_eq!(net.backend, dillo_config::NetBackendKind::User);
+        assert_eq!(net.bus, Some(dillo_config::Bus::Mmio));
+        assert_eq!(net.slot, None);
+        let gpt_i = argv.iter().position(|a| a == "--gpt").unwrap();
+        let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(&argv[gpt_i + 1]).unwrap();
+        assert_eq!(gpt.bus, Some(dillo_config::Bus::Mmio));
+        assert_eq!(gpt.slot, None);
 
         // three --fs mounts: ro repo + ro cache + rw output
         let fs_values: Vec<&String> = argv
@@ -528,6 +546,11 @@ mod tests {
             .map(|(i, _)| &argv[i + 1])
             .collect();
         assert_eq!(fs_values.len(), 3);
+        for value in &fs_values {
+            let spec = parse_fs(value);
+            assert_eq!(spec.bus, Some(dillo_config::Bus::Mmio));
+            assert_eq!(spec.slot, None);
+        }
 
         let repo = parse_fs(fs_values[0]);
         assert_eq!(repo.tag, REPO_TAG);
@@ -550,10 +573,57 @@ mod tests {
         let spec: dillo_config::ConsoleSpec =
             serde_keyvalue::from_key_values(console_val).expect("--console parses");
         assert_eq!(spec.endpoint.as_deref(), Some("stdio"));
+        assert_eq!(spec.bus, Some(dillo_config::Bus::Mmio));
+        assert_eq!(spec.slot, None);
         assert_eq!(spec.ports.len(), 1);
         assert_eq!(spec.ports[0].name, build_port::BUILD_PORT_NAME);
         assert!(spec.ports[0].rx.is_some());
         assert!(spec.ports[0].tx.is_some());
+    }
+
+    #[test]
+    fn build_devices_inherit_the_image_bus_and_interfaces_can_override_it() {
+        let requirements = serde_json::from_value(serde_json::json!({
+            "slot": "pci",
+            "interfaces": {"management": {}, "public": {"slot": "mmio"}}
+        }))
+        .unwrap();
+        let path = Path::new("/fixture");
+        let argv = build_dillo_args(
+            path,
+            None,
+            &[],
+            path,
+            path,
+            path,
+            None,
+            None,
+            None,
+            &requirements,
+        );
+        assert!(!argv.iter().any(|arg| arg == "--bus"));
+        let mut networks = Vec::new();
+        for pair in argv.windows(2) {
+            match pair[0].as_str() {
+                "--console" => {
+                    let spec: dillo_config::ConsoleSpec =
+                        serde_keyvalue::from_key_values(&pair[1]).unwrap();
+                    assert_eq!(spec.bus, Some(dillo_config::Bus::Pci));
+                    assert_eq!(spec.slot, None);
+                }
+                "--fs" => assert_eq!(parse_fs(&pair[1]).bus, Some(dillo_config::Bus::Pci)),
+                "--net" => {
+                    let spec: dillo_config::NetSpec =
+                        serde_keyvalue::from_key_values(&pair[1]).unwrap();
+                    networks.push(spec.bus);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            networks,
+            vec![Some(dillo_config::Bus::Pci), Some(dillo_config::Bus::Mmio)]
+        );
     }
 
     #[test]
@@ -564,7 +634,18 @@ mod tests {
             r#"/home/test/a "quoted", [project]"#,
         ] {
             let path = Path::new(path);
-            let argv = build_dillo_args(path, None, &[], path, path, path, None, None, None);
+            let argv = build_dillo_args(
+                path,
+                None,
+                &[],
+                path,
+                path,
+                path,
+                None,
+                None,
+                None,
+                &Requirements::default(),
+            );
             for pair in argv.windows(2).filter(|pair| pair[0] == "--fs") {
                 assert_eq!(parse_fs(&pair[1]).source, path);
             }
@@ -583,11 +664,13 @@ mod tests {
             None,
             None,
             None,
+            &Requirements::default(),
         );
         assert!(!argv.iter().any(|a| a == "--memory"));
         assert!(!argv.iter().any(|a| a == "--cpus"));
         assert!(!argv.iter().any(|a| a == "--gpt"));
-        assert!(!argv.iter().any(|a| a == "--console"));
+        let console = argv.iter().position(|a| a == "--console").unwrap();
+        assert_eq!(argv[console + 1], "endpoint=stdio,bus=mmio");
     }
 
     #[tokio::test]
@@ -602,6 +685,7 @@ mod tests {
             None,
             None,
             None,
+            &Requirements::default(),
         );
         let i = argv
             .iter()
@@ -654,7 +738,7 @@ mod tests {
         let canon = canonicalize_reference(&pinned);
         assert_eq!(
             canon.as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a"
+            "ghcr.io/pichi-vm/conglobate@sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946"
         );
         let parsed: Reference = canon.parse().unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
@@ -663,7 +747,7 @@ mod tests {
             ReferenceKind::Digest(d) => {
                 assert_eq!(
                     d.to_string(),
-                    "sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a"
+                    "sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946"
                 );
             }
             ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),
@@ -704,6 +788,7 @@ mod tests {
             Some(&console),
             None,
             None,
+            &Requirements::default(),
         );
         let fs_values: Vec<&String> = argv
             .iter()

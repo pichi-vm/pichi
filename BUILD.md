@@ -341,9 +341,9 @@ from the committed lock. `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a rebuilt
 OCI appliance layout for cross-project qualification; otherwise the smoke
 uses the shipping default. Staged plans require an appliance built with the
 matching Conglobate engine; `--build-image` selects it explicitly. The default image is
-`ghcr.io/pichi-vm/conglobate@sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a`.
+`ghcr.io/pichi-vm/conglobate@sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946`.
 This amd64/arm64 index is built from Conglobate revision
-`9b15826d03da60b34ee39097a298b342a6ea17cf` and uses the staged plan, GPT
+`3c704762b6f03b31da14d076f5cb695b79fc42ce` and uses the staged plan, GPT
 root, embedded-DTB PMI and native bootconfig contracts described here.
 The default appliance and the library in `deps/conglobate` both require
 `version: 1` in plans and the flat digest lock shown above.
@@ -521,6 +521,18 @@ Plan and lock formats are Conglobate's, not redefined here.
   host imports.
 - Confidential-computing attestation of the appliance remains an
   appliance concern; the thin launcher must not claim it by itself.
+
+---
+
+### Device transport contract
+
+The shared plan/config contract defaults `requirements.slot` to `mmio`.
+A resource's slot declaration overrides the image default. Pichi resolves
+these values before launch and sends an explicit `bus=pci|mmio` for every
+attached device, including the console, image GPT, writable disk, interfaces
+and build virtiofs shares. Dillo has no global bus setting or transport
+fallback: an unavailable or full declared bus fails the launch. Numeric slots
+remain optional and are allocated only on the specified bus.
 
 ---
 
