@@ -59,6 +59,7 @@ impl ScuteFiles {
 pub(super) struct PreparedLayer {
     source: Option<NamedTempFile>,
     scute: Option<PreparedScute>,
+    pmi: Option<NamedTempFile>,
 }
 
 struct PreparedScute {
@@ -69,6 +70,44 @@ struct PreparedScute {
 }
 
 impl PreparedLayer {
+    /// Rebuild transport-derived PMI bytes from the verified source at launch.
+    /// The PMI content is opaque here; Dillo owns its interpretation.
+    pub(super) async fn prepare_pmi(
+        manifest: &Manifest,
+        layer: &Layer,
+        store: &dyn BlobStore,
+    ) -> Result<PathBuf> {
+        let path = store.blob_path(&layer.digest_str().parse()?);
+        match layer {
+            Layer::Pmi(_) => Ok(path),
+            Layer::PmiZstd(_) => {
+                Self::prepare_cached(manifest, layer, store).await?;
+                Ok(Self::pmi_path(&path))
+            }
+            _ => bail!("layer is not PMI"),
+        }
+    }
+
+    fn pmi_path(source: &Path) -> PathBuf {
+        source.prepared_dir().join("pmi")
+    }
+
+    fn decoder<R: Read>(
+        input: R,
+    ) -> Result<ruzstd::decoding::StreamingDecoder<R, ruzstd::decoding::FrameDecoder>> {
+        match ruzstd::decoding::StreamingDecoder::new(input) {
+            Ok(decoder) => Ok(decoder),
+            Err(ruzstd::decoding::errors::FrameDecoderError::WindowSizeTooBig {
+                requested,
+                max,
+            }) => bail!(
+                "zstd window size too large: requested {requested} bytes (limit {max} bytes / {} MiB)",
+                max / (1024 * 1024)
+            ),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     pub(super) async fn fetch<R: Registry>(
         registry: &R,
         target: &Reference,
@@ -141,6 +180,7 @@ impl PreparedLayer {
             count: 0,
             expected: layer.size(),
         };
+        let mut pmi = None;
         let scute = match layer {
             Layer::Scute(scute) => {
                 let mut output = NamedTempFile::new_in(scratch)?;
@@ -161,22 +201,7 @@ impl PreparedLayer {
             }
             Layer::ScuteZstd(scute) => {
                 let mut output = NamedTempFile::new_in(scratch)?;
-                let decoder = match ruzstd::decoding::StreamingDecoder::new(&mut wire) {
-                    Ok(decoder) => decoder,
-                    Err(ruzstd::decoding::errors::FrameDecoderError::WindowSizeTooBig {
-                        requested,
-                        max,
-                    }) => {
-                        // ruzstd's default ceiling is 128 MiB (DEFAULT_MAX_WINDOW_SIZE).
-                        // Surface a clean message on the pull/decode path rather than
-                        // a Debug dump of the decoder error enum.
-                        bail!(
-                            "zstd window size too large: requested {requested} bytes (limit {max} bytes / {} MiB)",
-                            max / (1024 * 1024)
-                        );
-                    }
-                    Err(err) => return Err(err.into()),
-                };
+                let decoder = Self::decoder(&mut wire)?;
                 let header = manifest.verity_header(scute, None)?;
                 let (data, root) =
                     Self::prepare_data(decoder, &header, output.as_file_mut(), scratch)?;
@@ -197,7 +222,21 @@ impl PreparedLayer {
                 );
                 None
             }
-            Layer::Pmi(_) | Layer::PmiZstd(_) => {
+            Layer::PmiZstd(_) => {
+                let output = NamedTempFile::new_in(scratch)?;
+                let mut decoded = DecodedReader {
+                    input: Self::decoder(&mut wire)?,
+                    output: BufWriter::new(output.as_file()),
+                    count: 0,
+                    capacity: fs4::available_space(scratch)?,
+                };
+                io::copy(&mut decoded, &mut io::sink())?;
+                decoded.output.flush()?;
+                drop(decoded);
+                pmi = Some(output);
+                None
+            }
+            Layer::Pmi(_) => {
                 io::copy(&mut wire, &mut io::sink())?;
                 None
             }
@@ -209,9 +248,13 @@ impl PreparedLayer {
                 data.as_file().sync_all()?;
             }
         }
+        if let Some(pmi) = &pmi {
+            pmi.as_file().sync_all()?;
+        }
         Ok(Self {
             source: None,
             scute,
+            pmi,
         })
     }
 
@@ -255,6 +298,10 @@ impl PreparedLayer {
             }
             tokio::fs::rename(scute.verity.path(), files.verity).await?;
         }
+        if let Some(pmi) = &self.pmi {
+            tokio::fs::create_dir_all(path.prepared_dir()).await?;
+            tokio::fs::rename(pmi.path(), Self::pmi_path(&path)).await?;
+        }
         if let Some(source) = &self.source {
             store.put_blob_from_path(source.path(), digest).await?;
         }
@@ -295,7 +342,7 @@ impl<R: Read, W: Write> WireReader<R, W> {
         // A decoder can stop at a frame boundary. Reject trailing wire bytes
         // and observe late transport errors before accepting the layer.
         if self.read(&mut [0])? != 0 {
-            bail!("trailing bytes after compressed scute");
+            bail!("trailing bytes after compressed layer");
         }
         if self.count != self.expected {
             bail!("layer size mismatch");
@@ -401,6 +448,22 @@ mod tests {
             }
         }
 
+        fn pmi(compressed: bool) -> Self {
+            let mut fixture = Self::new(compressed, 2);
+            let descriptor = conglobate::artifact::PmiDescriptor {
+                digest: Digest::Sha256(Sha256::digest(&fixture.wire).into()).to_string(),
+                size: fixture.wire.len() as u64,
+            };
+            fixture.manifest.layers = vec![if compressed {
+                Layer::PmiZstd(descriptor)
+            } else {
+                Layer::Pmi(descriptor)
+            }];
+            fixture.manifest.annotations.clear();
+            fixture.manifest.validate().unwrap();
+            fixture
+        }
+
         fn prepare(&self, scratch: &Path) -> Result<PreparedLayer> {
             PreparedLayer::read(
                 self.wire.as_slice(),
@@ -409,6 +472,86 @@ mod tests {
                 scratch,
             )
         }
+    }
+
+    #[tokio::test]
+    async fn pmi_transport_preserves_exact_bytes_and_repairs_decoded_cache() {
+        for compressed in [false, true] {
+            let fixture = Fixture::pmi(compressed);
+            let dir = tempfile::tempdir().unwrap();
+            let store = pichi_storage::FilesystemBlobStore::new(dir.path());
+            let layer = &fixture.manifest.layers[0];
+            let digest = layer.digest_str().parse().unwrap();
+            let prepared = fixture.prepare(dir.path()).unwrap();
+            assert!(prepared.scute.is_none());
+            assert_eq!(prepared.pmi.is_some(), compressed);
+            assert_eq!(prepared.commit(&store, &digest).await.unwrap(), None);
+            let source = store.blob_path(&digest);
+            for stale in [None, Some(b"stale decoded PMI".as_slice())] {
+                if compressed {
+                    let path = PreparedLayer::pmi_path(&source);
+                    if let Some(bytes) = stale {
+                        std::fs::write(path, bytes).unwrap();
+                    } else {
+                        std::fs::remove_file(path).unwrap();
+                    }
+                }
+                let path = PreparedLayer::prepare_pmi(&fixture.manifest, layer, &store)
+                    .await
+                    .unwrap();
+                assert_eq!(path == source, !compressed);
+                assert_eq!(std::fs::read(path).unwrap(), fixture.data);
+                assert_eq!(std::fs::read(&source).unwrap(), fixture.wire);
+            }
+            if compressed {
+                // A valid-looking decoded sidecar must never mask a damaged source.
+                std::fs::write(&source, b"damaged wire bytes").unwrap();
+                assert!(
+                    PreparedLayer::prepare_pmi(&fixture.manifest, layer, &store)
+                        .await
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_compressed_pmi_never_publishes_or_leaks_temporary_files() {
+        let scratch = tempfile::tempdir().unwrap();
+        for case in 0..5 {
+            let mut fixture = Fixture::pmi(true);
+            let Layer::PmiZstd(descriptor) = &mut fixture.manifest.layers[0] else {
+                unreachable!()
+            };
+            match case {
+                0 => {
+                    fixture.wire.pop();
+                }
+                1 => fixture.wire = b"not a zstd frame".to_vec(),
+                2 => fixture.wire.extend_from_within(..),
+                3 => descriptor.size += 1,
+                4 => descriptor.digest = Digest::Sha256([0; 32]).to_string(),
+                _ => unreachable!(),
+            }
+            if case < 3 {
+                descriptor.size = fixture.wire.len() as u64;
+                descriptor.digest =
+                    Digest::Sha256(Sha256::digest(&fixture.wire).into()).to_string();
+            }
+            assert!(fixture.prepare(scratch.path()).is_err(), "case {case}");
+            assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+        }
+        let fixture = Fixture::pmi(true);
+        assert!(
+            PreparedLayer::read(
+                LateFailure(&fixture.wire),
+                &fixture.manifest,
+                &fixture.manifest.layers[0],
+                scratch.path(),
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
     }
 
     #[test]

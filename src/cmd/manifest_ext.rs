@@ -14,9 +14,7 @@ use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context as _, Result, anyhow, bail};
 
 use crate::cmd::verity::{VerityFormat as _, VerityParams};
-use conglobate::artifact::{
-    BootConfigDescriptor, Digest, Layer, Manifest, PmiDescriptor, ScuteDescriptor,
-};
+use conglobate::artifact::{BootConfigDescriptor, Digest, Layer, Manifest, ScuteDescriptor};
 use devmap_verity::{HashType, Header};
 use pichi_storage::BlobStore;
 
@@ -36,8 +34,8 @@ pub trait ManifestExt {
         Self: Sized;
     /// The native Linux boot configuration accompanying the PMI, if present.
     fn bootconfig_layer(&self) -> Option<&BootConfigDescriptor>;
-    /// Partition layers into the single PMI descriptor + scute layers.
-    fn partition_layers(&self) -> Result<(&PmiDescriptor, Vec<&Layer>)>;
+    /// Partition layers into the single PMI layer (retaining its encoding) + scute layers.
+    fn partition_layers(&self) -> Result<(&Layer, Vec<&Layer>)>;
     /// Collect scute layers with no PMI requirement (build `from:` sources).
     fn scute_layers(&self) -> Vec<&Layer>;
     /// Fail closed when the artifact's declared architecture ≠ the host.
@@ -69,9 +67,9 @@ impl ManifestExt for Manifest {
         })
     }
 
-    fn partition_layers(&self) -> Result<(&PmiDescriptor, Vec<&Layer>)> {
+    fn partition_layers(&self) -> Result<(&Layer, Vec<&Layer>)> {
         let pmi = self.layers.iter().find_map(|layer| match layer {
-            Layer::Pmi(descriptor) => Some(descriptor),
+            Layer::Pmi(_) | Layer::PmiZstd(_) => Some(layer),
             _ => None,
         });
         let pmi = pmi.ok_or_else(|| {
