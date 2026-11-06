@@ -717,6 +717,8 @@ async fn vm_timeout_cleanup_stops_workloads_after_client_exit() {
             .unwrap();
         file.try_lock()
             .expect("monitor retained the storage reservation");
+        // Windows locks also exclude reads through a second file handle.
+        drop(file);
         assert_eq!(&std::fs::read(&disk).unwrap()[..10], b"guest data");
         child.kill_vm(tmp.path()).unwrap();
     }
