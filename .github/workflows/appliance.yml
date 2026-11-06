@@ -53,6 +53,10 @@ jobs:
           workspaces: |
             . -> target
             appliance/dillo -> target
+          cache-targets: false
+          cache-directories: |
+            ${{ github.workspace }}/target
+            ${{ github.workspace }}/appliance/dillo/target
           save-if: true
 
       - name: Build Pichi
