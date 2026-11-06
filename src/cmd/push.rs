@@ -257,7 +257,6 @@ mod tests {
     /// stays clean of false-positive call sites.
     fn make_pichi_manifest(scute_digest: &Digest, data: &[u8]) -> (Bytes, Digest) {
         let mut annotations = BTreeMap::new();
-        annotations.insert("dev.pichi.carapace.verity.algo".into(), "sha256".into());
         annotations.insert(
             "dev.pichi.carapace.verity.data-block-size".into(),
             "4096".into(),
@@ -277,7 +276,10 @@ mod tests {
         .compute(data)
         .unwrap()
         .root_hash;
-        annotations.insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
+        annotations.insert(
+            "dev.pichi.carapace.verity.hash".into(),
+            format!("sha256:{}", hex::encode(root)),
+        );
         let manifest = Manifest {
             schema_version: 2,
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),

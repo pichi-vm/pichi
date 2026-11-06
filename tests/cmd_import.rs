@@ -240,25 +240,17 @@ async fn manifest_has_locked_verity_params_e2e() {
     let blob_store = FilesystemBlobStore::new(&g);
     let (_, bytes) = index::manifest(&blob_store, &manifest_digest).await;
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        manifest
+    assert!(
+        !manifest
             .annotations
-            .get("dev.pichi.carapace.verity.algo")
-            .map(String::as_str),
-        Some("sha256")
+            .contains_key("dev.pichi.carapace.verity.algo")
     );
-    assert_eq!(
-        manifest
-            .annotations
-            .get("dev.pichi.carapace.verity.data-block-size")
-            .map(String::as_str),
-        Some("4096")
-    );
-    assert_eq!(
-        manifest
-            .annotations
-            .get("dev.pichi.carapace.verity.hash-block-size")
-            .map(String::as_str),
-        Some("4096")
-    );
+    assert!(manifest.carapace_root().unwrap().is_some());
+    for key in ["data-block-size", "hash-block-size", "version", "hash-type"] {
+        assert!(
+            !manifest
+                .annotations
+                .contains_key(&format!("dev.pichi.carapace.verity.{key}"))
+        );
+    }
 }

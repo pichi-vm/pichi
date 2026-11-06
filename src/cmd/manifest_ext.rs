@@ -104,21 +104,21 @@ impl ManifestExt for Manifest {
     }
 
     fn verity_header(&self, scute: &ScuteDescriptor, size: Option<u64>) -> Result<Header> {
-        let annotation = |key: &str| {
+        let annotation = |key: &str, default| {
             self.annotations
                 .get(key)
-                .ok_or_else(|| anyhow!("missing verity annotation {key}"))
+                .map(String::as_str)
+                .unwrap_or(default)
         };
-        if annotation("dev.pichi.carapace.verity.version")?.parse::<u32>()? != 1 {
+        if annotation("dev.pichi.carapace.verity.version", "1").parse::<u32>()? != 1 {
             bail!("unsupported verity header version");
         }
         // Carapace trust anchors and salt-chain prefixes are SHA-256 digests.
-        if annotation("dev.pichi.carapace.verity.algo")? != "sha256" {
-            bail!("unsupported carapace verity algorithm");
-        }
+        self.carapace_root()?
+            .ok_or_else(|| anyhow!("missing carapace root"))?;
         let params = VerityParams {
-            data_block_size: annotation(ANN_DATA_BLOCK_SIZE)?.parse()?,
-            hash_block_size: annotation(ANN_HASH_BLOCK_SIZE)?.parse()?,
+            data_block_size: annotation(ANN_DATA_BLOCK_SIZE, "4096").parse()?,
+            hash_block_size: annotation(ANN_HASH_BLOCK_SIZE, "4096").parse()?,
             salt: hex::decode(&scute.annotations.salt)?,
             uuid: [0; 16],
         };
@@ -130,7 +130,7 @@ impl ManifestExt for Manifest {
             bail!("scute data_blocks disagrees with COW length");
         }
         header.parameters.hash_type =
-            match annotation("dev.pichi.carapace.verity.hash-type")?.parse::<u32>()? {
+            match annotation("dev.pichi.carapace.verity.hash-type", "1").parse::<u32>()? {
                 0 => HashType::ChromeOs,
                 1 => HashType::Normal,
                 value => bail!("unsupported verity hash type {value}"),

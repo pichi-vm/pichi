@@ -30,6 +30,8 @@ pub(crate) struct Launch<'a> {
     pub(crate) endpoint: &'a Path,
     pub(crate) input: bool,
     pub(crate) inherited: Vec<File>,
+    pub(crate) held: Vec<File>,
+    pub(crate) cleanup: Option<&'a Path>,
 }
 
 #[derive(Debug)]
@@ -42,7 +44,7 @@ pub(crate) struct Running {
 }
 
 impl Launch<'_> {
-    fn options(&self) -> Vec<OsString> {
+    fn options(&self) -> Result<Vec<OsString>> {
         let mut options = vec![
             "--state-dir".into(),
             self.state.into(),
@@ -52,7 +54,17 @@ impl Launch<'_> {
         if self.input {
             options.push("--stdin".into());
         }
-        options
+        if let Some(path) = self.cleanup {
+            options.extend([
+                "--exit-command".into(),
+                std::env::current_exe()?.into(),
+                "--exit-command-arg".into(),
+                "cleanup-workload".into(),
+                "--exit-command-arg".into(),
+                path.into(),
+            ]);
+        }
+        Ok(options)
     }
 
     fn diagnostic_file(&self) -> Result<File> {
@@ -82,15 +94,20 @@ impl Launch<'_> {
         parent.set_nonblocking(true)?;
         let mut mappings = Vec::new();
         let mut command = Command::new(self.monitor);
-        command.args(self.options());
+        command.args(self.options()?);
         let mut control = 3_i32;
-        for file in &self.inherited {
+        for (role, file) in self
+            .inherited
+            .iter()
+            .map(|file| ("--inherit", file))
+            .chain(self.held.iter().map(|file| ("--hold", file)))
+        {
             let number = file.as_raw_fd();
             if number < 3 {
                 bail!("workload inheritance must be distinct from stdio");
             }
             control = control.max(number.checked_add(1).context("descriptor limit")?);
-            command.args([OsString::from("--inherit"), number.to_string().into()]);
+            command.args([OsString::from(role), number.to_string().into()]);
             mappings.push(FdMapping {
                 parent_fd: file.as_fd().try_clone_to_owned()?,
                 child_fd: number,
@@ -154,8 +171,11 @@ impl Launch<'_> {
         let parent: interprocess::os::windows::named_pipe::local_socket::tokio::Stream =
             listener.accept().await?.into();
         let mut command = Command::new(self.monitor);
+        for file in &self.held {
+            command.arg("--hold").arg_handle(file)?;
+        }
         command
-            .args(self.options())
+            .args(self.options()?)
             .arg("--control")
             .arg_handle(&initial)?
             .arg("--")
@@ -269,6 +289,8 @@ mod tests {
             endpoint: &endpoint,
             input: true,
             inherited: Vec::new(),
+            held: Vec::new(),
+            cleanup: None,
         }
         .spawn()
         .await;
@@ -326,6 +348,8 @@ mod tests {
                 endpoint: &endpoint,
                 input: true,
                 inherited: Vec::new(),
+                held: Vec::new(),
+                cleanup: None,
             }
             .spawn()
             .await?,
@@ -404,6 +428,8 @@ mod tests {
                     endpoint: &endpoint,
                     input: true,
                     inherited: Vec::new(),
+                    held: Vec::new(),
+                    cleanup: None,
                 }
                 .spawn()
                 .await?,
@@ -437,6 +463,7 @@ impl Running {
         record: &Record,
         arguments: &[OsString],
         inherited: Vec<File>,
+        held: Vec<File>,
         input: bool,
     ) -> Result<Self> {
         let mut running = Launch {
@@ -447,6 +474,8 @@ impl Running {
             endpoint: record.endpoint(),
             input,
             inherited,
+            cleanup: (!held.is_empty()).then_some(record.path()),
+            held,
         }
         .spawn()
         .await
@@ -605,6 +634,10 @@ impl Outcome {
 pub struct Workload(Record);
 
 impl Workload {
+    /// Idempotent exit callback. Missing or incomplete results retain storage.
+    pub fn cleanup(path: &Path) -> Result<()> {
+        Record::at(path)?.release_storage()
+    }
     pub fn open(id: uuid::Uuid, config: &crate::config::Config) -> Result<Self> {
         let layout = config.resolve_layout()?;
         let records =
@@ -621,6 +654,7 @@ impl Workload {
     }
 
     pub async fn wait(&self) -> Result<Outcome> {
+        self.0.release_storage()?;
         if let Some(result) = self.0.completion()? {
             return Ok(Outcome(result));
         }
@@ -634,6 +668,7 @@ impl Workload {
     }
 
     pub async fn stop(&self, grace: Duration) -> Result<Outcome> {
+        self.0.release_storage()?;
         if let Some(result) = self.0.completion()? {
             return Ok(Outcome(result));
         }
@@ -642,6 +677,7 @@ impl Workload {
     }
 
     pub async fn attach(&self, interactive: bool) -> Result<u32> {
+        self.0.release_storage()?;
         if let Some(result) = self.0.completion()? {
             return Outcome(result).code();
         }
@@ -670,6 +706,7 @@ impl Workload {
     }
 
     fn retained_or_error(&self, result: Result<Completion>) -> Result<Completion> {
+        self.0.release_storage()?;
         match result {
             Ok(result) => Ok(result),
             Err(error) => match self.0.completion()? {

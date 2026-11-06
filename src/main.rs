@@ -79,20 +79,28 @@ enum Command {
 
     /// List retained workloads, including unknown and completed workloads.
     Ps,
+
+    #[command(hide = true)]
+    CleanupWorkload { path: std::path::PathBuf },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<NativeExit> {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     let cli = Cli::parse();
 
-    let config = config::Config::load().context("failed to load pichi config")?;
+    let config = if matches!(cli.command, Command::CleanupWorkload { .. }) {
+        config::Config::default()
+    } else {
+        config::Config::load().context("failed to load pichi config")?
+    };
 
     // Every command runs on the one async runtime. Commands whose work is
     // purely local fs/CPU offload their blocking parts via `spawn_blocking`
     // internally; network commands are async end to end.
     match cli.command {
+        Command::CleanupWorkload { path } => cmd::workload::Workload::cleanup(&path),
         Command::System { cmd } => match cmd {
             cli::SystemCmd::Info(args) => system::run(args, &config).await,
             cli::SystemCmd::Prune(args) => cmd::prune::run(args, &config).await,

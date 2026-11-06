@@ -6,6 +6,8 @@ version: 1
 stages:
   tools:
     extend: ghcr.io/pichi-vm/fedora:43
+    mounts:
+      /tmp: tmpfs
     steps:
       - exec:
           command: >-
@@ -68,6 +70,7 @@ image:
     extend:
       kernel.selinux: "0"
       kernel.systemd.log_level: "warning"
+      kernel.systemd.getty_auto: "no"
 
 requirements:
   cpus: { recommended: 2 }

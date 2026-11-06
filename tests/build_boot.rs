@@ -42,10 +42,23 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     // Seed an authenticated index and record its actual digest.
     let index = seed_smoke_source_carapace(g, tmp.path()).await;
 
-    // Use the same Conglobate revision as the engine dependency.
-    // That tree stores `plan.yaml` / `lock.yaml`; the smoke passes
-    // those paths with `-p` / `-l`.
+    // Start with the pinned smoke context and exercise current requirements
+    // through plan export, guest output import and host config inspection.
     let (repo, _) = prepare_smoke_repo(tmp.path(), &index);
+    let requirements = serde_json::json!({
+        "slot": "pci",
+        "cpus": {"required": 2, "recommended": "max"},
+        "memory": {"required": 2048, "recommended": "max"},
+        "storage": {"required": 1024, "recommended": "max", "slot": "mmio"},
+        "interfaces": {"public": {
+            "slot": "mmio", "ingress": {"required": [443], "recommended": [443, "all"]}
+        }}
+    });
+    let plan_path = repo.join(SMOKE_CONTEXT).join(SMOKE_PLAN);
+    let mut plan: serde_json::Value =
+        serde_saphyr::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
+    plan["requirements"] = requirements.clone();
+    std::fs::write(&plan_path, serde_saphyr::to_string(&plan).unwrap()).unwrap();
     assert_pichi_ok(
         "update",
         &pichi(
@@ -169,4 +182,9 @@ async fn pichi_build_boots_official_image_to_poweroff() {
         out_digest.starts_with("sha256:"),
         "imported smoke:out missing digest; source was {SMOKE_SOURCE_REF}@{index}"
     );
+    let inspect = pichi(g, &[], &["inspect", "smoke:out"]);
+    assert_pichi_ok("inspect output requirements", &inspect);
+    let output: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(output["config"]["version"], 1);
+    assert_eq!(output["config"]["requirements"], requirements);
 }

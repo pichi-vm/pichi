@@ -25,7 +25,10 @@ fn graphroot(tmp: &TempDir) -> PathBuf {
 
 fn chain_annotations() -> std::collections::BTreeMap<String, String> {
     [
-        ("dev.pichi.carapace.verity.algo", "sha256"),
+        (
+            "dev.pichi.carapace.verity.hash",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        ),
         ("dev.pichi.carapace.verity.data-block-size", "4096"),
         ("dev.pichi.carapace.verity.hash-block-size", "4096"),
         ("dev.pichi.carapace.verity.version", "1"),
@@ -45,6 +48,14 @@ fn sha256_digest(bytes: &[u8]) -> conglobate::artifact::Digest {
 /// Populate a bootable artifact (PMI layer + one scute) and bind `tag`.
 /// Returns `(pmi_blob_path, cow_blob_path)` for assertions.
 async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
+    populate_bootable_with_requirements(graphroot, tag, None).await
+}
+
+async fn populate_bootable_with_requirements(
+    graphroot: &Path,
+    tag: &str,
+    requirements: Option<serde_json::Value>,
+) -> (PathBuf, PathBuf) {
     let blob_store = FilesystemBlobStore::new(graphroot);
 
     // Real cow bytes so the verity-root derivation in `pichi run` succeeds.
@@ -79,14 +90,23 @@ async fn populate_bootable(graphroot: &Path, tag: &str) -> (PathBuf, PathBuf) {
         ],
         annotations: chain_annotations(),
     };
+    if let Some(requirements) = requirements {
+        let bytes =
+            serde_json::to_vec(&serde_json::json!({"version":1,"requirements":requirements}))
+                .unwrap();
+        let digest = sha256_digest(&bytes);
+        blob_store.put_blob(&digest, &bytes).await.unwrap();
+        manifest.config = ConfigDescriptor::for_config(digest.to_string(), bytes.len() as u64);
+    }
     let root = manifest
         .cached_scute_root(&manifest.layers[0], &blob_store)
         .await
         .unwrap()
         .unwrap();
-    manifest
-        .annotations
-        .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
+    manifest.annotations.insert(
+        "dev.pichi.carapace.verity.hash".into(),
+        format!("sha256:{}", hex::encode(root)),
+    );
     let bytes = serde_json::to_vec(&manifest).unwrap();
     let digest =
         conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
@@ -256,9 +276,10 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 .await
                 .unwrap()
                 .unwrap();
-            manifest
-                .annotations
-                .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
+            manifest.annotations.insert(
+                "dev.pichi.carapace.verity.hash".into(),
+                format!("sha256:{}", hex::encode(root)),
+            );
             let bytes = serde_json::to_vec(&manifest).unwrap();
             let manifest_digest = sha256_digest(&bytes);
             store.put_blob(&manifest_digest, &bytes).await.unwrap();
@@ -481,4 +502,213 @@ async fn run_propagates_dillo_exit_status_with_spaced_paths() {
         .assert()
         .code(7);
     assert!(record.is_file());
+}
+
+#[tokio::test]
+async fn image_config_defaults_and_manual_allocations_are_enforced() {
+    let tmp = TempDir::new().unwrap();
+    let requirements = serde_json::json!({
+        "slot":"pci", "cpus":{"required":2,"recommended":8},
+        "memory":{"required":512,"recommended":1024},
+        "interfaces":{"public":{"slot":"mmio"}}
+    });
+    populate_bootable_with_requirements(&graphroot(&tmp), "sized:1", Some(requirements)).await;
+    let stub = make_stub_dillo(tmp.path());
+    for (extra, cpus, memory, warning) in [
+        (vec![], "8", "1024", false),
+        (vec!["--cpus", "4", "--memory", "768"], "4", "768", true),
+    ] {
+        let mut command = Command::cargo_bin("pichi").unwrap();
+        command
+            .env("XDG_DATA_HOME", tmp.path())
+            .env("PICHI_DILLO", &stub)
+            .env_remove("RUST_LOG")
+            .args(["run", "sized:1"])
+            .args(extra);
+        let output = command.assert().success().get_output().clone();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(stderr.contains("below the recommended"), warning);
+        let argv = std::fs::read_to_string(tmp.path().join("argv.txt")).unwrap();
+        let args: Vec<_> = argv.lines().collect();
+        let value = |flag| args[args.iter().position(|a| *a == flag).unwrap() + 1];
+        assert_eq!(value("--cpus"), cpus);
+        assert_eq!(value("--memory"), memory);
+        assert_eq!(value("--bus"), "pci");
+        assert_eq!(value("--net"), "backend=user,preferred-bus=mmio");
+    }
+    let output = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .env("PICHI_DILLO", &stub)
+        .args(["run", "sized:1", "--cpus", "1"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("required minimum")
+    );
+}
+
+#[tokio::test]
+async fn detached_storage_stays_reserved_until_workload_exit() {
+    struct StopOnDrop {
+        root: PathBuf,
+        id: Option<String>,
+    }
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            if let Some(id) = &self.id {
+                let _ = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"))
+                    .env("XDG_DATA_HOME", &self.root)
+                    .args(["stop", id, "--time", "0"])
+                    .output();
+            }
+        }
+    }
+    for retained in [false, true] {
+        let tmp = TempDir::new().unwrap();
+        populate_bootable(&graphroot(&tmp), "storage:detached").await;
+        let stub = make_stub_dillo(tmp.path());
+        let disk = tmp.path().join("retained.raw");
+        let mut command = Command::cargo_bin("pichi").unwrap();
+        command
+            .env("XDG_DATA_HOME", tmp.path())
+            .env("PICHI_DILLO", &stub)
+            .env("PICHI_TEST_STORAGE", "1")
+            .args(["run", "-d", "--storage", "2", "storage:detached"]);
+        if retained {
+            command
+                .arg("--storage-file")
+                .arg(&disk)
+                .env("PICHI_TEST_DILLO_WAIT_FOR_EOF", "1");
+        } else {
+            command.env("PICHI_TEST_DILLO_EXIT_GATE", tmp.path().join("exit-gate"));
+        }
+        let output = command.assert().success().get_output().stdout.clone();
+        let id = String::from_utf8(output).unwrap().trim().to_owned();
+        let mut cleanup = StopOnDrop {
+            root: tmp.path().to_owned(),
+            id: Some(id.clone()),
+        };
+        let report = tmp.path().join("storage-path.txt");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !report.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "workload did not open storage"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let path = PathBuf::from(std::fs::read_to_string(report).unwrap());
+        assert!(path.exists(), "detach removed the backing");
+        Command::cargo_bin("pichi")
+            .unwrap()
+            .env("XDG_DATA_HOME", tmp.path())
+            .env("PICHI_DILLO", &stub)
+            .args(["run", "-d", "--storage-file"])
+            .arg(&path)
+            .arg("storage:detached")
+            .assert()
+            .failure();
+        if retained {
+            Command::cargo_bin("pichi")
+                .unwrap()
+                .env("XDG_DATA_HOME", tmp.path())
+                .args(["stop", &id, "--time", "2"])
+                .assert()
+                .success();
+            assert_eq!(&std::fs::read(&path).unwrap()[..10], b"guest data");
+            // A completed workload releases the reservation for a new run.
+            Command::cargo_bin("pichi")
+                .unwrap()
+                .env("XDG_DATA_HOME", tmp.path())
+                .env("PICHI_DILLO", &stub)
+                .args(["run", "--storage-file"])
+                .arg(&path)
+                .arg("storage:detached")
+                .assert()
+                .success();
+        } else {
+            std::fs::write(tmp.path().join("exit-gate"), b"exit").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while path.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "exit callback did not remove storage"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        cleanup.id = None;
+    }
+}
+
+#[tokio::test]
+async fn writable_storage_lives_through_the_child_and_is_cleaned_on_exit() {
+    for exit in [0, 7] {
+        let tmp = TempDir::new().unwrap();
+        let root = graphroot(&tmp);
+        populate_bootable_with_requirements(
+            &root,
+            "storage:1",
+            Some(serde_json::json!({
+                "storage":{"required":1,"recommended":2,"slot":"mmio"}
+            })),
+        )
+        .await;
+        let stub = make_stub_dillo(tmp.path());
+        let mut command = Command::cargo_bin("pichi").unwrap();
+        command
+            .env("XDG_DATA_HOME", tmp.path())
+            .env("PICHI_DILLO", &stub)
+            .env("PICHI_TEST_STORAGE", "1")
+            .env("PICHI_TEST_DILLO_EXIT", exit.to_string())
+            .args(["run", "storage:1"]);
+        command.assert().code(exit);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("storage-capacity.txt")).unwrap(),
+            (2 * 1024 * 1024).to_string()
+        );
+        let path = std::fs::read_to_string(tmp.path().join("storage-path.txt")).unwrap();
+        assert!(!Path::new(&path).exists());
+        let argv = std::fs::read_to_string(tmp.path().join("argv.txt")).unwrap();
+        let args: Vec<_> = argv.lines().collect();
+        let spec: dillo_config::BlkSpec = serde_keyvalue::from_key_values(
+            args[args.iter().position(|a| *a == "--blk").unwrap() + 1],
+        )
+        .unwrap();
+        assert_eq!(spec.path, PathBuf::from(path));
+        assert!(!spec.readonly);
+        assert_eq!(spec.preferred_bus, Some(dillo_config::Bus::Mmio));
+    }
+}
+
+#[tokio::test]
+async fn cpu_max_uses_host_availability_as_the_default() {
+    let tmp = TempDir::new().unwrap();
+    populate_bootable_with_requirements(
+        &graphroot(&tmp),
+        "max:1",
+        Some(serde_json::json!({"cpus":{"recommended":"max"}})),
+    )
+    .await;
+    let stub = make_stub_dillo(tmp.path());
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .env("PICHI_DILLO", stub)
+        .args(["run", "max:1"])
+        .assert()
+        .success();
+    let argv = std::fs::read_to_string(tmp.path().join("argv.txt")).unwrap();
+    let args: Vec<_> = argv.lines().collect();
+    assert_eq!(
+        args[args.iter().position(|a| *a == "--cpus").unwrap() + 1]
+            .parse::<usize>()
+            .unwrap(),
+        std::thread::available_parallelism().unwrap().get()
+    );
 }

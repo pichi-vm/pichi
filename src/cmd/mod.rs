@@ -34,3 +34,4 @@ pub mod update;
 mod test_support;
 mod verity;
 pub mod workload;
+mod writable_storage;

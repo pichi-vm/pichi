@@ -341,9 +341,9 @@ from the committed lock. `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a rebuilt
 OCI appliance layout for cross-project qualification; otherwise the smoke
 uses the shipping default. Staged plans require an appliance built with the
 matching Conglobate engine; `--build-image` selects it explicitly. The default image is
-`ghcr.io/pichi-vm/conglobate@sha256:278ca85b9c06639592db961ee1c8e78827a768f452838f2d03e683b5f8cf7095`.
+`ghcr.io/pichi-vm/conglobate@sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a`.
 This amd64/arm64 index is built from Conglobate revision
-`f63474a47bc94316fcf662493d0cf8f7036777d0` and uses the staged plan, GPT
+`9b15826d03da60b34ee39097a298b342a6ea17cf` and uses the staged plan, GPT
 root, embedded-DTB PMI and native bootconfig contracts described here.
 The default appliance and the library in `deps/conglobate` both require
 `version: 1` in plans and the flat digest lock shown above.
@@ -542,3 +542,17 @@ Plan and lock formats are Conglobate's, not redefined here.
 - Host vGPT loops over source carapaces as the build product API
 - Mid-build registry pulls inside `pichi build` (cache is prepared first)
 - Reintroducing Conglobate-as-`/init` or `$DIR`→erofs host packaging
+
+Carapace manifest roots use `sha256:<64 lowercase hex digits>` in
+`dev.pichi.carapace.verity.hash`; new output retires `verity.algo`.
+Currently pinned appliances remain readable through an input-only path for
+bare roots with an explicit `verity.algo=sha256`. Bare roots without that
+declaration, unsupported algorithms, and any separate algorithm declaration
+alongside a qualified root are rejected. Composition emits the qualified form.
+Boot configuration continues to carry the verified raw root bytes as hex.
+
+Verity reconstruction defaults are `data-block-size=4096`,
+`hash-block-size=4096`, `version=1` and `hash-type=1`. Producers omit
+parameters equal to these defaults. Consumers use defaults only when
+fields are absent and validate supplied overrides. Image composition
+preserves nondefault parameters; load enforces supported carapace geometry.

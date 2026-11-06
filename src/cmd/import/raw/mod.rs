@@ -356,7 +356,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 manifest.annotations.get("dev.pichi.carapace.verity.hash"),
-                Some(&hex::encode(formatted.root_hash))
+                Some(&format!("sha256:{}", hex::encode(formatted.root_hash)))
             );
             assert_eq!(std::fs::read(staged.verity.path()).unwrap(), formatted.blob);
             drop(staged);
@@ -400,7 +400,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             manifest.annotations.get("dev.pichi.carapace.verity.hash"),
-            Some(&hex::encode(formatted.root_hash))
+            Some(&format!("sha256:{}", hex::encode(formatted.root_hash)))
         );
         assert_eq!(std::fs::read(staged.verity.path()).unwrap(), formatted.blob);
     }

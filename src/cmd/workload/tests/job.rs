@@ -60,6 +60,8 @@ async fn caller() -> Result<()> {
             endpoint: &endpoint,
             input: true,
             inherited: Vec::new(),
+            held: Vec::new(),
+            cleanup: None,
         }
         .spawn()
         .await?,

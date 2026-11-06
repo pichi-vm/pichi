@@ -256,10 +256,10 @@ impl Image {
             .map(|layer| fs::read(self.layer_path(layer)).unwrap())
     }
 
-    pub fn root(&self) -> &str {
-        self.manifest["annotations"]["dev.pichi.carapace.verity.hash"]
-            .as_str()
-            .unwrap()
+    pub fn root(&self) -> String {
+        let manifest: conglobate::artifact::Manifest =
+            serde_json::from_value(self.manifest.clone()).unwrap();
+        hex::encode(manifest.carapace_root().unwrap().expect("image has a root"))
     }
 
     pub fn boot_config(&self) -> Option<String> {

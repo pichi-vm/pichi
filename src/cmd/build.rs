@@ -29,11 +29,13 @@ use crate::cmd::build_port::{
 };
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
+use crate::cmd::requirements::SlotArgument as _;
 use crate::cmd::run::{DevicePath as _, build_gpt_spec, path_arg};
 use crate::cmd::workload::{
     Outcome, Running,
     record::{Record, Records},
 };
+use crate::cmd::writable_storage::WritableStorage;
 use crate::config::Config;
 
 /// virtio-fs mount tags the host and Conglobate agree on (BUILD.md §2.3).
@@ -64,7 +66,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     // Reserve appliance identity and the build cache lease under the same
     // lock as image removal. Only the guest interprets source plans and locks.
-    let (record, output_dir, pmi_path, bootconfig_path, gpt_specs, cpus, memory) = layout
+    let (record, output_dir, pmi_path, bootconfig_path, gpt_specs, cpus, memory, reqs) = layout
         .with_index_lock(|| async {
             // The build image launches like `pichi run` (BUILD.md §2.6): --pmi,
             // optional --bootconfig, and a vGPT for the appliance carapace scutes.
@@ -99,17 +101,15 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
             // Size the build VM from the build image's requirements, with the
             // operator's --memory/--cpus overriding (but not below required).
             let reqs = requirements::load_requirements(&build_manifest, &blob_store).await?;
-            let cpus = requirements::resolve_sized(
+            let cpus = requirements::Sizing::Cpus.resolve(
                 args.cpus,
                 reqs.as_ref().and_then(Requirements::cpus_required),
                 reqs.as_ref().and_then(Requirements::cpus_recommended),
-                "cpus",
             )?;
-            let memory = requirements::resolve_sized(
+            let memory = requirements::Sizing::Memory.resolve(
                 args.memory,
                 reqs.as_ref().and_then(Requirements::memory_required_mib),
                 reqs.as_ref().and_then(Requirements::memory_recommended_mib),
-                "memory (MiB)",
             )?;
 
             let record = Records::open(&layout.graphroot)?.reserve(vec![build_digest])?;
@@ -122,6 +122,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
                 gpt_specs,
                 cpus,
                 memory,
+                reqs,
             ))
         })
         .await?;
@@ -147,7 +148,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let pipes = create_build_port_pipes().context("creating build-port pipes")?;
     let console = console_arg(pipes.device_rx_fd, pipes.device_tx_fd);
 
-    let argv = build_dillo_args(
+    let mut argv = build_dillo_args(
         &pmi_path,
         bootconfig_path.as_deref(),
         &gpt_specs,
@@ -158,6 +159,25 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         memory,
         cpus,
     );
+    if let Some(slot) = reqs.as_ref().and_then(|r| r.slot) {
+        argv.extend(["--bus".into(), slot.as_argument().into()]);
+    }
+    let storage = WritableStorage::prepare(
+        reqs.as_ref().and_then(|r| r.storage.as_ref()),
+        args.storage,
+        None,
+        &record.storage_directory(),
+    )?;
+    if let Some(backing) = &storage {
+        argv.extend([
+            "--blk".into(),
+            backing.argument(
+                reqs.as_ref()
+                    .and_then(|r| r.storage.as_ref())
+                    .and_then(|r| r.slot),
+            ),
+        ]);
+    }
 
     let tag = args
         .tag
@@ -172,7 +192,18 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .then(|| super::build_output::BuildLog::create(&layout.runroot))
         .transpose()?;
     let result: Result<_> = async {
-        boot_serve_and_wait(&record, &argv, pipes, response, log.as_ref()).await?;
+        boot_serve_and_wait(
+            &record,
+            &argv,
+            pipes,
+            response,
+            log.as_ref(),
+            storage
+                .map(WritableStorage::into_monitor)
+                .into_iter()
+                .collect(),
+        )
+        .await?;
         // Successful guest exit is required before opening its OCI output.
         let imported = crate::cmd::load::OciLayout::read(&output_dir, &blob_store).await?;
         imported
@@ -185,6 +216,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         Some(log) => log.failure(error),
         None => error,
     })?;
+    record.release_storage()?;
     record.release_build_output()?;
     if args.quiet {
         println!("{digest}");
@@ -258,10 +290,10 @@ pub(crate) fn build_dillo_args(
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
 /// Conglobate appliance pinned by content digest.
-/// Built from f63474a47bc94316fcf662493d0cf8f7036777d0 for amd64 and arm64.
+/// Built from 9b15826d03da60b34ee39097a298b342a6ea17cf for amd64 and arm64.
 /// It consumes versioned staged plans and boots its GPT root with native bootconfig.
 /// Official-image smoke verifies guest output, poweroff, and host import.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:278ca85b9c06639592db961ee1c8e78827a768f452838f2d03e683b5f8cf7095";
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a";
 
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
@@ -362,6 +394,7 @@ async fn boot_serve_and_wait(
     pipes: build_port::BuildPortPipes,
     response: Vec<u8>,
     log: Option<&super::build_output::BuildLog>,
+    held: Vec<std::fs::File>,
 ) -> Result<()> {
     let build_port::BuildPortPipes {
         host_tx,
@@ -371,7 +404,8 @@ async fn boot_serve_and_wait(
         ..
     } = pipes;
     let args: Vec<OsString> = args.iter().map(OsString::from).collect();
-    let mut running = Running::start(record, &args, vec![device_rx, device_tx], false).await?;
+    let mut running =
+        Running::start(record, &args, vec![device_rx, device_tx], held, false).await?;
     let (done, mut served) = tokio::sync::oneshot::channel();
     // Blocking named-port I/O has no monitor/VM ownership and must not keep
     // the async runtime alive if a missing result leaves cleanup unknown.
@@ -605,7 +639,7 @@ mod tests {
         let canon = canonicalize_reference(&pinned);
         assert_eq!(
             canon.as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:278ca85b9c06639592db961ee1c8e78827a768f452838f2d03e683b5f8cf7095"
+            "ghcr.io/pichi-vm/conglobate@sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a"
         );
         let parsed: Reference = canon.parse().unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
@@ -614,7 +648,7 @@ mod tests {
             ReferenceKind::Digest(d) => {
                 assert_eq!(
                     d.to_string(),
-                    "sha256:278ca85b9c06639592db961ee1c8e78827a768f452838f2d03e683b5f8cf7095"
+                    "sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a"
                 );
             }
             ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),

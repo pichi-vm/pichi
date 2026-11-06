@@ -46,12 +46,11 @@ impl Fixture {
                 }
             }],
             "annotations": {
-                "dev.pichi.carapace.verity.algo": "sha256",
                 "dev.pichi.carapace.verity.data-block-size": "4096",
                 "dev.pichi.carapace.verity.hash-block-size": "4096",
                 "dev.pichi.carapace.verity.version": "1",
                 "dev.pichi.carapace.verity.hash-type": "1",
-                "dev.pichi.carapace.verity.hash": hex::encode(root)
+                "dev.pichi.carapace.verity.hash": format!("sha256:{}", hex::encode(root))
             }
         }))
         .unwrap();

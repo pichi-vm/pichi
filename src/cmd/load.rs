@@ -209,7 +209,13 @@ impl OciLayout {
                     "dev.pichi.carapace.verity.hash-block-size",
                 ] {
                     ensure!(
-                        manifest.annotations.get(key).map(String::as_str) == Some("4096"),
+                        manifest
+                            .annotations
+                            .get(key)
+                            .map(String::as_str)
+                            .unwrap_or("4096")
+                            .parse::<u32>()?
+                            == 4096,
                         "carapace block sizes must be 4096"
                     );
                 }
@@ -228,7 +234,9 @@ impl OciLayout {
                             .annotations
                             .get("dev.pichi.carapace.verity.hash-type")
                             .map(String::as_str)
-                            == Some("1"),
+                            .unwrap_or("1")
+                            .parse::<u32>()?
+                            == 1,
                         "carapace hash type must be 1"
                     );
                     // Optional guest sidecars have only digest-derived names.
@@ -564,11 +572,6 @@ pub(super) mod tests {
                     "config": conglobate::artifact::ConfigDescriptor::canonical(),
                     "layers": [],
                     "annotations": {
-                        "dev.pichi.carapace.verity.algo": "sha256",
-                        "dev.pichi.carapace.verity.data-block-size": "4096",
-                        "dev.pichi.carapace.verity.hash-block-size": "4096",
-                        "dev.pichi.carapace.verity.version": "1",
-                        "dev.pichi.carapace.verity.hash-type": "1",
                     },
                 }),
                 blobs: Vec::new(),
@@ -614,7 +617,7 @@ pub(super) mod tests {
             self.trees.push(output.blob);
             self.tip = output.root_hash;
             self.manifest["annotations"]["dev.pichi.carapace.verity.hash"] =
-                hex::encode(self.tip).into();
+                format!("sha256:{}", hex::encode(self.tip)).into();
         }
 
         pub(crate) fn write(&self, dir: &Path) -> Digest {
@@ -674,7 +677,7 @@ pub(super) mod tests {
             let parent = fixture.tip;
             fixture.add_cow(shared.clone(), false);
             fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash"] =
-                hex::encode(fixture.tip).into();
+                format!("sha256:{}", hex::encode(fixture.tip)).into();
             let manifest: Manifest = serde_json::from_value(fixture.manifest.clone()).unwrap();
             let layer = manifest.layers.last().unwrap();
             assert_eq!(layer.digest_str(), digest.to_string());
@@ -706,6 +709,45 @@ pub(super) mod tests {
                         .await
                         .unwrap();
                 assert!(spec.contains(path.to_str().unwrap()), "{spec}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn optional_default_parameters_rebuild_identical_verity() {
+        let fields = [
+            ("data-block-size", "4096"),
+            ("hash-block-size", "4096"),
+            ("version", "1"),
+            ("hash-type", "1"),
+        ];
+        for mask in 0..16 {
+            let dir = tempfile::tempdir().unwrap();
+            let mut fixture = LayoutFixture::new();
+            fixture.add_scute(true);
+            for (bit, (key, value)) in fields.iter().enumerate() {
+                if mask & (1 << bit) != 0 {
+                    fixture.manifest["annotations"][format!("dev.pichi.carapace.verity.{key}")] =
+                        (*value).into();
+                }
+            }
+            let output = dir.path().join("output");
+            fixture.write(&output);
+            let store = FilesystemBlobStore::new(dir.path().join("cache"));
+            OciLayout::read(&output, &store)
+                .await
+                .unwrap()
+                .commit(&store)
+                .await
+                .unwrap();
+            let manifest: Manifest = serde_json::from_value(fixture.manifest).unwrap();
+            assert_eq!(
+                manifest.carapace_top_root(&store).await.unwrap(),
+                fixture.tip
+            );
+            for (layer, expected) in manifest.layers.iter().zip(fixture.trees) {
+                let files = ScuteFiles::new(&manifest, layer, &store).unwrap();
+                assert_eq!(std::fs::read(files.verity).unwrap(), expected);
             }
         }
     }
@@ -879,8 +921,8 @@ pub(super) mod tests {
                 "zero root" | "wrong root" | "malformed root" => {
                     fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash"] =
                         match case {
-                            "zero root" => hex::encode([0; 32]),
-                            "wrong root" => hex::encode([42; 32]),
+                            "zero root" => format!("sha256:{}", hex::encode([0; 32])),
+                            "wrong root" => format!("sha256:{}", hex::encode([42; 32])),
                             _ => "not a root".into(),
                         }
                         .into();

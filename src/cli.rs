@@ -61,7 +61,7 @@ pub struct InspectArgs {
     pub reference: String,
     /// Output format: `json` (default, pretty-printed) or a minijinja (Jinja2)
     /// template. Dotted annotation keys use subscripts, e.g.
-    /// `{{ manifest.annotations["dev.pichi.carapace.verity.algo"] }}`.
+    /// `{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}`.
     #[arg(long)]
     pub format: Option<String>,
 }
@@ -316,6 +316,9 @@ pub struct BuildArgs {
     /// vCPUs for the build VM (forwarded to dillo).
     #[arg(long)]
     pub cpus: Option<u32>,
+    /// Writable storage capacity in MiB for the build appliance.
+    #[arg(long)]
+    pub storage: Option<u64>,
     /// Suppress build output and print the image digest on success.
     #[arg(long, short = 'q')]
     pub quiet: bool,
@@ -351,12 +354,18 @@ pub struct RunArgs {
 
     /// Image reference to boot (`image:tag` or `image@sha256:...`).
     pub reference: String,
-    /// Number of vCPUs. Overrides config; falls back to dillo's default.
+    /// Number of vCPUs. Overrides operator and image defaults.
     #[arg(long)]
     pub cpus: Option<u32>,
-    /// Guest memory in MiB. Overrides config; falls back to dillo's default.
+    /// Guest memory in MiB. Overrides operator and image defaults.
     #[arg(long)]
     pub memory: Option<u32>,
+    /// Writable storage capacity in MiB. Overrides the image recommendation.
+    #[arg(long)]
+    pub storage: Option<u64>,
+    /// Retain storage in this raw file; otherwise use disposable storage.
+    #[arg(long, value_name = "PATH")]
+    pub storage_file: Option<std::path::PathBuf>,
 }
 
 /// Attach to an existing workload's live console.

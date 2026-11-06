@@ -301,6 +301,41 @@ impl Records {
 }
 
 impl Record {
+    pub(super) fn at(path: &Path) -> Result<Self> {
+        let id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("workload directory must name an ID")?
+            .parse()?;
+        let records = path.parent().context("workload directory parent")?;
+        let parent = Dir::open_ambient_dir(
+            records.parent().context("workload root parent")?,
+            cap_std::ambient_authority(),
+        )?;
+        Records::from_parent(records.to_owned(), &parent)?
+            .context("missing workload directory")?
+            .get(id)
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn storage_directory(&self) -> PathBuf {
+        self.path.join("storage")
+    }
+
+    pub(crate) fn release_storage(&self) -> Result<()> {
+        if matches!(self.completion()?, Some(result) if result.cleanup == CleanupResult::Complete) {
+            match self.directory.remove_dir_all("storage") {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn id(&self) -> Uuid {
         self.identity.id
     }
@@ -402,6 +437,49 @@ mod tests {
     use madrillo::{CompletionCause, LeaderResult, OomEvidence};
     use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
     use sha2::{Digest as _, Sha256};
+
+    #[test]
+    fn storage_cleanup_requires_complete_evidence_and_is_idempotent() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache)?;
+        let record = Records::open(&cache)?.reserve(vec![Digest::Sha256([1; 32])])?;
+        std::fs::create_dir(record.storage_directory())?;
+        let backing = record.storage_directory().join("storage.raw");
+        std::fs::write(&backing, b"guest data")?;
+        Record::at(record.path())?.release_storage()?;
+        assert!(backing.exists(), "missing result must retain storage");
+        std::fs::create_dir(record.state())?;
+        for cleanup in [
+            CleanupResult::Unknown,
+            CleanupResult::Incomplete {
+                errors: vec!["helper still running".into()],
+            },
+            CleanupResult::Complete,
+        ] {
+            let result = Completion {
+                version: PROTOCOL_VERSION,
+                leader: LeaderResult::Exit { code: 0 },
+                cause: CompletionCause::LeaderExit,
+                exited_at_unix_ms: 0,
+                cleanup,
+                oom: OomEvidence::NoneObserved,
+                log_errors: Vec::new(),
+                monitor_errors: Vec::new(),
+                monitor_warnings: Vec::new(),
+                output_truncated: false,
+            };
+            std::fs::write(
+                record.state().join("result.json"),
+                serde_json::to_vec(&result)?,
+            )?;
+            for _ in 0..2 {
+                Record::at(record.path())?.release_storage()?;
+                assert_eq!(backing.exists(), result.cleanup != CleanupResult::Complete);
+            }
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn image_gc_preserves_pins_and_guest_selected_build_inputs() -> Result<()> {
