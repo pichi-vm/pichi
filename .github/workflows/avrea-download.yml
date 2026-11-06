@@ -1,0 +1,26 @@
+name: Avrea artifact download diagnostic
+on:
+  push:
+    branches: [probe/avrea-artifact-download]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  download:
+    runs-on: avrea-ubuntu-latest-arm-1-vcpu
+    timeout-minutes: 7
+    steps:
+      - name: Download existing appliance via GitHub REST API
+        timeout-minutes: 5
+        uses: actions/download-artifact@v4
+        with:
+          name: appliance-oci-arm64
+          path: ${{ runner.temp }}/appliance-layout
+          github-token: ${{ github.token }}
+          repository: pichi-vm/pichi
+          run-id: 42268527848
+      - name: Check OCI layout
+        run: |
+          test -f "$RUNNER_TEMP/appliance-layout/oci-layout"
+          test -f "$RUNNER_TEMP/appliance-layout/index.json"
+          du -sh "$RUNNER_TEMP/appliance-layout"
