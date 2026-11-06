@@ -6,92 +6,6 @@ name: Hosted hypervisor probes
 permissions:
   contents: read
 jobs:
-  github-arm-kvm:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 5
-    steps:
-    - name: Inspect runner and KVM
-      shell: bash
-      run: |
-        uname -a
-        id
-        lscpu
-        ls -l /dev/kvm || true
-        cat /sys/class/misc/kvm/dev || true
-        sudo dmesg | grep -Ei 'kvm|hyp mode|EL2|hypervisor' || true
-        grep -E 'CONFIG_KVM|CONFIG_VIRTUALIZATION' /boot/config-"$(uname -r)" || true
-        cat > /tmp/kvm-probe.py <<'PY'
-        import fcntl
-        import os
-        import platform
-        import sys
-
-        print(f"architecture={platform.machine()} uid={os.geteuid()}", flush=True)
-        assert platform.machine() == "aarch64"
-        try:
-            kvm = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
-            version = fcntl.ioctl(kvm, 0xAE00, 0)  # KVM_GET_API_VERSION
-            print(f"KVM_GET_API_VERSION={version}", flush=True)
-            assert version == 12
-            vm = fcntl.ioctl(kvm, 0xAE01, 0)  # KVM_CREATE_VM
-            print("KVM_CREATE_VM succeeded", flush=True)
-            vcpu = fcntl.ioctl(vm, 0xAE41, 0)  # KVM_CREATE_VCPU
-            print("KVM_CREATE_VCPU succeeded", flush=True)
-            os.close(vcpu)
-            os.close(vm)
-            os.close(kvm)
-        except OSError as error:
-            print(f"KVM unavailable: {error}", flush=True)
-            sys.exit(1)
-        PY
-        user_result=0
-        python3 /tmp/kvm-probe.py || user_result=$?
-        root_result=0
-        sudo python3 /tmp/kvm-probe.py || root_result=$?
-        echo "User probe exit: $user_result; root probe exit: $root_result" | tee -a "$GITHUB_STEP_SUMMARY"
-        exit "$root_result"
-  avrea-windows-whp:
-    runs-on: avrea-windows-2025-2-vcpu
-    timeout-minutes: 10
-    steps:
-    - name: Create WHP partition and vCPU
-      shell: pwsh
-      run: |
-        Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version
-        Get-CimInstance Win32_Processor | Select-Object Name, VirtualizationFirmwareEnabled, SecondLevelAddressTranslationExtensions
-        Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform | Format-List FeatureName, State
-        Add-Type @'
-        using System;
-        using System.Runtime.InteropServices;
-        public static class WhpProbe {
-            [DllImport("WinHvPlatform.dll")] static extern int WHvGetCapability(uint code, out uint value, uint size, out uint written);
-            [DllImport("WinHvPlatform.dll")] static extern int WHvCreatePartition(out IntPtr partition);
-            [DllImport("WinHvPlatform.dll")] static extern int WHvSetPartitionProperty(IntPtr partition, uint code, ref uint value, uint size);
-            [DllImport("WinHvPlatform.dll")] static extern int WHvSetupPartition(IntPtr partition);
-            [DllImport("WinHvPlatform.dll")] static extern int WHvCreateVirtualProcessor(IntPtr partition, uint index, uint flags);
-            [DllImport("WinHvPlatform.dll")] static extern int WHvDeleteVirtualProcessor(IntPtr partition, uint index);
-            [DllImport("WinHvPlatform.dll")] static extern int WHvDeletePartition(IntPtr partition);
-            static void Check(string operation, int result) {
-                Console.WriteLine("{0}: 0x{1:X8}", operation, result);
-                if (result < 0) Marshal.ThrowExceptionForHR(result);
-            }
-            public static void Run() {
-                uint present, written;
-                Check("WHvGetCapability(HypervisorPresent)", WHvGetCapability(0, out present, 4, out written));
-                Console.WriteLine("HypervisorPresent={0}", present);
-                IntPtr partition;
-                Check("WHvCreatePartition", WHvCreatePartition(out partition));
-                try {
-                    uint count = 1;
-                    Check("WHvSetPartitionProperty(ProcessorCount)", WHvSetPartitionProperty(partition, 0x1fff, ref count, 4));
-                    Check("WHvSetupPartition", WHvSetupPartition(partition));
-                    Check("WHvCreateVirtualProcessor", WHvCreateVirtualProcessor(partition, 0, 0));
-                    Check("WHvDeleteVirtualProcessor", WHvDeleteVirtualProcessor(partition, 0));
-                } finally { WHvDeletePartition(partition); }
-            }
-        }
-        '@
-        [WhpProbe]::Run()
   avrea-macos-hvf:
     runs-on: avrea-macos-26-8-vcpu
     timeout-minutes: 10
@@ -102,12 +16,13 @@ jobs:
         uname -a
         sw_vers
         sysctl kern.hv_support
+        sysctl kern.hv_vmm_present hw.model machdep.cpu.brand_string || true
         cat > /tmp/hvf.c <<'C'
         #include <Hypervisor/Hypervisor.h>
         #include <stdio.h>
         int main(void) {
             hv_return_t r = hv_vm_create(NULL);
-            printf("hv_vm_create: 0x%x\n", r);
+            printf("hv_vm_create: 0x%x (HV_UNSUPPORTED=0x%x, HV_DENIED=0x%x)\n", r, HV_UNSUPPORTED, HV_DENIED);
             if (r != HV_SUCCESS) return 1;
             hv_vcpu_t cpu;
             hv_vcpu_exit_t *exit_info;
@@ -125,4 +40,29 @@ jobs:
         PLIST
         clang -Wall -Wextra -Werror /tmp/hvf.c -framework Hypervisor -o /tmp/hvf
         codesign --force --sign - --entitlements /tmp/hvf.plist /tmp/hvf
-        /tmp/hvf
+        codesign --verify --verbose /tmp/hvf
+        codesign --display --entitlements - /tmp/hvf
+        cat > /tmp/vz.m <<'OBJC'
+        #import <Foundation/Foundation.h>
+        #import <Virtualization/Virtualization.h>
+        int main(void) {
+            @autoreleasepool {
+                printf("VZVirtualMachine.isSupported=%d\n", VZVirtualMachine.isSupported);
+                printf("VZGenericPlatformConfiguration.isNestedVirtualizationSupported=%d\n", VZGenericPlatformConfiguration.isNestedVirtualizationSupported);
+            }
+            return 0;
+        }
+        OBJC
+        clang -Wall -Wextra -Werror /tmp/vz.m -framework Foundation -framework Virtualization -o /tmp/vz
+        cat > /tmp/vz.plist <<'PLIST'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <plist version="1.0"><dict><key>com.apple.security.virtualization</key><true/></dict></plist>
+        PLIST
+        codesign --force --sign - --entitlements /tmp/vz.plist /tmp/vz
+        /tmp/vz
+        user_result=0
+        /tmp/hvf || user_result=$?
+        root_result=0
+        sudo /tmp/hvf || root_result=$?
+        echo "HVF user exit=$user_result; root exit=$root_result" | tee -a "$GITHUB_STEP_SUMMARY"
+        exit "$root_result"
