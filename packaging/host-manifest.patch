@@ -34,7 +34,7 @@
  [target.'cfg(not(target_os = "linux"))'.dependencies]
  sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
-@@ -81,26 +65,6 @@
+@@ -82,22 +66,6 @@
  windows-spawn = "=0.1.0"
  widestring = "1"
  win-custody = "=0.1.2"
@@ -44,10 +44,6 @@
 -assert_cmd.workspace = true
 -tempfile.workspace = true
 -pichi-storage.workspace = true
--# Test-only: round-trip the `--gpt` kv string `cmd::run` emits back through
--# dillo's device schema to guarantee the format parses as intended. Not a
--# runtime dependency — pichi and dillo are coupled only via dillo's CLI.
--dillo-config.workspace = true
 -serde-keyvalue.workspace = true
 -# KVM/boot integration tests (build_*.rs, gated on `vm-tests`). These drive the
 -# real product binaries through their CLIs; the artifact deps build them.
