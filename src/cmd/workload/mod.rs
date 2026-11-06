@@ -3,13 +3,19 @@
 
 //! Pichi owns workload identity and attachment; madrillo owns supervision.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod client;
 mod console;
 mod logs;
 pub(crate) mod record;
 mod resize;
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "Approved private native handle-inheritance boundary"
+)]
+mod windows;
 
 use anyhow::{Context, Result, bail};
 use client::Client;
@@ -41,7 +47,7 @@ pub(crate) struct Running {
     #[cfg(unix)]
     monitor: Box<dyn process_wrap::std::ChildWrapper>,
     #[cfg(windows)]
-    monitor: windows_spawn::Child,
+    monitor: windows::Monitor,
 }
 
 impl Launch<'_> {
@@ -150,10 +156,7 @@ impl Launch<'_> {
         use interprocess::os::windows::named_pipe::{
             DuplexPipeStream, PipeListenerOptions, pipe_mode::Bytes,
         };
-        use windows_spawn::{Command, CreationFlags, SpawnOptions, Stdio};
-        if !self.inherited.is_empty() {
-            bail!("madrillo's exact workload handle inheritance is not yet available on Windows");
-        }
+        use std::os::windows::io::{AsHandle, AsRawHandle};
         let name = format!(r"\\.\pipe\pichi-initial-{}", uuid::Uuid::new_v4());
         let path = widestring::U16CString::from_str(&name)?;
         let sid = win_custody::current_user_sid_string()?;
@@ -171,33 +174,31 @@ impl Launch<'_> {
         let initial = DuplexPipeStream::<Bytes>::connect_by_path(name.as_str())?;
         let parent: interprocess::os::windows::named_pipe::local_socket::tokio::Stream =
             listener.accept().await?.into();
-        let mut command = Command::new(self.monitor);
-        for file in &self.held {
-            command.arg("--hold").arg_handle(file)?;
+        let mut arguments = self.options()?;
+        let mut handles = Vec::new();
+        for (role, file) in self
+            .inherited
+            .iter()
+            .map(|file| ("--inherit", file))
+            .chain(self.held.iter().map(|file| ("--hold", file)))
+        {
+            arguments.extend([
+                role.into(),
+                (file.as_raw_handle() as usize).to_string().into(),
+            ]);
+            handles.push(file.as_handle());
         }
-        command
-            .args(self.options()?)
-            .arg("--control")
-            .arg_handle(&initial)?
-            .arg("--")
-            .arg(self.program)
-            .args(self.arguments)
-            .env(
-                "RUST_LOG",
-                std::env::var_os("RUST_LOG").unwrap_or_else(|| "warn".into()),
-            )
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(self.diagnostic_file()?);
-        let options = SpawnOptions::new().creation_flags(
-            CreationFlags::DETACHED_PROCESS
-                | CreationFlags::NEW_PROCESS_GROUP
-                | CreationFlags::BREAKAWAY_FROM_JOB,
-        );
-        let monitor = command
-            .spawn_with(options)
-            .with_context(|| format!("start independent monitor {}", self.monitor.display()))?;
-        drop(command);
+        arguments.extend([
+            "--control".into(),
+            (initial.as_raw_handle() as usize).to_string().into(),
+            "--".into(),
+            self.program.into(),
+        ]);
+        arguments.extend_from_slice(self.arguments);
+        handles.push(initial.as_handle());
+        let monitor =
+            windows::Monitor::spawn(self.monitor, &arguments, &handles, self.diagnostic_file()?)
+                .with_context(|| format!("start independent monitor {}", self.monitor.display()))?;
         drop(initial);
         Ok(Running {
             client: Client::new(parent.into()),
@@ -539,6 +540,72 @@ mod tests {
             #[cfg(windows)]
             let status = running.monitor.wait()?;
             assert!(status.success());
+        }
+        #[cfg(windows)]
+        {
+            use std::{
+                io::Read,
+                os::windows::io::{AsRawHandle, OwnedHandle},
+                sync::mpsc,
+            };
+            let (mut reader, writer) = std::io::pipe()?;
+            let writer = File::from(OwnedHandle::from(writer));
+            let number = writer.as_raw_handle() as usize;
+            let hidden_path = root.path().join("hidden");
+            std::fs::write(&hidden_path, b"monitor-only resource")?;
+            let hidden = File::open(hidden_path)?;
+            let hidden_number = hidden.as_raw_handle() as usize;
+            let endpoint =
+                PathBuf::from(format!(r"\\.\pipe\pichi-inherit-{}", uuid::Uuid::new_v4()));
+            let record = records.create(
+                record.images().to_vec(),
+                endpoint.clone(),
+                uuid::Uuid::new_v4(),
+            )?;
+            let mut running = ReapMonitor(
+                Launch {
+                    monitor: &monitor,
+                    program: &fixture,
+                    arguments: &[
+                        "inherited-probe".into(),
+                        number.to_string().into(),
+                        hidden_number.to_string().into(),
+                    ],
+                    state: &record.state(),
+                    endpoint: &endpoint,
+                    input: false,
+                    inherited: vec![writer],
+                    held: vec![hidden],
+                    cleanup: None,
+                }
+                .spawn()
+                .await?,
+            );
+            running.started().await?;
+            let (send, receive) = mpsc::sync_channel(1);
+            let reader = std::thread::Builder::new()
+                .name("pichi-inherited-reader".into())
+                .spawn(move || {
+                    let mut bytes = Vec::new();
+                    let result = reader.read_to_end(&mut bytes).map(|_| bytes);
+                    let _ = send.send(result);
+                })?;
+            assert_eq!(
+                receive.recv_timeout(Duration::from_secs(8))??,
+                b"opaque\0\xff"
+            );
+            reader
+                .join()
+                .map_err(|_| anyhow::anyhow!("inheritance reader panicked"))?;
+            let completion =
+                tokio::time::timeout(Duration::from_secs(8), running.wait(None)).await??;
+            assert_eq!(completion.leader, LeaderResult::Exit { code: 37 });
+            assert_eq!(completion.cleanup, madrillo::CleanupResult::Complete);
+            assert!(completion.monitor_errors.is_empty(), "{completion:?}");
+            assert!(running.monitor.wait()?.success());
+            println!(
+                "native Pichi exact inheritance: opaque bytes, excluded handle and EOF passed"
+            );
         }
         Ok(())
     }

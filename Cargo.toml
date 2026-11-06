@@ -34,7 +34,7 @@ dillo-config.workspace = true
 dillo-devtree.workspace = true
 object.workspace = true
 pmi.workspace = true
-madrillo = { git = "https://github.com/pichi-vm/madrillo", rev = "30437e1cc1089057e7a14d973723e27dc8e65876", default-features = false }
+madrillo = { git = "https://github.com/pichi-vm/madrillo", rev = "2a7993d2bdb7a92aea49794d31ede09ce49a0d69", default-features = false }
 interprocess = { version = "=2.4.7", features = ["tokio"] }
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true
@@ -82,7 +82,7 @@ command-fds = "=0.3.3"
 process-wrap = { version = "=10.0.1", default-features = false, features = ["std", "process-session"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-spawn = "=0.1.0"
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Threading"] }
 widestring = "1"
 win-custody = "=0.1.2"
 
