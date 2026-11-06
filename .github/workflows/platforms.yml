@@ -108,6 +108,8 @@ jobs:
       # resolves the graph — no patched cargo needed.
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-targets: false
+          cache-directories: ${{ github.workspace }}/target
           save-if: ${{ runner.environment == 'github-hosted' || github.ref == 'refs/heads/main' }}
 
       - name: Versions
