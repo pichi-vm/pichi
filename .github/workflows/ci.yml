@@ -15,12 +15,6 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  appliance:
-    name: appliance
-    uses: ./.github/workflows/appliance.yml
-    permissions:
-      contents: read
-
   checks:
     name: checks
     uses: ./.github/workflows/checks.yml
@@ -92,7 +86,6 @@ jobs:
 
   ci:
     name: platforms
-    needs: appliance
     uses: ./.github/workflows/platforms.yml
     with:
       appliance-artifacts: true
@@ -110,7 +103,7 @@ jobs:
   publish-appliance:
     name: publish appliance
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [appliance, ci, checks, copr-spec, copr-srpm, registry]
+    needs: [ci, checks, copr-spec, copr-srpm, registry]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
