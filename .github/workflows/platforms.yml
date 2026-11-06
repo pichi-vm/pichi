@@ -92,10 +92,22 @@ jobs:
           fi
 
       - name: Install Python with TOML support
-        if: matrix.os != 'linux-arm64'
+        if: matrix.os != 'linux-arm64' && matrix.os != 'macos-arm64'
         uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+
+      - name: Install relocatable Python on the native Mac runner
+        if: matrix.os == 'macos-arm64'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/pichi-python
+        with:
+          python-version: '3.13'
+          activate-environment: true
+          venv-path: ${{ runner.temp }}/pichi-python-env
+          enable-cache: false
+          cache-local-path: ${{ runner.temp }}/pichi-uv-cache
 
       - name: Install toolchain
         shell: bash
@@ -290,6 +302,11 @@ jobs:
         if: always()
         shell: bash
         run: rm -f "$RUNNER_TEMP/pichi-ci-python"
+
+      - name: Remove the native Mac Python environment
+        if: always() && matrix.os == 'macos-arm64'
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/pichi-python-env" "$RUNNER_TEMP/pichi-python" "$RUNNER_TEMP/pichi-uv-cache"
 
   workspace:
     name: workspace checks (${{ matrix.os }})
