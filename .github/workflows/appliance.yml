@@ -1,85 +1,67 @@
-name: appliance
+name: Verify defaults appliance archive
 
 on:
-  workflow_call:
   workflow_dispatch:
 
-defaults:
-  run:
-    shell: bash
-
-env:
-  NIGHTLY: nightly-2026-07-06
+permissions:
+  actions: read
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: [ self-hosted, Linux, ARM64, bare-metal, aarch64, kvm ]
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          submodules: recursive
-          persist-credentials: false
-
-      - name: Reserve build VM memory
+      - name: Verify archive and every OCI descriptor
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ matrix.arch }}" = amd64 ]; then
-            sudo chmod a+rw /dev/kvm
-            sudo sysctl -w vm.nr_hugepages=4096
-          fi
-          test -r /dev/kvm && test -w /dev/kvm
-          test "$(cat /proc/sys/vm/nr_hugepages)" -ge 4096
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import subprocess
+          import tempfile
+          import zipfile
 
-      - name: Build Pichi
-        run: |
-          rustup toolchain install "$NIGHTLY" --profile minimal
-          cargo "+$NIGHTLY" build --locked --release --bin pichi
-          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
-          echo "XDG_DATA_HOME=$RUNNER_TEMP/appliance-image-cache" >> "$GITHUB_ENV"
-
-      - name: Build Dillo
-        working-directory: appliance/dillo
-        run: |
-          cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
-          echo "PICHI_DILLO=$PWD/target/release/dillo" >> "$GITHUB_ENV"
-
-      - name: Build the appliance from Fedora
-        run: |
-          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
-          pichi pull "ghcr.io/pichi-vm/fedora@$digest"
-          pichi build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
-            --build-image ghcr.io/pichi-vm/conglobate@sha256:262f87ecd7a178a90979eebd9689a0a28c1a4d844e6572a0fea116bf782a0b6f \
-            --memory 8192 -t qualification.local/appliance:build
-          pichi save qualification.local/appliance:build -o "$RUNNER_TEMP/appliance-layout"
-
-      - name: Build Fedora with the new appliance
-        run: |
-          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
-          pichi tag "ghcr.io/pichi-vm/fedora@$digest" ghcr.io/pichi-vm/fedora:43
-          pichi build . --ref HEAD --context appliance/fedora \
-            --build-image qualification.local/appliance:build --memory 8192 \
-            -t qualification.local/fedora:build
-          pichi inspect qualification.local/fedora:build > "$RUNNER_TEMP/fedora-output.json"
-
-      - name: Preserve the Fedora build result
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: appliance-fedora-result-${{ matrix.arch }}
-          path: ${{ runner.temp }}/fedora-output.json
-          if-no-files-found: error
-
-      - name: Upload the native OCI layout
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: appliance-oci-${{ matrix.arch }}
-          path: ${{ runner.temp }}/appliance-layout
-          if-no-files-found: error
+          repo = 'pichi-vm/pichi'
+          result = subprocess.check_output([
+              'gh', 'api', f'repos/{repo}/actions/runs/42144626726/artifacts'
+          ])
+          artifacts = json.loads(result)['artifacts']
+          artifact = next(a for a in artifacts if a['name'] == 'appliance-oci-arm64')
+          with tempfile.TemporaryFile() as output:
+              subprocess.run([
+                  'gh', 'api', '--allow-escape-sequences',
+                  f'repos/{repo}/actions/artifacts/{artifact["id"]}/zip'
+              ], stdout=output, check=True)
+              output.seek(0)
+              digest = 'sha256:' + hashlib.file_digest(output, 'sha256').hexdigest()
+              assert digest == artifact['digest'], (digest, artifact['digest'])
+              output.seek(0)
+              with zipfile.ZipFile(output) as archive:
+                  pending = json.loads(archive.read('index.json'))['manifests']
+                  seen = set()
+                  while pending:
+                      descriptor = pending.pop()
+                      identity = descriptor['digest']
+                      if identity in seen:
+                          continue
+                      seen.add(identity)
+                      algorithm, encoded = identity.split(':', 1)
+                      assert algorithm == 'sha256'
+                      path = f'blobs/sha256/{encoded}'
+                      info = archive.getinfo(path)
+                      assert info.file_size == descriptor['size'], (
+                          path, info.file_size, descriptor['size']
+                      )
+                      with archive.open(path) as blob:
+                          actual = hashlib.file_digest(blob, 'sha256').hexdigest()
+                      assert actual == encoded, (path, actual)
+                      kind = descriptor['mediaType']
+                      if kind.endswith('image.index.v1+json'):
+                          pending.extend(json.loads(archive.read(path))['manifests'])
+                      elif kind.endswith('image.manifest.v1+json'):
+                          manifest = json.loads(archive.read(path))
+                          pending.extend([manifest['config'], *manifest['layers']])
+                  print('PASS', artifact['name'], artifact['id'], digest,
+                        len(seen), 'OCI descriptors')
+          PY
