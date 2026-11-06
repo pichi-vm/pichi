@@ -1,85 +1,121 @@
-name: appliance
+name: Investigate ARM debug linking
 
 on:
-  workflow_call:
   workflow_dispatch:
 
-defaults:
-  run:
-    shell: bash
-
-env:
-  NIGHTLY: nightly-2026-07-06
+permissions:
+  contents: read
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: [ self-hosted, Linux, ARM64, bare-metal, aarch64, kvm ]
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
+  reproduce:
+    runs-on: [self-hosted, Linux, ARM64, bare-metal, aarch64, kvm]
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: /tmp
+        shell: bash
+    env:
+      NIGHTLY: nightly-2026-07-06
+      RUSTUP_TOOLCHAIN: nightly-2026-07-06
+      CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          submodules: recursive
-          persist-credentials: false
-
-      - name: Reserve build VM memory
+      - name: Preserve the original archive if this is the failing workspace
         run: |
-          if [ "${{ matrix.arch }}" = amd64 ]; then
-            sudo chmod a+rw /dev/kvm
-            sudo sysctl -w vm.nr_hugepages=4096
+          link_case_dir=$(mktemp -d "$RUNNER_TEMP/arm-link-repro.XXXXXX")
+          mkdir "$link_case_dir/evidence" "$link_case_dir/src"
+          echo "CASE_DIR=$link_case_dir" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$link_case_dir/cargo" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$link_case_dir/target" >> "$GITHUB_ENV"
+          printf '%s\n' "$RUNNER_NAME" > "$link_case_dir/evidence/runner.txt"
+          original="$GITHUB_WORKSPACE/target/debug/deps/libdifflib-35bf61ef26f591dc.rlib"
+          if [ "$RUNNER_NAME" = ares-1 ] && [ -f "$original" ]; then
+            stamp=$(stat -c %Y "$original")
+            first=$(date -u -d '2026-11-06 07:19:45 UTC' +%s)
+            last=$(date -u -d '2026-11-06 07:20:50 UTC' +%s)
+            stat "$original" > "$link_case_dir/evidence/original-stat.txt"
+            git -C "$GITHUB_WORKSPACE" log -1 --format='%H%n%P' > "$link_case_dir/evidence/original-checkout.txt"
+            if [ "$stamp" -ge "$first" ] && [ "$stamp" -le "$last" ]; then
+              cp "$original" "$link_case_dir/evidence/original-difflib.rlib"
+            fi
           fi
-          test -r /dev/kvm && test -w /dev/kvm
-          test "$(cat /proc/sys/vm/nr_hugepages)" -ge 4096
-
-      - name: Build Pichi
+      - name: Record and prepare the matching toolchain
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal
-          cargo "+$NIGHTLY" build --locked --release --bin pichi
-          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
-          echo "XDG_DATA_HOME=$RUNNER_TEMP/appliance-image-cache" >> "$GITHUB_ENV"
-
-      - name: Build Dillo
-        working-directory: appliance/dillo
+          rustup component add llvm-tools-preview --toolchain "$NIGHTLY"
+          {
+            uname -a
+            rustc -vV
+            cc --version
+            cc -print-prog-name=ld
+            ld.bfd --version
+          } > "$CASE_DIR/evidence/toolchain.txt"
+          sysroot=$(rustc --print sysroot)
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          echo "LLVM_READOBJ=$sysroot/lib/rustlib/$host/bin/llvm-readobj" >> "$GITHUB_ENV"
+      - name: Link a minimal matching dependency build
         run: |
-          cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
-          echo "PICHI_DILLO=$PWD/target/release/dillo" >> "$GITHUB_ENV"
-
-      - name: Build the appliance from Fedora
+          cat > "$CASE_DIR/Cargo.toml" <<'TOML'
+          [package]
+          name = "arm-link-repro"
+          version = "0.0.0"
+          edition = "2024"
+          [dependencies]
+          difflib = "=0.4.0"
+          [profile.dev.package."*"]
+          opt-level = 3
+          TOML
+          cat > "$CASE_DIR/Cargo.lock" <<'LOCK'
+          version = 4
+          [[package]]
+          name = "arm-link-repro"
+          version = "0.0.0"
+          dependencies = ["difflib"]
+          [[package]]
+          name = "difflib"
+          version = "0.4.0"
+          source = "registry+https://github.com/rust-lang/crates.io-index"
+          checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
+          LOCK
+          cat > "$CASE_DIR/src/lib.rs" <<'RS'
+          #[test]
+          fn link_difflib() {
+              let matches = difflib::get_close_matches("image", vec!["image", "build"], 1, 0.5);
+              assert!(!std::hint::black_box(matches).is_empty());
+              let diff = difflib::unified_diff(&["a"], &["b"], "a", "b", "", "", 3);
+              assert!(!std::hint::black_box(diff).is_empty());
+          }
+          RS
+          status=0
+          cargo test --manifest-path "$CASE_DIR/Cargo.toml" --locked -vv > "$CASE_DIR/evidence/build.log" 2>&1 || status=$?
+          printf '%s\n' "$status" > "$CASE_DIR/evidence/test-status"
+          cp "$CASE_DIR/Cargo.toml" "$CASE_DIR/Cargo.lock" "$CASE_DIR/evidence/"
+          cat "$CASE_DIR/evidence/build.log"
+          exit "$status"
+      - name: Inspect produced and preserved archives
+        if: always()
         run: |
-          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
-          pichi pull "ghcr.io/pichi-vm/fedora@$digest"
-          pichi build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
-            --build-image ghcr.io/pichi-vm/conglobate@sha256:262f87ecd7a178a90979eebd9689a0a28c1a4d844e6572a0fea116bf782a0b6f \
-            --memory 8192 -t qualification.local/appliance:build
-          pichi save qualification.local/appliance:build -o "$RUNNER_TEMP/appliance-layout"
-
-      - name: Build Fedora with the new appliance
-        run: |
-          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
-          pichi tag "ghcr.io/pichi-vm/fedora@$digest" ghcr.io/pichi-vm/fedora:43
-          pichi build . --ref HEAD --context appliance/fedora \
-            --build-image qualification.local/appliance:build --memory 8192 \
-            -t qualification.local/fedora:build
-          pichi inspect qualification.local/fedora:build > "$RUNNER_TEMP/fedora-output.json"
-
-      - name: Preserve the Fedora build result
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          shopt -s nullglob
+          for archive in "$CASE_DIR"/target/debug/deps/libdifflib-*.rlib; do
+            cp "$archive" "$CASE_DIR/evidence/"
+          done
+          for archive in "$CASE_DIR"/evidence/*.rlib; do
+            sha256sum "$archive" >> "$CASE_DIR/evidence/archive-sha256.txt"
+            status=0
+            readelf --relocs --wide "$archive" > "$archive.gnu-relocs.txt" 2>&1 || status=$?
+            printf '%s\n' "$status" > "$archive.gnu-status"
+            status=0
+            "$LLVM_READOBJ" --symbols --relocations "$archive" > "$archive.llvm-relocs.txt" 2>&1 || status=$?
+            printf '%s\n' "$status" > "$archive.llvm-status"
+          done
+      - name: Preserve diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: appliance-fedora-result-${{ matrix.arch }}
-          path: ${{ runner.temp }}/fedora-output.json
-          if-no-files-found: error
-
-      - name: Upload the native OCI layout
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: appliance-oci-${{ matrix.arch }}
-          path: ${{ runner.temp }}/appliance-layout
-          if-no-files-found: error
+          name: arm-linker-evidence
+          path: ${{ env.CASE_DIR }}/evidence
+      - name: Remove only this diagnostic's compilation scratch
+        if: always()
+        run: |
+          if [[ -n "${CASE_DIR:-}" && "$CASE_DIR" == "$RUNNER_TEMP"/arm-link-repro.* ]]; then
+            rm -rf -- "$CASE_DIR/target" "$CASE_DIR/cargo"
+          fi
