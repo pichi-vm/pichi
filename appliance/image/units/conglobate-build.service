@@ -16,7 +16,9 @@ FailureAction=poweroff-force
 Type=oneshot
 BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf
 ExecStartPre=/usr/libexec/conglobate-lsm /sys/fs/bpf/conglobate-label-policy
-ExecStart=/usr/bin/conglobate appliance
+MemoryAccounting=yes
+ExecStart=/usr/bin/unshare --cgroup /usr/libexec/pichi-measured-build
+ExecStopPost=/usr/libexec/pichi-memory-report
 # Image cmdline is console=hvc0, so the console copy is the build console.
 StandardOutput=journal+console
 
