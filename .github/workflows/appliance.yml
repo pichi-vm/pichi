@@ -22,6 +22,7 @@ permissions:
 
 jobs:
   build:
+    if: inputs.sample != 'private-pair'
     name: ${{ matrix.runner }} / ${{ matrix.mode }}
     strategy:
       fail-fast: false
@@ -65,3 +66,27 @@ jobs:
       - name: Build Dillo
         working-directory: appliance/dillo
         run: cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
+
+  private-pair:
+    if: inputs.sample == 'private-pair'
+    runs-on: [self-hosted, Linux, ARM64, bare-metal, aarch64, kvm]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: Swatinem/rust-cache
+          ref: v2
+          path: .measure-rust-cache
+          persist-credentials: false
+      - name: Install toolchain
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          rustup default "$NIGHTLY"
+      - name: Measure cold build and two restored builds on one runner
+        env:
+          CARGO_HOME: ${{ runner.temp }}/measure-157-cargo
+        uses: ./.github/actions/measure-cache

@@ -1,0 +1,5 @@
+name: Measure dependency cache reuse
+description: Run the actual cache action around unchanged appliance host builds
+runs:
+  using: node24
+  main: measure.cjs
