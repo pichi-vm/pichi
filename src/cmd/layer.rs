@@ -105,8 +105,21 @@ impl PreparedLayer {
         let manifest = manifest.clone();
         let layer = layer.clone();
         let prepared = tokio::task::spawn_blocking(move || {
-            let input = BufReader::new(std::fs::File::open(path)?);
-            Self::read_into(input, io::sink(), &manifest, &layer, &scratch)
+            let input = BufReader::new(std::fs::File::open(&path)?);
+            let result = Self::read_into(input, io::sink(), &manifest, &layer, &scratch);
+            if let Err(error) = &result {
+                eprintln!("import diagnostic: {}: {error:#}", path.display());
+                for attempt in 1..=3 {
+                    let hash = std::process::Command::new("sha256sum").arg(&path).status();
+                    eprintln!("independent hash {attempt}: {hash:?}");
+                    let repeated = (|| {
+                        let input = BufReader::new(std::fs::File::open(&path)?);
+                        Self::read_into(input, io::sink(), &manifest, &layer, &scratch)
+                    })();
+                    eprintln!("repeat preparation {attempt}: {:?}", repeated.map(|_| ()));
+                }
+            }
+            result
         })
         .await
         .context("layer formatting task panicked")??;

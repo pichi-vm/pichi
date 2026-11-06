@@ -1,0 +1,51 @@
+name: Diagnose ARM64 import
+
+on:
+  push:
+    branches: [ diagnostic/arm64-import-readback ]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  import:
+    runs-on: [ self-hosted, Linux, ARM64, bare-metal, aarch64, kvm ]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Record runner environment
+        run: |
+          uname -a
+          cat /proc/cpuinfo /proc/meminfo
+          df -T "$RUNNER_TEMP"
+
+      - name: Build the import diagnostic
+        run: |
+          git submodule update --init deps/conglobate
+          rustup toolchain install nightly-2026-07-06 --profile minimal
+          cargo +nightly-2026-07-06 build --locked --bin pichi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: appliance-oci-arm64
+          run-id: 42147386907
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/import-diagnostic-layout
+
+      - name: Repeat imports into fresh caches
+        run: |
+          cache=$(mktemp -d "$RUNNER_TEMP/import-readback.XXXXXX")
+          trap 'rm -rf "$cache" "$RUNNER_TEMP/import-diagnostic-layout"' EXIT
+          sha256sum "$RUNNER_TEMP/import-diagnostic-layout/blobs/sha256/fb21cb01632a48b4a8bf88d0880e6df19ec08bf80b90de79cc1a66f1ebfe5da0"
+          for attempt in {1..20}; do
+            echo "Import attempt $attempt"
+            XDG_DATA_HOME="$cache" target/debug/pichi load "$RUNNER_TEMP/import-diagnostic-layout" \
+              --tag qualification.local/import-diagnostic:1
+            rm -rf "$cache"
+          done
