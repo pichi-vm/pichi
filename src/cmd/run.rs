@@ -36,6 +36,8 @@ use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
 use crate::cmd::layer::ScuteFiles;
 use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
 use crate::cmd::requirements;
+use crate::cmd::requirements::SlotArgument as _;
+use crate::cmd::writable_storage::WritableStorage;
 use crate::config::Config;
 
 /// GPT type GUID for scute COW partitions (carapace spec §"GPT Deployment
@@ -67,26 +69,37 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<()> {
     // Derive the dillo argv from the manifest + runtime resources, applying
     // the artifact's requirements.yaml floors (BUILD.md §7) when present.
     let reqs = requirements::load_requirements(&manifest, &blob_store).await?;
-    let cpus = requirements::resolve_sized(
+    let cpus = requirements::Sizing::Cpus.resolve(
         args.cpus.or(config.run.cpus),
         reqs.as_ref().and_then(Requirements::cpus_required),
         reqs.as_ref().and_then(Requirements::cpus_recommended),
-        "cpus",
     )?;
-    let memory = requirements::resolve_sized(
+    let memory = requirements::Sizing::Memory.resolve(
         args.memory.or(config.run.memory_mib),
         reqs.as_ref().and_then(Requirements::memory_required_mib),
         reqs.as_ref().and_then(Requirements::memory_recommended_mib),
-        "memory (MiB)",
     )?;
-    // One user-mode NIC per declared interface (BUILD.md §7); the guest brings
-    // them up. v1 wires user-net only and does not yet act on ingress/slot.
-    let interfaces = reqs.as_ref().map_or(0, |r| r.interfaces.len());
-    let dillo_args = build_dillo_args(&manifest, &blob_store, cpus, memory, interfaces).await?;
+    let requirements = reqs.unwrap_or_default();
+    let mut dillo_args =
+        build_dillo_args(&manifest, &blob_store, cpus, memory, &requirements).await?;
+    let storage = WritableStorage::prepare(
+        requirements.storage.as_ref(),
+        args.storage.or(config.run.storage_mib),
+        args.storage_file
+            .as_deref()
+            .or(config.run.storage_file.as_deref()),
+        &layout.graphroot.join("writable"),
+    )?;
+    if let Some(backing) = &storage {
+        dillo_args.extend([
+            "--blk".into(),
+            backing.argument(requirements.storage.as_ref().and_then(|r| r.slot)),
+        ]);
+    }
 
     // Locate dillo and hand off.
     let dillo = find_dillo();
-    exec_dillo(&dillo, &dillo_args)
+    exec_dillo(&dillo, &dillo_args, storage).await
 }
 
 /// Fetch an artifact that isn't cached, mirroring `docker`/`podman run`'s
@@ -113,7 +126,7 @@ async fn build_dillo_args(
     blob_store: &FilesystemBlobStore,
     cpus: Option<u32>,
     memory_mib: Option<u32>,
-    interfaces: usize,
+    requirements: &Requirements,
 ) -> Result<Vec<String>> {
     let (pmi, scutes) = manifest.partition_layers()?;
     let pmi_digest: Digest = pmi
@@ -123,6 +136,9 @@ async fn build_dillo_args(
     let pmi_path = blob_store.blob_path(&pmi_digest);
 
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(&pmi_path)];
+    if let Some(slot) = requirements.slot {
+        argv.extend(["--bus".into(), slot.as_argument().into()]);
+    }
     // Boot configuration accompanies the immutable PMI. Its native text is
     // supplied to Dillo without changing firmware or the embedded command line.
     if let Some(path) =
@@ -143,9 +159,14 @@ async fn build_dillo_args(
         argv.push("--gpt".to_string());
         argv.push(build_gpt_spec(manifest, &scutes, blob_store).await?);
     }
-    for _ in 0..interfaces {
+    for interface in requirements.interfaces.values() {
         argv.push("--net".to_string());
-        argv.push(crate::cmd::build::USER_NET_SPEC.to_string());
+        let mut spec = crate::cmd::build::USER_NET_SPEC.to_string();
+        if let Some(slot) = interface.slot {
+            spec.push_str(",preferred-bus=");
+            spec.push_str(slot.as_argument());
+        }
+        argv.push(spec);
     }
     Ok(argv)
 }
@@ -241,7 +262,7 @@ fn resolve_dillo(override_path: Option<OsString>, current_exe: Option<PathBuf>) 
 /// Hand the assembled invocation to `dillo`. On Unix this replaces the
 /// process image (clean signal/tty/exit-code semantics); elsewhere it spawns,
 /// waits, and propagates the child's exit code.
-fn exec_dillo(dillo: &Path, args: &[String]) -> Result<()> {
+async fn exec_dillo(dillo: &Path, args: &[String], storage: Option<WritableStorage>) -> Result<()> {
     log::info!("exec dillo: {} {}", dillo.display(), args.join(" "));
     let mut cmd = Command::new(dillo);
     cmd.args(args);
@@ -250,19 +271,20 @@ fn exec_dillo(dillo: &Path, args: &[String]) -> Result<()> {
     }
 
     #[cfg(unix)]
-    {
+    if storage.is_none() {
         use std::os::unix::process::CommandExt as _;
         // `exec` only returns if the replacement failed.
         let err = cmd.exec();
-        Err(err).with_context(|| format!("failed to exec dillo at {}", dillo.display()))
+        return Err(err).with_context(|| format!("failed to exec dillo at {}", dillo.display()));
     }
-    #[cfg(not(unix))]
-    {
-        let status = cmd
-            .status()
-            .with_context(|| format!("failed to spawn dillo at {}", dillo.display()))?;
-        std::process::exit(status.code().unwrap_or(1));
-    }
+    // Retain disposable backing and its lock until the child has closed it.
+    let status = tokio::process::Command::from(cmd)
+        .kill_on_drop(true)
+        .status()
+        .await
+        .with_context(|| format!("failed to spawn dillo at {}", dillo.display()))?;
+    drop(storage);
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 /// Render a path as a CLI argument string (lossy is acceptable — blob paths
@@ -402,9 +424,15 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
 
-        let argv = build_dillo_args(&m, &blob_store, Some(2), None, 1)
-            .await
-            .unwrap();
+        let argv = build_dillo_args(
+            &m,
+            &blob_store,
+            Some(2),
+            None,
+            &serde_json::from_value(serde_json::json!({"interfaces":{"public":{}}})).unwrap(),
+        )
+        .await
+        .unwrap();
         assert_eq!(argv[0], "--pmi");
         assert!(argv.contains(&"--cpus".to_string()));
         assert!(argv.contains(&"2".to_string()));
@@ -420,7 +448,7 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
 
-        let argv = build_dillo_args(&m, &blob_store, None, None, 0)
+        let argv = build_dillo_args(&m, &blob_store, None, None, &Requirements::default())
             .await
             .unwrap();
         assert!(!argv.contains(&"--cpus".to_string()));
@@ -452,7 +480,7 @@ mod tests {
             }),
             Layer::BootConfig(config.descriptor().unwrap()),
         ]);
-        let argv = build_dillo_args(&m, &blob_store, None, None, 0)
+        let argv = build_dillo_args(&m, &blob_store, None, None, &Requirements::default())
             .await
             .unwrap();
         assert!(argv.contains(&"--bootconfig".to_string()), "argv: {argv:?}");
@@ -463,7 +491,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
-        let argv = build_dillo_args(&m, &blob_store, None, None, 0)
+        let argv = build_dillo_args(&m, &blob_store, None, None, &Requirements::default())
             .await
             .unwrap();
         assert!(!argv.contains(&"--bootconfig".to_string()));
@@ -639,7 +667,7 @@ mod tests {
                 };
                 let mut manifest = manifest_with(vec![pmi_layer(), layer]);
                 assert!(
-                    build_dillo_args(&manifest, &store, None, None, 0)
+                    build_dillo_args(&manifest, &store, None, None, &Requirements::default())
                         .await
                         .is_err()
                 );
@@ -676,9 +704,10 @@ mod tests {
                     if let Some(path) = missing {
                         std::fs::remove_file(path).unwrap();
                     }
-                    let argv = build_dillo_args(&manifest, &store, None, None, 0)
-                        .await
-                        .unwrap();
+                    let argv =
+                        build_dillo_args(&manifest, &store, None, None, &Requirements::default())
+                            .await
+                            .unwrap();
                     let spec = &argv[argv.iter().position(|arg| arg == "--gpt").unwrap() + 1];
                     let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(spec).unwrap();
                     let build_spec = build_gpt_spec(&manifest, &manifest.scute_layers(), &store)
@@ -704,7 +733,7 @@ mod tests {
                 for invalid in [4096, 4097, 8191, 8192, 8193] {
                     std::fs::write(&expected_data, vec![0; invalid]).unwrap();
                     assert!(
-                        build_dillo_args(&manifest, &store, None, None, 0)
+                        build_dillo_args(&manifest, &store, None, None, &Requirements::default())
                             .await
                             .is_err()
                     );

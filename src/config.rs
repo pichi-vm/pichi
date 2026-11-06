@@ -44,6 +44,10 @@ pub struct RunConfig {
     pub cpus: Option<u32>,
     /// Default guest memory in MiB.
     pub memory_mib: Option<u32>,
+    /// Default writable storage capacity in MiB.
+    pub storage_mib: Option<u64>,
+    /// Optional retained raw storage file.
+    pub storage_file: Option<PathBuf>,
 }
 
 /// Storage paths override block.
@@ -202,6 +206,12 @@ impl Config {
         if other.run.memory_mib.is_some() {
             self.run.memory_mib = other.run.memory_mib;
         }
+        if other.run.storage_mib.is_some() {
+            self.run.storage_mib = other.run.storage_mib;
+        }
+        if other.run.storage_file.is_some() {
+            self.run.storage_file = other.run.storage_file;
+        }
     }
 }
 
@@ -340,6 +350,25 @@ mod tests {
         let cfg = Config::load_from_paths(Some(&p), None, None).unwrap();
         assert_eq!(cfg.storage.graphroot, Some(PathBuf::from("/data/pichi")));
         assert_eq!(cfg.storage.runroot, Some(PathBuf::from("/run/x")));
+    }
+
+    #[test]
+    fn run_storage_defaults_follow_config_precedence() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sys = write(
+            dir.path(),
+            "sys.toml",
+            "[run]\nstorage_mib = 1024\nstorage_file = 'system.raw'\n",
+        );
+        let usr = write(dir.path(), "usr.toml", "[run]\nstorage_mib = 2048\n");
+        let env = write(
+            dir.path(),
+            "env.toml",
+            "[run]\nstorage_file = 'chosen.raw'\n",
+        );
+        let cfg = Config::load_from_paths(Some(&sys), Some(&usr), Some(&env)).unwrap();
+        assert_eq!(cfg.run.storage_mib, Some(2048));
+        assert_eq!(cfg.run.storage_file, Some(PathBuf::from("chosen.raw")));
     }
 
     #[test]

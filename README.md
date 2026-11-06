@@ -6,7 +6,7 @@ ecosystem: it manages VM images as OCI artifacts and boots them.
 `pichi` owns image management — importing, pulling, pushing, and inspecting
 artifacts in a local content-addressed cache — and delegates the actual VM
 launch to the [`dillo`](https://github.com/pichi-vm/dillo) VMM. `pichi run`
-derives the guest's device set from the cached artifact, then `exec()`s dillo.
+derives the guest's device set from the cached artifact, then launches Dillo.
 
 ## The artifact model
 
@@ -17,8 +17,8 @@ A pichi artifact is an OCI image composed of:
 - an optional **PMI** layer — the measured boot payload (kernel + initramfs)
   produced by [`arma`](https://github.com/pichi-vm/arma), described by the
   [`pmi`](https://github.com/pichi-vm/pmi) wire-format spec,
-- an optional detached **base DTB** layer, and
-- a **config** blob — the launch contract (CPU / memory / interface
+- optional native **bootconfig**, and
+- a **config** blob — the launch contract (CPU / memory / storage / interface
   requirements).
 
 An artifact is *bootable* exactly when it carries a PMI. A carapace with no PMI
@@ -33,12 +33,50 @@ is still a valid image — a base others derive from.
 | `pichi inspect` | Inspect a cached image and its platform manifest |
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
-| `pichi run` | Boot a cached artifact (prepares the environment, execs dillo) |
+| `pichi run` | Boot a cached artifact with its declared resources |
 | `pichi update` | Update a working-tree plan’s image lock |
 | `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |
 | `pichi system` | System-level inspection and maintenance |
 
 Run `pichi <command> --help` for details.
+
+## Launch requirements
+
+The image config's recommended CPU, memory and storage sizes supply the run
+defaults. Operator configuration (`run.cpus`, `run.memory_mib`, `run.storage_mib`)
+overrides those defaults, and CLI values take precedence. Allocations below a
+required minimum fail; manual allocations below a numeric recommendation warn.
+`recommended: max` uses detected host availability when no operator value is
+set: available CPU parallelism, allocatable guest memory, or free space on the
+storage backing filesystem. Linux guest memory uses the available, unreserved
+2-MiB hugepage pool; other hosts use available physical memory, rounded to 2 MiB.
+
+Pichi attaches one unformatted writable block device alongside the read-only
+image. The distribution decides how to format and mount it. Disposable storage
+is removed after the VM exits. To retain it across runs, provide a raw file:
+
+```sh
+pichi run example:1 --cpus 4 --memory 4096 --storage 8192 \
+  --storage-file /path/to/instance.raw
+```
+
+Sizes are in MiB. `run.storage_file` can configure the retained file. Pichi
+locks retained storage against concurrent use, preserves existing contents,
+and refuses to shrink it. A supplied file's existing capacity is an operator
+allocation when no explicit size is set.
+
+The global `requirements.slot` supplies a preferred PCI or virtio-MMIO
+transport; interface and storage preferences override it. Dillo assigns actual
+slots within the platform's declared capacity and can fall back to another
+transport when a preference cannot be met.
+
+`pichi inspect` includes the decoded image config beside its manifest. Templates
+can access it directly, for example
+`pichi inspect example:1 --format '{{ config.requirements.storage.recommended }}'`.
+
+Builds use the build appliance's requirements. `pichi build --storage <MiB>`
+overrides its recommended storage allocation; output-image requirements remain
+metadata for later launches.
 
 ## Build
 

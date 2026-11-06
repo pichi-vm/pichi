@@ -30,7 +30,9 @@ use crate::cmd::build_port::{
 };
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
+use crate::cmd::requirements::SlotArgument as _;
 use crate::cmd::run::{DevicePath as _, build_gpt_spec, find_dillo, path_arg};
+use crate::cmd::writable_storage::WritableStorage;
 use crate::config::Config;
 
 /// virtio-fs mount tags the host and Conglobate agree on (BUILD.md §2.3).
@@ -96,17 +98,15 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     // Size the build VM from the build image's requirements, with the
     // operator's --memory/--cpus overriding (but not below required).
     let reqs = requirements::load_requirements(&build_manifest, &blob_store).await?;
-    let cpus = requirements::resolve_sized(
+    let cpus = requirements::Sizing::Cpus.resolve(
         args.cpus,
         reqs.as_ref().and_then(Requirements::cpus_required),
         reqs.as_ref().and_then(Requirements::cpus_recommended),
-        "cpus",
     )?;
-    let memory = requirements::resolve_sized(
+    let memory = requirements::Sizing::Memory.resolve(
         args.memory,
         reqs.as_ref().and_then(Requirements::memory_required_mib),
         reqs.as_ref().and_then(Requirements::memory_recommended_mib),
-        "memory (MiB)",
     )?;
 
     let build_input = BuildInput {
@@ -123,7 +123,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let pipes = create_build_port_pipes().context("creating build-port pipes")?;
     let console = console_arg(pipes.device_rx_fd, pipes.device_tx_fd);
 
-    let argv = build_dillo_args(
+    let mut argv = build_dillo_args(
         &pmi_path,
         bootconfig_path.as_deref(),
         &gpt_specs,
@@ -134,6 +134,25 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         memory,
         cpus,
     );
+    if let Some(slot) = reqs.as_ref().and_then(|r| r.slot) {
+        argv.extend(["--bus".into(), slot.as_argument().into()]);
+    }
+    let storage = WritableStorage::prepare(
+        reqs.as_ref().and_then(|r| r.storage.as_ref()),
+        args.storage,
+        None,
+        &layout.graphroot.join("writable"),
+    )?;
+    if let Some(backing) = &storage {
+        argv.extend([
+            "--blk".into(),
+            backing.argument(
+                reqs.as_ref()
+                    .and_then(|r| r.storage.as_ref())
+                    .and_then(|r| r.slot),
+            ),
+        ]);
+    }
 
     let tag = args
         .tag
@@ -147,6 +166,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .transpose()?;
     let result: Result<_> = async {
         boot_serve_and_wait(&dillo, &argv, pipes, response, log.as_ref()).await?;
+        drop(storage);
         // Successful guest exit is required before opening its OCI output.
         let imported = crate::cmd::load::OciLayout::read(output_dir.path(), &blob_store).await?;
         imported
@@ -231,10 +251,10 @@ pub(crate) fn build_dillo_args(
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
 /// Conglobate appliance pinned by content digest.
-/// Built from 64952a01dfadfd419a00184832d9c21646efccec for amd64 and arm64.
+/// Built from 9b15826d03da60b34ee39097a298b342a6ea17cf for amd64 and arm64.
 /// It consumes versioned staged plans and boots its GPT root with native bootconfig.
 /// Official-image smoke verifies guest output, poweroff, and host import.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:a3b7f71f87bc4ed2ae29902f8c2801858ec8ad06d87ccdea834317d3ac3f6328";
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a";
 
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
@@ -631,7 +651,7 @@ mod tests {
         let canon = canonicalize_reference(&pinned);
         assert_eq!(
             canon.as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:a3b7f71f87bc4ed2ae29902f8c2801858ec8ad06d87ccdea834317d3ac3f6328"
+            "ghcr.io/pichi-vm/conglobate@sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a"
         );
         let parsed: Reference = canon.parse().unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
@@ -640,7 +660,7 @@ mod tests {
             ReferenceKind::Digest(d) => {
                 assert_eq!(
                     d.to_string(),
-                    "sha256:a3b7f71f87bc4ed2ae29902f8c2801858ec8ad06d87ccdea834317d3ac3f6328"
+                    "sha256:3b0c8618ac069477e99afb12b6901dfb6ca08fc1a83268d3f4402104b24d1a0a"
                 );
             }
             ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),
