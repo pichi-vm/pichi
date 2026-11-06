@@ -17,6 +17,10 @@ use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
+#[cfg(windows)]
+#[path = "support/windows_terminal.rs"]
+mod windows_terminal;
+
 fn graphroot(tmp: &TempDir) -> PathBuf {
     let p = tmp.path().join("pichi").join("storage");
     std::fs::create_dir_all(&p).unwrap();
@@ -128,7 +132,7 @@ async fn populate_bootable_with_requirements(
 
 /// Compile once, then copy the native stub beside each test's argument log.
 fn make_stub_dillo(dir: &Path) -> PathBuf {
-    static STUB: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    static STUB: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     let compiled = STUB.get_or_init(|| {
         let directory = TempDir::new().unwrap();
         let output = std::process::Command::new("rustc")
@@ -142,11 +146,21 @@ fn make_stub_dillo(dir: &Path) -> PathBuf {
             .output()
             .unwrap();
         assert!(output.status.success(), "compile dillo stub: {output:?}");
-        directory
+        std::fs::read(
+            directory
+                .path()
+                .join(format!("dillo-stub{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .unwrap()
     });
     let name = format!("dillo-stub{}", std::env::consts::EXE_SUFFIX);
     let stub = dir.join(&name);
-    std::fs::copy(compiled.path().join(name), &stub).unwrap();
+    std::fs::write(&stub, compiled).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     stub
 }
 
