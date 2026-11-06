@@ -22,6 +22,9 @@ signal.signal(signal.SIGTERM, signal.SIG_IGN)
 signal.signal(signal.SIGHUP, signal.SIG_IGN)
 original = termios.tcgetattr(0)
 child = subprocess.Popen(sys.argv[2:])
+# Like an interactive shell, relay the session owner's terminal hangup to
+# its owned foreground child. The kernel need not signal every process.
+signal.signal(signal.SIGHUP, lambda number, frame: child.send_signal(number))
 try:
     code = child.wait(timeout=30)
 finally:

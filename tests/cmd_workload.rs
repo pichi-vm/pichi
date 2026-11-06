@@ -389,7 +389,10 @@ async fn terminal_restoration_and_hangup_preserve_workload() {
         "import os, signal\nsignal.alarm(45)\nos.write(1, b'console-ready\\n')\nwhile data := os.read(0, 8192): os.write(1, data)",
     ).await;
     Command::new("python3")
-        .args(["-c", include_str!("support/workload_terminal.py")])
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/workload_terminal.py"
+        ))
         .env("XDG_DATA_HOME", fixture.root.path())
         .env("PICHI_DILLO", &fixture.program)
         .env("PICHI_BIN", env!("CARGO_BIN_EXE_pichi"))
