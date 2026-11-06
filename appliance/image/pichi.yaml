@@ -20,11 +20,10 @@ stages:
   engine:
     use: tools
     steps:
-      - copy: { path: deps/conglobate, into: /build/conglobate/ }
       - exec:
           command: >-
-            cargo install --locked --path /build/conglobate
-            --features cli --root /mnt
+            cargo install --locked --git https://github.com/pichi-vm/conglobate
+            --rev 4bce57b4fc9b8e61f597bb51786fa5659c5a2bd0 --features cli --root /mnt conglobate
           network: true
   policy:
     use: tools
