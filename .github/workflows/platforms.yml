@@ -134,7 +134,10 @@ jobs:
         shell: pwsh
         run: |
           $script = (Resolve-Path .github/scripts/windows-test-runner.ps1).Path
-          'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=pwsh -NoLogo -NoProfile -NonInteractive -File "{0}"' -f $script >> $env:GITHUB_ENV
+          $runner = ConvertTo-Json -Compress -InputObject @('pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $script)
+          # Cargo string runners do not interpret shell quotes. Use its array
+          # form so an absolute path remains one argument, even with spaces.
+          Add-Content -LiteralPath .cargo/config.toml -Value "`n[target.x86_64-pc-windows-msvc]`nrunner = $runner"
 
       - name: Versions
         shell: bash

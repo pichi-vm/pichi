@@ -140,7 +140,6 @@ async fn caller_loss_preserves_workload() -> Result<()> {
         assert_eq!(monitor.wait(Some(Duration::ZERO))?, WaitOutcome::TimedOut);
         assert!(caller.process.try_wait()?.is_none());
         if console {
-            use winsafe::prelude::Handle as _;
             // Process.MainWindowHandle excludes some console windows on the
             // WMI test desktop. Identify the actual owned native window, then
             // use Windows UI Automation's safe close operation on that handle.
