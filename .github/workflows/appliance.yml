@@ -39,9 +39,20 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
           test "$(cat /proc/sys/vm/nr_hugepages)" -ge 4096
 
-      - name: Build Pichi
+      - name: Install toolchain
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal
+          rustup default "$NIGHTLY"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            appliance/dillo -> target
+          save-if: ${{ runner.environment == 'github-hosted' || github.ref == 'refs/heads/main' }}
+
+      - name: Build Pichi
+        run: |
           cargo "+$NIGHTLY" build --locked --release --bin pichi
           echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
           echo "XDG_DATA_HOME=$RUNNER_TEMP/appliance-image-cache" >> "$GITHUB_ENV"
