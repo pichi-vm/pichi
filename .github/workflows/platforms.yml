@@ -129,6 +129,13 @@ jobs:
         shell: bash
         run: python3 .github/scripts/build_monitor.py
 
+      - name: Run native Windows tests outside restrictive Cargo Jobs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $script = (Resolve-Path .github/scripts/windows-test-runner.ps1).Path
+          'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=pwsh -NoLogo -NoProfile -NonInteractive -File "{0}"' -f $script >> $env:GITHUB_ENV
+
       - name: Versions
         shell: bash
         run: |

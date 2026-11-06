@@ -20,6 +20,9 @@ use tempfile::TempDir;
 #[path = "support/pmi.rs"]
 mod pmi;
 
+#[path = "common/process.rs"]
+mod process;
+
 #[cfg(windows)]
 #[path = "support/windows_terminal.rs"]
 mod windows_terminal;
@@ -659,6 +662,63 @@ async fn detached_storage_stays_reserved_until_workload_exit() {
             }
         }
         cleanup.id = None;
+    }
+}
+
+#[tokio::test]
+async fn vm_timeout_cleanup_stops_workloads_after_client_exit() {
+    use process::ChildExt as _;
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    use wait_timeout::ChildExt as _;
+
+    for detached in [false, true] {
+        let tmp = TempDir::new().unwrap();
+        populate_bootable(&graphroot(&tmp), "cleanup:1").await;
+        let stub = make_stub_dillo(tmp.path());
+        let disk = tmp.path().join("retained.raw");
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"));
+        command
+            .env("XDG_DATA_HOME", tmp.path())
+            .env("PICHI_DILLO", stub)
+            .env("PICHI_TEST_STORAGE", "1")
+            .env("PICHI_TEST_DILLO_WAIT_FOR_EOF", "1")
+            .args(["run", "--storage", "2", "--storage-file"])
+            .arg(&disk)
+            .arg("cleanup:1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null());
+        if detached {
+            command.arg("-d");
+        }
+        let mut child = command.spawn().unwrap();
+        let report = tmp.path().join("storage-path.txt");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !report.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let ready = report.exists();
+        let detached_exit = !detached
+            || child
+                .wait_timeout(Duration::from_secs(10))
+                .unwrap()
+                .is_some();
+        // Always attempt cleanup before asserting readiness, including on failure.
+        child.kill_vm(tmp.path()).unwrap();
+        assert!(ready && detached_exit, "workload did not become ready");
+        assert!(child.try_wait().unwrap().is_some());
+        // Madrillo's reservation survives client exit but must be gone now.
+        let file = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&disk)
+            .unwrap();
+        file.try_lock()
+            .expect("monitor retained the storage reservation");
+        assert_eq!(&std::fs::read(&disk).unwrap()[..10], b"guest data");
+        child.kill_vm(tmp.path()).unwrap();
     }
 }
 
