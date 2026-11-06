@@ -64,13 +64,18 @@ pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
     // assertion target — do not split into multiple lock callbacks.
     let (records, total) = layout
         .with_index_lock(|| async {
+            if crate::cmd::workload::record::Records::build_cache_in_use(&layout.graphroot)? {
+                return Ok((Vec::new(), 0));
+            }
             let db = FilesystemTagDb::open(&layout.graphroot)?;
             let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
             let all_tags = db.list_tags().await?;
 
             let still_referenced = blob_store
-                .reachable(all_tags.iter().map(|entry| entry.digest.clone()))
+                .reachable(all_tags.iter().map(|entry| entry.digest.clone()).chain(
+                    crate::cmd::workload::record::Records::pins_at(&layout.graphroot)?,
+                ))
                 .await?;
 
             let blob_dir = layout.graphroot.join("blobs").join("sha256");

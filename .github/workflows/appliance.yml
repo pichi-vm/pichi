@@ -30,6 +30,15 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
+      - name: Provide Python on minimal NixOS runners
+        run: |
+          if ! command -v python3 >/dev/null; then
+            python=$(nix --extra-experimental-features 'nix-command flakes' build \
+              --out-link "$RUNNER_TEMP/pichi-ci-python" --print-out-paths \
+              github:NixOS/nixpkgs/7dcdd87373d72e7a2173e4db02e20d3d7f495cfd#python313)
+            echo "$python/bin" >> "$GITHUB_PATH"
+          fi
+
       - name: Reserve build VM memory
         run: |
           if [ "${{ matrix.arch }}" = amd64 ]; then
@@ -51,6 +60,9 @@ jobs:
         run: |
           cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
           echo "PICHI_DILLO=$PWD/target/release/dillo" >> "$GITHUB_ENV"
+
+      - name: Build the matching native process monitor
+        run: python3 .github/scripts/build_monitor.py
 
       - name: Build the appliance from Fedora
         run: |
@@ -83,3 +95,11 @@ jobs:
           name: appliance-oci-${{ matrix.arch }}
           path: ${{ runner.temp }}/appliance-layout
           if-no-files-found: error
+
+      - name: Remove the monitor build checkout
+        if: always() && env.PICHI_MONITOR_SOURCE != ''
+        run: python3 .github/scripts/build_monitor.py --cleanup
+
+      - name: Release the CI Python store reference
+        if: always()
+        run: rm -f "$RUNNER_TEMP/pichi-ci-python"

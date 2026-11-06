@@ -13,7 +13,7 @@ use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore};
 use wait_timeout::ChildExt;
 
-use super::process::{ChildExt as _, CommandExt as _};
+use super::process::ChildExt as _;
 use super::{DILLO_BIN, PICHI_BIN, SMOKE_SOURCE_REF};
 
 #[derive(Debug)]
@@ -228,13 +228,13 @@ impl SubmoduleFixture {
             ])
             .stdout(std::fs::File::create(&stdout).unwrap())
             .stderr(std::fs::File::create(&stderr).unwrap())
-            .spawn_vm()
+            .spawn()
             .unwrap();
         let status = child
             .wait_timeout(Duration::from_secs(180))
             .unwrap()
             .unwrap_or_else(|| {
-                child.kill_vm().unwrap();
+                child.kill_vm(&self.graphroot).unwrap();
                 panic!(
                     "{plan} timed out:\n{}\n{}",
                     std::fs::read_to_string(&stdout).unwrap(),
