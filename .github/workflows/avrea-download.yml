@@ -1,7 +1,8 @@
 name: Avrea artifact download diagnostic
-on:
+true:
   push:
-    branches: [probe/avrea-artifact-download]
+    branches:
+    - probe/avrea-artifact-download
 permissions:
   contents: read
   actions: read
@@ -10,17 +11,30 @@ jobs:
     runs-on: avrea-ubuntu-latest-arm-1-vcpu
     timeout-minutes: 7
     steps:
-      - name: Download existing appliance via GitHub REST API
-        timeout-minutes: 5
-        uses: actions/download-artifact@v4
-        with:
-          name: appliance-oci-arm64
-          path: ${{ runner.temp }}/appliance-layout
-          github-token: ${{ github.token }}
-          repository: pichi-vm/pichi
-          run-id: 42268527848
-      - name: Check OCI layout
-        run: |
-          test -f "$RUNNER_TEMP/appliance-layout/oci-layout"
-          test -f "$RUNNER_TEMP/appliance-layout/index.json"
-          du -sh "$RUNNER_TEMP/appliance-layout"
+    - name: Fetch artifact with curl and validate archive
+      timeout-minutes: 4
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        python3 - <<'PYTHON'
+        import urllib.request, urllib.error, os, subprocess, hashlib, zipfile, time
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+        request = urllib.request.Request('https://api.github.com/repos/pichi-vm/pichi/actions/artifacts/13528563470/zip', headers={'Authorization': 'Bearer '+os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+        try:
+            urllib.request.build_opener(NoRedirect).open(request, timeout=20)
+            raise RuntimeError('Expected artifact redirect')
+        except urllib.error.HTTPError as response:
+            if response.code != 302: raise
+            url = response.headers['Location']
+        start = time.monotonic()
+        result = subprocess.run(['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '15', '--max-time', '120', '--output', '/tmp/appliance.zip', '--write-out', 'HTTP=%{http_code} bytes=%{size_download} seconds=%{time_total} speed=%{speed_download}\n', url])
+        print('curl exit:', result.returncode, 'elapsed:', time.monotonic()-start, flush=True)
+        if result.returncode: raise SystemExit(result.returncode)
+        with open('/tmp/appliance.zip','rb') as f: digest=hashlib.file_digest(f,'sha256').hexdigest()
+        print('sha256:',digest,flush=True)
+        assert digest == 'd367e6ec1942e4b79fc8558abe6776d3da0aa8c908d5e9f3b1777fb0edfd95cc'
+        with zipfile.ZipFile('/tmp/appliance.zip') as z:
+            z.extractall('/tmp/appliance-layout')
+        print('Extracted verified archive in',time.monotonic()-start,'seconds',flush=True)
+        PYTHON
