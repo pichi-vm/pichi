@@ -76,6 +76,16 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Provide Python on minimal NixOS runners
+        shell: bash
+        run: |
+          if ! command -v python3 >/dev/null; then
+            python=$(nix --extra-experimental-features 'nix-command flakes' build \
+              --out-link "$RUNNER_TEMP/pichi-ci-python" --print-out-paths \
+              github:NixOS/nixpkgs/7dcdd87373d72e7a2173e4db02e20d3d7f495cfd#python313)
+            echo "$python/bin" >> "$GITHUB_PATH"
+          fi
+
       - name: Install toolchain
         shell: bash
         run: |
@@ -248,6 +258,11 @@ jobs:
             ${{ runner.temp }}/staged-image-evidence/**/PASS
 
       - name: Remove the monitor build checkout
-        if: always()
+        if: always() && env.PICHI_MONITOR_SOURCE != ''
         shell: bash
         run: python3 .github/scripts/build_monitor.py --cleanup
+
+      - name: Release the CI Python store reference
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/pichi-ci-python"
