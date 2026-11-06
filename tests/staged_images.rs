@@ -104,7 +104,7 @@ fn staged_images_create_extend_and_compose() {
             .unwrap();
     assert_eq!(
         config,
-        serde_json::json!({"version":1,"requirements":{"cpus":{"recommended":2},"memory":{"required":1024,"recommended":2048}}})
+        serde_json::json!({"version":1,"requirements":{"slot":"pci","cpus":{"recommended":2},"memory":{"required":1024,"recommended":2048}}})
     );
     let root = disk::Disk::from(&base).verify(&builds.directory.join("base-gpt.raw"));
     fs::write(
