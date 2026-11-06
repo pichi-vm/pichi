@@ -20,6 +20,10 @@ env:
 # Supported platforms are Linux x86_64/aarch64 (KVM), Windows x86_64 (WHP),
 # and macOS arm64 (HVF on bare-metal organization runners).
 jobs:
+  appliance:
+    if: inputs.appliance-artifacts
+    uses: ./.github/workflows/appliance.yml
+
   fixtures:
     name: portable filesystem fixture
     runs-on: ubuntu-24.04
@@ -38,7 +42,8 @@ jobs:
           if-no-files-found: error
 
   ci:
-    needs: fixtures
+    needs: [fixtures, appliance]
+    if: ${{ !cancelled() && needs.fixtures.result == 'success' && (!inputs.appliance-artifacts || needs.appliance.result == 'success') }}
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
