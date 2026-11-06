@@ -32,8 +32,9 @@ BuildRequires:  cmake
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
 BuildRequires:  make
-# Installing pichi also pulls in the dillo-vm VMM package.
+# Run and build use both the VMM and the persistent process monitor.
 Requires:       dillo-vm
+Requires:       madrillo >= 0.1.0
 
 ExclusiveArch:  x86_64 aarch64
 
