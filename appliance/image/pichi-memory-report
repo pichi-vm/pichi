@@ -3,10 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 set -eu
 # ExecStopPost runs outside ExecStart's private cgroup namespace.
-measured_group=$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)
+IFS=: read -r measured_id measured_controllers measured_group < /proc/self/cgroup
+[ "$measured_id" = 0 ]
 measured_path=/sys/fs/cgroup$measured_group
 read -r measured_peak < "$measured_path/memory.peak"
 [ "$measured_peak" -gt 0 ]
 printf 'PICHI_MEMORY_PEAK_BYTES %s result=%s\n' "$measured_peak" "$SERVICE_RESULT"
-awk '{ print "PICHI_MEMORY_FINAL_STAT", $0 }' "$measured_path/memory.stat"
-awk '{ print "PICHI_MEMORY_EVENTS", $0 }' "$measured_path/memory.events"
+while IFS= read -r measured_line; do
+    printf 'PICHI_MEMORY_FINAL_STAT %s\n' "$measured_line"
+done < "$measured_path/memory.stat"
+while IFS= read -r measured_line; do
+    printf 'PICHI_MEMORY_EVENTS %s\n' "$measured_line"
+done < "$measured_path/memory.events"
