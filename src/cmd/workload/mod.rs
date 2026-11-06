@@ -319,6 +319,92 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires MADRILLO_BIN and its qualification fixture; run explicitly"]
+    async fn monitor_crash_preserves_unknown_state_and_cleanup_inputs() -> Result<()> {
+        let monitor = PathBuf::from(std::env::var_os("MADRILLO_BIN").context("set MADRILLO_BIN")?);
+        let fixture =
+            monitor.with_file_name(format!("madrillo-fixture{}", std::env::consts::EXE_SUFFIX));
+        let root = tempfile::tempdir()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let records = record::Records::open(&graphroot)?;
+        let image = format!("sha256:{}", "0".repeat(64)).parse()?;
+        let id = uuid::Uuid::new_v4();
+        #[cfg(unix)]
+        let endpoint = root.path().join("crashed.sock");
+        #[cfg(windows)]
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-crashed-{id}"));
+        let record = records.create(vec![image], endpoint, id)?;
+        std::fs::create_dir(record.storage_directory())?;
+        let storage = record.storage_directory().join("storage.raw");
+        let output = record.create_build_output()?.join("partial-output");
+        std::fs::write(&storage, b"guest storage")?;
+        std::fs::write(&output, b"incomplete build")?;
+        let mut running = ReapMonitor(
+            Launch {
+                monitor: &monitor,
+                program: &fixture,
+                arguments: &["echo".into()],
+                state: &record.state(),
+                endpoint: record.endpoint(),
+                input: true,
+                inherited: Vec::new(),
+                held: Vec::new(),
+                cleanup: None,
+            }
+            .spawn()
+            .await?,
+        );
+        running.started().await?;
+        let payload = b"before crash\0\xff\n";
+        running
+            .client
+            .send(ClientMessage::Input {
+                bytes: payload.to_vec(),
+            })
+            .await?;
+        let reply = tokio::time::timeout(Duration::from_secs(5), running.client.next()).await??;
+        assert!(matches!(reply, ServerMessage::Output { bytes, .. } if bytes == payload));
+        // Kill only our still-owned monitor, never a PID recovered from a record.
+        // Its echo workload exits when the monitor's console writer disappears.
+        #[cfg(unix)]
+        let monitor = running.monitor.inner_mut();
+        #[cfg(windows)]
+        let monitor = &mut running.monitor;
+        monitor.kill()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = monitor.try_wait()? {
+                break status;
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "monitor crash deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert!(!status.success());
+        let workload = Workload(records.get(record.id())?);
+        for _ in 0..2 {
+            for error in [
+                workload.wait().await.unwrap_err(),
+                workload.stop(Duration::ZERO).await.unwrap_err(),
+                workload.attach(false).await.unwrap_err(),
+            ] {
+                assert!(error.to_string().contains("workload state is unknown"));
+            }
+            Workload::cleanup(record.path())?;
+            record.release_build_output()?;
+            assert!(record.completion()?.is_none());
+            assert_eq!(records.pins()?, record.images());
+            assert_eq!(std::fs::read(&storage)?, b"guest storage");
+            assert_eq!(std::fs::read(&output)?, b"incomplete build");
+        }
+        println!("native monitor crash: unknown state and cleanup inputs retained");
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires MADRILLO_BIN and its qualification fixture; run explicitly"]
     async fn native_monitor_launch_and_async_control() -> Result<()> {
         let monitor = PathBuf::from(std::env::var_os("MADRILLO_BIN").context("set MADRILLO_BIN")?);
         let fixture = monitor.with_file_name(if cfg!(windows) {
