@@ -142,9 +142,16 @@ async fn caller_loss_preserves_workload() -> Result<()> {
             // WM_CLOSE wrapper. Only the console created by this fixture matches.
             let script = r#"
 $ErrorActionPreference = 'Stop'
-$windows = @(Get-Process -Name conhost -ErrorAction SilentlyContinue | Where-Object {
-    $_.MainWindowTitle.EndsWith($env:PICHI_CONSOLE_TEST_TITLE, [StringComparison]::Ordinal)
-})
+$deadline = [DateTime]::UtcNow.AddSeconds(5)
+do {
+    # Console ownership can be attributed to the client or its console host.
+    # Match the owned title, not a particular host executable's name.
+    $windows = @(Get-Process | Where-Object {
+        $_.MainWindowTitle.EndsWith($env:PICHI_CONSOLE_TEST_TITLE, [StringComparison]::Ordinal)
+    } | Sort-Object MainWindowHandle -Unique)
+    if ($windows.Count -ne 0) { break }
+    Start-Sleep -Milliseconds 50
+} while ([DateTime]::UtcNow -lt $deadline)
 if ($windows.Count -ne 1) { throw "Expected one owned console window, got $($windows.Count)" }
 if (-not $windows[0].CloseMainWindow()) { throw 'Console window rejected WM_CLOSE' }
 "#;
