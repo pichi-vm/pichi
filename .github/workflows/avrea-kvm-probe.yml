@@ -1,0 +1,51 @@
+name: Avrea x86 KVM probe
+on:
+  push:
+    branches: [probe/avrea-x86-kvm]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: avrea-ubuntu-latest-2-vcpu
+    timeout-minutes: 5
+    steps:
+      - name: Inspect runner and KVM
+        shell: bash
+        run: |
+          uname -a
+          id
+          lscpu
+          ls -l /dev/kvm || true
+          cat /sys/class/misc/kvm/dev || true
+          sudo dmesg | grep -Ei 'kvm|hyp mode|EL2|hypervisor' || true
+          grep -E 'CONFIG_KVM|CONFIG_VIRTUALIZATION' /boot/config-"$(uname -r)" || true
+          cat > /tmp/kvm-probe.py <<'PY'
+          import fcntl
+          import os
+          import platform
+          import sys
+
+          print(f"architecture={platform.machine()} uid={os.geteuid()}", flush=True)
+          assert platform.machine() == "x86_64"
+          try:
+              kvm = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
+              version = fcntl.ioctl(kvm, 0xAE00, 0)  # KVM_GET_API_VERSION
+              print(f"KVM_GET_API_VERSION={version}", flush=True)
+              assert version == 12
+              vm = fcntl.ioctl(kvm, 0xAE01, 0)  # KVM_CREATE_VM
+              print("KVM_CREATE_VM succeeded", flush=True)
+              vcpu = fcntl.ioctl(vm, 0xAE41, 0)  # KVM_CREATE_VCPU
+              print("KVM_CREATE_VCPU succeeded", flush=True)
+              os.close(vcpu)
+              os.close(vm)
+              os.close(kvm)
+          except OSError as error:
+              print(f"KVM unavailable: {error}", flush=True)
+              sys.exit(1)
+          PY
+          user_result=0
+          python3 /tmp/kvm-probe.py || user_result=$?
+          root_result=0
+          sudo python3 /tmp/kvm-probe.py || root_result=$?
+          echo "User probe exit: $user_result; root probe exit: $root_result" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$root_result"
