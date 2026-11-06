@@ -27,14 +27,8 @@ jobs:
         except urllib.error.HTTPError as response:
             if response.code != 302: raise
             url = response.headers['Location']
-        start = time.monotonic()
-        result = subprocess.run(['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '15', '--max-time', '120', '--output', '/tmp/appliance.zip', '--write-out', 'HTTP=%{http_code} bytes=%{size_download} seconds=%{time_total} speed=%{speed_download}\n', url])
-        print('curl exit:', result.returncode, 'elapsed:', time.monotonic()-start, flush=True)
-        if result.returncode: raise SystemExit(result.returncode)
-        with open('/tmp/appliance.zip','rb') as f: digest=hashlib.file_digest(f,'sha256').hexdigest()
-        print('sha256:',digest,flush=True)
-        assert digest == 'd367e6ec1942e4b79fc8558abe6776d3da0aa8c908d5e9f3b1777fb0edfd95cc'
-        with zipfile.ZipFile('/tmp/appliance.zip') as z:
-            z.extractall('/tmp/appliance-layout')
-        print('Extracted verified archive in',time.monotonic()-start,'seconds',flush=True)
+        for start in [0, 160000000, 316000000]:
+            print('Testing 8 MB range at offset', start, flush=True)
+            result = subprocess.run(['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '10', '--max-time', '30', '--range', f'{start}-{start+7999999}', '--output', '/dev/null', '--write-out', 'HTTP=%{http_code} bytes=%{size_download} seconds=%{time_total} speed=%{speed_download} remote=%{remote_ip}\n', url])
+            print('curl exit:', result.returncode, flush=True)
         PYTHON
