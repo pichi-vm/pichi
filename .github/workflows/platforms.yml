@@ -50,7 +50,7 @@ jobs:
             guest_musl: x86_64-unknown-linux-musl
             zot_asset: zot-linux-amd64-minimal
             zot_sha256: 8a6e77686bc0e7751766c49828cff6c66b115c854d350c9d936b855463f6c973
-          - name: linux-arm64       # Linux arm64 - full workspace + real KVM boot
+          - name: linux-arm64       # Linux arm64 - real KVM boot
             os: linux-arm64
             runs_on: '["self-hosted","Linux","ARM64","bare-metal","aarch64","kvm"]'
             guest_musl: aarch64-unknown-linux-musl
@@ -62,7 +62,7 @@ jobs:
             guest_musl: x86_64-unknown-linux-musl
             zot_asset: zot-windows-amd64-minimal.exe
             zot_sha256: d8b29c9cd9d68f46a338a2ae0533991415148587703ec3bd0f909c22604f7bed
-          - name: macos-arm64       # macOS arm64 - build + real HVF boot
+          - name: macos-arm64       # macOS arm64 - real HVF boot
             os: macos-arm64
             runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
             guest_musl: aarch64-unknown-linux-musl
@@ -116,7 +116,9 @@ jobs:
           cargo --version
           rustc --version
 
+      # ARM workspace checks run on hosted runners in the workspace job.
       - name: Clippy
+        if: runner.arch != 'ARM64'
         shell: bash
         run: cargo clippy --locked --workspace --all-targets --all-features
 
@@ -139,6 +141,7 @@ jobs:
       # per-step, never globally, so it can't reach the patched-cargo build above.
 
       - name: Test full workspace and registry
+        if: runner.arch != 'ARM64'
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
@@ -238,3 +241,42 @@ jobs:
             ${{ runner.temp }}/staged-image-evidence/**/pichi.yaml
             ${{ runner.temp }}/staged-image-evidence/**/pichi.lock
             ${{ runner.temp }}/staged-image-evidence/**/PASS
+
+  workspace:
+    name: workspace checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            zot_asset: zot-linux-arm64-minimal
+            zot_sha256: 931d687899cc4b1fcad4c026d2792df6132e6de1b2f329aa730dccee14ec0395
+          - os: macos-15
+            zot_asset: zot-darwin-arm64-minimal
+            zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src,clippy,llvm-tools
+          rustup default "$NIGHTLY"
+          rustup target add x86_64-unknown-none aarch64-unknown-none-softfloat aarch64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        shell: bash
+        run: cargo clippy --locked --workspace --all-targets --all-features
+
+      - name: Test full workspace and registry
+        shell: bash
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+          ZOT_ASSET: ${{ matrix.zot_asset }}
+          ZOT_SHA256: ${{ matrix.zot_sha256 }}
+        run: bash .github/scripts/test-registry.sh
