@@ -143,15 +143,23 @@ async fn caller_loss_preserves_workload() -> Result<()> {
             // WMI test desktop. Identify the actual owned native window, then
             // use Windows UI Automation's safe close operation on that handle.
             let mut windows = Vec::new();
-            winsafe::EnumWindows(|window| {
-                if window
-                    .GetWindowText()
-                    .is_ok_and(|text| text.ends_with(&title))
-                {
-                    windows.push(window);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                winsafe::EnumWindows(|window| {
+                    if window
+                        .GetWindowText()
+                        .is_ok_and(|text| text.ends_with(&title))
+                    {
+                        windows.push(window);
+                    }
+                    true
+                })?;
+                if !windows.is_empty() || Instant::now() >= deadline {
+                    break;
                 }
-                true
-            })?;
+                assert!(caller.process.try_wait()?.is_none());
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
             let [window] = windows.as_slice() else {
                 bail!("expected one owned console window, got {}", windows.len());
             };
