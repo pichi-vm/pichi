@@ -10,7 +10,7 @@ use interprocess::local_socket::{
     tokio::{Stream, prelude::*},
 };
 use std::{path::Path, time::Duration};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub(super) struct Resize<'a>(pub(super) &'a Path);
 
@@ -69,6 +69,12 @@ impl Resize<'_> {
                 }
             }
             stream.0.write_all(&<[u8; 4]>::from(size)).await?;
+            // A synchronous Windows pipe listener discards connections that
+            // close before accept. Retain this writer until the receiver has
+            // consumed the update and closed its end; there is no reply frame.
+            if stream.0.read(&mut [0]).await? != 0 {
+                bail!("unexpected console resize response");
+            }
             Ok(())
         })
         .await
@@ -93,11 +99,11 @@ impl Drop for Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interprocess::local_socket::ListenerOptions;
-    use tokio::io::AsyncReadExt;
+    use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, prelude::*};
+    use std::{io::Read as _, time::Instant};
 
     #[tokio::test]
-    async fn resize_reconnects_and_delivers_before_client_close() -> Result<()> {
+    async fn resize_reconnects_after_receiver_consumes_each_update() -> Result<()> {
         let root = tempfile::tempdir()?;
         #[cfg(unix)]
         let endpoint = root.path().join("resize.sock");
@@ -108,27 +114,67 @@ mod tests {
         ));
         let listener = ListenerOptions::new()
             .name(endpoint.as_path().to_fs_name::<GenericFilePath>()?)
-            .create_tokio()?;
+            .nonblocking(ListenerNonblockingMode::Accept)
+            .create_sync()?;
+        let receiver = std::thread::spawn(move || -> Result<()> {
+            for dimensions in [(300, 77), (120, 41)] {
+                // Dillo polls a synchronous listener. Delay accept so that
+                // prematurely closing a Windows client loses the update.
+                std::thread::sleep(Duration::from_millis(100));
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok(stream) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            anyhow::ensure!(Instant::now() < deadline, "resize accept deadline");
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                };
+                let mut bytes = [0; 4];
+                stream.read_exact(&mut bytes)?;
+                let size = ConsoleSize::try_from(bytes).map_err(std::io::Error::other)?;
+                assert_eq!((size.cols.get(), size.rows.get()), dimensions);
+                // Closing after consumption lets the client finish without
+                // a native FlushFileBuffers worker or a reply message.
+            }
+            Ok(())
+        });
         let resize = Resize(&endpoint);
-        for dimensions in [(300, 77), (120, 41)] {
-            // Let the writer close before the reader consumes anything. This
-            // exercises native named-pipe ownership as well as Unix sockets.
-            resize
-                .send(ConsoleSize::try_from(dimensions).map_err(std::io::Error::other)?)
-                .await?;
-            let mut stream = Connection(listener.accept().await?);
-            let mut bytes = [0; 4];
-            tokio::time::timeout(Duration::from_secs(2), stream.0.read_exact(&mut bytes)).await??;
-            let size = ConsoleSize::try_from(bytes).map_err(std::io::Error::other)?;
-            assert_eq!((size.cols.get(), size.rows.get()), dimensions);
+        let sent: Result<()> = async {
+            for dimensions in [(300, 77), (120, 41)] {
+                resize
+                    .send(ConsoleSize::try_from(dimensions).map_err(std::io::Error::other)?)
+                    .await?;
+            }
+            Ok(())
         }
-        drop(listener);
+        .await;
+        let received = receiver.join().expect("resize fixture panicked");
+        sent?;
+        received?;
         assert!(
             resize
                 .send(ConsoleSize::try_from((80, 24)).map_err(std::io::Error::other)?)
                 .await
                 .is_err()
         );
+        let listener = ListenerOptions::new()
+            .name(endpoint.as_path().to_fs_name::<GenericFilePath>()?)
+            .create_tokio()?;
+        let receive_without_closing = async {
+            let mut stream = Connection(listener.accept().await?);
+            stream.0.read_exact(&mut [0; 4]).await?;
+            Ok::<_, std::io::Error>(stream)
+        };
+        let (sent, retained) = tokio::join!(
+            resize.send(ConsoleSize::try_from((80, 24)).map_err(std::io::Error::other)?),
+            receive_without_closing,
+        );
+        assert!(sent.unwrap_err().to_string().contains("resize deadline"));
+        drop(retained?);
+        drop(listener);
         drop(root);
         Ok(())
     }
