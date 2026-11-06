@@ -73,5 +73,6 @@ image:
       kernel.systemd.getty_auto: "no"
 
 requirements:
+  slot: pci
   cpus: { recommended: 2 }
   memory: { required: 2048, recommended: 4096 }

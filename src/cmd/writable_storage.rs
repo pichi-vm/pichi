@@ -111,13 +111,12 @@ impl WritableStorage {
         }))
     }
 
-    pub(super) fn argument(&self, slot: Option<Slot>) -> String {
-        let mut argument = format!("path={}", self.path.key_value_arg());
-        if let Some(slot) = slot {
-            argument.push_str(",preferred-bus=");
-            argument.push_str(slot.as_argument());
-        }
-        argument
+    pub(super) fn argument(&self, slot: Slot) -> String {
+        format!(
+            "path={},bus={}",
+            self.path.key_value_arg(),
+            slot.as_argument()
+        )
     }
 }
 
@@ -139,8 +138,8 @@ mod tests {
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 2 * MIB);
         assert!(
             storage
-                .argument(requirement.slot)
-                .ends_with("preferred-bus=mmio")
+                .argument(requirement.slot.unwrap_or_default())
+                .ends_with(",bus=mmio")
         );
         assert!(
             WritableStorage::prepare(Some(&requirement), None, Some(&path), directory.path())

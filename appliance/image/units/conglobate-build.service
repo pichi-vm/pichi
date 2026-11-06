@@ -14,6 +14,8 @@ FailureAction=poweroff
 
 [Service]
 Type=oneshot
+RuntimeDirectory=conglobate
+RuntimeDirectoryMode=0700
 BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf
 ExecStartPre=/usr/libexec/conglobate-lsm /sys/fs/bpf/conglobate-label-policy
 ExecStart=/usr/bin/conglobate appliance

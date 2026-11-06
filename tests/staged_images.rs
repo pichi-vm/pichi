@@ -104,7 +104,7 @@ fn staged_images_create_extend_and_compose() {
             .unwrap();
     assert_eq!(
         config,
-        serde_json::json!({"version":1,"requirements":{"cpus":{"recommended":2},"memory":{"required":1024,"recommended":2048}}})
+        serde_json::json!({"version":1,"requirements":{"slot":"pci","cpus":{"recommended":2},"memory":{"required":1024,"recommended":2048}}})
     );
     let root = disk::Disk::from(&base).verify(&builds.directory.join("base-gpt.raw"));
     fs::write(
@@ -140,6 +140,31 @@ fn staged_images_create_extend_and_compose() {
             .contains(&format!("corium.root = \"{}\";", base.root()))
     );
     matrix.assert_boot("bootable", &bootable, &["base root"]);
+    // The fixture's PMI declares PCI only. Resetting requirements resolves
+    // the omitted slot to MMIO, which must fail without bus substitution.
+    builds.build(
+        "unsupported-transport",
+        "version: 1\nrequirements: {}\nimage: qualification.local/bootable:1\n",
+        &[],
+    );
+    let unsupported = common::pichi(
+        &builds.cache,
+        &[],
+        &[
+            "run",
+            "qualification.local/unsupported-transport:1",
+            "--memory",
+            "2048",
+            "--cpus",
+            "1",
+        ],
+    );
+    assert!(!unsupported.status.success());
+    let stderr = String::from_utf8_lossy(&unsupported.stderr);
+    assert!(
+        stderr.contains("bus `Mmio`") && stderr.contains("declares no such bus"),
+        "{stderr}"
+    );
     let undersized = common::pichi(
         &builds.cache,
         &[],
