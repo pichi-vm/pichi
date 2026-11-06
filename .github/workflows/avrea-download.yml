@@ -1,5 +1,5 @@
 name: Avrea artifact download diagnostic
-true:
+'on':
   push:
     branches:
     - probe/avrea-artifact-download
