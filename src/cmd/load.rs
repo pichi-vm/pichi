@@ -663,6 +663,47 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn layout_import_prepares_compressed_pmi_and_rejects_bad_frames() {
+        let original = b"opaque PMI, not block aligned";
+        for malformed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FilesystemBlobStore::new(dir.path().join("cache"));
+            let mut fixture = LayoutFixture::new();
+            let wire = if malformed {
+                b"invalid zstd bytes".to_vec()
+            } else {
+                ruzstd::encoding::compress_to_vec(
+                    original.as_slice(),
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                )
+            };
+            let digest = Digest::Sha256(Sha256::digest(&wire).into());
+            fixture.manifest["layers"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                    "mediaType": "application/vnd.pichi.pmi.v1+zstd",
+                    "digest": digest.to_string(), "size": wire.len(),
+                }));
+            fixture.blobs.push(wire.clone());
+            let input = dir.path().join("layout");
+            fixture.write(&input);
+            let result = OciLayout::read(&input, &store).await;
+            if malformed {
+                assert!(result.is_err());
+                assert!(!store.blob_path(&digest).exists());
+            } else {
+                result.unwrap().commit(&store).await.unwrap();
+                assert_eq!(std::fs::read(store.blob_path(&digest)).unwrap(), wire);
+                assert_eq!(
+                    std::fs::read(store.blob_path(&digest).prepared_dir().join("pmi")).unwrap(),
+                    original
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn shared_cow_keeps_trees_for_different_parents() {
         let dir = tempfile::tempdir().unwrap();
         let store = FilesystemBlobStore::new(dir.path().join("cache"));

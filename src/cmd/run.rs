@@ -29,7 +29,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use conglobate::artifact::{Digest, Layer, Manifest, Reference, Requirements};
+use conglobate::artifact::{Layer, Manifest, Reference, Requirements};
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
@@ -136,11 +136,7 @@ async fn build_dillo_args(
     requirements: &Requirements,
 ) -> Result<Vec<String>> {
     let (pmi, scutes) = manifest.partition_layers()?;
-    let pmi_digest: Digest = pmi
-        .digest
-        .parse()
-        .with_context(|| format!("invalid PMI digest: {}", pmi.digest))?;
-    let pmi_path = blob_store.blob_path(&pmi_digest);
+    let pmi_path = super::layer::PreparedLayer::prepare_pmi(manifest, pmi, blob_store).await?;
 
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(&pmi_path)];
     argv.extend([
@@ -329,7 +325,7 @@ mod tests {
     const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
     use conglobate::artifact::{
-        ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
+        ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
         ScuteAnnotations, ScuteDescriptor,
     };
     use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore};
@@ -427,6 +423,43 @@ mod tests {
         let (_, scutes) = m.partition_layers().unwrap();
         assert_eq!(scutes, vec![&m.layers[0], &m.layers[2]]);
         assert_eq!(m.scute_layers(), scutes);
+    }
+
+    #[tokio::test]
+    async fn compressed_pmi_is_decoded_before_passing_it_to_dillo() {
+        use pichi_storage::BlobStore as _;
+        let tmp = TempDir::new().unwrap();
+        let store = FilesystemBlobStore::new(tmp.path());
+        let original = b"opaque PMI bytes; deliberately not block aligned";
+        for compressed in [false, true] {
+            let wire = if compressed {
+                ruzstd::encoding::compress_to_vec(
+                    original.as_slice(),
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                )
+            } else {
+                original.to_vec()
+            };
+            let digest = sha256_digest(&wire);
+            store.put_blob(&digest, &wire).await.unwrap();
+            let descriptor = PmiDescriptor {
+                digest: digest.to_string(),
+                size: wire.len() as u64,
+            };
+            let m = manifest_with(vec![if compressed {
+                Layer::PmiZstd(descriptor)
+            } else {
+                Layer::Pmi(descriptor)
+            }]);
+            assert_eq!(m.partition_layers().unwrap().0, &m.layers[0]);
+            let argv = build_dillo_args(&m, &store, None, None, &Requirements::default())
+                .await
+                .unwrap();
+            assert_eq!(argv[0], "--pmi");
+            assert_eq!(std::fs::read(&argv[1]).unwrap(), original);
+            assert_eq!(argv[1] == path_arg(&store.blob_path(&digest)), !compressed);
+            assert_eq!(std::fs::read(store.blob_path(&digest)).unwrap(), wire);
+        }
     }
 
     #[tokio::test]
