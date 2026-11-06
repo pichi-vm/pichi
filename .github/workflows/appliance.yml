@@ -19,8 +19,6 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-24.04
-          - arch: arm64
-            runner: [ self-hosted, Linux, ARM64, bare-metal, aarch64, kvm ]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
