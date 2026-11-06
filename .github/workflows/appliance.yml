@@ -24,7 +24,7 @@ jobs:
 
           repo = 'pichi-vm/pichi'
           result = subprocess.check_output([
-              'gh', 'api', f'repos/{repo}/actions/runs/42144626726/artifacts'
+              'gh', 'api', f'repos/{repo}/actions/runs/42162008288/artifacts'
           ])
           artifacts = json.loads(result)['artifacts']
           artifact = next(a for a in artifacts if a['name'] == 'appliance-oci-arm64')
