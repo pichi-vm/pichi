@@ -4,6 +4,7 @@ on:
     branches: [probe/avrea-arm-ci]
 permissions:
   contents: read
+# Do not cancel earlier runs retained for runner debugging.
 jobs:
   platforms:
     uses: ./.github/workflows/platforms.yml

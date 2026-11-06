@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       appliance-artifacts:
-        description: Test the appliance images built by this workflow run
+        description: Build the native appliance and test it in each platform job
         type: boolean
         default: false
   workflow_dispatch:
@@ -20,10 +20,6 @@ env:
 # Supported platforms are Linux x86_64/aarch64 (KVM), Windows x86_64 (WHP),
 # and macOS arm64 (HVF on bare-metal organization runners).
 jobs:
-  appliance:
-    if: inputs.appliance-artifacts
-    uses: ./.github/workflows/appliance.yml
-
   fixtures:
     name: portable filesystem fixture
     runs-on: ubuntu-24.04
@@ -42,20 +38,38 @@ jobs:
           if-no-files-found: error
 
   ci:
-    needs: [fixtures, appliance]
-    if: ${{ !cancelled() && needs.fixtures.result == 'success' && (!inputs.appliance-artifacts || needs.appliance.result == 'success') }}
+    needs: [fixtures]
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          - name: ubuntu-24.04      # Linux x86_64 - full workspace + real KVM boot
+            os: ubuntu-24.04
+            runs_on: '["ubuntu-24.04"]'
+            guest_musl: x86_64-unknown-linux-musl
+            zot_asset: zot-linux-amd64-minimal
+            zot_sha256: 8a6e77686bc0e7751766c49828cff6c66b115c854d350c9d936b855463f6c973
           - name: linux-arm64       # Linux arm64 - real KVM boot
             os: linux-arm64
             runs_on: '["avrea-ubuntu-latest-arm-4-vcpu"]'
             guest_musl: aarch64-unknown-linux-musl
             zot_asset: zot-linux-arm64-minimal
             zot_sha256: 931d687899cc4b1fcad4c026d2792df6132e6de1b2f329aa730dccee14ec0395
+          - name: windows-2025      # Windows x86_64 - build + real WHP boot
+            os: windows-2025
+            runs_on: '["windows-2025"]'
+            guest_musl: x86_64-unknown-linux-musl
+            zot_asset: zot-windows-amd64-minimal.exe
+            zot_sha256: d8b29c9cd9d68f46a338a2ae0533991415148587703ec3bd0f909c22604f7bed
+          - name: macos-arm64       # macOS arm64 - real HVF boot
+            os: macos-arm64
+            runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
+            guest_musl: aarch64-unknown-linux-musl
+            zot_asset: zot-darwin-arm64-minimal
+            zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
     runs-on: ${{ fromJSON(matrix.runs_on) }}
+    # A hung test must not hold the only Mac runner for hours.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7.0.1
@@ -72,9 +86,19 @@ jobs:
           rustup target add x86_64-unknown-none aarch64-unknown-none-softfloat "${{ matrix.guest_musl }}"
 
       - uses: actions/download-artifact@v4
+        if: runner.os != 'Linux'
+        timeout-minutes: 3
         with:
           name: smoke-root
           path: ${{ runner.temp }}/fixtures
+
+      - name: Create smoke root locally
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/root" "$RUNNER_TEMP/fixtures"
+          printf 'ID=fedora\nVERSION_ID=43\n' > "$RUNNER_TEMP/root/os-release"
+          mkfs.ext4 -q -F -b 4096 -d "$RUNNER_TEMP/root" "$RUNNER_TEMP/fixtures/root.ext4" 16M
 
       - name: Configure portable fixture tools
         shell: bash
@@ -144,10 +168,9 @@ jobs:
           # have seen ~132). Free the page cache + compact memory and retry a
           # few times so enough 2 MiB-contiguous regions become available before
           # giving up. This is allocation flakiness, not a capability gap.
-          # VM tests run sequentially: 3.5 GiB for builds, 2 GiB for boots.
+          # Appliance qualification needs 8 GiB; acceptance tests need 3.5 GiB.
           # Build snapshots and verity trees share the guest's RAM workspace.
-          # Leave room below Dillo's current 4 GiB placement ceiling.
-          want=1792
+          want=${{ inputs.appliance-artifacts && 4096 || 1792 }}
           pages=$(sysctl -n vm.nr_hugepages)
           for attempt in 1 2 3 4 5 6; do
             if [ "$pages" -ge "$want" ]; then break; fi
@@ -167,6 +190,51 @@ jobs:
 
           grep -i huge /proc/meminfo
 
+      - name: Build Pichi
+        if: inputs.appliance-artifacts
+        shell: bash
+        run: |
+          cargo "+$NIGHTLY" build --locked --release --bin pichi
+          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
+          echo "XDG_DATA_HOME=$RUNNER_TEMP/appliance-image-cache" >> "$GITHUB_ENV"
+
+      - name: Build Dillo
+        working-directory: appliance/dillo
+        if: inputs.appliance-artifacts
+        shell: bash
+        run: |
+          cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
+          suffix=''
+          if [ "$RUNNER_OS" = Windows ]; then suffix='.exe'; fi
+          dillo="$GITHUB_WORKSPACE/appliance/dillo/target/release/dillo$suffix"
+          if [ "$RUNNER_OS" = macOS ]; then
+            printf '%s\n' '<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>' > "$RUNNER_TEMP/hypervisor.plist"
+            codesign --force --sign - --entitlements "$RUNNER_TEMP/hypervisor.plist" "$dillo"
+          fi
+          echo "PICHI_DILLO=$dillo" >> "$GITHUB_ENV"
+
+      - name: Build the appliance from Fedora
+        if: inputs.appliance-artifacts
+        shell: bash
+        run: |
+          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
+          pichi pull "ghcr.io/pichi-vm/fedora@$digest"
+          pichi build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
+            --build-image ghcr.io/pichi-vm/conglobate@sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946 \
+            --memory 8192 -t qualification.local/appliance:build
+          pichi save qualification.local/appliance:build -o "$RUNNER_TEMP/appliance-layout"
+
+      - name: Build Fedora with the new appliance
+        if: inputs.appliance-artifacts
+        shell: bash
+        run: |
+          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
+          pichi tag "ghcr.io/pichi-vm/fedora@$digest" ghcr.io/pichi-vm/fedora:43
+          pichi build . --ref HEAD --context appliance/fedora \
+            --build-image qualification.local/appliance:build --memory 8192 \
+            -t qualification.local/fedora:build
+          pichi inspect qualification.local/fedora:build > "$RUNNER_TEMP/fedora-output.json"
+
       - name: Build guest tools for staged images
         shell: bash
         env:
@@ -182,13 +250,6 @@ jobs:
           echo "PICHI_TEST_GUEST_ARMA=$RUNNER_TEMP/arma-guest/bin/arma" >> "$GITHUB_ENV"
           echo "PICHI_TEST_REPLACEMENT_CORIUM=$RUNNER_TEMP/corium-release/bin/corium" >> "$GITHUB_ENV"
           echo "PICHI_TEST_EVIDENCE=$RUNNER_TEMP/staged-image-evidence" >> "$GITHUB_ENV"
-
-      - name: Download the rebuilt appliance
-        if: inputs.appliance-artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: appliance-oci-${{ runner.arch == 'X64' && 'amd64' || 'arm64' }}
-          path: ${{ runner.temp }}/appliance-layout
 
       - name: Use the rebuilt appliance for VM tests
         if: inputs.appliance-artifacts
@@ -211,14 +272,17 @@ jobs:
               exit 1
             fi
           done
-          cargo test "${vm_tests[@]}" --no-fail-fast -- --test-threads=1 --nocapture
+          cargo test "${vm_tests[@]}" --no-fail-fast -- --test-threads=1 --nocapture 2>&1 | tee "$RUNNER_TEMP/boot-tests.log"
 
       - name: Preserve staged-image evidence
         if: always()
+        timeout-minutes: 3
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: staged-image-evidence-${{ matrix.os }}
           path: |
+            ${{ runner.temp }}/vm-tests.txt
+            ${{ runner.temp }}/boot-tests.log
             ${{ runner.temp }}/zot.log
             ${{ runner.temp }}/staged-image-evidence/**/*.log
             ${{ runner.temp }}/staged-image-evidence/**/manifest.json
@@ -227,6 +291,24 @@ jobs:
             ${{ runner.temp }}/staged-image-evidence/**/pichi.yaml
             ${{ runner.temp }}/staged-image-evidence/**/pichi.lock
             ${{ runner.temp }}/staged-image-evidence/**/PASS
+
+      - name: Preserve the Fedora build result
+        if: always() && inputs.appliance-artifacts
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appliance-fedora-result-${{ matrix.os }}
+          path: ${{ runner.temp }}/fedora-output.json
+          if-no-files-found: warn
+
+      - name: Upload the native OCI layout
+        if: always() && inputs.appliance-artifacts
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appliance-oci-${{ matrix.os }}
+          path: ${{ runner.temp }}/appliance-layout
+          if-no-files-found: warn
 
   workspace:
     name: workspace checks (${{ matrix.os }})
@@ -237,6 +319,9 @@ jobs:
           - os: ubuntu-24.04-arm
             zot_asset: zot-linux-arm64-minimal
             zot_sha256: 931d687899cc4b1fcad4c026d2792df6132e6de1b2f329aa730dccee14ec0395
+          - os: macos-15
+            zot_asset: zot-darwin-arm64-minimal
+            zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1

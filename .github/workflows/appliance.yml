@@ -17,10 +17,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - arch: amd64
+            runner: ubuntu-24.04
           - arch: arm64
-            runner: avrea-ubuntu-latest-arm-4-vcpu
+            runner: [ self-hosted, Linux, ARM64, bare-metal, aarch64, kvm ]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -31,22 +32,12 @@ jobs:
 
       - name: Reserve build VM memory
         run: |
-          uname -a
-          free -h
-          sudo chmod a+rw /dev/kvm
-          want=4096
-          for attempt in 1 2 3 4 5 6; do
-            pages=$(cat /proc/sys/vm/nr_hugepages)
-            if [ "$pages" -ge "$want" ]; then break; fi
-            sync
-            echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-            echo 1 | sudo tee /proc/sys/vm/compact_memory >/dev/null
-            sudo sysctl -w vm.nr_hugepages=$want
-            sleep 3
-          done
+          if [ "${{ matrix.arch }}" = amd64 ]; then
+            sudo chmod a+rw /dev/kvm
+            sudo sysctl -w vm.nr_hugepages=4096
+          fi
           test -r /dev/kvm && test -w /dev/kvm
-          test "$(cat /proc/sys/vm/nr_hugepages)" -ge "$want"
-          grep -i huge /proc/meminfo
+          test "$(cat /proc/sys/vm/nr_hugepages)" -ge 4096
 
       - name: Build Pichi
         run: |
