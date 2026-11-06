@@ -1,8 +1,14 @@
 name: appliance
 
 on:
-  workflow_call:
   workflow_dispatch:
+    inputs:
+      sample:
+        description: Measurement label (seed, warm-1, warm-2)
+        required: true
+        type: string
+
+run-name: Cache 157 measurement ${{ inputs.sample }}
 
 defaults:
   run:
@@ -11,33 +17,29 @@ defaults:
 env:
   NIGHTLY: nightly-2026-07-06
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: ${{ matrix.runner }} / ${{ matrix.mode }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: [ self-hosted, Linux, ARM64, bare-metal, aarch64, kvm ]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        mode: [baseline, cache]
     runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
           persist-credentials: false
 
-      - name: Reserve build VM memory
+      - name: Record host
         run: |
-          if [ "${{ matrix.arch }}" = amd64 ]; then
-            sudo chmod a+rw /dev/kvm
-            sudo sysctl -w vm.nr_hugepages=4096
-          fi
-          test -r /dev/kvm && test -w /dev/kvm
-          test "$(cat /proc/sys/vm/nr_hugepages)" -ge 4096
+          lscpu
+          free -h
 
       - name: Install toolchain
         run: |
@@ -45,52 +47,17 @@ jobs:
           rustup default "$NIGHTLY"
 
       - uses: Swatinem/rust-cache@v2
+        if: matrix.mode == 'cache'
         with:
+          prefix-key: measure-157-v1
           workspaces: |
             . -> target
             appliance/dillo -> target
-          save-if: ${{ runner.environment == 'github-hosted' || github.ref == 'refs/heads/main' }}
+          save-if: true
 
       - name: Build Pichi
-        run: |
-          cargo "+$NIGHTLY" build --locked --release --bin pichi
-          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
-          echo "XDG_DATA_HOME=$RUNNER_TEMP/appliance-image-cache" >> "$GITHUB_ENV"
+        run: cargo "+$NIGHTLY" build --locked --release --bin pichi
 
       - name: Build Dillo
         working-directory: appliance/dillo
-        run: |
-          cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
-          echo "PICHI_DILLO=$PWD/target/release/dillo" >> "$GITHUB_ENV"
-
-      - name: Build the appliance from Fedora
-        run: |
-          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
-          pichi pull "ghcr.io/pichi-vm/fedora@$digest"
-          pichi build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
-            --build-image ghcr.io/pichi-vm/conglobate@sha256:262f87ecd7a178a90979eebd9689a0a28c1a4d844e6572a0fea116bf782a0b6f \
-            --memory 8192 -t qualification.local/appliance:build
-          pichi save qualification.local/appliance:build -o "$RUNNER_TEMP/appliance-layout"
-
-      - name: Build Fedora with the new appliance
-        run: |
-          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
-          pichi tag "ghcr.io/pichi-vm/fedora@$digest" ghcr.io/pichi-vm/fedora:43
-          pichi build . --ref HEAD --context appliance/fedora \
-            --build-image qualification.local/appliance:build --memory 8192 \
-            -t qualification.local/fedora:build
-          pichi inspect qualification.local/fedora:build > "$RUNNER_TEMP/fedora-output.json"
-
-      - name: Preserve the Fedora build result
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: appliance-fedora-result-${{ matrix.arch }}
-          path: ${{ runner.temp }}/fedora-output.json
-          if-no-files-found: error
-
-      - name: Upload the native OCI layout
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: appliance-oci-${{ matrix.arch }}
-          path: ${{ runner.temp }}/appliance-layout
-          if-no-files-found: error
+        run: cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
