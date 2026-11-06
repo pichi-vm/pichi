@@ -10,6 +10,7 @@
 //! The host prepares the build-input payload before launch, then waits for the
 //! guest request after dillo starts (hold-until-open / Linux discard).
 
+#![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use anyhow::{Context, Result, bail};
@@ -99,10 +100,8 @@ pub(crate) fn create_build_port_pipes() -> Result<BuildPortPipes> {
     let (host_rx, device_tx) = pipe_pair().context("creating guest→host build-port pipe")?;
     let device_rx_fd = fd_number(&device_rx);
     let device_tx_fd = fd_number(&device_tx);
-    // `std::io::pipe` ends are CLOEXEC / non-inheritable. Host ends stay that
-    // way; device ends must be inheritable so dillo can adopt `pipe:N`.
-    set_device_inheritable(&device_rx)?;
-    set_device_inheritable(&device_tx)?;
+    // Keep every parent handle non-inheritable. The shared launch transfers
+    // only the two device ends at their exact original numbers.
     Ok(BuildPortPipes {
         host_tx,
         host_rx,
@@ -144,58 +143,6 @@ fn pipe_pair() -> Result<(std::fs::File, std::fs::File)> {
             std::fs::File::from(OwnedHandle::from(write_end)),
         ))
     }
-}
-
-/// Mark a device-side pipe end inheritable (Windows). On Unix, inheritance is
-/// handled by clearing `FD_CLOEXEC` in the child's `pre_exec` instead.
-fn set_device_inheritable(file: &std::fs::File) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let _ = file;
-        Ok(())
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
-        let handle = file.as_raw_handle();
-        // SAFETY: `handle` is an owned pipe end from std::io::pipe; we only
-        // set HANDLE_FLAG_INHERIT so CreateProcess can pass it to dillo.
-        #[allow(unsafe_code)]
-        let ok = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error())
-                .context("SetHandleInformation set inherit on device end");
-        }
-        Ok(())
-    }
-}
-
-/// Clear `FD_CLOEXEC` on the device-side ends so they survive `exec` into dillo
-/// under the same descriptor numbers referenced by `--console … pipe:N`.
-#[cfg(unix)]
-pub(crate) fn clear_device_cloexec(device_rx_fd: u64, device_tx_fd: u64) -> Result<()> {
-    clear_cloexec_fd(device_rx_fd)?;
-    clear_cloexec_fd(device_tx_fd)?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn clear_cloexec_fd(fd: u64) -> Result<()> {
-    use std::os::fd::{BorrowedFd, RawFd};
-    let raw = RawFd::try_from(fd).context("build-port device fd does not fit RawFd")?;
-    // SAFETY: `fd` is a descriptor this process still owns (device-side pipe
-    // end kept alive in `BuildPortPipes`); we only clear FD_CLOEXEC on it.
-    #[allow(unsafe_code)]
-    let borrowed = unsafe { BorrowedFd::borrow_raw(raw) };
-    let flags = nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_GETFD)
-        .map_err(std::io::Error::from)
-        .context("F_GETFD on build-port device fd")?;
-    let cleared = nix::fcntl::FdFlag::from_bits_truncate(flags) & !nix::fcntl::FdFlag::FD_CLOEXEC;
-    nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_SETFD(cleared))
-        .map_err(std::io::Error::from)
-        .context("F_SETFD clear CLOEXEC on build-port device fd")?;
-    Ok(())
 }
 
 /// True when `path` parses as a dillo console spec naming our build port with

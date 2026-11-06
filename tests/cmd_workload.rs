@@ -19,6 +19,7 @@ use std::{os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
 struct WorkloadFixture {
     root: tempfile::TempDir,
     program: PathBuf,
+    manifest: Manifest,
 }
 
 impl WorkloadFixture {
@@ -53,7 +54,78 @@ impl WorkloadFixture {
         Self {
             root,
             program: path,
+            manifest,
         }
+    }
+
+    async fn build_product(&self) -> PathBuf {
+        let product = self.root.path().join("product");
+        let blobs = product.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        let mut manifest = self.manifest.clone();
+        manifest.annotations.extend([
+            (
+                "dev.pichi.build.commit".into(),
+                format!("sha1:{}", "1".repeat(40)),
+            ),
+            ("dev.pichi.build.context".into(), ".".into()),
+            ("dev.pichi.build.plan".into(), "pichi.yaml".into()),
+            ("dev.pichi.build.lock".into(), "pichi.lock".into()),
+        ]);
+        let store = FilesystemBlobStore::new(self.root.path().join("pichi/storage"));
+        for layer in &manifest.layers {
+            let digest: Digest = layer.digest_str().parse().unwrap();
+            std::fs::write(
+                blobs.join(digest.hex()),
+                store.get_blob(&digest).await.unwrap(),
+            )
+            .unwrap();
+        }
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let digest = Digest::Sha256(Sha256::digest(&bytes).into());
+        std::fs::write(blobs.join(digest.hex()), &bytes).unwrap();
+        std::fs::write(
+            product.join("oci-layout"),
+            br#"{"imageLayoutVersion":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            product.join("index.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "manifests": [{
+                    "mediaType": manifest.media_type,
+                    "artifactType": manifest.artifact_type,
+                    "digest": digest.to_string(),
+                    "size": bytes.len(),
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        product
+    }
+
+    fn build_command(&self, request: &impl serde::Serialize) -> Command {
+        let mut encoded = Vec::new();
+        ciborium::into_writer(request, &mut encoded).unwrap();
+        let mut command = self.command();
+        command
+            .arg("build")
+            .arg(self.root.path())
+            .args(["--ref", "HEAD", "-b", "fixture:1", "-t", "built:1"])
+            .env("BUILD_REQUEST", hex::encode(encoded));
+        command
+    }
+
+    fn record(&self) -> PathBuf {
+        let records: Vec<_> = std::fs::read_dir(self.root.path().join("pichi/storage.workloads"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(records.len(), 1);
+        records[0].clone()
     }
 
     fn command(&self) -> Command {
@@ -64,6 +136,110 @@ impl WorkloadFixture {
             .timeout(Duration::from_secs(15));
         command
     }
+}
+
+#[tokio::test]
+async fn build_port_remains_direct_and_guest_first_through_monitor_launch() {
+    let fixture = WorkloadFixture::new(r"
+import os, re, select, shutil, signal, sys
+signal.alarm(5)
+console = sys.argv[sys.argv.index('--console') + 1]
+rx = int(re.search(r'rx=pipe:(\d+)', console)[1])
+tx = int(re.search(r'tx=pipe:(\d+)', console)[1])
+assert not select.select([rx], [], [], 0.1)[0], 'unsolicited host response'
+os.write(tx, bytes.fromhex(os.environ['BUILD_REQUEST']))
+os.close(tx)
+response = b''
+while True:
+    chunk = os.read(rx, 4096)
+    if not chunk: break
+    response += chunk
+assert response == bytes.fromhex(os.environ['BUILD_RESPONSE']), response.hex()
+output = next(arg.removeprefix('tag=output,source=') for arg in sys.argv if arg.startswith('tag=output,source='))
+shutil.copytree(os.environ['BUILD_PRODUCT'], output, dirs_exist_ok=True)
+os.write(1, b'opaque build port\n')
+").await;
+    let response = pichi_launch::Response::Ok(pichi_launch::Input {
+        r#ref: "HEAD".into(),
+        plan: "pichi.yaml".into(),
+        lock: "pichi.lock".into(),
+        context: ".".into(),
+        location: None,
+    });
+    let mut encoded = Vec::new();
+    ciborium::into_writer(&response, &mut encoded).unwrap();
+    let built = fixture
+        .build_command(&pichi_launch::Request::from(pichi_launch::Build::default()))
+        .env("BUILD_RESPONSE", hex::encode(encoded))
+        .env("BUILD_PRODUCT", fixture.build_product().await)
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&built.get_output().stdout);
+    assert!(stdout.contains("opaque build port\n"), "{stdout}");
+    assert!(
+        stdout.contains("pichi build: imported built:1 -> sha256:"),
+        "{stdout}"
+    );
+    let record = fixture.record();
+    let result: madrillo::Completion =
+        serde_json::from_slice(&std::fs::read(record.join("monitor/result.json")).unwrap())
+            .unwrap();
+    assert_eq!(result.leader, madrillo::LeaderResult::Exit { code: 0 });
+    assert_eq!(
+        record.join("output").exists(),
+        result.cleanup != madrillo::CleanupResult::Complete
+    );
+    let tags = FilesystemTagDb::open(fixture.root.path().join("pichi/storage")).unwrap();
+    assert!(
+        tags.resolve_tag("docker.io/library/built:1")
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn invalid_build_request_terminates_owned_workload_without_import() {
+    let fixture = WorkloadFixture::new(
+        r"
+import os, re, signal, sys
+signal.alarm(5)
+console = sys.argv[sys.argv.index('--console') + 1]
+tx = int(re.search(r'tx=pipe:(\d+)', console)[1])
+os.write(tx, bytes.fromhex(os.environ['BUILD_REQUEST']))
+while True: signal.pause()
+",
+    )
+    .await;
+    let built = fixture
+        .build_command(&("build", 2_u16, ()))
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&built.get_output().stderr);
+    assert!(
+        stderr.contains("reading build-port guest request"),
+        "{stderr}"
+    );
+    let record = fixture.record();
+    let result: madrillo::Completion =
+        serde_json::from_slice(&std::fs::read(record.join("monitor/result.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        result.leader,
+        madrillo::LeaderResult::Signal {
+            signal: 9,
+            core_dumped: false
+        }
+    );
+    assert_eq!(result.cause, madrillo::CompletionCause::Forced);
+    assert!(record.join("output").is_dir());
+    let tags = FilesystemTagDb::open(fixture.root.path().join("pichi/storage")).unwrap();
+    assert!(
+        tags.resolve_tag("docker.io/library/built:1")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

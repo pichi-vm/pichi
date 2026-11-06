@@ -75,7 +75,6 @@ command-fds = "=0.3.3"
 process-wrap = { version = "=10.0.1", default-features = false, features = ["std", "process-session"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation"] }
 windows-spawn = "=0.1.0"
 widestring = "1"
 win-custody = "=0.1.2"

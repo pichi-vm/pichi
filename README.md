@@ -109,16 +109,23 @@ Apache-2.0. See [LICENSE](LICENSE).
 
 Madrillo integration is under development on this branch. Set `PICHI_MADRILLO`
 to its executable (otherwise a sibling executable or PATH is used), and use a
-dillo build supporting `--exit-on-stdin-close`. Foreground run prints its ID on
-stderr; detached run prints it on stdout. Host terminals use raw input with
+dillo build whose console closure requests shutdown. Foreground run prints its
+ID on stderr; detached run prints it on stdout. Host terminals use raw input with
 `-i`; Ctrl-P Ctrl-Q detaches. Piped input remains binary. Input EOF releases
 ownership while madrillo keeps dillo's liveness pipe open. Attachment is live
 only; completed workloads retain their result and configured CRI console log.
 Missing results remain unknown and retain image pins. `rmi` may remove a tag
 without deleting images still needed by such workloads.
 
-Build integration, stop/log presentation, native Windows/macOS caller testing,
-and the full signal/resize contract are not complete yet. Current external
+Build uses the same monitor launch and retains its output outside the cache.
+Its named guest API pipes pass directly through to dillo: the guest requests
+input before the host responds, and successful guest exit precedes OCI import.
+Output is removed only after import and confirmed complete workload cleanup.
+Linux qualification includes a real build using the published appliance.
+
+Windows extra-handle inheritance, caller-managed process containment, stop/log
+presentation, native Windows/macOS caller testing, and the full signal/resize
+contract are not complete yet. Current external
 termination signals end the foreground attachment; they are not proxied to
 dillo. Workload state lives beside the canonical image cache, in a directory
 whose name appends `.workloads` (for example `storage.workloads`). This keeps

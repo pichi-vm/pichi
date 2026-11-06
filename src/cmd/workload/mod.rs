@@ -320,12 +320,10 @@ impl Running {
         inherited: Vec<File>,
         input: bool,
     ) -> Result<Self> {
-        let mut arguments = arguments.to_vec();
-        arguments.push("--exit-on-stdin-close".into());
         let mut running = Launch {
             monitor: &Self::executable(),
             program: &crate::cmd::run::find_dillo(),
-            arguments: &arguments,
+            arguments,
             state: &record.state(),
             endpoint: record.endpoint(),
             input,
@@ -347,6 +345,36 @@ impl Running {
         console::Console::open(interactive)?
             .view(&mut self.client)
             .await
+    }
+
+    pub(crate) async fn wait(&mut self, capture: Option<&File>) -> Result<Completion> {
+        self.client
+            .wait_with(|stream, bytes| {
+                if let Some(mut file) = capture {
+                    use std::io::Write as _;
+                    file.write_all(bytes)?;
+                    Ok(())
+                } else {
+                    console::Console::write(stream, bytes)
+                }
+            })
+            .await
+    }
+
+    pub(crate) async fn terminate(&mut self, record: &Record) -> Result<Completion> {
+        if let Some(result) = record.completion()? {
+            return Ok(result);
+        }
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            self.client.send(ClientMessage::Terminate).await?;
+            self.client.wait(false).await
+        })
+        .await
+        .context("workload termination deadline; cleanup remains unknown")?;
+        match result {
+            Ok(result) => Ok(result),
+            Err(error) => record.completion()?.ok_or(error),
+        }
     }
 
     pub(crate) async fn started(&mut self) -> Result<u32> {
@@ -387,15 +415,22 @@ impl Running {
 
 impl Client {
     async fn wait(&mut self, output: bool) -> Result<Completion> {
-        use std::io::Write;
+        self.wait_with(|stream, bytes| {
+            if output {
+                console::Console::write(stream, bytes)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn wait_with(
+        &mut self,
+        mut output: impl FnMut(&str, &[u8]) -> Result<()>,
+    ) -> Result<Completion> {
         loop {
             match self.next().await? {
-                ServerMessage::Output { stream, bytes } if output => match stream.as_str() {
-                    "stdout" => std::io::stdout().write_all(&bytes)?,
-                    "stderr" => std::io::stderr().write_all(&bytes)?,
-                    _ => bail!("unexpected monitor output stream {stream}"),
-                },
-                ServerMessage::Output { .. } => {}
+                ServerMessage::Output { stream, bytes } => output(&stream, &bytes)?,
                 ServerMessage::Completed { result } => return Ok(result),
                 ServerMessage::Error { code, message } => bail!("monitor {code:?}: {message}"),
                 response => bail!("unexpected monitor response: {response:?}"),

@@ -64,6 +64,9 @@ pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
     // assertion target — do not split into multiple lock callbacks.
     let (records, total) = layout
         .with_index_lock(|| async {
+            if crate::cmd::workload::record::Records::build_cache_in_use(&layout.graphroot)? {
+                return Ok((Vec::new(), 0));
+            }
             let db = FilesystemTagDb::open(&layout.graphroot)?;
             let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 

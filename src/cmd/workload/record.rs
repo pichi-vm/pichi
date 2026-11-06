@@ -38,6 +38,28 @@ pub(crate) struct Record {
 }
 
 impl Records {
+    /// Build guests select their own inputs from the read-only image cache.
+    /// Their retained output directory also marks that whole-cache lifetime;
+    /// only confirmed complete workload cleanup releases it for collection.
+    pub(crate) fn build_cache_in_use(graphroot: &Path) -> Result<bool> {
+        let Some(records) = Self::existing(graphroot)? else {
+            return Ok(false);
+        };
+        for record in records.list()? {
+            match record.directory.open_dir_nofollow("output") {
+                Ok(_) => {
+                    if !matches!(record.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
+                    {
+                        return Ok(true);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn open(graphroot: &Path) -> Result<Self> {
         let path = Self::location(graphroot)?;
         let parent = Dir::open_ambient_dir(
@@ -292,7 +314,23 @@ impl Record {
         self.path.join("monitor")
     }
 
-    pub(super) fn completion(&self) -> Result<Option<Completion>> {
+    pub(crate) fn create_build_output(&self) -> Result<PathBuf> {
+        self.directory.create_dir("output")?;
+        Ok(self.path.join("output"))
+    }
+
+    pub(crate) fn release_build_output(&self) -> Result<()> {
+        if matches!(self.completion()?, Some(result) if result.cleanup == CleanupResult::Complete) {
+            match self.directory.remove_dir_all("output") {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn completion(&self) -> Result<Option<Completion>> {
         let monitor = match self.directory.open_dir_nofollow("monitor") {
             Ok(directory) => directory,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -352,85 +390,107 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     #[tokio::test]
-    async fn image_gc_retains_all_workload_roots_until_cleanup_is_known_complete() -> Result<()> {
-        let root = tempfile::tempdir()?;
-        let graphroot = root.path().join("cache");
-        let config = Config {
-            storage: StorageConfig {
-                graphroot: Some(graphroot.clone()),
+    async fn image_gc_preserves_pins_and_guest_selected_build_inputs() -> Result<()> {
+        for build in [false, true] {
+            let root = tempfile::tempdir()?;
+            let graphroot = root.path().join("cache");
+            let config = Config {
+                storage: StorageConfig {
+                    graphroot: Some(graphroot.clone()),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        };
-        let blobs = FilesystemBlobStore::new(&graphroot);
-        let tags = FilesystemTagDb::open(&graphroot)?;
-        let records = Records::open(&graphroot)?;
-        let mut images = Vec::new();
-        let mut layers = Vec::new();
-        for payload in [b"appliance".as_slice(), b"build source".as_slice()] {
-            let layer = Digest::Sha256(Sha256::digest(payload).into());
-            blobs.put_blob(&layer, payload).await?;
-            let manifest = Manifest {
-                schema_version: 2,
-                media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-                artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-                config: ConfigDescriptor::canonical(),
-                layers: vec![Layer::Pmi(PmiDescriptor {
-                    digest: layer.to_string(),
-                    size: payload.len() as u64,
-                })],
-                annotations: std::collections::BTreeMap::default(),
             };
-            let bytes = serde_json::to_vec(&manifest)?;
-            let image = Digest::Sha256(Sha256::digest(&bytes).into());
-            blobs.put_blob(&image, &bytes).await?;
-            images.push(image);
-            layers.push(layer);
-        }
-        tags.set_tag("docker.io/library/appliance:test", &images[0])
-            .await?;
-        let record = records.create(images.clone(), root.path().join("control"), Uuid::new_v4())?;
-        assert!(
-            !record
-                .state()
-                .starts_with(std::fs::canonicalize(&graphroot)?),
-            "build's cache mount must not include console state"
-        );
-        crate::cmd::rmi::run(
-            RmiArgs {
-                references: vec!["appliance:test".into()],
-                force: false,
-            },
-            &config,
-        )
-        .await?;
-        assert_eq!(tags.list_tags().await?, Vec::new());
-        for digest in images.iter().chain(&layers) {
+            let blobs = FilesystemBlobStore::new(&graphroot);
+            let tags = FilesystemTagDb::open(&graphroot)?;
+            let records = Records::open(&graphroot)?;
+            let mut images = Vec::new();
+            let mut layers = Vec::new();
+            for payload in [b"appliance".as_slice(), b"build source".as_slice()] {
+                let layer = Digest::Sha256(Sha256::digest(payload).into());
+                blobs.put_blob(&layer, payload).await?;
+                let manifest = Manifest {
+                    schema_version: 2,
+                    media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+                    artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+                    config: ConfigDescriptor::canonical(),
+                    layers: vec![Layer::Pmi(PmiDescriptor {
+                        digest: layer.to_string(),
+                        size: payload.len() as u64,
+                    })],
+                    annotations: std::collections::BTreeMap::default(),
+                };
+                let bytes = serde_json::to_vec(&manifest)?;
+                let image = Digest::Sha256(Sha256::digest(&bytes).into());
+                blobs.put_blob(&image, &bytes).await?;
+                images.push(image);
+                layers.push(layer);
+            }
+            tags.set_tag("docker.io/library/appliance:test", &images[0])
+                .await?;
+            let pins = if build {
+                images[..1].to_vec()
+            } else {
+                images.clone()
+            };
+            let record = records.create(pins, root.path().join("control"), Uuid::new_v4())?;
+            if build {
+                record.create_build_output()?;
+            }
             assert!(
-                blobs.blob_exists(digest).await,
-                "rmi removed a workload image: {digest}"
+                !record
+                    .state()
+                    .starts_with(std::fs::canonicalize(&graphroot)?),
+                "build's cache mount must not include console state"
             );
-        }
-        let mut result = Completion {
-            version: PROTOCOL_VERSION,
-            leader: LeaderResult::Exit { code: 0 },
-            cause: CompletionCause::LeaderExit,
-            exited_at_unix_ms: 0,
-            cleanup: CleanupResult::Unknown,
-            oom: OomEvidence::NoneObserved,
-            log_errors: Vec::new(),
-            monitor_errors: Vec::new(),
-            monitor_warnings: Vec::new(),
-            output_truncated: false,
-        };
-        std::fs::create_dir(record.state())?;
-        for cleanup in [
-            CleanupResult::Unknown,
-            CleanupResult::Incomplete {
-                errors: vec!["helper still running".into()],
-            },
-        ] {
-            result.cleanup = cleanup;
+            crate::cmd::rmi::run(
+                RmiArgs {
+                    references: vec!["appliance:test".into()],
+                    force: false,
+                },
+                &config,
+            )
+            .await?;
+            assert_eq!(tags.list_tags().await?, Vec::new());
+            for digest in images.iter().chain(&layers) {
+                assert!(
+                    blobs.blob_exists(digest).await,
+                    "rmi removed a workload image: {digest}"
+                );
+            }
+            let mut result = Completion {
+                version: PROTOCOL_VERSION,
+                leader: LeaderResult::Exit { code: 0 },
+                cause: CompletionCause::LeaderExit,
+                exited_at_unix_ms: 0,
+                cleanup: CleanupResult::Unknown,
+                oom: OomEvidence::NoneObserved,
+                log_errors: Vec::new(),
+                monitor_errors: Vec::new(),
+                monitor_warnings: Vec::new(),
+                output_truncated: false,
+            };
+            std::fs::create_dir(record.state())?;
+            for cleanup in [
+                CleanupResult::Unknown,
+                CleanupResult::Incomplete {
+                    errors: vec!["helper still running".into()],
+                },
+            ] {
+                result.cleanup = cleanup;
+                std::fs::write(
+                    record.state().join("result.json"),
+                    serde_json::to_vec(&result)?,
+                )?;
+                crate::cmd::prune::run(PruneArgs { dry_run: false }, &config).await?;
+                for digest in images.iter().chain(&layers) {
+                    assert!(
+                        blobs.blob_exists(digest).await,
+                        "prune removed a workload image: {digest}"
+                    );
+                }
+            }
+            result.cleanup = CleanupResult::Complete;
             std::fs::write(
                 record.state().join("result.json"),
                 serde_json::to_vec(&result)?,
@@ -438,22 +498,10 @@ mod tests {
             crate::cmd::prune::run(PruneArgs { dry_run: false }, &config).await?;
             for digest in images.iter().chain(&layers) {
                 assert!(
-                    blobs.blob_exists(digest).await,
-                    "prune removed a workload image: {digest}"
+                    !blobs.blob_exists(digest).await,
+                    "completed workload retained {digest}"
                 );
             }
-        }
-        result.cleanup = CleanupResult::Complete;
-        std::fs::write(
-            record.state().join("result.json"),
-            serde_json::to_vec(&result)?,
-        )?;
-        crate::cmd::prune::run(PruneArgs { dry_run: false }, &config).await?;
-        for digest in images.iter().chain(&layers) {
-            assert!(
-                !blobs.blob_exists(digest).await,
-                "completed workload retained {digest}"
-            );
         }
         Ok(())
     }
