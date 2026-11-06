@@ -224,6 +224,54 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires MADRILLO_BIN and a containing Job that forbids breakaway"]
+    async fn denied_job_breakaway_keeps_workload_unknown() -> Result<()> {
+        let monitor = PathBuf::from(std::env::var_os("MADRILLO_BIN").context("set MADRILLO_BIN")?);
+        let fixture = monitor.with_file_name("madrillo-fixture.exe");
+        let root = tempfile::tempdir()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let records = record::Records::open(&graphroot)?;
+        let id = uuid::Uuid::new_v4();
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-denied-{id}"));
+        let image = format!("sha256:{}", "0".repeat(64)).parse()?;
+        let record = records.create(vec![image], endpoint.clone(), id)?;
+        let attempt = Launch {
+            monitor: &monitor,
+            program: &fixture,
+            arguments: &["echo".into()],
+            state: &record.state(),
+            endpoint: &endpoint,
+            input: true,
+            inherited: Vec::new(),
+        }
+        .spawn()
+        .await;
+        let error = match attempt {
+            Err(error) => error,
+            Ok(running) => {
+                drop(ReapMonitor(running));
+                bail!("test requires a Job that forbids breakaway");
+            }
+        };
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::raw_os_error),
+            Some(5),
+            "{error:#}"
+        );
+        assert!(record.completion()?.is_none());
+        assert!(
+            !record.state().exists(),
+            "denied creation must not run a monitor"
+        );
+        assert_eq!(records.pins()?, record.images());
+        Ok(())
+    }
+
     #[tokio::test]
     #[ignore = "requires MADRILLO_BIN and its qualification fixture; run explicitly"]
     async fn native_monitor_launch_and_async_control() -> Result<()> {
