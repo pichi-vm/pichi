@@ -69,8 +69,14 @@ jobs:
           grep -a 'PICHI_MEMORY_' "$RUNNER_TEMP/fedora-build.log" > "$RUNNER_TEMP/fedora-memory.txt"
           grep -a 'PICHI_MEMORY_PEAK_BYTES.*result=success' "$RUNNER_TEMP/fedora-memory.txt"
           gzip "$RUNNER_TEMP/fedora-build.log"
+          grep -aE 'PICHI_MEMORY_PHASE scute-start memory.current [0-9]+' "$RUNNER_TEMP/fedora-memory.txt"
+          grep -aE 'PICHI_MEMORY_PHASE pmi-finished memory.peak [0-9]+' "$RUNNER_TEMP/fedora-memory.txt"
+          if grep -a 'PICHI_MEMORY_PHASE_ERROR' "$RUNNER_TEMP/fedora-memory.txt"; then
+            exit 1
+          fi
 
       - name: Preserve the Fedora build result
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: appliance-fedora-result-${{ matrix.arch }}

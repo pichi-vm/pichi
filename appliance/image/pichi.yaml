@@ -23,7 +23,7 @@ stages:
       - exec:
           command: >-
             cargo install --locked --git https://github.com/pichi-vm/conglobate
-            --rev 24c28a795f74017f040fadbf2a0654aaa19a3b61 --features cli --root /mnt conglobate
+            --rev d3a35456793aa5d9e60e5a1826c12811553cd162 --features cli --root /mnt conglobate
           network: true
   policy:
     use: tools
