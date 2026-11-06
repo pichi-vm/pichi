@@ -121,11 +121,16 @@ Build uses the same monitor launch and retains its output outside the cache.
 Its named guest API pipes pass directly through to dillo: the guest requests
 input before the host responds, and successful guest exit precedes OCI import.
 Output is removed only after import and confirmed complete workload cleanup.
-Linux qualification includes a real build using the published appliance.
+An active build retains the image cache because the guest selects its inputs.
+Native caller qualification passes on Linux and macOS. Real VM build
+qualification for the current guest protocol remains pending.
 
 Windows extra-handle inheritance, caller-managed process containment, stop/log
-presentation, native Windows/macOS caller testing, and the full signal/resize
-contract are not complete yet. Current external
+presentation, native Windows caller qualification, and the full signal/resize
+contract are not complete yet. Windows launch requires permission to break
+away from the caller's Job Object; the current hosted runner denies that
+operation. Pichi does not fall back to a monitor whose lifetime is tied to
+that Job. Current external
 termination signals end the foreground attachment; they are not proxied to
 dillo. Workload state lives beside the canonical image cache, in a directory
 whose name appends `.workloads` (for example `storage.workloads`). This keeps
