@@ -298,7 +298,7 @@ pub struct BuildArgs {
     pub tag: Option<String>,
     /// Build appliance image.
     ///
-    /// When omitted, pichi uses the digest-pinned default appliance. If the
+    /// When omitted, pichi uses ghcr.io/pichi-vm/pichi-build:latest. If the
     /// resolved image is not cached, pichi pulls it and continues.
     #[arg(short = 'b', long = "build-image")]
     pub build_image: Option<String>,

@@ -1,13 +1,15 @@
 # Pichi build appliance
 
-[The recipe](image/pichi.yaml) extends Fedora 43 and installs Conglobate and
-the LSM label helper from recorded submodules. The resulting VM runs
-`conglobate appliance` to execute `pichi build` requests.
+[The recipe](image/pichi.yaml) installs signed Conglobate and Pichi LSM packages
+from COPR. Its package owns the service and mount units; the recipe supplies network configuration,
+policy-service ordering and service enablement.
 
-[The CI workflow](../.github/workflows/appliance.yml) builds the image once on
-each native Linux architecture, then uses it to build Fedora. Pichi's existing
-VM tests also run against these images.
+[The platform workflow](../.github/workflows/platforms.yml) conditionally builds
+the image on each native runner and uses that local candidate for build/boot
+compatibility tests. This avoids downloading large candidate artifacts on Avrea.
+There is no separate Fedora qualification build. See [the CI contract](../BUILD.md#10-continuous-integration).
 
-After all main-branch checks pass, CI publishes both architectures as
-`ghcr.io/pichi-vm/pichi-build:<Pichi version>`. Select this image with
-`pichi build --build-image`; the shipping default remains unchanged.
+After required main-branch checks pass, CI publishes both architectures as
+`ghcr.io/pichi-vm/pichi-build:latest`, the default for `pichi build`.
+Compatibility failures are reported but do not block publication, including
+intentional breaking changes. Pull requests never publish.

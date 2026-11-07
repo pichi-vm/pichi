@@ -17,13 +17,6 @@ pub struct Builds {
 }
 
 impl Builds {
-    /// Arma runs inside Fedora and must not depend on the host's loader.
-    pub fn guest_arma(&self) -> PathBuf {
-        let source = std::env::var_os("PICHI_TEST_GUEST_ARMA")
-            .expect("set PICHI_TEST_GUEST_ARMA to a static musl Arma executable");
-        self.guest_binary("arma", Path::new(&source))
-    }
-
     /// Guest executables omit host debug information, as shipped binaries do.
     /// Git's reduced-trust object reader bounds each allocation to 16 MiB.
     pub fn guest_binary(&self, name: &str, source: &Path) -> PathBuf {

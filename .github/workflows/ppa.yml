@@ -26,14 +26,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Prepare source
         run: |
-          git submodule update --init deps/conglobate
           mkdir -p .cargo
           RUSTC_BOOTSTRAP=1 cargo +stable vendor --locked --versioned-dirs vendor > .cargo/vendor.toml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm --cached deps/conglobate
-          rm deps/conglobate/.git
-          git add -f deps/conglobate .cargo/vendor.toml vendor
+          git add -f .cargo/vendor.toml vendor
           git commit -m 'build: prepare PPA source'
       - name: Publish source and request builds
         env:

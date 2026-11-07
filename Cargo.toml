@@ -13,12 +13,8 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-# Gates the KVM/boot integration tests (build_*.rs). The default `cargo test`
-# does not pull in the boot deps (arma/dillo/corium artifacts); CI
-# runs them explicitly: `cargo test -p pichi --features vm-tests`. The product
-# artifacts are optional [dependencies] so non-vm builds never resolve them
-# (the registry/workspace jobs would otherwise drag in cross-target binaries).
-vm-tests = ["dep:arma", "dep:dillo", "dep:corium"]
+# Optional extended VM tests for local investigation; CI uses command_smoke.
+vm-tests = ["dep:dillo", "dep:corium"]
 
 [dependencies]
 anyhow.workspace = true
@@ -53,11 +49,6 @@ tokio-util = { workspace = true, features = ["io", "io-util"] }
 toml.workspace = true
 uuid.workspace = true
 ruzstd = "0.9.1"
-# Product binaries the boot tests orchestrate (host target). Optional so only
-# `vm-tests` resolves them; a plain `cargo test` pulls zero product artifacts.
-arma = { git = "https://github.com/pichi-vm/arma", rev = "3297920b46122689fb13ca41acd61cbe94ac1de7", artifact = "bin", optional = true }
-dillo = { git = "https://github.com/pichi-vm/dillo", rev = "f642c76241cd6c85335398e2140b84371fd4c0c1", artifact = "bin", optional = true }
-
 # Optional guest Corium binaries for `vm-tests` only. Production builds launch
 # Conglobate's shipped appliance; the host consumes its types-only library.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
@@ -67,6 +58,7 @@ corium = { git = "https://github.com/pichi-vm/corium", rev = "c33ae0e01d58b657f8
 corium = { git = "https://github.com/pichi-vm/corium", rev = "c33ae0e01d58b657f8f62cb91672885326a903b9", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
+dillo = { git = "https://github.com/pichi-vm/dillo", rev = "f642c76241cd6c85335398e2140b84371fd4c0c1", artifact = "bin", optional = true }
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]
@@ -93,7 +85,6 @@ burrow = { workspace = true }
 
 [workspace]
 resolver = "2"
-exclude = ["deps/conglobate"]
 members = [
     # pichi-owned library crates (nested by their sole consumer, the root
     # `pichi` crate).
@@ -153,8 +144,8 @@ pichi-launch = { path = "deps/pichi-launch" }
 pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
-# The submodule pins both this library and the appliance engine.
-conglobate = { path = "deps/conglobate", default-features = false }
+# Pin the library independently of the packaged build appliance.
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "bb1c85852fda48b626fd278f8532af8939a6207d", default-features = false }
 # Error handling
 anyhow = "1"
 thiserror = "2"
@@ -245,19 +236,9 @@ humansize = "2"
 minijinja = "2"
 toml = "1"
 
-# tatu must fit its 2 MiB slab (linker ASSERT in tatu/linker/tatu.ld), so it
-# must always be built with release-equivalent codegen even when the rest of
-# the workspace is built in dev — a debug build's larger .text overflows the
-# slab. tatu is consumed by arma as an artifact dependency, so the profile
-# that applies is this workspace's, not tatu's own.
 [profile.release]
 opt-level = 3
 lto = "thin"
-
-[profile.dev.package.tatu]
-opt-level = 3
-debug-assertions = false
-overflow-checks = false
 
 # Optimize all dependencies even in dev. The workspace crates stay at -O0 for
 # fast incremental rebuilds, but hot dependency code — SHA-256 (sha2) for

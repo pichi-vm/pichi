@@ -23,7 +23,7 @@ Both share the same launch path: resolve a pichi image, prepare a dillo
 device set, and boot. Build adds only the wires the guest needs to produce
 an artifact — virtiofs (shared host folders) mounts and a named-console
 CBOR (compact binary format) exchange — then waits
-for a finished OCI layout (the standard folder format for container images) in the output mount when the guest exits 0.
+for a finished OCI layout (the standard folder format for container images) in the output mount only after explicit build success and VM exit 0.
 
 Building is launching. The host does not check out Conglobate sources, does
 not parse Conglobate plans, and does not run Conglobate as `/init`.
@@ -51,8 +51,8 @@ These seven points are locked. Implementation and docs conform to them.
 Same launch path as `pichi run`. Build adds:
 
 - virtiofs wires (`repo`, `cache`, `output`);
-- bidirectional named console port `dev.pichi.build` (v0 CBOR request/response);
-- wait for guest exit 0, then take the OCI layout from the output mount.
+- bidirectional named console port `dev.pichi.build` (CBOR `start` and `finish` commands);
+- require explicit build success and guest exit 0, then take the OCI layout from the output mount.
 
 ### 2.2 Thin launcher
 
@@ -65,7 +65,7 @@ Host steps, in order:
    ends on named console `dev.pichi.build` (bidirectional; not rx-only).
 5. After dillo starts, wait for the guest's build-input request on the
    port, then write the prepared response (hold-until-open / Linux discard).
-6. On guest exit 0, take the OCI layout from the output directory and import
+6. Require `["finish", 1, null]` from the guest and VM exit 0, then take the OCI layout from the output directory and import
    / tag it locally as needed.
 
 Explicitly **not** on the host:
@@ -85,7 +85,13 @@ Explicitly **not** on the host:
 Tag names and guest mount points are convention. The CBOR does not carry
 mount tags or commit identities for those mounts.
 
-### 2.4 Named console `dev.pichi.build` (build command V1)
+### 2.4 Named console `dev.pichi.build` (`start` and `finish`)
+
+The guest requests input with `start`, then reports completion with `finish`.
+Both commands are version 1. Finish carries null after output finalization,
+or the build failure message. The host acknowledges receipt before the guest
+shuts down. Missing, malformed, or failed completion prevents output import
+even if Dillo exits successfully. Use a matching host and `--build-image`.
 
 The portable wire types live in `deps/pichi-launch`, shared by the host
 and guest adapter. Pichi owns this console contract.
@@ -95,13 +101,17 @@ Port name: `dev.pichi.build` (dillo named-console convention). The port is
 (not rx-only). dillo named MULTIPORT ports supply the pipe inheritance
 model (`pipe:N` = inherited host FD/handle).
 
-Wire (self-delimiting CBOR, no length prefix; **one round trip**; no
+Wire (self-delimiting CBOR, no length prefix; **input exchange followed by terminal result**; no
 streaming or multiplexing):
 
-1. **Guest → host** — one request array: `["build", 1, null]`
+1. **Guest → host** — one request array: `["start", 1, null]`
 2. **Host → guest** — one response array:
    - success: `[true, Input]`, with the build-input map below
    - failure: `[false, "error message"]`
+3. **Guest → host** — one finish request:
+   - finalized output: `["finish", 1, null]`
+   - build failure: `["finish", 1, "error message"]`
+4. **Host → guest** — `[true, null]` acknowledges receipt of the result.
 
 The host prepares the build-input payload **before** launch, but writes
 the response only **after** the guest request arrives (hold-until-open /
@@ -199,23 +209,25 @@ pichi (thin launcher)
   │  named console dev.pichi.build (rx+tx pipes)
   ▼
 dillo  ──boots──►  Conglobate pichi image
-                      │  writes ["build", 1, null]
+                      │  writes ["start", 1, null]
                       │     ◄── host success/failure CBOR
                       │  builds from /run/pichi/{repo,cache}
                       │  writes annotated OCI to /run/pichi/output
+                      │  writes ["finish", 1, null]
+                      │     ◄── host acknowledgement
                       ▼  exit 0
 pichi imports OCI from output dir → local tag
 ```
 
 
-Failure: non-zero guest exit means no successful product. Do not treat
-partial output as an artifact.
+Failure: a missing or failed finish command, or non-zero VM exit, means no
+successful product. Do not treat partial output as an artifact.
 
 Resource sizing (`--memory` / `--cpus` and similar) follows the same
 patterns as `pichi run` against the appliance image's launch contract.
 
 The appliance is `-b`/`--build-image` when the operator passes it,
-otherwise the digest-pinned default (digest means the image content fingerprint) (`DEFAULT_BUILD_IMAGE` in
+otherwise the latest successfully qualified appliance (`DEFAULT_BUILD_IMAGE` in
 `src/cmd/build.rs`). If that ref is not in the local cache, the host
 pulls it with the same path as `pichi pull` (`--pull=missing`) and then
 continues the build. The first build fetches the appliance.
@@ -227,7 +239,7 @@ not change the digest selection.
 
 ### OCI import and verity verification
 
-After guest exit 0, `pichi build` imports the complete OCI layout at the
+After explicit build success and guest exit 0, `pichi build` imports the complete OCI layout at the
 output mount root using the same reader as `pichi load`. A build must have
 exactly one image manifest in `index.json`. The host preserves its original
 bytes and digest, including inherited layers, and applies only the requested
@@ -289,12 +301,6 @@ or run/build launch Dillo. This single commitment covers the salt-linked
 ancestry; there are no per-scute root annotations. The guest verifies data
 blocks lazily against its trusted root. The v1 format identifiers are unchanged.
 
-Imports record the target architecture, never the importing host's architecture.
-`pichi import raw` requires `--arch amd64` or `--arch arm64` because disk
-bytes are opaque. `pichi import pmi` derives architecture from the PE header;
-`--arch` is required if it cannot be determined and must agree with a known
-header. `--carapace` selects the matching target platform from an index.
-
 `pichi import raw` records the computed chain root in the manifest annotation
 `dev.pichi.carapace.verity.hash`. Each import generates a fresh 32-byte salt
 suffix using the operating system's cryptographic random source, after the
@@ -347,12 +353,10 @@ from the committed lock. `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a rebuilt
 OCI appliance layout for cross-project qualification; otherwise the smoke
 uses the shipping default. Staged plans require an appliance built with the
 matching Conglobate engine; `--build-image` selects it explicitly. The default image is
-`ghcr.io/pichi-vm/conglobate@sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946`.
-This amd64/arm64 index is built from Conglobate revision
-`3c704762b6f03b31da14d076f5cb695b79fc42ce` and uses the staged plan, GPT
-root, embedded-DTB PMI and native bootconfig contracts described here.
-The default appliance and the library in `deps/conglobate` both require
-`version: 1` in plans and the flat digest lock shown above.
+`ghcr.io/pichi-vm/pichi-build:latest`. CI advances this tag after required
+current-version tests pass, even when previous-version compatibility fails.
+The pinned Conglobate Git library requires `version: 1` in plans and the flat
+digest lock shown above.
 The appliance also includes scute compaction, journal-free ext4 creation and
 command network isolation from Conglobate main. Plans may set top-level
 `requirements` for the output image; the host and appliance share that schema.
@@ -362,33 +366,30 @@ output layers; host-side input preparation never adds ancestry.
 
 ### Staged-image acceptance
 
-The platform workflow runs the same build smoke, submodule, and
-`staged_images` tests on Linux x86_64 and arm64 (KVM), Windows
-x86_64 (native MSVC/WHP), and macOS arm64 (HVF). Enabling `vm-tests` requires
+The optional build smoke, submodule, and `staged_images` suites support
+Linux x86_64 and arm64 (KVM), Windows x86_64 (native MSVC/WHP), and macOS
+arm64 (HVF). They run manually, not in ordinary CI. Enabling `vm-tests` requires
 working virtualization; missing prerequisites fail instead of skipping tests.
-The macOS harness signs Dillo with the hypervisor entitlement.
+Linux uses installed `dillo` from PATH; the macOS harness signs its native
+Dillo with the hypervisor entitlement.
 
 Builds use 3.5 GiB and boots use 2 GiB. Linux requires at least 1792 free
 2 MiB hugepages. All hosts need Git and network access to Fedora's package
 repositories. Builds retain both the original and packed scute during
 compaction. No host block devices or mounts are created by the harness.
 
-CI creates one tiny ext4 fixture on Linux and distributes the identical bytes
-through `PICHI_TEST_ROOT_FILESYSTEM` for the smoke and submodule tests. Local
-Linux runs can create it with `mkfs.ext4` when that variable is unset.
-`PICHI_TEST_STRIP` selects Rust's LLVM objcopy on every CI host so Linux guest
-executables can be stripped on Windows and macOS as well. Local runs default
-to `strip`.
+For manual submodule tests, `PICHI_TEST_ROOT_FILESYSTEM` can supply a tiny
+ext4 fixture; local Linux runs can create it with `mkfs.ext4` when unset.
+`PICHI_TEST_STRIP` selects an objcopy tool for stripping Linux guest binaries
+on Windows/macOS; local runs default to `strip`.
 
-Use a rebuilt appliance OCI layout, a static musl build of the pinned Arma,
-and a newly compiled static release Corium for qualification. Arma runs inside
-Fedora, so it must not depend on the host's dynamic loader. Corium's release
-binary replaces the test artifact's firmware while preserving the selected root.
-The platform CI workflow builds both guest tools for the native architecture:
+For manual staged-image qualification, use a rebuilt appliance OCI layout and
+a newly compiled static release Corium. The staged recipe installs guest Arma
+from signed COPR packages. Corium's release binary replaces the test artifact's
+firmware while preserving the selected root.
 
 ```sh
 PICHI_TEST_BUILD_IMAGE_LAYOUT=/path/to/appliance-oci \
-PICHI_TEST_GUEST_ARMA=/path/to/musl/release/arma \
 PICHI_TEST_REPLACEMENT_CORIUM=/path/to/release/corium \
 PICHI_TEST_EVIDENCE=/path/to/evidence \
 cargo +nightly-2026-07-06 test --locked --features vm-tests --test staged_images -- --nocapture
@@ -409,18 +410,18 @@ manifests are retained under `PICHI_TEST_EVIDENCE` when it is set.
 
 ## 4. Build-port CBOR (logical shape)
 
-Encoding is self-delimiting CBOR (no length prefix). One guest request, then
-one host response, each a single array. Command names and versions identify
+Encoding is self-delimiting CBOR (no length prefix). Each command has one
+guest request and one host response, each a single array. Names and versions identify
 request/response contracts; the protocol has no global version field.
 
-### 4.1 Guest request
+### 4.1 Start request
 
 ```json
-["build", 1, null]
+["start", 1, null]
 ```
 
 The three elements are command name, `u16` command version, and request body.
-Build V1 has a unit body, encoded as null. The host decodes the shared
+Start V1 has a unit body, encoded as null. The host decodes the shared
 `pichi_launch::Requests` enum; unsupported command/version pairs,
 wrong bodies, and incorrect array lengths fail before success is sent.
 
@@ -463,8 +464,19 @@ committed plan.
 
 The command types live in `pichi_launch`; plans, locks and remote
 references live in `conglobate::plan`. These array envelopes replace the old map
-format. The default appliance digest must identify an image with this command
+format. The default appliance must provide this command
 contract: updating the library/source pin alone does not update the guest.
+
+### 4.4 Finish request
+
+The guest sends `["finish", 1, null]` after finalizing output, or
+`["finish", 1, "error message"]` if the build failed. The host replies
+`[true, null]` to acknowledge receipt of either outcome. Acknowledgement
+does not turn a failed build into a success.
+
+The host requires `start` followed by `finish`. Missing, malformed, or
+out-of-order commands fail the build. A successful finish is required
+alongside successful VM exit before the host imports any output.
 
 ---
 
@@ -492,7 +504,7 @@ The semantic contract is §2.
 | ----- | ------- | -------- |
 | plan | `pichi.yaml` relative to `--context` | `-p` / `--plan` |
 | lock | `pichi.lock` relative to `--context` | `-l` / `--lock` |
-| appliance | digest-pinned `DEFAULT_BUILD_IMAGE` | `-b` / `--build-image` |
+| appliance | `ghcr.io/pichi-vm/pichi-build:latest` | `-b` / `--build-image` |
 | context | `.` | `--context` |
 
 `--context` defaults to `.` on the guest when the field is omitted.
@@ -574,3 +586,82 @@ Verity reconstruction defaults are `data-block-size=4096`,
 parameters equal to these defaults. Consumers use defaults only when
 fields are absent and validate supplied overrides. Image composition
 preserves nondefault parameters; load enforces supported carapace geometry.
+
+## 10. Continuous integration
+
+`checks` validates commit messages, license headers and formatting, and selects
+candidate builds from changes to appliance inputs, dependency pins and the build
+protocol. This short initial gate avoids a separate routing job or artifact
+polling. Each native platform builds its own candidate only when needed (or with
+manual `rebuild-appliance`). Candidates stay on the runner for command and
+compatibility tests, avoiding the known large-artifact download stall on Avrea.
+There are no separate appliance jobs or redundant Fedora qualification builds.
+Only the two Linux jobs upload qualified candidates, and only on main, for the
+publication job. The dependency graph is `checks → platforms → publish`.
+
+The fail-fast platform matrix runs `x86-linux` (KVM), `arm-linux` (KVM),
+`x86-windows` (MSVC/WHP), and `arm-macos` (bare-metal HVF). Each runs native Clippy,
+workspace tests against local Zot, and `tests/command_smoke.rs`. The latter is
+ignored by plain `cargo test` because it requires a real hypervisor and registry;
+CI explicitly checks that the test exists and executes it. Missing prerequisites
+fail the job. Every CLI leaf executes successfully, including both import kinds,
+all three manifest operations, and both system operations. The build copies a
+known payload into a derived bootable image; a guest service verifies the payload
+and powers off. The test requires its success marker and a successful exit.
+
+Build compatibility combinations, each with independent test storage:
+
+| Executable | Published, digest-pinned appliance | Candidate, when rebuilt |
+| --- | --- | --- |
+| Current commit, every platform | Build and boot | Build and boot |
+| Installed Pichi package, both Linux platforms | Build and boot | Build and boot |
+
+Windows/macOS package combinations are deferred until native packaging exists.
+The test logs executable versions and appliance digests. `PICHI_SMOKE_BIN` selects
+a packaged executable; otherwise Cargo's current executable is used.
+`PICHI_DILLO` selects native Dillo; `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a
+candidate OCI layout; omitting it uses `PICHI_TEST_PREVIOUS_BUILD_IMAGE`, pinned from the change base
+by CI (or `DEFAULT_BUILD_IMAGE` for local runs). Packaged executable combinations
+exercise update, build and run; full command coverage uses the current executable. Both Linux runners
+install Pichi and Dillo from the PPA. Windows and macOS build native Dillo.
+
+Current Pichi against the candidate (or published appliance when no candidate
+is built) is required. Other combinations report failures as warnings and a
+result table without blocking CI. The `skip-compatibility` PR label or manual
+`compatibility: false` input skips only those additional combinations.
+CI resolves the base revision's appliance reference to a digest before testing,
+so advancing `:latest` cannot change the previous-appliance axis mid-run.
+
+`publish` runs only on main after rebuilt candidates pass required native tests.
+Compatibility failures never block publication. It publishes the combined index
+to `ghcr.io/pichi-vm/pichi-build:latest`, pulls into fresh storage, compares both platform
+manifest digests with the candidates, and verifies the retrieved index digest.
+Ordinary host changes neither build nor publish an appliance. New PR pushes cancel
+superseded validation; main runs are preserved so a later host-only merge cannot
+cancel an appliance publication; the platform matrix fails fast. Job and command
+timeouts bound failures. Failed command logs are uploaded; successful smoke
+storage is removed.
+
+The staged-image and submodule suites remain available with `--features vm-tests`
+for targeted local investigation. GHCR compatibility remains a manual workflow.
+Neither is automatic PR work. PPA source publication remains independent; its source preparation vendors the
+Git dependency directly, without flattening a submodule.
+
+To run the native command test locally, start a local registry (or use
+`.github/scripts/test-registry.sh` with its pinned Zot asset/hash environment),
+set `PICHI_DILLO`, and run:
+
+```sh
+cargo test --locked --test command_smoke -- \
+  --ignored --exact every_command_builds_and_boots --nocapture
+```
+
+Acceptance for CI changes: all four platforms pass all command checks; both
+required current-version build/boot paths pass; Linux reports both executable
+versions; compatibility failures are visible but non-blocking and explicitly
+skippable; required candidate/test failures block publication; successful main
+candidates advance `:latest`, the Pichi default; PRs never publish; skipped
+candidate steps do not skip platform tests; native fail-fast cancels sibling work.
+Compare ordinary and candidate runs separately, recording elapsed workflow time,
+per-job execution and queue delay. Cold dependency compilation must not be
+presented as a warm-cache measurement.
