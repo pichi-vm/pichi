@@ -289,6 +289,12 @@ or run/build launch Dillo. This single commitment covers the salt-linked
 ancestry; there are no per-scute root annotations. The guest verifies data
 blocks lazily against its trusted root. The v1 format identifiers are unchanged.
 
+Imports record the target architecture, never the importing host's architecture.
+`pichi import raw` requires `--arch amd64` or `--arch arm64` because disk
+bytes are opaque. `pichi import pmi` derives architecture from the PE header;
+`--arch` is required if it cannot be determined and must agree with a known
+header. `--carapace` selects the matching target platform from an index.
+
 `pichi import raw` records the computed chain root in the manifest annotation
 `dev.pichi.carapace.verity.hash`. Each import generates a fresh 32-byte salt
 suffix using the operating system's cryptographic random source, after the

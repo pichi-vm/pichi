@@ -8,6 +8,12 @@
 //! plan task per D-prune-T-FLOCK; flock semantics themselves are a
 //! kernel primitive proven by Phase 42 T-42-02.
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
@@ -127,7 +133,15 @@ async fn prune_all_blobs_live_prints_nothing_to_prune() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "myapp:base"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "myapp:base",
+        ])
         .assert()
         .success();
 
@@ -158,7 +172,15 @@ async fn prune_after_import_then_rmi_reports_zero_orphans() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "myapp:base"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "myapp:base",
+        ])
         .assert()
         .success();
     Command::cargo_bin("pichi")

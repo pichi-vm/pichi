@@ -3,6 +3,12 @@
 
 //! Integration tests for `pichi rmi` (LOCAL-03 / SC3 / T-42-02).
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
@@ -195,7 +201,15 @@ async fn rmi_after_import_leaves_no_orphans() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "myapp:base"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "myapp:base",
+        ])
         .assert()
         .success();
 
@@ -259,7 +273,15 @@ async fn rmi_after_attach_leaves_no_orphans() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "myapp:base"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "myapp:base",
+        ])
         .assert()
         .success();
     Command::cargo_bin("pichi")
@@ -268,6 +290,8 @@ async fn rmi_after_attach_leaves_no_orphans() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--bootconfig",
             bootconfig.to_str().unwrap(),
@@ -316,7 +340,15 @@ async fn rmi_with_other_tag_preserves_source_and_sidecars() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "tag1:v"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "tag1:v",
+        ])
         .assert()
         .success();
 

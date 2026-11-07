@@ -289,6 +289,12 @@ mod tests {
         std::fs::write(&raw, vec![0x42; 64 * 1024]).unwrap();
         let reference = "registry.example/base:1";
         crate::cmd::import::raw::ImportArgs {
+            arch: if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else {
+                "amd64"
+            }
+            .into(),
             raw_image: raw,
             tag: Some(reference.into()),
             quiet: true,

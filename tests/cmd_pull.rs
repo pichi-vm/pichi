@@ -20,6 +20,12 @@
 
 #![allow(missing_docs)]
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 use std::path::PathBuf;
 
 use assert_cmd::Command;
@@ -100,6 +106,8 @@ async fn pull_skips_existing_blobs() {
         .args([
             "import",
             "raw",
+            "--arch",
+            TEST_ARCH,
             raw.to_str().unwrap(),
             "-t",
             &format!("{base}/dedup:1"),
@@ -175,6 +183,8 @@ async fn pull_always_refetches() {
         .args([
             "import",
             "raw",
+            "--arch",
+            TEST_ARCH,
             raw.to_str().unwrap(),
             "-t",
             &format!("{base}/always:1"),
@@ -214,6 +224,8 @@ async fn pull_newer_skips_when_unchanged() {
         .args([
             "import",
             "raw",
+            "--arch",
+            TEST_ARCH,
             raw.to_str().unwrap(),
             "-t",
             &format!("{base}/newer:1"),
@@ -253,6 +265,8 @@ async fn anonymous_pull() {
         .args([
             "import",
             "raw",
+            "--arch",
+            TEST_ARCH,
             raw.to_str().unwrap(),
             "-t",
             &format!("{base}/anon:1"),

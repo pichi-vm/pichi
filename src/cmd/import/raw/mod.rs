@@ -24,6 +24,7 @@ use crate::cmd::verity::{VerityFormat as _, VerityParams};
 
 #[derive(Debug)]
 pub(crate) struct ImportArgs {
+    pub arch: String,
     /// Path to the raw image file to import.
     pub raw_image: PathBuf,
     /// Tag to assign (e.g. `myapp:base`). `None` caches the carapace without
@@ -46,6 +47,11 @@ impl ImportArgs {
         let store = FilesystemBlobStore::new(graphroot);
         let scratch = store.scratch_dir().await?;
         let quiet = self.quiet;
+        let platform = conglobate::artifact::Platform {
+            os: crate::cmd::cache::TARGET_OS.into(),
+            architecture: self.arch.clone(),
+            variant: None,
+        };
         let staged = tokio::task::spawn_blocking(move || StagedImport::new(self, &scratch))
             .await
             .context("import staging task panicked")??;
@@ -62,7 +68,9 @@ impl ImportArgs {
         store
             .put_blob(&staged.manifest_digest, &staged.manifest_bytes)
             .await?;
-        let index = store.local_index(&staged.manifest_digest, None).await?;
+        let index = store
+            .local_index(&staged.manifest_digest, Some(platform))
+            .await?;
         if let Some(tag) = &staged.tag {
             db.set_tag_locked(tag, &index).await?;
         }
@@ -197,6 +205,12 @@ mod tests {
         let graphroot = tmp.path().join("storage");
         std::fs::create_dir_all(&graphroot).unwrap();
         let args = ImportArgs {
+            arch: if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else {
+                "amd64"
+            }
+            .into(),
             raw_image,
             tag: Some(tag.to_string()),
             quiet: true,

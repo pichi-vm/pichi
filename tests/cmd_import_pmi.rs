@@ -9,6 +9,12 @@
 //! scutes are combined in. The carapace reference is read-only — its tag is
 //! never modified — and the bootable artifact is always its own `-t`.
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 #[path = "support/index.rs"]
 mod index;
 
@@ -71,13 +77,23 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
     let (raw, pmi, bootconfig) = fixtures(&tmp);
 
     pichi(&tmp)
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "app:base"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "app:base",
+        ])
         .assert()
         .success();
     pichi(&tmp)
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--bootconfig",
             bootconfig.to_str().unwrap(),
@@ -125,7 +141,15 @@ async fn legacy_carapace_composition_emits_only_a_qualified_root() {
     let g = graphroot(&tmp);
     let (raw, pmi, _) = fixtures(&tmp);
     pichi(&tmp)
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "base:1"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "base:1",
+        ])
         .assert()
         .success();
     let mut legacy = resolve_manifest(&g, "docker.io/library/base:1").await;
@@ -162,6 +186,8 @@ async fn legacy_carapace_composition_emits_only_a_qualified_root() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--carapace",
             "legacy:1",
@@ -194,7 +220,15 @@ async fn composition_omits_inherited_default_parameters() {
     let g = graphroot(&tmp);
     let (raw, pmi, _) = fixtures(&tmp);
     pichi(&tmp)
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "base:1"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "base:1",
+        ])
         .assert()
         .success();
     let mut source = resolve_manifest(&g, "docker.io/library/base:1").await;
@@ -216,6 +250,8 @@ async fn composition_omits_inherited_default_parameters() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--carapace",
             &digest.to_string(),
@@ -250,6 +286,8 @@ async fn import_pmi_without_carapace_keeps_only_boot_components() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--bootconfig",
             bootconfig.to_str().unwrap(),
@@ -287,7 +325,7 @@ async fn import_raw_without_tag_prints_digest_usable_as_carapace() {
     std::fs::write(&bootconfig, b"kernel.console = \"hvc0\";\n").unwrap();
 
     let out = pichi(&tmp)
-        .args(["import", "raw", raw.to_str().unwrap()])
+        .args(["import", "raw", "--arch", TEST_ARCH, raw.to_str().unwrap()])
         .assert()
         .success()
         .get_output()
@@ -312,6 +350,8 @@ async fn import_raw_without_tag_prints_digest_usable_as_carapace() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--bootconfig",
             bootconfig.to_str().unwrap(),
@@ -347,6 +387,8 @@ async fn import_pmi_with_config_sets_config_blob() {
             .args([
                 "import",
                 "pmi",
+                "--arch",
+                TEST_ARCH,
                 pmi.to_str().unwrap(),
                 "--bootconfig",
                 bootconfig.to_str().unwrap(),
@@ -389,7 +431,7 @@ fn import_pmi_config_errors_include_path_and_location() {
     ] {
         std::fs::write(&cfg, text).unwrap();
         let output = pichi(&tmp)
-            .args(["import", "pmi"])
+            .args(["import", "pmi", "--arch", TEST_ARCH])
             .arg(&pmi)
             .arg("--bootconfig")
             .arg(&bootconfig)
@@ -419,6 +461,8 @@ async fn import_pmi_without_tag_prints_digest_and_leaves_no_tag() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--bootconfig",
             bootconfig.to_str().unwrap(),
@@ -452,6 +496,8 @@ async fn import_pmi_missing_file_errors() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             "/nonexistent/boot.pmi",
             "--bootconfig",
             bootconfig.to_str().unwrap(),
@@ -479,6 +525,8 @@ async fn import_pmi_unknown_carapace_errors() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--bootconfig",
             bootconfig.to_str().unwrap(),
@@ -499,7 +547,15 @@ async fn import_omits_absent_and_empty_bootconfig() {
         let (_, pmi, bootconfig) = fixtures(&tmp);
         std::fs::write(&bootconfig, b"").unwrap();
         let mut command = pichi(&tmp);
-        command.args(["import", "pmi", pmi.to_str().unwrap(), "-t", "boot:1"]);
+        command.args([
+            "import",
+            "pmi",
+            "--arch",
+            TEST_ARCH,
+            pmi.to_str().unwrap(),
+            "-t",
+            "boot:1",
+        ]);
         if empty {
             command.args(["--bootconfig", bootconfig.to_str().unwrap()]);
         }
@@ -518,6 +574,8 @@ async fn native_boot_components_survive_save_and_load_exactly() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--bootconfig",
             bootconfig.to_str().unwrap(),
@@ -558,6 +616,8 @@ async fn publication_rechecks_cached_bootconfig_bytes() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--bootconfig",
             bootconfig.to_str().unwrap(),
@@ -592,7 +652,15 @@ async fn empty_bootconfig_request_rechecks_the_cached_pmi() {
     let root = graphroot(&source);
     let (_, pmi, config) = fixtures(&source);
     pichi(&source)
-        .args(["import", "pmi", pmi.to_str().unwrap(), "-t", "boot:1"])
+        .args([
+            "import",
+            "pmi",
+            "--arch",
+            TEST_ARCH,
+            pmi.to_str().unwrap(),
+            "-t",
+            "boot:1",
+        ])
         .assert()
         .success();
     let manifest = resolve_manifest(&root, "docker.io/library/boot:1").await;
@@ -607,6 +675,8 @@ async fn empty_bootconfig_request_rechecks_the_cached_pmi() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--bootconfig",
             config.to_str().unwrap(),
@@ -624,4 +694,77 @@ async fn empty_bootconfig_request_rechecks_the_cached_pmi() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn imports_target_architecture_independently_of_host() {
+    for (machine, arch) in [(0x8664u16, "amd64"), (0xaa64, "arm64")] {
+        let tmp = TempDir::new().unwrap();
+        let g = graphroot(&tmp);
+        let (raw, pmi, _) = fixtures(&tmp);
+        // Minimal PE32+ header: enough to identify the target, not a bootable PMI.
+        let mut pe = vec![0; 512];
+        pe[..2].copy_from_slice(b"MZ");
+        pe[60..64].copy_from_slice(&128u32.to_le_bytes());
+        pe[128..132].copy_from_slice(b"PE\0\0");
+        pe[132..134].copy_from_slice(&machine.to_le_bytes());
+        pe[148..150].copy_from_slice(&240u16.to_le_bytes());
+        pe[152..154].copy_from_slice(&0x20bu16.to_le_bytes());
+        std::fs::write(&pmi, pe).unwrap();
+        pichi(&tmp)
+            .args([
+                "import",
+                "raw",
+                raw.to_str().unwrap(),
+                "--arch",
+                arch,
+                "-t",
+                "base:1",
+            ])
+            .assert()
+            .success();
+        pichi(&tmp)
+            .args([
+                "import",
+                "pmi",
+                pmi.to_str().unwrap(),
+                "--carapace",
+                "base:1",
+                "-t",
+                "boot:1",
+            ])
+            .assert()
+            .success();
+        let db = FilesystemTagDb::open(&g).unwrap();
+        let digest = db
+            .resolve_tag("docker.io/library/boot:1")
+            .await
+            .unwrap()
+            .unwrap();
+        let bytes = FilesystemBlobStore::new(&g)
+            .get_blob(&digest)
+            .await
+            .unwrap();
+        let index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(index["manifests"][0]["platform"]["architecture"], arch);
+        let wrong = if arch == "amd64" { "arm64" } else { "amd64" };
+        pichi(&tmp)
+            .args(["import", "pmi", pmi.to_str().unwrap(), "--arch", wrong])
+            .assert()
+            .failure();
+    }
+}
+
+#[test]
+fn unknown_import_architecture_requires_explicit_choice() {
+    let tmp = TempDir::new().unwrap();
+    let (raw, pmi, _) = fixtures(&tmp);
+    for (kind, path) in [("raw", raw), ("pmi", pmi)] {
+        let output = pichi(&tmp)
+            .args(["import", kind])
+            .arg(path)
+            .assert()
+            .failure();
+        assert!(String::from_utf8_lossy(&output.get_output().stderr).contains("--arch"));
+    }
 }

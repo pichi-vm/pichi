@@ -4,6 +4,12 @@
 #[path = "support/index.rs"]
 mod index;
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 use assert_cmd::Command;
 use conglobate::artifact::{Digest, Manifest};
 use pichi::cmd::manifest_ext::ManifestExt as _;
@@ -20,7 +26,7 @@ async fn save_load_preserves_manifest_and_rebuilds_verity_on_cache_hits() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", &source)
-        .args(["import", "raw"])
+        .args(["import", "raw", "--arch", TEST_ARCH])
         .arg(&raw)
         .args(["-t", "roundtrip:v1"])
         .assert()
@@ -107,7 +113,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
         let output = Command::cargo_bin("pichi")
             .unwrap()
             .env("XDG_DATA_HOME", &source_home)
-            .args(["import", "raw"])
+            .args(["import", "raw", "--arch", TEST_ARCH])
             .arg(&raw)
             .args(["-t", &tag, "--quiet"])
             .assert()

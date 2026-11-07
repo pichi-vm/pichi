@@ -3,6 +3,12 @@
 
 //! Cache lifetime follows OCI indexes, including shared and partially cached images.
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 use conglobate::artifact::Digest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use serde_json::json;
@@ -516,7 +522,15 @@ async fn local_imports_publish_retained_platform_indexes() {
     let fixture = Fixture::new().await;
     let raw = fixture.directory.path().join("input.raw");
     std::fs::write(&raw, [42; 8192]).unwrap();
-    let output = fixture.run(&["import", "raw", raw.to_str().unwrap(), "-t", "local:base"]);
+    let output = fixture.run(&[
+        "import",
+        "raw",
+        "--arch",
+        TEST_ARCH,
+        raw.to_str().unwrap(),
+        "-t",
+        "local:base",
+    ]);
     assert!(
         output.status.success(),
         "{}",
@@ -595,7 +609,15 @@ async fn publishers_wait_for_collection_before_writing_blobs() {
             .unwrap_or_else(|| "local:locked".into());
         if matches!(kind, "load" | "pull") {
             for args in [
-                vec!["import", "raw", raw.to_str().unwrap(), "-t", &tag],
+                vec![
+                    "import",
+                    "raw",
+                    "--arch",
+                    TEST_ARCH,
+                    raw.to_str().unwrap(),
+                    "-t",
+                    &tag,
+                ],
                 if kind == "load" {
                     vec!["save", &tag, "-o", saved.to_str().unwrap()]
                 } else {
@@ -629,7 +651,15 @@ async fn publishers_wait_for_collection_before_writing_blobs() {
                 command.args(["pull", &tag]);
             }
             _ => {
-                command.args(["import", kind, raw.to_str().unwrap(), "-t", &tag]);
+                command.args([
+                    "import",
+                    kind,
+                    "--arch",
+                    TEST_ARCH,
+                    raw.to_str().unwrap(),
+                    "-t",
+                    &tag,
+                ]);
             }
         }
         let mut child = command.spawn().unwrap();

@@ -19,6 +19,12 @@
 
 #![allow(missing_docs)]
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 #[path = "support/index.rs"]
 mod index;
 
@@ -123,7 +129,15 @@ async fn bit_identical_round_trip() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", &tag])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            &tag,
+        ])
         .assert()
         .success();
     let snap_before = snapshot_cache(&g);
@@ -261,6 +275,8 @@ async fn bootconfig_and_pmi_are_byte_identical_after_registry_round_trip() {
         .args([
             "import",
             "pmi",
+            "--arch",
+            TEST_ARCH,
             pmi.to_str().unwrap(),
             "--bootconfig",
             config.to_str().unwrap(),
@@ -306,7 +322,15 @@ async fn index_pin_survives_tag_move_and_fresh_cache() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", source.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", &tag])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            &tag,
+        ])
         .assert()
         .success();
     let root = graphroot(&source);

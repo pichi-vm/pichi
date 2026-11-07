@@ -19,6 +19,12 @@ pub mod process;
 mod root_disk;
 pub mod stages;
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -192,6 +198,8 @@ pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) -> String 
             &[
                 "import",
                 "raw",
+                "--arch",
+                TEST_ARCH,
                 src.to_str().unwrap(),
                 "-t",
                 SMOKE_SOURCE_REF,
