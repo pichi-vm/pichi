@@ -115,9 +115,8 @@ fn staged_images_create_extend_and_compose() {
     let matrix = Matrix { builds, root };
     let builds = &matrix.builds;
 
-    let arma = builds.guest_arma();
     let corium = builds.guest_binary("corium", Path::new(common::CORIUM_BIN));
-    let firmware = [("arma", arma.as_path()), ("corium", corium.as_path())];
+    let firmware = [("corium", corium.as_path())];
     let bootable = builds.build(
         "bootable",
         include_str!("staged_images/firmware.yaml"),
@@ -271,7 +270,7 @@ image:
     let new_firmware = builds.build(
         "new-firmware",
         &replacement_plan,
-        &[("arma", &arma), ("corium", &replacement_corium)],
+        &[("corium", &replacement_corium)],
     );
     assert_eq!(new_firmware.layers("scute"), extended.layers("scute"));
     assert_ne!(new_firmware.bytes("pmi"), extended.bytes("pmi"));

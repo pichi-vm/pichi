@@ -386,15 +386,14 @@ Linux runs can create it with `mkfs.ext4` when that variable is unset.
 executables can be stripped on Windows and macOS as well. Local runs default
 to `strip`.
 
-Use a rebuilt appliance OCI layout, a static musl build of the pinned Arma,
-and a newly compiled static release Corium for qualification. Arma runs inside
-Fedora, so it must not depend on the host's dynamic loader. Corium's release
-binary replaces the test artifact's firmware while preserving the selected root.
-The platform CI workflow builds both guest tools for the native architecture:
+Use a rebuilt appliance OCI layout and a newly compiled static release Corium
+for qualification. The Fedora test root installs Arma from the signed
+`npmccallum/pichi` COPR repository. Corium's release binary replaces the test
+artifact's firmware while preserving the selected root. The platform CI
+workflow builds replacement Corium for the native guest architecture:
 
 ```sh
 PICHI_TEST_BUILD_IMAGE_LAYOUT=/path/to/appliance-oci \
-PICHI_TEST_GUEST_ARMA=/path/to/musl/release/arma \
 PICHI_TEST_REPLACEMENT_CORIUM=/path/to/release/corium \
 PICHI_TEST_EVIDENCE=/path/to/evidence \
 cargo +nightly-2026-07-06 test --locked --features vm-tests --test staged_images -- --nocapture

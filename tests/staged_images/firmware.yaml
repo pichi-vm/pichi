@@ -8,11 +8,10 @@ stages:
     mounts:
       /tmp: tmpfs
     steps:
-      - copy: {path: arma, into: /tmp/arma}
       - copy: {path: corium, into: /tmp/corium}
       - exec:
           command: |
-            chmod +x /tmp/arma /tmp/corium
+            chmod +x /tmp/corium
             set -- /usr/lib/modules/*
             test "$#" -eq 1
             modules=$1
@@ -30,7 +29,7 @@ stages:
               fi
             done < /tmp/module-list
             (cd /tmp/initrd && find . -print0 | cpio --null --create --format=newc --quiet) > /tmp/initrd.cpio
-            /tmp/arma build --kernel "$modules/vmlinuz" --config "$modules/config" --initrd /tmp/initrd.cpio --cmdline bootconfig --dtb attached /out/boot.pmi
+            arma build --kernel "$modules/vmlinuz" --config "$modules/config" --initrd /tmp/initrd.cpio --cmdline bootconfig --dtb attached /out/boot.pmi
 image:
   root: qualification.local/base:1
   boot:

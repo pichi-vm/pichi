@@ -235,19 +235,15 @@ jobs:
             -t qualification.local/fedora:build
           pichi inspect qualification.local/fedora:build > "$RUNNER_TEMP/fedora-output.json"
 
-      - name: Build guest tools for staged images
+      - name: Build replacement Corium for staged images
         shell: bash
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
         run: |
-          cargo install -Z bindeps --locked --git https://github.com/pichi-vm/arma \
-            --rev 3297920b46122689fb13ca41acd61cbe94ac1de7 \
-            --target "${{ matrix.guest_musl }}" --root "$RUNNER_TEMP/arma-guest" arma
           cargo install --locked --git https://github.com/pichi-vm/corium \
             --rev c33ae0e01d58b657f8f62cb91672885326a903b9 \
             --target "${{ matrix.guest_musl }}" --root "$RUNNER_TEMP/corium-release" corium
-          echo "PICHI_TEST_GUEST_ARMA=$RUNNER_TEMP/arma-guest/bin/arma" >> "$GITHUB_ENV"
           echo "PICHI_TEST_REPLACEMENT_CORIUM=$RUNNER_TEMP/corium-release/bin/corium" >> "$GITHUB_ENV"
           echo "PICHI_TEST_EVIDENCE=$RUNNER_TEMP/staged-image-evidence" >> "$GITHUB_ENV"
 
