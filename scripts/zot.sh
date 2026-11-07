@@ -10,10 +10,8 @@
 #   scripts/zot.sh test    # ensure zot is up, then run the gated round-trip tests
 #
 # The push/pull/round-trip tests in pichi/tests/ skip silently unless
-# PICHI_TEST_REGISTRY is set. Once zot is up you can run them by hand with:
-#
-#   PICHI_TEST_REGISTRY=localhost:5000 PICHI_TEST_REGISTRY_INSECURE=1 \
-#     cargo test -p pichi --test cmd_pull --test cmd_push --test cmd_pull_push_roundtrip
+# PICHI_TEST_REGISTRY is set. The test command supplies a PICHI_CONFIG file
+# enabling HTTP for the local registry through ordinary registry configuration.
 #
 # Env overrides: PICHI_ZOT_PORT, PICHI_ZOT_IMAGE, PICHI_CONTAINER_ENGINE.
 set -euo pipefail
@@ -56,7 +54,13 @@ logs() { "$ENG" logs -f "$NAME"; }
 
 run_tests() {
   up
-  PICHI_TEST_REGISTRY="localhost:${PORT}" PICHI_TEST_REGISTRY_INSECURE=1 \
+  mkdir -p "$CFG_DIR"
+  cat > "$CFG_DIR/pichi.toml" <<EOF
+[[registries]]
+prefix = "localhost:${PORT}"
+insecure = true
+EOF
+  PICHI_TEST_REGISTRY="localhost:${PORT}" PICHI_CONFIG="$CFG_DIR/pichi.toml" \
     cargo test -p pichi --test cmd_pull --test cmd_push --test cmd_pull_push_roundtrip "$@"
 }
 

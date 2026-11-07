@@ -377,11 +377,17 @@ impl Registry {
     }
 
     fn update(&self, project: &Project, policy: Option<&str>) -> Output {
+        fs::write(
+            project.0.path().join("config.toml"),
+            format!(
+                "[storage]\ngraphroot = {:?}\n[[registries]]\nprefix = {:?}\ninsecure = true\n",
+                project.cache().to_str().unwrap(),
+                self.address,
+            ),
+        )
+        .unwrap();
         let mut command = project.command();
-        command
-            .env("PICHI_TEST_REGISTRY", &self.address)
-            .env("PICHI_TEST_REGISTRY_INSECURE", "1")
-            .arg("update");
+        command.arg("update");
         if let Some(policy) = policy {
             command.args(["--pull", policy]);
         }

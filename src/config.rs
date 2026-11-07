@@ -100,47 +100,20 @@ impl Config {
         Ok(layout)
     }
 
-    /// Translate `self.registries` into `pichi-registry`'s `RegistryEntry`
-    /// list. Honours the `PICHI_TEST_REGISTRY` / `PICHI_TEST_REGISTRY_INSECURE`
-    /// env-var pair so CI integration tests can target an HTTP-only zot without
-    /// a config file; the env bridge is a no-op outside CI.
+    /// Translate configured registries into `pichi-registry` entries.
     pub fn registry_entries(&self) -> Vec<RegistryEntry> {
-        let test_reg = std::env::var("PICHI_TEST_REGISTRY").ok();
-        let test_insec = std::env::var("PICHI_TEST_REGISTRY_INSECURE")
-            .ok()
-            .is_some_and(|v| !v.is_empty());
-
-        let mut entries: Vec<RegistryEntry> = self
-            .registries
+        self.registries
             .iter()
-            .map(|r| {
-                let auth_hint = r.auth.as_ref().map(|a| AuthHint {
+            .map(|r| RegistryEntry {
+                prefix: r.prefix.clone(),
+                insecure: r.insecure,
+                auth_hint: r.auth.as_ref().map(|a| AuthHint {
                     username: a.username.clone(),
                     password: a.password.clone(),
                     identity_token: a.identity_token.clone(),
-                });
-                let insecure =
-                    r.insecure || (test_insec && test_reg.as_deref() == Some(r.prefix.as_str()));
-                RegistryEntry {
-                    prefix: r.prefix.clone(),
-                    insecure,
-                    auth_hint,
-                }
+                }),
             })
-            .collect();
-
-        // If the test registry isn't declared in config, synthesise an insecure
-        // entry so integration tests work without a config file.
-        if let Some(reg) = test_reg {
-            if test_insec && !entries.iter().any(|e| e.prefix == reg) {
-                entries.push(RegistryEntry {
-                    prefix: reg,
-                    insecure: true,
-                    auth_hint: None,
-                });
-            }
-        }
-        entries
+            .collect()
     }
 
     /// Construct an [`HttpRegistry`] from this config.

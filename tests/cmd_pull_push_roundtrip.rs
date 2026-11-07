@@ -12,10 +12,9 @@
 // in 44-VALIDATION.md.
 //
 // Gating: silently skips when `PICHI_TEST_REGISTRY` is unset (matches the
-// pattern in tests/cmd_pull.rs and tests/cmd_push.rs). The CI
-// `registry-pull-push` job sets `PICHI_TEST_REGISTRY=localhost:5000` +
-// `PICHI_TEST_REGISTRY_INSECURE=1` to exercise the full pipeline against the
-// ephemeral zot container.
+// pattern in tests/cmd_pull.rs and tests/cmd_push.rs).
+// The Zot launcher supplies PICHI_TEST_REGISTRY and a PICHI_CONFIG file
+// enabling HTTP for that registry through ordinary configuration.
 
 #![allow(missing_docs)]
 
