@@ -82,7 +82,8 @@ jobs:
         run: git submodule update --init appliance/dillo
 
       - name: ♻️ Restore build cache
-        uses: Swatinem/rust-cache@v2
+        # Temporary fork until https://github.com/Swatinem/rust-cache/pull/400 lands.
+        uses: pichi-vm/rust-cache@c21f30586e995d7bc93110b6538b713925f08b18
         with:
           workspaces: |
             . -> target
