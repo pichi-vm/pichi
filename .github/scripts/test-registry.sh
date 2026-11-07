@@ -52,4 +52,8 @@ done
 curl -fsS "http://$registry_address/v2/" >/dev/null
 export PICHI_TEST_REGISTRY="$registry_address"
 export PICHI_TEST_REGISTRY_INSECURE=1
-cargo test --locked --workspace --no-fail-fast
+if [ "$#" -eq 0 ]; then
+  cargo test --locked --workspace
+else
+  "$@"
+fi

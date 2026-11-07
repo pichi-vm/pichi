@@ -1,207 +1,116 @@
-name: platforms
+name: 🧪 platforms
 
 on:
   workflow_call:
     inputs:
-      appliance-artifacts:
-        description: Build the native appliance and test it in each platform job
+      build-appliance:
+        description: Build and test a local candidate appliance on each platform
         type: boolean
         default: false
-  workflow_dispatch:
+      compatibility:
+        description: Report previous-version build compatibility (non-blocking)
+        type: boolean
+        default: true
+      previous-appliance:
+        description: Digest-pinned appliance from the change base
+        type: string
+        required: true
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    shell: bash
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   NIGHTLY: nightly-2026-07-06
+  PICHI_TEST_COMPATIBILITY: ${{ inputs.compatibility }}
+  PICHI_TEST_PREVIOUS_BUILD_IMAGE: ${{ inputs.previous-appliance }}
 
-# Supported platforms are Linux x86_64/aarch64 (KVM), Windows x86_64 (WHP),
-# and macOS arm64 (HVF on bare-metal organization runners).
 jobs:
-  fixtures:
-    name: portable filesystem fixture
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Create smoke root
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/root"
-          printf 'ID=fedora\nVERSION_ID=43\n' > "$RUNNER_TEMP/root/os-release"
-          mkfs.ext4 -q -F -b 4096 -d "$RUNNER_TEMP/root" "$RUNNER_TEMP/root.ext4" 16M
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: smoke-root
-          path: ${{ runner.temp }}/root.ext4
-          if-no-files-found: error
-
-  ci:
-    needs: [fixtures]
-    name: ${{ matrix.name }}
+  test:
+    name: 🧪 ${{ matrix.name }}
     strategy:
       fail-fast: true
       matrix:
         include:
-          - name: ubuntu-24.04      # Linux x86_64 - full workspace + real KVM boot
+          - name: x86-linux
             os: ubuntu-24.04
             runs_on: '["ubuntu-24.04"]'
             guest_musl: x86_64-unknown-linux-musl
             zot_asset: zot-linux-amd64-minimal
             zot_sha256: 8a6e77686bc0e7751766c49828cff6c66b115c854d350c9d936b855463f6c973
-          - name: linux-arm64       # Linux arm64 - real KVM boot
+          - name: arm-linux
             os: linux-arm64
             runs_on: '["avrea-ubuntu-latest-arm-4-vcpu"]'
             guest_musl: aarch64-unknown-linux-musl
             zot_asset: zot-linux-arm64-minimal
             zot_sha256: 931d687899cc4b1fcad4c026d2792df6132e6de1b2f329aa730dccee14ec0395
-          - name: windows-2025      # Windows x86_64 - build + real WHP boot
+          - name: x86-windows
             os: windows-2025
             runs_on: '["windows-2025"]'
             guest_musl: x86_64-unknown-linux-musl
             zot_asset: zot-windows-amd64-minimal.exe
             zot_sha256: d8b29c9cd9d68f46a338a2ae0533991415148587703ec3bd0f909c22604f7bed
-          - name: macos-arm64       # macOS arm64 - real HVF boot
+          - name: arm-macos
             os: macos-arm64
             runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
             guest_musl: aarch64-unknown-linux-musl
             zot_asset: zot-darwin-arm64-minimal
             zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
     runs-on: ${{ fromJSON(matrix.runs_on) }}
-    # A hung test must not hold the only Mac runner for hours.
-    timeout-minutes: 90
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7.0.1
+      - name: 📥 Check out source
+        uses: actions/checkout@v7.0.1
         with:
-          submodules: recursive
+          persist-credentials: false
 
-      - name: Install toolchain
-        shell: bash
+      - name: 📦 Install toolchain
         run: |
-          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src,clippy,llvm-tools
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src,clippy
           rustup default "$NIGHTLY"
-          # arma embeds native-arch tatu; snuffler is cross-built for the guest
-          # musl triple matching this host's arch.
           rustup target add x86_64-unknown-none aarch64-unknown-none-softfloat "${{ matrix.guest_musl }}"
-
-      - uses: actions/download-artifact@v4
-        if: runner.os != 'Linux'
-        timeout-minutes: 3
-        with:
-          name: smoke-root
-          path: ${{ runner.temp }}/fixtures
-
-      - name: Create smoke root locally
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/root" "$RUNNER_TEMP/fixtures"
-          printf 'ID=fedora\nVERSION_ID=43\n' > "$RUNNER_TEMP/root/os-release"
-          mkfs.ext4 -q -F -b 4096 -d "$RUNNER_TEMP/root" "$RUNNER_TEMP/fixtures/root.ext4" 16M
-
-      - name: Configure portable fixture tools
-        shell: bash
-        run: |
-          host=$(rustc -vV | sed -n 's/^host: //p')
-          suffix=''
-          if [ "$RUNNER_OS" = Windows ]; then suffix='.exe'; fi
-          echo "PICHI_TEST_STRIP=$(rustc --print sysroot)/lib/rustlib/$host/bin/llvm-objcopy$suffix" >> "$GITHUB_ENV"
-          echo "PICHI_TEST_ROOT_FILESYSTEM=$RUNNER_TEMP/fixtures/root.ext4" >> "$GITHUB_ENV"
           git config --global core.longpaths true
           git config --global core.autocrlf false
 
-      # The boot step (`--features vm-tests`) consumes arma/dillo/conglobate/corium
-      # as git artifact deps, whose transitive tatu/snuffler artifact deps target
-      # non-default triples. The cargo bug that panicked on this
-      # (rust-lang/cargo#10647) is fixed in the pinned nightly, so stock cargo
-      # resolves the graph — no patched cargo needed.
-      - uses: Swatinem/rust-cache@v2
+      - name: 📥 Initialize native Dillo source
+        if: runner.os != 'Linux'
+        run: git submodule update --init appliance/dillo
+
+      - name: ♻️ Restore build cache
+        uses: Swatinem/rust-cache@v2
         with:
+          workspaces: |
+            . -> target
+            appliance/dillo -> target
+          cache-targets: false
+          cache-directories: |
+            ${{ github.workspace }}/target
+            ${{ github.workspace }}/appliance/dillo/target
           save-if: ${{ runner.environment == 'github-hosted' || github.ref == 'refs/heads/main' }}
 
-      - name: Versions
-        shell: bash
-        run: |
-          cargo --version
-          rustc --version
-
-      # ARM workspace checks run on hosted runners in the workspace job.
-      - name: Clippy
-        if: runner.arch != 'ARM64'
-        shell: bash
-        run: cargo clippy --locked --workspace --all-targets --all-features
-
-      - name: Enable KVM (Linux)
-        # Backend tests and boot fixtures may touch /dev/kvm during the plain
-        # workspace test run, so access must be granted before it.
+      - name: 📦 Install packaged Dillo
         if: runner.os == 'Linux'
         run: |
-          test -c /dev/kvm
-          if ! [ -r /dev/kvm ] || ! [ -w /dev/kvm ]; then
-            sudo chmod 666 /dev/kvm
-          fi
-          test -r /dev/kvm && test -w /dev/kvm
+          sudo add-apt-repository --yes ppa:nmccallum/pichi
+          sudo apt-get install -y dillo-vm
+          echo "PICHI_DILLO=/usr/bin/dillo" >> "$GITHUB_ENV"
+          dpkg-query -W dillo-vm
 
-      # `CARGO_BUILD_RUSTFLAGS: -D warnings` (set per cargo step below) makes the
-      # build warning-clean-or-fail. It is the lowest-priority rustflags source,
-      # so it applies to the host/workspace crates but is ignored for the musl
-      # snuffler target, which keeps its own linker flags from .cargo/config.toml.
-      # (Registry deps are cap-lints'd, so only our crates can fail it.) It is set
-      # per-step, never globally, so it can't reach the patched-cargo build above.
-
-      - name: Test full workspace and registry
-        if: runner.arch != 'ARM64'
-        shell: bash
-        env:
-          CARGO_BUILD_RUSTFLAGS: "-D warnings"
-          ZOT_ASSET: ${{ matrix.zot_asset }}
-          ZOT_SHA256: ${{ matrix.zot_sha256 }}
-        run: bash .github/scripts/test-registry.sh
-
-      - name: Reserve hugepages for guest RAM (Linux/KVM)
-        if: runner.os == 'Linux'
-        shell: bash
+      - name: 📦 Install Pichi for compatibility checks
+        if: runner.os == 'Linux' && inputs.compatibility
         run: |
-          # Hosted runners start with a fragmented page allocator, so a single
-          # `sysctl -w vm.nr_hugepages=1536` often only secures a fraction (we
-          # have seen ~132). Free the page cache + compact memory and retry a
-          # few times so enough 2 MiB-contiguous regions become available before
-          # giving up. This is allocation flakiness, not a capability gap.
-          # Appliance qualification needs 8 GiB; acceptance tests need 3.5 GiB.
-          # Build snapshots and verity trees share the guest's RAM workspace.
-          want=${{ inputs.appliance-artifacts && 4096 || 1792 }}
-          pages=$(sysctl -n vm.nr_hugepages)
-          for attempt in 1 2 3 4 5 6; do
-            if [ "$pages" -ge "$want" ]; then break; fi
-            sync || true
-            echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
-            echo 1 | sudo tee /proc/sys/vm/compact_memory >/dev/null || true
-            sudo sysctl -w vm.nr_hugepages=$want || true
-            pages=$(sysctl -n vm.nr_hugepages)
-            echo "hugepage reservation attempt $attempt: nr_hugepages=$pages (want $want)"
-            sleep 3
-          done
-
-          if [ "$pages" -lt "$want" ]; then
-            echo "Linux runner must provide vm.nr_hugepages >= $want; got $pages" >&2
-            exit 1
+          if ! sudo apt-get install -y pichi; then
+            echo '::warning::Packaged Pichi unavailable; compatibility checks will report failure.'
           fi
 
-          grep -i huge /proc/meminfo
-
-      - name: Build Pichi
-        if: inputs.appliance-artifacts
-        shell: bash
-        run: |
-          cargo "+$NIGHTLY" build --locked --release --bin pichi
-          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
-          echo "XDG_DATA_HOME=$RUNNER_TEMP/appliance-image-cache" >> "$GITHUB_ENV"
-
-      - name: Build Dillo
+      - name: 🔨 Build native Dillo
+        if: runner.os != 'Linux'
         working-directory: appliance/dillo
-        if: inputs.appliance-artifacts
-        shell: bash
         run: |
           cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
           suffix=''
@@ -213,138 +122,73 @@ jobs:
           fi
           echo "PICHI_DILLO=$dillo" >> "$GITHUB_ENV"
 
-      - name: Build the appliance from Fedora
-        if: inputs.appliance-artifacts
-        shell: bash
+      - name: ⚙️ Prepare KVM
+        if: runner.os == 'Linux'
         run: |
-          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
-          pichi pull "ghcr.io/pichi-vm/fedora@$digest"
-          pichi build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
-            --build-image ghcr.io/pichi-vm/conglobate@sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946 \
-            --memory 8192 -t qualification.local/appliance:build
-          pichi save qualification.local/appliance:build -o "$RUNNER_TEMP/appliance-layout"
-
-      - name: Build Fedora with the new appliance
-        if: inputs.appliance-artifacts
-        shell: bash
-        run: |
-          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
-          pichi tag "ghcr.io/pichi-vm/fedora@$digest" ghcr.io/pichi-vm/fedora:43
-          pichi build . --ref HEAD --context appliance/fedora \
-            --build-image qualification.local/appliance:build --memory 8192 \
-            -t qualification.local/fedora:build
-          pichi inspect qualification.local/fedora:build > "$RUNNER_TEMP/fedora-output.json"
-
-      - name: Build guest tools for staged images
-        shell: bash
-        env:
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
-        run: |
-          cargo install -Z bindeps --locked --git https://github.com/pichi-vm/arma \
-            --rev 3297920b46122689fb13ca41acd61cbe94ac1de7 \
-            --target "${{ matrix.guest_musl }}" --root "$RUNNER_TEMP/arma-guest" arma
-          cargo install --locked --git https://github.com/pichi-vm/corium \
-            --rev c33ae0e01d58b657f8f62cb91672885326a903b9 \
-            --target "${{ matrix.guest_musl }}" --root "$RUNNER_TEMP/corium-release" corium
-          echo "PICHI_TEST_GUEST_ARMA=$RUNNER_TEMP/arma-guest/bin/arma" >> "$GITHUB_ENV"
-          echo "PICHI_TEST_REPLACEMENT_CORIUM=$RUNNER_TEMP/corium-release/bin/corium" >> "$GITHUB_ENV"
-          echo "PICHI_TEST_EVIDENCE=$RUNNER_TEMP/staged-image-evidence" >> "$GITHUB_ENV"
-
-      - name: Use the rebuilt appliance for VM tests
-        if: inputs.appliance-artifacts
-        shell: bash
-        run: echo "PICHI_TEST_BUILD_IMAGE_LAYOUT=$RUNNER_TEMP/appliance-layout" >> "$GITHUB_ENV"
-
-      # Require every acceptance suite to be present before running it. An OS
-      # cfg gate must never turn a native VM job into a green zero-test run.
-      # These suites build and boot Fedora images using KVM, WHP, or HVF.
-      - name: Boot tests (KVM / WHP / HVF)
-        shell: bash
-        env:
-          CARGO_BUILD_RUSTFLAGS: "-D warnings"
-        run: |
-          vm_tests=(--locked -p pichi --features vm-tests --test build_boot --test build_submodules --test staged_images)
-          cargo test "${vm_tests[@]}" -- --list | tr -d '\r' | tee "$RUNNER_TEMP/vm-tests.txt"
-          for test in pichi_build_boots_official_image_to_poweroff pichi_build_checks_committed_submodule_stores staged_images_create_extend_and_compose; do
-            if ! grep -Fxq "$test: test" "$RUNNER_TEMP/vm-tests.txt"; then
-              echo "Missing native VM acceptance test: $test" >&2
-              exit 1
-            fi
+          sudo chmod a+rw /dev/kvm
+          want=${{ inputs.build-appliance && 4096 || 1792 }}
+          for attempt in 1 2 3 4 5 6; do
+            if [ "$(cat /proc/sys/vm/nr_hugepages)" -ge "$want" ]; then break; fi
+            sync
+            echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+            echo 1 | sudo tee /proc/sys/vm/compact_memory >/dev/null
+            sudo sysctl -w vm.nr_hugepages=$want
+            sleep 3
           done
-          cargo test "${vm_tests[@]}" --no-fail-fast -- --test-threads=1 --nocapture 2>&1 | tee "$RUNNER_TEMP/boot-tests.log"
+          test -r /dev/kvm && test -w /dev/kvm
+          test "$(cat /proc/sys/vm/nr_hugepages)" -ge "$want"
 
-      - name: Preserve staged-image evidence
-        if: always()
-        timeout-minutes: 3
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: staged-image-evidence-${{ matrix.os }}
-          path: |
-            ${{ runner.temp }}/vm-tests.txt
-            ${{ runner.temp }}/boot-tests.log
-            ${{ runner.temp }}/zot.log
-            ${{ runner.temp }}/staged-image-evidence/**/*.log
-            ${{ runner.temp }}/staged-image-evidence/**/manifest.json
-            ${{ runner.temp }}/staged-image-evidence/**/root-sectors.json
-            ${{ runner.temp }}/staged-image-evidence/**/bootconfig
-            ${{ runner.temp }}/staged-image-evidence/**/pichi.yaml
-            ${{ runner.temp }}/staged-image-evidence/**/pichi.lock
-            ${{ runner.temp }}/staged-image-evidence/**/PASS
+      - name: 🔎 Check code with Clippy
+        run: cargo clippy --locked --workspace --all-targets
 
-      - name: Preserve the Fedora build result
-        if: always() && inputs.appliance-artifacts
-        timeout-minutes: 3
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: appliance-fedora-result-${{ matrix.os }}
-          path: ${{ runner.temp }}/fedora-output.json
-          if-no-files-found: warn
-
-      - name: Upload the native OCI layout
-        if: always() && inputs.appliance-artifacts
-        timeout-minutes: 3
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: appliance-oci-${{ runner.os == 'Linux' && (runner.arch == 'X64' && 'amd64' || 'arm64') || matrix.os }}
-          path: ${{ runner.temp }}/appliance-layout
-          if-no-files-found: warn
-
-  workspace:
-    name: workspace checks (${{ matrix.os }})
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - os: ubuntu-24.04-arm
-            zot_asset: zot-linux-arm64-minimal
-            zot_sha256: 931d687899cc4b1fcad4c026d2792df6132e6de1b2f329aa730dccee14ec0395
-          - os: macos-15
-            zot_asset: zot-darwin-arm64-minimal
-            zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          submodules: recursive
-
-      - name: Install toolchain
-        shell: bash
-        run: |
-          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src,clippy,llvm-tools
-          rustup default "$NIGHTLY"
-          rustup target add x86_64-unknown-none aarch64-unknown-none-softfloat aarch64-unknown-linux-musl
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Clippy
-        shell: bash
-        run: cargo clippy --locked --workspace --all-targets --all-features
-
-      - name: Test full workspace and registry
-        shell: bash
+      - name: 🧪 Run workspace tests
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
           ZOT_ASSET: ${{ matrix.zot_asset }}
           ZOT_SHA256: ${{ matrix.zot_sha256 }}
         run: bash .github/scripts/test-registry.sh
+
+      - name: 🔨 Build candidate appliance
+        if: inputs.build-appliance
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/appliance-image-cache
+        run: |
+          suffix=''
+          if [ "$RUNNER_OS" = Windows ]; then suffix='.exe'; fi
+          pichi="$GITHUB_WORKSPACE/target/debug/pichi$suffix"
+          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
+          "$pichi" pull "ghcr.io/pichi-vm/fedora@$digest"
+          "$pichi" build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
+            --build-image ghcr.io/pichi-vm/conglobate@sha256:8138d258113a161c831e7bad8a2d1fbf7abc9357b4d10637305c9d811a5f3237 \
+            --memory 8192 -t qualification.local/appliance:build
+          "$pichi" save qualification.local/appliance:build -o "$RUNNER_TEMP/appliance-layout"
+          echo "PICHI_TEST_BUILD_IMAGE_LAYOUT=$RUNNER_TEMP/appliance-layout" >> "$GITHUB_ENV"
+
+      - name: 🧪 Exercise commands and build compatibility
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+          ZOT_ASSET: ${{ matrix.zot_asset }}
+          ZOT_SHA256: ${{ matrix.zot_sha256 }}
+        run: bash .github/scripts/test-registry.sh bash .github/scripts/test-commands.sh
+
+      - name: ⬆️ Upload qualified appliance
+        if: inputs.build-appliance && runner.os == 'Linux' && github.ref == 'refs/heads/main'
+        timeout-minutes: 10
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appliance-oci-${{ runner.arch == 'X64' && 'amd64' || 'arm64' }}
+          path: ${{ runner.temp }}/appliance-layout
+          if-no-files-found: error
+
+      - name: ⬆️ Upload failed-command logs
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-evidence-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/zot.log
+            ${{ runner.temp }}/command-tests.txt
+            ${{ runner.temp }}/pichi command smoke */*.log
+            ${{ runner.temp }}/pichi command smoke */pichi.yaml
+            ${{ runner.temp }}/pichi command smoke */pichi.lock

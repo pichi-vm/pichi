@@ -5,8 +5,8 @@
 //!
 //! Specializes `pichi run`: same launch path, plus virtiofs wires and the
 //! bidirectional named-console build-port protocol on `dev.pichi.build`
-//! (guest requests build-input; host replies with CBOR). On guest exit 0 the
-//! host takes the OCI layout from the output mount.
+//! (`start` requests input; `finish` reports the result). Only successful
+//! completion and VM exit allow import of the OCI layout from the output mount.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
@@ -164,7 +164,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let result: Result<_> = async {
         boot_serve_and_wait(&dillo, &argv, pipes, response, log.as_ref()).await?;
         drop(storage);
-        // Successful guest exit is required before opening its OCI output.
+        // Explicit build success and successful VM exit precede OCI import.
         let imported = crate::cmd::load::OciLayout::read(output_dir.path(), &blob_store).await?;
         imported
             .import_build(&blob_store, &db, tag)
@@ -258,11 +258,10 @@ pub(crate) fn build_dillo_args(
 /// pichi wires. `NetSpec` defaults `backend` to user; we state it explicitly.
 pub(crate) const USER_NET_SPEC: &str = "backend=user";
 
-/// Conglobate appliance pinned by content digest.
-/// Built from 9b15826d03da60b34ee39097a298b342a6ea17cf for amd64 and arm64.
+/// Latest successfully qualified Pichi build appliance.
 /// It consumes versioned staged plans and boots its GPT root with native bootconfig.
 /// Official-image smoke verifies guest output, poweroff, and host import.
-pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/conglobate@sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946";
+pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/pichi-build:latest";
 
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
@@ -451,16 +450,12 @@ async fn boot_serve_and_wait(
         }
         status = child.wait() => {
             let status = status.context("waiting for build VM")?;
-            serve.abort();
             match serve.await {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => {
                     bail!(
                         "guest exited before completing build-port exchange ({status}): {err}"
                     );
-                }
-                Err(join) if join.is_cancelled() => {
-                    bail!("guest exited before build-input request ({status})");
                 }
                 Err(join) => {
                     return Err(join).context("build-port task join");
@@ -692,9 +687,12 @@ mod tests {
     }
 
     #[test]
-    fn build_image_flag_or_digest_pinned_default() {
+    fn build_image_flag_or_latest_default() {
         assert_eq!(resolve_build_image(Some("reg/bi:1")), "reg/bi:1");
-        assert_eq!(resolve_build_image(None), DEFAULT_BUILD_IMAGE);
+        assert_eq!(
+            resolve_build_image(None),
+            "ghcr.io/pichi-vm/pichi-build:latest"
+        );
     }
 
     #[test]
@@ -730,12 +728,12 @@ mod tests {
     fn canonicalize_reference_strips_tag_before_digest() {
         let pinned = format!(
             "ghcr.io/pichi-vm/conglobate:0.2.0@{}",
-            DEFAULT_BUILD_IMAGE.split_once('@').unwrap().1
+            "sha256:8138d258113a161c831e7bad8a2d1fbf7abc9357b4d10637305c9d811a5f3237"
         );
         let canon = canonicalize_reference(&pinned);
         assert_eq!(
             canon.as_ref(),
-            "ghcr.io/pichi-vm/conglobate@sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946"
+            "ghcr.io/pichi-vm/conglobate@sha256:8138d258113a161c831e7bad8a2d1fbf7abc9357b4d10637305c9d811a5f3237"
         );
         let parsed: Reference = canon.parse().unwrap();
         assert_eq!(parsed.registry, "ghcr.io");
@@ -744,7 +742,7 @@ mod tests {
             ReferenceKind::Digest(d) => {
                 assert_eq!(
                     d.to_string(),
-                    "sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946"
+                    "sha256:8138d258113a161c831e7bad8a2d1fbf7abc9357b4d10637305c9d811a5f3237"
                 );
             }
             ReferenceKind::Tag(t) => panic!("expected digest kind, got tag {t}"),
@@ -770,7 +768,7 @@ mod tests {
     #[tokio::test]
     async fn smoke_port_output_import() {
         use crate::cmd::load::tests::LayoutFixture;
-        use std::io::{Read, Write};
+        use std::io::Write;
         use std::thread;
         use std::time::Duration;
 
@@ -833,17 +831,26 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
             let mut req = Vec::new();
             ciborium::into_writer(
-                &pichi_launch::Request(pichi_launch::Build::default()),
+                &pichi_launch::Request(pichi_launch::Start::default()),
                 &mut req,
             )
             .unwrap();
             device_tx.write_all(&req).unwrap();
             device_tx.flush().unwrap();
-            let mut reply = Vec::new();
-            device_rx.read_to_end(&mut reply).unwrap();
+            let decoded: Response<BuildInput> = ciborium::from_reader(&mut device_rx).unwrap();
+            let reply = decoded.encode_cbor().unwrap();
             assert!(!reply.is_empty(), "host wrote no build-input response");
 
             fixture.write(&output_dir);
+            ciborium::into_writer(
+                &pichi_launch::Request(pichi_launch::Finish(None)),
+                &mut device_tx,
+            )
+            .unwrap();
+            device_tx.flush().unwrap();
+            let acknowledgement: Response<Option<()>> =
+                ciborium::from_reader(&mut device_rx).unwrap();
+            assert_eq!(acknowledgement, Response::Ok(None));
             (reply, output_dir)
         });
 
