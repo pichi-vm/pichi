@@ -5,19 +5,21 @@
 //! Commands version their own request and response payloads. Transport and
 //! filesystem resolution are outside this portable contract.
 
-mod build;
 mod command;
+mod finish;
 mod input;
 mod request;
 mod requests;
 mod response;
+mod start;
 
-pub use build::Build;
 pub use command::Command;
+pub use finish::Finish;
 pub use input::Input;
 pub use request::Request;
 pub use requests::Requests;
 pub use response::Response;
+pub use start::Start;
 
 /// Named bidirectional console used by the build appliance.
 pub const PORT_NAME: &str = "dev.pichi.build";
@@ -45,43 +47,43 @@ mod tests {
     }
 
     #[test]
-    fn build_body_encodes_as_null_and_rejects_non_null_values() {
-        let build = Build::default();
+    fn start_body_encodes_as_null_and_rejects_non_null_values() {
+        let start = Start::default();
 
-        assert_eq!(cbor(&build), b"\xf6");
-        assert_eq!(serde_json::to_string(&build).unwrap(), "null");
+        assert_eq!(cbor(&start), b"\xf6");
+        assert_eq!(serde_json::to_string(&start).unwrap(), "null");
         assert_eq!(
-            ciborium::from_reader::<Build, _>(&b"\xf6"[..]).unwrap(),
-            build
+            ciborium::from_reader::<Start, _>(&b"\xf6"[..]).unwrap(),
+            start
         );
-        assert_eq!(serde_json::from_str::<Build>("null").unwrap(), build);
+        assert_eq!(serde_json::from_str::<Start>("null").unwrap(), start);
         for invalid in [json!(false), json!(0), json!(""), json!([]), json!({})] {
-            assert!(ciborium::from_reader::<Build, _>(&cbor(&invalid)[..]).is_err());
-            assert!(serde_json::from_value::<Build>(invalid).is_err());
+            assert!(ciborium::from_reader::<Start, _>(&cbor(&invalid)[..]).is_err());
+            assert!(serde_json::from_value::<Start>(invalid).is_err());
         }
 
         // Ciborium presents undefined as None too; serialization normalizes it.
-        let decoded: Build = ciborium::from_reader(&b"\xf7"[..]).unwrap();
+        let decoded: Start = ciborium::from_reader(&b"\xf7"[..]).unwrap();
         assert_eq!(cbor(&decoded), b"\xf6");
     }
 
     #[test]
-    fn build_request_has_exact_wire_bytes_and_server_dispatch() {
-        let request = Request::from(Build::default());
-        let expected = b"\x83\x65build\x01\xf6";
+    fn start_request_has_exact_wire_bytes_and_server_dispatch() {
+        let request = Request::from(Start::default());
+        let expected = b"\x83\x65start\x01\xf6";
         assert_eq!(cbor(&request), expected);
-        assert_eq!(cbor(&Requests::Build(request)), expected);
+        assert_eq!(cbor(&Requests::Start(request)), expected);
         assert_eq!(
-            ciborium::from_reader::<Request<Build>, _>(&expected[..]).unwrap(),
+            ciborium::from_reader::<Request<Start>, _>(&expected[..]).unwrap(),
             request
         );
         assert_eq!(
             ciborium::from_reader::<Requests, _>(&expected[..]).unwrap(),
-            Requests::Build(request)
+            Requests::Start(request)
         );
         assert_eq!(
-            serde_json::from_str::<Requests>(r#"["build", 1, null]"#).unwrap(),
-            Requests::Build(request)
+            serde_json::from_str::<Requests>(r#"["start", 1, null]"#).unwrap(),
+            Requests::Start(request)
         );
     }
 
@@ -89,25 +91,25 @@ mod tests {
     fn requests_reject_wrong_commands_versions_bodies_and_lengths() {
         for value in [
             json!([]),
-            json!(["build"]),
-            json!(["build", 1]),
+            json!(["start"]),
+            json!(["start", 1]),
             json!(["other", 1, null]),
-            json!(["build", 0, null]),
-            json!(["build", 2, null]),
-            json!(["build", 65536, null]),
-            json!(["build", -1, null]),
-            json!(["build", 1.0, null]),
-            json!(["build", "1", null]),
-            json!(["build", true, null]),
+            json!(["start", 0, null]),
+            json!(["start", 2, null]),
+            json!(["start", 65536, null]),
+            json!(["start", -1, null]),
+            json!(["start", 1.0, null]),
+            json!(["start", "1", null]),
+            json!(["start", true, null]),
             json!([1, 1, null]),
-            json!(["build", 1, {}]),
-            json!(["build", 1, []]),
-            json!(["build", 1, false]),
+            json!(["start", 1, {}]),
+            json!(["start", 1, []]),
+            json!(["start", 1, false]),
             json!({"v": 1, "op": "build-input"}),
         ] {
             let bytes = cbor(&value);
             assert!(
-                ciborium::from_reader::<Request<Build>, _>(&bytes[..]).is_err(),
+                ciborium::from_reader::<Request<Start>, _>(&bytes[..]).is_err(),
                 "{value}"
             );
             assert!(
@@ -115,7 +117,7 @@ mod tests {
                 "{value}"
             );
         }
-        let bytes = cbor(&Request(Build::default()));
+        let bytes = cbor(&Request(Start::default()));
         for end in 0..bytes.len() {
             assert!(ciborium::from_reader::<Requests, _>(&bytes[..end]).is_err());
         }
@@ -123,19 +125,19 @@ mod tests {
 
     #[test]
     fn request_dispatch_rejects_extra_elements() {
-        let value = json!(["build", 1, null, null]);
+        let value = json!(["start", 1, null, null]);
         assert!(ciborium::from_reader::<Requests, _>(&cbor(&value)[..]).is_err());
         assert!(serde_json::from_value::<Requests>(value).is_err());
         // Ciborium delegates tuple length checks to its visitor. The untagged
         // server dispatcher buffers the whole request and enforces the length.
-        let indefinite = b"\x9f\x65build\x01\xf6\xf6\xff";
+        let indefinite = b"\x9f\x65start\x01\xf6\xf6\xff";
         assert!(ciborium::from_reader::<Requests, _>(&indefinite[..]).is_err());
     }
 
     #[test]
     fn response_status_selects_the_body_and_has_two_byte_overhead() {
         let body = input();
-        let response: Response<<Build as Command>::Response> = Response::Ok(body.clone());
+        let response: Response<<Start as Command>::Response> = Response::Ok(body.clone());
         let mut expected = vec![0x82, 0xf5];
         expected.extend(cbor(&body));
         assert_eq!(cbor(&response), expected);
@@ -279,29 +281,24 @@ mod tests {
     }
 
     #[test]
-    fn untagged_dispatch_distinguishes_command_versions() {
-        #[derive(Debug, Deserialize)]
-        struct BuildV2(String);
-        impl Command for BuildV2 {
-            const NAME: &'static str = "build";
-            const VERSION: u16 = 2;
-            type Response = ();
+    fn finish_dispatch_reports_success_or_failure() {
+        for error in [None, Some("apt exited with status 100".to_string())] {
+            let request = Request(Finish(error.clone()));
+            let bytes = cbor(&request);
+            assert_eq!(bytes, cbor(&("finish", 1, &error)));
+            assert_eq!(
+                ciborium::from_reader::<Requests, _>(&bytes[..]).unwrap(),
+                Requests::Finish(request)
+            );
         }
-        #[derive(Debug, Deserialize)]
-        #[serde(untagged)]
-        enum Supported {
-            V1(Request<Build>),
-            V2(Request<BuildV2>),
+        for value in [
+            json!(["finish", 2, null]),
+            json!(["finish", 1, false]),
+            json!(["finish", 1, {}]),
+            json!(["finish", 1, null, null]),
+            json!(["build", 1, null]),
+        ] {
+            assert!(ciborium::from_reader::<Requests, _>(&cbor(&value)[..]).is_err());
         }
-        assert!(matches!(
-            ciborium::from_reader::<Supported, _>(&cbor(&("build", 1, ()))[..]).unwrap(),
-            Supported::V1(Request(build)) if build == Build::default()
-        ));
-        let Supported::V2(Request(BuildV2(value))) =
-            ciborium::from_reader::<Supported, _>(&cbor(&("build", 2, "new body"))[..]).unwrap()
-        else {
-            panic!("expected v2");
-        };
-        assert_eq!(value, "new body");
     }
 }

@@ -62,7 +62,7 @@ jobs:
           digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
           pichi pull "ghcr.io/pichi-vm/fedora@$digest"
           pichi build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
-            --build-image ghcr.io/pichi-vm/conglobate@sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946 \
+            --build-image ghcr.io/pichi-vm/conglobate@sha256:8138d258113a161c831e7bad8a2d1fbf7abc9357b4d10637305c9d811a5f3237 \
             --memory 8192 -t qualification.local/appliance:build
           pichi save qualification.local/appliance:build -o "$RUNNER_TEMP/appliance-layout"
 

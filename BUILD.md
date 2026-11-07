@@ -23,7 +23,7 @@ Both share the same launch path: resolve a pichi image, prepare a dillo
 device set, and boot. Build adds only the wires the guest needs to produce
 an artifact — virtiofs (shared host folders) mounts and a named-console
 CBOR (compact binary format) exchange — then waits
-for a finished OCI layout (the standard folder format for container images) in the output mount when the guest exits 0.
+for a finished OCI layout (the standard folder format for container images) in the output mount only after explicit build success and VM exit 0.
 
 Building is launching. The host does not check out Conglobate sources, does
 not parse Conglobate plans, and does not run Conglobate as `/init`.
@@ -51,8 +51,8 @@ These seven points are locked. Implementation and docs conform to them.
 Same launch path as `pichi run`. Build adds:
 
 - virtiofs wires (`repo`, `cache`, `output`);
-- bidirectional named console port `dev.pichi.build` (v0 CBOR request/response);
-- wait for guest exit 0, then take the OCI layout from the output mount.
+- bidirectional named console port `dev.pichi.build` (CBOR `start` and `finish` commands);
+- require explicit build success and guest exit 0, then take the OCI layout from the output mount.
 
 ### 2.2 Thin launcher
 
@@ -65,7 +65,7 @@ Host steps, in order:
    ends on named console `dev.pichi.build` (bidirectional; not rx-only).
 5. After dillo starts, wait for the guest's build-input request on the
    port, then write the prepared response (hold-until-open / Linux discard).
-6. On guest exit 0, take the OCI layout from the output directory and import
+6. Require `["finish", 1, null]` from the guest and VM exit 0, then take the OCI layout from the output directory and import
    / tag it locally as needed.
 
 Explicitly **not** on the host:
@@ -85,7 +85,13 @@ Explicitly **not** on the host:
 Tag names and guest mount points are convention. The CBOR does not carry
 mount tags or commit identities for those mounts.
 
-### 2.4 Named console `dev.pichi.build` (build command V1)
+### 2.4 Named console `dev.pichi.build` (`start` and `finish`)
+
+The guest requests input with `start`, then reports completion with `finish`.
+Both commands are version 1. Finish carries null after output finalization,
+or the build failure message. The host acknowledges receipt before the guest
+shuts down. Missing, malformed, or failed completion prevents output import
+even if Dillo exits successfully. Use a matching host and `--build-image`.
 
 The portable wire types live in `deps/pichi-launch`, shared by the host
 and guest adapter. Pichi owns this console contract.
@@ -95,13 +101,17 @@ Port name: `dev.pichi.build` (dillo named-console convention). The port is
 (not rx-only). dillo named MULTIPORT ports supply the pipe inheritance
 model (`pipe:N` = inherited host FD/handle).
 
-Wire (self-delimiting CBOR, no length prefix; **one round trip**; no
+Wire (self-delimiting CBOR, no length prefix; **input exchange followed by terminal result**; no
 streaming or multiplexing):
 
-1. **Guest → host** — one request array: `["build", 1, null]`
+1. **Guest → host** — one request array: `["start", 1, null]`
 2. **Host → guest** — one response array:
    - success: `[true, Input]`, with the build-input map below
    - failure: `[false, "error message"]`
+3. **Guest → host** — one finish request:
+   - finalized output: `["finish", 1, null]`
+   - build failure: `["finish", 1, "error message"]`
+4. **Host → guest** — `[true, null]` acknowledges receipt of the result.
 
 The host prepares the build-input payload **before** launch, but writes
 the response only **after** the guest request arrives (hold-until-open /
@@ -199,17 +209,19 @@ pichi (thin launcher)
   │  named console dev.pichi.build (rx+tx pipes)
   ▼
 dillo  ──boots──►  Conglobate pichi image
-                      │  writes ["build", 1, null]
+                      │  writes ["start", 1, null]
                       │     ◄── host success/failure CBOR
                       │  builds from /run/pichi/{repo,cache}
                       │  writes annotated OCI to /run/pichi/output
+                      │  writes ["finish", 1, null]
+                      │     ◄── host acknowledgement
                       ▼  exit 0
 pichi imports OCI from output dir → local tag
 ```
 
 
-Failure: non-zero guest exit means no successful product. Do not treat
-partial output as an artifact.
+Failure: a missing or failed finish command, or non-zero VM exit, means no
+successful product. Do not treat partial output as an artifact.
 
 Resource sizing (`--memory` / `--cpus` and similar) follows the same
 patterns as `pichi run` against the appliance image's launch contract.
@@ -227,7 +239,7 @@ not change the digest selection.
 
 ### OCI import and verity verification
 
-After guest exit 0, `pichi build` imports the complete OCI layout at the
+After explicit build success and guest exit 0, `pichi build` imports the complete OCI layout at the
 output mount root using the same reader as `pichi load`. A build must have
 exactly one image manifest in `index.json`. The host preserves its original
 bytes and digest, including inherited layers, and applies only the requested
@@ -347,9 +359,9 @@ from the committed lock. `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a rebuilt
 OCI appliance layout for cross-project qualification; otherwise the smoke
 uses the shipping default. Staged plans require an appliance built with the
 matching Conglobate engine; `--build-image` selects it explicitly. The default image is
-`ghcr.io/pichi-vm/conglobate@sha256:dda6d25f6f51ad171611f159f4202bdec4e50482d6e741ad566c1b4d7c61d946`.
+`ghcr.io/pichi-vm/conglobate@sha256:8138d258113a161c831e7bad8a2d1fbf7abc9357b4d10637305c9d811a5f3237`.
 This amd64/arm64 index is built from Conglobate revision
-`3c704762b6f03b31da14d076f5cb695b79fc42ce` and uses the staged plan, GPT
+`bb1c85852fda48b626fd278f8532af8939a6207d` and uses the staged plan, GPT
 root, embedded-DTB PMI and native bootconfig contracts described here.
 The default appliance and the library in `deps/conglobate` both require
 `version: 1` in plans and the flat digest lock shown above.
@@ -409,18 +421,18 @@ manifests are retained under `PICHI_TEST_EVIDENCE` when it is set.
 
 ## 4. Build-port CBOR (logical shape)
 
-Encoding is self-delimiting CBOR (no length prefix). One guest request, then
-one host response, each a single array. Command names and versions identify
+Encoding is self-delimiting CBOR (no length prefix). Each command has one
+guest request and one host response, each a single array. Names and versions identify
 request/response contracts; the protocol has no global version field.
 
-### 4.1 Guest request
+### 4.1 Start request
 
 ```json
-["build", 1, null]
+["start", 1, null]
 ```
 
 The three elements are command name, `u16` command version, and request body.
-Build V1 has a unit body, encoded as null. The host decodes the shared
+Start V1 has a unit body, encoded as null. The host decodes the shared
 `pichi_launch::Requests` enum; unsupported command/version pairs,
 wrong bodies, and incorrect array lengths fail before success is sent.
 
@@ -465,6 +477,17 @@ The command types live in `pichi_launch`; plans, locks and remote
 references live in `conglobate::plan`. These array envelopes replace the old map
 format. The default appliance digest must identify an image with this command
 contract: updating the library/source pin alone does not update the guest.
+
+### 4.4 Finish request
+
+The guest sends `["finish", 1, null]` after finalizing output, or
+`["finish", 1, "error message"]` if the build failed. The host replies
+`[true, null]` to acknowledge receipt of either outcome. Acknowledgement
+does not turn a failed build into a success.
+
+The host requires `start` followed by `finish`. Missing, malformed, or
+out-of-order commands fail the build. A successful finish is required
+alongside successful VM exit before the host imports any output.
 
 ---
 
