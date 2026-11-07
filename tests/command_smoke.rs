@@ -151,13 +151,18 @@ impl Smoke {
                 "manifest", "annotate", &list, &tag, "--os", "pichi", "--arch", arch,
             ],
         );
-        self.run("manifest-push", &["manifest", "push", &list, &list]);
+        let pushed = self.run("manifest-push", &["manifest", "push", &list, &list]);
+        let pushed_digest = pushed
+            .lines()
+            .find_map(|line| line.strip_prefix("digest: "))
+            .unwrap();
         let source_cache = self.cache.clone();
         self.cache = self.directory.join("fresh-cache");
         self.run("pull", &["pull", &tag]);
         assert_eq!(self.inspect(&tag)["digest"], original["digest"]);
         self.run("pull-index", &["pull", &list]);
         let index = self.inspect(&list);
+        assert_eq!(index["digest"], pushed_digest);
         assert_eq!(index["entries"][0]["platform"]["architecture"], arch);
         assert_eq!(index["manifest_digest"], original["manifest_digest"]);
         self.run("system-info", &["system", "info", "--json"]);

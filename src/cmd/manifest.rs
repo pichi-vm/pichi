@@ -181,12 +181,13 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
     drop(pushes);
 
     let index_bytes = serde_json::to_vec(&ready).context("serialise OCI image index")?;
-    registry
+    let digest = registry
         .push_manifest(&dest, OCI_IMAGE_INDEX_MEDIA_TYPE, Bytes::from(index_bytes))
         .await
         .map_err(|e| anyhow!("push image index {dest}: {e}"))?;
 
     println!("pushed manifest list {list_ref} -> {dest}");
+    println!("digest: {digest}");
     Ok(())
 }
 
