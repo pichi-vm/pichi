@@ -51,3 +51,4 @@ jobs:
         shell: bash
         run: |
           cargo fmt --all -- --check
+          cargo fmt --manifest-path appliance/guest/Cargo.toml -- --check

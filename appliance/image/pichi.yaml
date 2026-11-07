@@ -36,6 +36,15 @@ stages:
           command: >-
             RUSTC_BOOTSTRAP=1 cargo install --locked --path /build/lsm --root /mnt
           network: true
+  guest:
+    use: tools
+    steps:
+      - copy: { path: ., into: /build/pichi/ }
+      - exec:
+          command: >-
+            RUSTC_BOOTSTRAP=1 cargo install --locked
+            --path /build/pichi/appliance/guest --root /mnt
+          network: true
   appliance:
     extend: ghcr.io/pichi-vm/fedora:43
     mounts:
@@ -49,6 +58,7 @@ stages:
             systemd-networkd systemd-resolved e2fsprogs dosfstools
           network: true
       - copy: { from: engine, path: /bin/conglobate, into: /usr/bin/conglobate }
+      - copy: { from: guest, path: /bin/pichi-build, into: /usr/bin/pichi-build }
       - copy: { from: policy, path: /bin/lsm, into: /usr/libexec/conglobate-lsm }
       - copy: { path: appliance/image/units, into: /usr/lib/systemd/system/ }
       - copy: { path: appliance/image/10-build.network, into: /usr/lib/systemd/network/10-build.network }

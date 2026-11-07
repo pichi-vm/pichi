@@ -1,8 +1,9 @@
 # Pichi build appliance
 
 [The recipe](image/pichi.yaml) extends Fedora 43 and installs Conglobate and
-the LSM label helper from recorded submodules. The resulting VM runs
-`conglobate appliance` to execute `pichi build` requests.
+the LSM label helper from recorded submodules. The VM's [request handler](guest)
+receives `pichi build` inputs and executes `conglobate build` with fixed mount
+paths and identity mappings. Conglobate validates the inputs and builds the image.
 
 [The CI workflow](../.github/workflows/appliance.yml) builds the image once on
 each native Linux architecture, then uses it to build Fedora. Pichi's existing
