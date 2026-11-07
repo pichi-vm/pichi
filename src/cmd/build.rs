@@ -28,6 +28,7 @@ use crate::cmd::build_port::{
     self, BuildInput, Response, ResponseExt as _, console_arg, create_build_port_pipes,
     serve_build_port,
 };
+use crate::cmd::build_repo::BuildRepository;
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
 use crate::cmd::requirements::SlotArgument as _;
@@ -41,6 +42,7 @@ const CACHE_TAG: &str = "cache";
 const OUTPUT_TAG: &str = "output";
 
 pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
+    let repository = BuildRepository::try_from(args.dir.as_path())?;
     let build_image_ref = resolve_build_image(args.build_image.as_deref());
 
     // Thin-launcher build-input (BUILD.md §2.4): `ref` is required; plan
@@ -87,8 +89,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     // Thin-launcher mounts (BUILD.md §2.2–§2.3): empty RW output, RO cache,
     // RO repo (git object store / work tree the guest resolves `--ref` against).
     let output_dir = tempfile::TempDir::new().context("creating build output dir")?;
-    let repo_dir = std::fs::canonicalize(&args.dir)
-        .with_context(|| format!("canonicalizing repo dir {}", args.dir.display()))?;
     let cache_dir = std::fs::canonicalize(&layout.graphroot)
         .with_context(|| format!("canonicalizing cache {}", layout.graphroot.display()))?;
 
@@ -125,7 +125,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         &pmi_path,
         bootconfig_path.as_deref(),
         &gpt_specs,
-        &repo_dir,
+        &repository.path,
         &cache_dir,
         output_dir.path(),
         Some(&console),

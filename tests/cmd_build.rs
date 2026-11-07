@@ -118,6 +118,12 @@ fn build_requires_ref_during_argument_parsing() {
 #[test]
 fn build_missing_appliance_attempts_pull() {
     let tmp = tempfile::TempDir::new().unwrap();
+    let git = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .arg(tmp.path())
+        .status()
+        .unwrap();
+    assert!(git.success());
     let assert = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
