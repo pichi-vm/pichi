@@ -390,7 +390,6 @@ firmware while preserving the selected root.
 ```sh
 PICHI_TEST_BUILD_IMAGE_LAYOUT=/path/to/appliance-oci \
 PICHI_TEST_REPLACEMENT_CORIUM=/path/to/release/corium \
-PICHI_TEST_EVIDENCE=/path/to/evidence \
 cargo +nightly-2026-07-06 test --locked --features vm-tests --test staged_images -- --nocapture
 ```
 
@@ -403,7 +402,7 @@ and replacement, all five component combinations, and failed builds without
 published output. Kernel bootconfig is compared with the selected artifact;
 Linux displays bare keys as empty strings in `/proc/bootconfig`, while the
 artifact checks retain the distinction. Logs, plans, locks and output
-manifests are retained under `PICHI_TEST_EVIDENCE` when it is set.
+manifests live in the temporary test directory and are cleaned up after the test.
 
 ---
 

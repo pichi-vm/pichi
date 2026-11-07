@@ -9,9 +9,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt as _;
 
-/// Real CLI builds in an isolated cache, with retained logs when requested.
+/// Real CLI builds in an isolated temporary cache.
 pub struct Builds {
-    temporary: Option<tempfile::TempDir>,
+    _temporary: tempfile::TempDir,
     pub directory: PathBuf,
     pub cache: PathBuf,
 }
@@ -33,25 +33,13 @@ impl Builds {
     }
 
     pub fn new(name: &str) -> Self {
-        let temporary = if let Some(parent) = std::env::var_os("PICHI_TEST_EVIDENCE") {
-            fs::create_dir_all(&parent).unwrap();
-            tempfile::Builder::new()
-                .prefix(name)
-                .tempdir_in(parent)
-                .unwrap()
-        } else {
-            tempfile::Builder::new().prefix(name).tempdir().unwrap()
-        };
-        let (directory, temporary) = if std::env::var_os("PICHI_TEST_EVIDENCE").is_some() {
-            (temporary.keep(), None)
-        } else {
-            (temporary.path().to_owned(), Some(temporary))
-        };
+        let temporary = tempfile::Builder::new().prefix(name).tempdir().unwrap();
+        let directory = temporary.path().to_owned();
         let cache = directory.join("cache");
         fs::create_dir(&cache).unwrap();
         eprintln!("staged-image evidence: {}", directory.display());
         let fixture = Self {
-            temporary,
+            _temporary: temporary,
             directory,
             cache,
         };
@@ -205,13 +193,6 @@ impl Builds {
             "root init did not finish: {text}"
         );
         text
-    }
-}
-
-impl Drop for Builds {
-    fn drop(&mut self) {
-        // Keep the temporary directory alive until every subprocess has exited.
-        drop(self.temporary.take());
     }
 }
 
