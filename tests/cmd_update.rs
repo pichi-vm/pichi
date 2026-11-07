@@ -25,8 +25,9 @@ struct Project(tempfile::TempDir);
 impl Project {
     fn new() -> Self {
         let project = Self(tempfile::tempdir().unwrap());
+        fs::create_dir_all(project.0.path().join("config/pichi")).unwrap();
         fs::write(
-            project.0.path().join("config.toml"),
+            project.0.path().join("config/pichi/config.toml"),
             format!(
                 "[storage]\ngraphroot = {:?}\n",
                 project.cache().to_str().unwrap()
@@ -44,8 +45,14 @@ impl Project {
         let mut command = Command::new(env!("CARGO_BIN_EXE_pichi"));
         command
             .current_dir(self.0.path())
-            .env("PICHI_CONFIG", self.0.path().join("config.toml"))
-            .env("XDG_CONFIG_HOME", self.0.path().join("config"))
+            .env(
+                if cfg!(windows) {
+                    "APPDATA"
+                } else {
+                    "XDG_CONFIG_HOME"
+                },
+                self.0.path().join("config"),
+            )
             // A successful update must not need Git, Conglobate, or dillo.
             .env("PATH", "");
         command
@@ -378,7 +385,7 @@ impl Registry {
 
     fn update(&self, project: &Project, policy: Option<&str>) -> Output {
         fs::write(
-            project.0.path().join("config.toml"),
+            project.0.path().join("config/pichi/config.toml"),
             format!(
                 "[storage]\ngraphroot = {:?}\n[[registries]]\nprefix = {:?}\ninsecure = true\n",
                 project.cache().to_str().unwrap(),

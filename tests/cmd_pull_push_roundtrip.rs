@@ -13,7 +13,7 @@
 //
 // Gating: silently skips when `PICHI_TEST_REGISTRY` is unset (matches the
 // pattern in tests/cmd_pull.rs and tests/cmd_push.rs).
-// The Zot launcher supplies PICHI_TEST_REGISTRY and a PICHI_CONFIG file
+// The Zot launcher supplies PICHI_TEST_REGISTRY and an isolated user config file
 // enabling HTTP for that registry through ordinary configuration.
 
 #![allow(missing_docs)]

@@ -7,7 +7,6 @@
 //! 1. compiled-in defaults (`Config::default()`)
 //! 2. `/etc/pichi/config.toml`
 //! 3. `$XDG_CONFIG_HOME/pichi/config.toml` (or `~/.config/pichi/config.toml`)
-//! 4. `PICHI_CONFIG` env var (if set, file MUST exist — silent skip is a footgun for explicit overrides)
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
@@ -121,23 +120,17 @@ impl Config {
         HttpRegistry::new(self.registry_entries(), AuthEnv::from_process_env())
     }
 
-    /// Load with the production 4-tier precedence chain.
+    /// Load with the production 3-tier precedence chain.
     pub fn load() -> Result<Self> {
         let system = system_config_path();
         let user = user_config_path();
-        let env_override = std::env::var_os("PICHI_CONFIG").map(PathBuf::from);
-        Self::load_from_paths(system.as_deref(), user.as_deref(), env_override.as_deref())
+        Self::load_from_paths(system.as_deref(), user.as_deref())
     }
 
     /// Load with explicit paths. Used by tests to avoid mutating env vars.
     ///
     /// `system` and `user`: silently skipped if NotFound.
-    /// `env_override`: NotFound is an error (explicit override should not silently fail).
-    pub fn load_from_paths(
-        system: Option<&Path>,
-        user: Option<&Path>,
-        env_override: Option<&Path>,
-    ) -> Result<Self> {
+    pub fn load_from_paths(system: Option<&Path>, user: Option<&Path>) -> Result<Self> {
         let mut cfg = Self::default();
         if let Some(p) = system {
             if let Some(file_cfg) = Self::read_optional(p)? {
@@ -148,13 +141,6 @@ impl Config {
             if let Some(file_cfg) = Self::read_optional(p)? {
                 cfg.merge(file_cfg);
             }
-        }
-        if let Some(p) = env_override {
-            let contents = std::fs::read_to_string(p)
-                .with_context(|| format!("PICHI_CONFIG file not readable: {}", p.display()))?;
-            let file_cfg: Config = toml::from_str(&contents)
-                .with_context(|| format!("invalid TOML in PICHI_CONFIG: {}", p.display()))?;
-            cfg.merge(file_cfg);
         }
         Ok(cfg)
     }
@@ -249,7 +235,7 @@ mod tests {
 
     #[test]
     fn all_paths_none_returns_defaults() {
-        let cfg = Config::load_from_paths(None, None, None).unwrap();
+        let cfg = Config::load_from_paths(None, None).unwrap();
         assert!(cfg.default_pull_policy.is_none());
         assert!(cfg.storage.graphroot.is_none());
         assert!(cfg.registries.is_empty());
@@ -259,7 +245,7 @@ mod tests {
     fn system_only_loaded() {
         let dir = tempfile::TempDir::new().unwrap();
         let sys = write(dir.path(), "sys.toml", r#"default_pull_policy = "always""#);
-        let cfg = Config::load_from_paths(Some(&sys), None, None).unwrap();
+        let cfg = Config::load_from_paths(Some(&sys), None).unwrap();
         assert_eq!(cfg.default_pull_policy.as_deref(), Some("always"));
     }
 
@@ -268,18 +254,8 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let sys = write(dir.path(), "sys.toml", r#"default_pull_policy = "always""#);
         let usr = write(dir.path(), "usr.toml", r#"default_pull_policy = "missing""#);
-        let cfg = Config::load_from_paths(Some(&sys), Some(&usr), None).unwrap();
+        let cfg = Config::load_from_paths(Some(&sys), Some(&usr)).unwrap();
         assert_eq!(cfg.default_pull_policy.as_deref(), Some("missing"));
-    }
-
-    #[test]
-    fn env_overrides_user() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let sys = write(dir.path(), "sys.toml", r#"default_pull_policy = "always""#);
-        let usr = write(dir.path(), "usr.toml", r#"default_pull_policy = "missing""#);
-        let env = write(dir.path(), "env.toml", r#"default_pull_policy = "never""#);
-        let cfg = Config::load_from_paths(Some(&sys), Some(&usr), Some(&env)).unwrap();
-        assert_eq!(cfg.default_pull_policy.as_deref(), Some("never"));
     }
 
     #[test]
@@ -303,7 +279,7 @@ mod tests {
                 prefix = "c.io"
             "#,
         );
-        let cfg = Config::load_from_paths(Some(&sys), Some(&usr), None).unwrap();
+        let cfg = Config::load_from_paths(Some(&sys), Some(&usr)).unwrap();
         assert_eq!(cfg.registries.len(), 1);
         assert_eq!(cfg.registries[0].prefix, "c.io");
     }
@@ -320,7 +296,7 @@ mod tests {
                 runroot = "/run/x"
             "#,
         );
-        let cfg = Config::load_from_paths(Some(&p), None, None).unwrap();
+        let cfg = Config::load_from_paths(Some(&p), None).unwrap();
         assert_eq!(cfg.storage.graphroot, Some(PathBuf::from("/data/pichi")));
         assert_eq!(cfg.storage.runroot, Some(PathBuf::from("/run/x")));
     }
@@ -334,14 +310,9 @@ mod tests {
             "[run]\nstorage_mib = 1024\nstorage_file = 'system.raw'\n",
         );
         let usr = write(dir.path(), "usr.toml", "[run]\nstorage_mib = 2048\n");
-        let env = write(
-            dir.path(),
-            "env.toml",
-            "[run]\nstorage_file = 'chosen.raw'\n",
-        );
-        let cfg = Config::load_from_paths(Some(&sys), Some(&usr), Some(&env)).unwrap();
+        let cfg = Config::load_from_paths(Some(&sys), Some(&usr)).unwrap();
         assert_eq!(cfg.run.storage_mib, Some(2048));
-        assert_eq!(cfg.run.storage_file, Some(PathBuf::from("chosen.raw")));
+        assert_eq!(cfg.run.storage_file, Some(PathBuf::from("system.raw")));
     }
 
     #[test]
@@ -359,7 +330,7 @@ mod tests {
                 password = "p"
             "#,
         );
-        let cfg = Config::load_from_paths(Some(&p), None, None).unwrap();
+        let cfg = Config::load_from_paths(Some(&p), None).unwrap();
         assert_eq!(cfg.registries.len(), 1);
         let r = &cfg.registries[0];
         assert_eq!(r.prefix, "ghcr.io");
@@ -370,19 +341,11 @@ mod tests {
     }
 
     #[test]
-    fn explicit_env_override_missing_file_errors() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let bogus = dir.path().join("does-not-exist.toml");
-        let err = Config::load_from_paths(None, None, Some(&bogus)).unwrap_err();
-        assert!(err.to_string().contains("PICHI_CONFIG"));
-    }
-
-    #[test]
     fn system_or_user_missing_file_silently_skipped() {
         let dir = tempfile::TempDir::new().unwrap();
         let nope1 = dir.path().join("none1.toml");
         let nope2 = dir.path().join("none2.toml");
-        let cfg = Config::load_from_paths(Some(&nope1), Some(&nope2), None).unwrap();
+        let cfg = Config::load_from_paths(Some(&nope1), Some(&nope2)).unwrap();
         assert!(cfg.default_pull_policy.is_none());
     }
 
@@ -390,7 +353,7 @@ mod tests {
     fn invalid_toml_errors() {
         let dir = tempfile::TempDir::new().unwrap();
         let bad = write(dir.path(), "bad.toml", "garbage}{not toml{");
-        let err = Config::load_from_paths(Some(&bad), None, None).unwrap_err();
+        let err = Config::load_from_paths(Some(&bad), None).unwrap_err();
         assert!(err.to_string().to_lowercase().contains("invalid toml"));
     }
 }
