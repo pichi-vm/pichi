@@ -12,8 +12,6 @@
 # The push/pull/round-trip tests in pichi/tests/ skip silently unless
 # PICHI_TEST_REGISTRY is set. The test command supplies an isolated user configuration
 # enabling HTTP for the local registry through ordinary registry configuration.
-#
-# Env override: PICHI_CONTAINER_ENGINE.
 set -euo pipefail
 
 NAME=pichi-zot
@@ -22,7 +20,6 @@ IMAGE=ghcr.io/project-zot/zot-linux-amd64:latest
 CFG_DIR="${TMPDIR:-/tmp}/pichi-zot"
 
 engine() {
-  if [ -n "${PICHI_CONTAINER_ENGINE:-}" ]; then echo "$PICHI_CONTAINER_ENGINE"; return; fi
   if command -v podman >/dev/null 2>&1; then echo podman; return; fi
   if command -v docker >/dev/null 2>&1; then echo docker; return; fi
   echo "error: need podman or docker on PATH" >&2; exit 1
