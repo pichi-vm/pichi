@@ -51,11 +51,11 @@ jobs:
           echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
           echo "XDG_DATA_HOME=$RUNNER_TEMP/appliance-image-cache" >> "$GITHUB_ENV"
 
-      - name: Build Dillo
-        working-directory: appliance/dillo
+      - name: 📦 Install Dillo
         run: |
-          cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
-          echo "PICHI_DILLO=$PWD/target/release/dillo" >> "$GITHUB_ENV"
+          sudo add-apt-repository --yes ppa:nmccallum/pichi
+          sudo apt-get install -y dillo-vm
+          echo "PICHI_DILLO=$(command -v dillo)" >> "$GITHUB_ENV"
 
       - name: Build the appliance from Fedora
         run: |

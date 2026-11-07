@@ -366,7 +366,9 @@ The platform workflow runs the same build smoke, submodule, and
 `staged_images` tests on Linux x86_64 and arm64 (KVM), Windows
 x86_64 (native MSVC/WHP), and macOS arm64 (HVF). Enabling `vm-tests` requires
 working virtualization; missing prerequisites fail instead of skipping tests.
-The macOS harness signs Dillo with the hypervisor entitlement.
+Linux uses `dillo` from `PATH`; install the `dillo-vm` package before running
+the VM tests. The macOS harness signs its native Dillo build with the
+hypervisor entitlement.
 
 Builds use 3.5 GiB and boots use 2 GiB. Linux requires at least 1792 free
 2 MiB hugepages. All hosts need Git and network access to Fedora's package

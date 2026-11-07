@@ -31,12 +31,15 @@ use std::process::Command;
 pub mod submodules;
 
 pub const CORIUM_BIN: &str = env!("CARGO_BIN_FILE_CORIUM_corium");
+#[cfg(target_os = "linux")]
+pub const DILLO_BIN: &str = "dillo";
+#[cfg(not(target_os = "linux"))]
 pub const DILLO_BIN: &str = env!("CARGO_BIN_FILE_DILLO_dillo");
 pub const PICHI_BIN: &str = env!("CARGO_BIN_EXE_pichi");
 
 /// Run the `pichi` binary against an isolated cache (`graphroot` via
-/// `XDG_DATA_HOME`) with `PICHI_DILLO` pointed at the built dillo. `envs`
-/// adds extra environment. Returns the captured output; use
+/// `XDG_DATA_HOME`) with installed Dillo on Linux or the native build elsewhere.
+/// `envs` adds extra environment. Returns the captured output; use
 /// [`assert_pichi_ok`] to fail loudly with stdout+stderr.
 pub fn pichi(graphroot: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(PICHI_BIN);
