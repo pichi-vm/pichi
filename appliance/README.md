@@ -1,7 +1,10 @@
 # Pichi build appliance
 
-[The recipe](image/pichi.yaml) extends Fedora 43 and installs Conglobate and
-the LSM label helper from recorded submodules. The resulting VM runs
+[The recipe](image/pichi.yaml) extends Fedora 43 and installs the `conglobate` and
+`pichi-lsm` packages from COPR. Their packages own the service and mount
+units; this recipe supplies network configuration, orders policy startup before
+the build service through a systemd drop-in, and enables the appliance services.
+The resulting VM runs
 `conglobate appliance` to execute `pichi build` requests.
 
 [The CI workflow](../.github/workflows/appliance.yml) builds the image once on
