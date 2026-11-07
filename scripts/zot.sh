@@ -13,12 +13,12 @@
 # PICHI_TEST_REGISTRY is set. The test command supplies an isolated user configuration
 # enabling HTTP for the local registry through ordinary registry configuration.
 #
-# Env overrides: PICHI_ZOT_IMAGE, PICHI_CONTAINER_ENGINE.
+# Env override: PICHI_CONTAINER_ENGINE.
 set -euo pipefail
 
 NAME=pichi-zot
 PORT=5000
-IMAGE="${PICHI_ZOT_IMAGE:-ghcr.io/project-zot/zot-linux-amd64:latest}"
+IMAGE=ghcr.io/project-zot/zot-linux-amd64:latest
 CFG_DIR="${TMPDIR:-/tmp}/pichi-zot"
 
 engine() {
