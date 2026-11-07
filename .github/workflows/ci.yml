@@ -118,7 +118,9 @@ jobs:
         with:
           persist-credentials: false
       - name: 📦 Install toolchain
-        run: rustup toolchain install "$NIGHTLY" --profile minimal
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          rustup default "$NIGHTLY"
       - name: ♻️ Restore build cache
         uses: Swatinem/rust-cache@v2
       - name: 🔨 Build Pichi
@@ -156,10 +158,23 @@ jobs:
           for arch in amd64 arm64; do
             pichi inspect "${image}-$arch" | jq -r '.entries[].digest'
           done | sort > "$RUNNER_TEMP/expected-manifests"
-          pichi manifest push "$image" "$image"
+          pichi manifest push "$image" "$image" | tee "$RUNNER_TEMP/push-result"
+          expected_index=$(sed -n 's/^digest: //p' "$RUNNER_TEMP/push-result")
+          [[ "$expected_index" =~ ^sha256:[0-9a-f]{64}$ ]]
           export XDG_DATA_HOME="$RUNNER_TEMP/publish-verify"
-          pichi pull "$image"
-          pichi inspect "$image" > "$RUNNER_TEMP/published.json"
+          for attempt in 1 2 3 4 5 6; do
+            if pichi pull "$image" &&
+               pichi inspect "$image" > "$RUNNER_TEMP/published.json" &&
+               [ "$(jq -r .digest "$RUNNER_TEMP/published.json")" = "$expected_index" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo '::error::Published tag did not resolve to the expected index after six attempts.'
+              exit 1
+            fi
+            echo "::warning::Published image is not yet readable at the expected digest; retrying ($attempt/6)."
+            sleep 10
+          done
           jq -r '.entries[].digest' "$RUNNER_TEMP/published.json" | sort > "$RUNNER_TEMP/actual-manifests"
           diff "$RUNNER_TEMP/expected-manifests" "$RUNNER_TEMP/actual-manifests"
           digest=$(jq -r .digest "$RUNNER_TEMP/published.json")

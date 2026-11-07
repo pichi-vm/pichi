@@ -636,6 +636,9 @@ so advancing `:latest` cannot change the previous-appliance axis mid-run.
 Compatibility failures never block publication. It publishes the combined index
 to `ghcr.io/pichi-vm/pichi-build:latest`, pulls into fresh storage, compares both platform
 manifest digests with the candidates, and verifies the retrieved index digest.
+Publication allows up to six pull attempts, ten seconds apart, for registry
+read-after-write delays. The tag must resolve to the exact index pushed; stale
+indexes and exhausted retries fail verification.
 Ordinary host changes neither build nor publish an appliance. New PR pushes cancel
 superseded validation; main runs are preserved so a later host-only merge cannot
 cancel an appliance publication; the platform matrix fails fast. Job and command
