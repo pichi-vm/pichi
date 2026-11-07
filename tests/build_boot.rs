@@ -123,7 +123,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     // fill a pipe and deadlock dillo.
     let mut child = std::process::Command::new(common::PICHI_BIN)
         .env("XDG_DATA_HOME", g)
-        .env("PICHI_DILLO", common::DILLO_BIN)
+        .env("PATH", common::dillo_path())
         .args([
             "build",
             repo.to_str().unwrap(),

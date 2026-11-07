@@ -619,7 +619,7 @@ Build compatibility combinations, each with independent test storage:
 Windows/macOS package combinations are deferred until native packaging exists.
 The test logs executable versions and appliance digests. `PICHI_SMOKE_BIN` selects
 a packaged executable; otherwise Cargo's current executable is used.
-`PICHI_DILLO` selects native Dillo; `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a
+`PATH` selects native Dillo; `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a
 candidate OCI layout; omitting it uses `PICHI_TEST_PREVIOUS_BUILD_IMAGE`, pinned from the change base
 by CI (or `DEFAULT_BUILD_IMAGE` for local runs). Packaged executable combinations
 exercise update, build and run; full command coverage uses the current executable. Both Linux runners
@@ -652,7 +652,7 @@ Git dependency directly, without flattening a submodule.
 
 To run the native command test locally, start a local registry (or use
 `.github/scripts/test-registry.sh` with its pinned Zot asset/hash environment),
-set `PICHI_DILLO`, and run:
+put native Dillo on `PATH`, and run:
 
 ```sh
 cargo test --locked --test command_smoke -- \

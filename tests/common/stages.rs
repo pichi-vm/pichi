@@ -150,7 +150,7 @@ impl Builds {
         let log = fs::File::create(repo.join("build.log")).unwrap();
         let mut child = Command::new(super::PICHI_BIN)
             .env("XDG_DATA_HOME", &self.cache)
-            .env("PICHI_DILLO", super::DILLO_BIN)
+            .env("PATH", super::dillo_path())
             .args([
                 "build",
                 repo.to_str().unwrap(),
@@ -181,7 +181,7 @@ impl Builds {
         let log = fs::File::create(&path).unwrap();
         let mut child = Command::new(super::PICHI_BIN)
             .env("XDG_DATA_HOME", &self.cache)
-            .env("PICHI_DILLO", super::DILLO_BIN)
+            .env("PATH", super::dillo_path())
             .args(["run", tag, "--memory", "2048", "--cpus", "1"])
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())

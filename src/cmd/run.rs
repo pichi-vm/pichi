@@ -23,7 +23,6 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -240,30 +239,9 @@ pub(crate) async fn build_gpt_spec(
     Ok(format!("partitions=[{}]", parts.join(",")))
 }
 
-/// Locate the `dillo` binary: `PICHI_DILLO` env override, then a sibling of
-/// the running `pichi` binary, then bare `dillo` (resolved via `PATH`).
+/// Locate the native launcher through the executable search path.
 pub(crate) fn find_dillo() -> PathBuf {
-    resolve_dillo(
-        std::env::var_os("PICHI_DILLO"),
-        std::env::current_exe().ok(),
-    )
-}
-
-/// Pure core of [`find_dillo`], split out so tests don't touch process state.
-fn resolve_dillo(override_path: Option<OsString>, current_exe: Option<PathBuf>) -> PathBuf {
-    if let Some(p) = override_path {
-        return PathBuf::from(p);
-    }
-    let exe_name = if cfg!(windows) { "dillo.exe" } else { "dillo" };
-    if let Some(exe) = current_exe {
-        if let Some(dir) = exe.parent() {
-            let cand = dir.join(exe_name);
-            if cand.is_file() {
-                return cand;
-            }
-        }
-    }
-    PathBuf::from(exe_name)
+    PathBuf::from(if cfg!(windows) { "dillo.exe" } else { "dillo" })
 }
 
 /// Hand the assembled invocation to `dillo`. On Unix this replaces the
@@ -810,28 +788,5 @@ mod tests {
             err.to_string().contains("does not match host"),
             "got: {err}"
         );
-    }
-
-    #[tokio::test]
-    async fn resolve_dillo_prefers_override() {
-        let got = resolve_dillo(Some(OsString::from("/opt/dillo")), None);
-        assert_eq!(got, PathBuf::from("/opt/dillo"));
-    }
-
-    #[tokio::test]
-    async fn resolve_dillo_finds_sibling() {
-        let tmp = TempDir::new().unwrap();
-        let name = if cfg!(windows) { "dillo.exe" } else { "dillo" };
-        std::fs::write(tmp.path().join(name), b"#!/bin/sh\n").unwrap();
-        let pichi_exe = tmp.path().join("pichi");
-        let got = resolve_dillo(None, Some(pichi_exe));
-        assert_eq!(got, tmp.path().join(name));
-    }
-
-    #[tokio::test]
-    async fn resolve_dillo_falls_back_to_path() {
-        let got = resolve_dillo(None, None);
-        let name = if cfg!(windows) { "dillo.exe" } else { "dillo" };
-        assert_eq!(got, PathBuf::from(name));
     }
 }
