@@ -26,12 +26,16 @@ devmap-core.workspace = true
 devmap-verity.workspace = true
 conglobate = { workspace = true, features = ["yaml"] }
 pichi-launch.workspace = true
+dillo-config.workspace = true
+madrillo = { git = "https://github.com/pichi-vm/madrillo", rev = "722f8b9e9b265f0318743141b74a16ab797cb1c8", default-features = false }
+interprocess = { version = "=2.4.7", features = ["tokio"] }
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true
 bytes.workspace = true
 cap-std = "4.0.3"
+cap-fs-ext = "4.0.3"
 env_logger.workspace = true
-futures-util.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
 getrandom = "0.4"
 fs4.workspace = true
 hex.workspace = true
@@ -44,11 +48,13 @@ sha2.workspace = true
 tempfile.workspace = true
 ciborium.workspace = true
 minijinja.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "macros", "fs", "process", "sync"] }
-tokio-util = { workspace = true, features = ["io", "io-util"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "macros", "fs", "process", "sync", "time", "signal"] }
+tokio-util = { workspace = true, features = ["io", "io-util", "codec"] }
 toml.workspace = true
 uuid.workspace = true
 ruzstd = "0.9.1"
+crossterm = { version = "0.29", default-features = false, features = ["windows"] }
+
 # Optional guest Corium binaries for `vm-tests` only. Production builds launch
 # Conglobate's shipped appliance; the host consumes its types-only library.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
@@ -58,30 +64,35 @@ corium = { git = "https://github.com/pichi-vm/corium", rev = "c33ae0e01d58b657f8
 corium = { git = "https://github.com/pichi-vm/corium", rev = "c33ae0e01d58b657f8f62cb91672885326a903b9", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-dillo = { git = "https://github.com/pichi-vm/dillo", rev = "f642c76241cd6c85335398e2140b84371fd4c0c1", artifact = "bin", optional = true }
+dillo = { git = "https://github.com/pichi-vm/dillo", rev = "42a2ec1f2facfad4ce469c0a3045ca7ad94cdf80", artifact = "bin", optional = true }
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true }
+nix = { workspace = true, features = ["user"] }
+command-fds = "=0.3.3"
+process-wrap = { version = "=10.0.1", default-features = false, features = ["std", "process-session"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Threading"] }
+widestring = "1"
+win-custody = "=0.1.2"
 
 [dev-dependencies]
 gpt.workspace = true
 assert_cmd.workspace = true
 tempfile.workspace = true
 pichi-storage.workspace = true
-# Test-only: round-trip the `--gpt` kv string `cmd::run` emits back through
-# dillo's device schema to guarantee the format parses as intended. Not a
-# runtime dependency — pichi and dillo are coupled only via dillo's CLI.
-dillo-config.workspace = true
 serde-keyvalue.workspace = true
 # KVM/boot integration tests (build_*.rs, gated on `vm-tests`). These drive the
 # real product binaries through their CLIs; the artifact deps build them.
 wait-timeout = "0.2"
 hex = "0.4"
 burrow = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+portable-pty = "=0.9.0"
+win32job = "=2.0.3"
+winsafe = { version = "=0.0.29", features = ["user"] }
 
 [workspace]
 resolver = "2"
@@ -135,9 +146,8 @@ devtree = { git = "https://github.com/pichi-vm/devtree" }
 # Dev-only caching URL downloader (shared by arma/dillo/e2e tests).
 burrow = { git = "https://github.com/pichi-vm/burrow" }
 
-# dillo lives in its own repo; the pichi CLI consumes only dillo-config (its
-# device schema) to validate the device set it passes to the dillo launcher.
-dillo-config = { git = "https://github.com/pichi-vm/dillo", rev = "f642c76241cd6c85335398e2140b84371fd4c0c1" }
+# Use Dillo's console schema without linking its VM backends.
+dillo-config = { git = "https://github.com/pichi-vm/dillo", rev = "42a2ec1f2facfad4ce469c0a3045ca7ad94cdf80" }
 
 # pichi-internal crates
 pichi-launch = { path = "deps/pichi-launch" }

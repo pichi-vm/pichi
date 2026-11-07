@@ -16,6 +16,7 @@ BuildRequires:  cmake
 BuildRequires:  gcc-c++
 BuildRequires:  make
 Requires:       dillo-vm
+Requires:       madrillo
 Requires:       ca-certificates
 
 %description

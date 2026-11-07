@@ -11,8 +11,6 @@
 //! NOT exported here.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
-// Windows named-port inheritance for `pichi build` (dillo `pipe:N` HANDLEs).
-#![cfg_attr(windows, feature(windows_process_extensions_inherit_handles))]
 #![cfg_attr(windows, feature(windows_by_handle))]
 
 pub mod cli;

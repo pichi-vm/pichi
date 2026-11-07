@@ -8,7 +8,7 @@
 #[path = "common/process.rs"]
 mod process;
 
-use process::{ChildExt as _, CommandExt as _};
+use process::ChildExt as _;
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -29,8 +29,16 @@ impl Smoke {
             .tempdir_in(
                 std::env::var_os("RUNNER_TEMP").unwrap_or_else(|| std::env::temp_dir().into()),
             )
-            .unwrap()
-            .keep();
+            .unwrap();
+        #[cfg(windows)]
+        {
+            let user = win_custody::current_user_sid_string().unwrap();
+            win_custody::SecurityDescriptor::from_sddl(&format!("D:P(A;OICI;FA;;;{user})"))
+                .unwrap()
+                .apply_to_tree(directory.path(), true)
+                .unwrap();
+        }
+        let directory = directory.keep();
         eprintln!("Smoke evidence: {}", directory.display());
         Self {
             binary: std::env::var_os("PICHI_SMOKE_BIN")
@@ -42,22 +50,50 @@ impl Smoke {
 
     fn run(&self, label: &str, args: &[&str]) -> String {
         let path = self.directory.join(format!("{label}.log"));
-        let log = fs::File::create(&path).unwrap();
-        let mut child = Command::new(&self.binary)
+        let errors = self.directory.join(format!("{label}.stderr.log"));
+        let mut command = Command::new(&self.binary);
+        command
             .env("XDG_DATA_HOME", &self.cache)
             .args(args)
             .stdin(Stdio::null())
-            .stdout(log.try_clone().unwrap())
-            .stderr(log)
-            .spawn_vm()
-            .unwrap();
+            .stdout(fs::File::create(&path).unwrap())
+            .stderr(fs::File::create(&errors).unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+        let mut child = command.spawn().unwrap();
         let status = child.wait_timeout(Duration::from_secs(300)).unwrap();
         if status.is_none() {
-            child.kill_vm().unwrap();
+            if !self.cache.join("pichi/storage.workloads").exists() {
+                // Previous packages launch Dillo directly and have no monitor record.
+                #[cfg(unix)]
+                nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(child.id().try_into().unwrap()),
+                    nix::sys::signal::Signal::SIGKILL,
+                )
+                .unwrap();
+                #[cfg(windows)]
+                assert!(
+                    Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &child.id().to_string()])
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+                child.wait().unwrap();
+            } else {
+                child.kill_vm(&self.cache).unwrap();
+            }
             panic!("{label} timed out; see {}", path.display());
         }
         let text = fs::read_to_string(&path).unwrap();
-        assert!(status.unwrap().success(), "{label} failed:\n{text}");
+        assert!(
+            status.unwrap().success(),
+            "{label} failed:\n{text}\n{}",
+            fs::read_to_string(&errors).unwrap()
+        );
         eprintln!("PASS {label}");
         text
     }
@@ -262,6 +298,19 @@ impl Smoke {
             "guest did not verify built content:\n{boot}"
         );
         assert!(!boot.contains("Kernel panic"), "{boot}");
+        if std::env::var_os("PICHI_SMOKE_BIN").is_none() {
+            let id = fs::read_to_string(self.directory.join("run.stderr.log"))
+                .unwrap()
+                .lines()
+                .find_map(|line| uuid::Uuid::parse_str(line).ok())
+                .expect("foreground run prints its workload ID")
+                .to_string();
+            assert!(self.run("ps", &["ps"]).contains(&id));
+            assert!(self.run("logs", &["logs", &id]).contains("PICHI_SMOKE_OK"));
+            assert_eq!(self.run("wait", &["wait", &id]).trim(), "0");
+            assert_eq!(self.run("stop", &["stop", &id]).trim(), id);
+            self.run("attach-exited", &["attach", &id]);
+        }
     }
 }
 
@@ -280,4 +329,27 @@ fn every_command_builds_and_boots() {
     }
     smoke.build_and_boot();
     fs::remove_dir_all(&smoke.directory).unwrap();
+}
+
+#[test]
+fn command_stdout_excludes_diagnostics() {
+    let directory = tempfile::tempdir().unwrap();
+    let smoke = Smoke {
+        directory: directory.path().to_owned(),
+        binary: if cfg!(windows) { "cmd.exe" } else { "/bin/sh" }.into(),
+        dillo: "unused".into(),
+        cache: directory.path().join("cache"),
+    };
+    let arguments: &[&str] = if cfg!(windows) {
+        &["/D", "/C", "echo 0&echo monitor warning 1>&2"]
+    } else {
+        &["-c", "printf '0\\n'; printf 'monitor warning\\n' >&2"]
+    };
+    assert_eq!(smoke.run("wait", arguments).trim(), "0");
+    assert_eq!(
+        fs::read_to_string(directory.path().join("wait.stderr.log"))
+            .unwrap()
+            .trim(),
+        "monitor warning",
+    );
 }

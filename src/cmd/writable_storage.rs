@@ -3,7 +3,8 @@
 
 //! One writable block device. Formatting and mounting belong to the image.
 
-use super::{requirements::SlotArgument as _, run::DevicePath as _};
+use super::requirements::SlotArgument as _;
+use super::run::DevicePath as _;
 use anyhow::{Context, Result, bail, ensure};
 use conglobate::artifact::{Recommendation, Slot, Storage};
 use std::{
@@ -18,8 +19,8 @@ const MIB: u64 = 1024 * 1024;
 #[derive(Debug)]
 pub(super) struct WritableStorage {
     path: PathBuf,
-    _lock: File,
-    _temporary: Option<TempDir>,
+    lock: File,
+    temporary: Option<TempDir>,
 }
 
 impl WritableStorage {
@@ -57,9 +58,18 @@ impl WritableStorage {
         // locks on the backing itself would block the VMM's I/O.
         let mut lock_path = path.as_os_str().to_owned();
         lock_path.push(".lock");
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            // Sharing restrictions follow the open file object when its
+            // handle is transferred to Madrillo. Byte-range locks belong to
+            // the locking process and cannot provide that lifetime.
+            options.share_mode(0);
+        }
         let lock = options
             .open(Path::new(&lock_path))
             .context("opening storage lock")?;
+        #[cfg(unix)]
         lock.try_lock().context("storage is already in use")?;
         let parent = path
             .parent()
@@ -106,8 +116,8 @@ impl WritableStorage {
         }
         Ok(Some(Self {
             path,
-            _lock: lock,
-            _temporary: temporary,
+            lock,
+            temporary,
         }))
     }
 
@@ -117,6 +127,15 @@ impl WritableStorage {
             self.path.key_value_arg(),
             slot.as_argument()
         )
+    }
+
+    /// Retain temporary backing in the workload record; its exit callback
+    /// removes it only after confirmed cleanup. Madrillo owns the reservation.
+    pub(super) fn into_monitor(self) -> File {
+        if let Some(temporary) = self.temporary {
+            let _ = temporary.keep();
+        }
+        self.lock
     }
 }
 
