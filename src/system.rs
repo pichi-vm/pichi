@@ -71,9 +71,6 @@ fn collect_config_file_entries() -> Vec<ConfigFileEntry> {
     if let Some(p) = crate::config::user_config_path() {
         files.push(entry(p));
     }
-    if let Some(env_path) = std::env::var_os("PICHI_CONFIG") {
-        files.push(entry(PathBuf::from(env_path)));
-    }
 
     files
 }

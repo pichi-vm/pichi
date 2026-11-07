@@ -51,12 +51,14 @@ for _ in {1..30}; do
 done
 curl -fsS "http://$registry_address/v2/" >/dev/null
 export PICHI_TEST_REGISTRY="$registry_address"
-cat > "$fixture_dir/pichi-registry.toml" <<TOML
+export XDG_CONFIG_HOME="$fixture_dir/pichi-config"
+export APPDATA="$XDG_CONFIG_HOME"
+mkdir -p "$XDG_CONFIG_HOME/pichi"
+cat > "$XDG_CONFIG_HOME/pichi/config.toml" <<TOML
 [[registries]]
 prefix = "$registry_address"
 insecure = true
 TOML
-export PICHI_CONFIG="$fixture_dir/pichi-registry.toml"
 if [ "$#" -eq 0 ]; then
   cargo test --locked --workspace
 else
