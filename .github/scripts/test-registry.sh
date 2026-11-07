@@ -7,11 +7,7 @@ set -euo pipefail
 # Native Zot releases keep the same real HTTP coverage on all four hosts.
 # RUNNER_TEMP uses backslashes on Windows; JSON accepts forward-slash paths.
 fixture_dir=${RUNNER_TEMP//\\//}
-registry_port=${PICHI_TEST_REGISTRY_PORT:-5000}
-if [[ ! "$registry_port" =~ ^[0-9]{1,5}$ ]] || (( 10#$registry_port < 1024 || 10#$registry_port > 65535 )); then
-  echo "PICHI_TEST_REGISTRY_PORT must be an unprivileged TCP port" >&2
-  exit 1
-fi
+registry_port=5000
 registry_address="127.0.0.1:$registry_port"
 zot="$fixture_dir/$ZOT_ASSET"
 curl --fail --location --retry 3 \
