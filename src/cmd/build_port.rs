@@ -3,9 +3,11 @@
 
 //! Build-port protocol on named virtio-console `dev.pichi.build` (BUILD.md §2.4).
 //!
-//! Bidirectional, self-delimiting CBOR, one round trip:
-//! 1. Guest → host: `["build", 1, null]`
+//! Bidirectional, self-delimiting CBOR:
+//! 1. Guest → host: `["start", 1, null]`
 //! 2. Host → guest: `[true, Input]` or `[false, message]`.
+//! 3. Guest → host: `["finish", 1, null]` or `["finish", 1, message]`.
+//! 4. Host → guest: `[true, null]` acknowledges the result.
 //!
 //! The host prepares the build-input payload before launch, then waits for the
 //! guest request after dillo starts (hold-until-open / Linux discard).
@@ -33,7 +35,7 @@ fn encode_failure(error: &str) -> Result<Vec<u8>> {
     Response::Err(error.to_owned()).encode_cbor()
 }
 
-/// Read one guest request, validate it, write the prepared response bytes.
+/// Exchange build input, then require an explicit successful terminal result.
 ///
 /// On a bad request, writes `[false, message]` before returning `Err`,
 /// so the guest still gets a self-delimiting reply.
@@ -42,21 +44,40 @@ pub(crate) fn serve_build_port(
     mut host_tx: impl Write,
     response: &[u8],
 ) -> Result<()> {
-    let Requests::Build(_) = match ciborium::from_reader(&mut host_rx) {
-        Ok(request) => request,
+    match ciborium::from_reader::<Requests, _>(&mut host_rx) {
+        Ok(Requests::Start(_)) => {}
+        Ok(_) => {
+            write_failure_response(&mut host_tx, "expected start command")?;
+            bail!("expected start command");
+        }
         Err(err) => {
-            let msg = format!("reading build-port guest request: {err}");
+            let msg = format!("reading start command: {err}");
             write_failure_response(&mut host_tx, &msg)?;
             bail!("{msg}");
         }
-    };
+    }
     host_tx
         .write_all(response)
         .context("writing build-port host response")?;
     host_tx
         .flush()
         .context("flushing build-port host response")?;
-    Ok(())
+    let request: Requests = ciborium::from_reader(host_rx.take(64 * 1024))
+        .context("build interrupted: missing or invalid finish command")?;
+    let Requests::Finish(request) = request else {
+        write_failure_response(&mut host_tx, "expected finish command")?;
+        bail!("expected finish command");
+    };
+    let reported = (|| -> Result<()> {
+        ciborium::into_writer(&Response::Ok(None::<()>), &mut host_tx)
+            .context("encoding finish acknowledgement")?;
+        host_tx.flush()?;
+        Ok(())
+    })();
+    if let Some(error) = request.0.0 {
+        bail!("guest build failed: {error}");
+    }
+    reported.context("acknowledging finish command")
 }
 
 fn write_failure_response(host_tx: &mut impl Write, error: &str) -> Result<()> {
@@ -211,7 +232,7 @@ pub(crate) fn console_arg_names_build_port(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pichi_launch::{Build, Request};
+    use pichi_launch::{Finish, Request, Start};
     use std::io::Cursor;
 
     #[test]
@@ -302,19 +323,22 @@ mod tests {
     fn serve_accepts_expected_request_and_writes_response() {
         let req = {
             let mut b = Vec::new();
-            ciborium::into_writer(&Request(Build::default()), &mut b).unwrap();
+            ciborium::into_writer(&Request(Start::default()), &mut b).unwrap();
+            ciborium::into_writer(&Request(Finish(None)), &mut b).unwrap();
             b
         };
         let response = encode_failure("nope").unwrap();
         let mut rx = Cursor::new(req);
         let mut tx = Vec::new();
         serve_build_port(&mut rx, &mut tx, &response).unwrap();
-        assert_eq!(tx, response);
+        let mut expected = response;
+        ciborium::into_writer(&Response::Ok(None::<()>), &mut expected).unwrap();
+        assert_eq!(tx, expected);
     }
 
     #[test]
     fn serve_rejects_unsupported_commands_and_versions() {
-        for bad in [("other", 1, ()), ("build", 2, ())] {
+        for bad in [("other", 1, ()), ("build", 1, ()), ("start", 2, ())] {
             let mut bytes = Vec::new();
             ciborium::into_writer(&bad, &mut bytes).unwrap();
             let mut tx = Vec::new();
@@ -326,11 +350,53 @@ mod tests {
     }
 
     #[test]
+    fn missing_malformed_or_failed_result_never_succeeds() {
+        let mut failure = Vec::new();
+        ciborium::into_writer(
+            &Request(Finish(Some(
+                "rootfs command 1: apt exited with status 100".into(),
+            ))),
+            &mut failure,
+        )
+        .unwrap();
+        for terminal in [vec![], vec![0xff], failure] {
+            let mut request = Vec::new();
+            ciborium::into_writer(&Request(Start::default()), &mut request).unwrap();
+            request.extend_from_slice(&terminal);
+            let error = serve_build_port(request.as_slice(), Vec::new(), b"response").unwrap_err();
+            if terminal.first() == Some(&0x83) {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("rootfs command 1: apt exited with status 100")
+                );
+            } else {
+                assert!(error.to_string().contains("build interrupted"));
+            }
+        }
+    }
+
+    #[test]
+    fn commands_must_arrive_in_start_finish_order() {
+        let mut finish_first = Vec::new();
+        ciborium::into_writer(&Request(Finish(None)), &mut finish_first).unwrap();
+        let error = serve_build_port(finish_first.as_slice(), Vec::new(), b"input").unwrap_err();
+        assert!(error.to_string().contains("expected start command"));
+
+        let mut start_twice = Vec::new();
+        for _ in 0..2 {
+            ciborium::into_writer(&Request(Start::default()), &mut start_twice).unwrap();
+        }
+        let error = serve_build_port(start_twice.as_slice(), Vec::new(), b"input").unwrap_err();
+        assert!(error.to_string().contains("expected finish command"));
+    }
+
+    #[test]
     fn serve_writes_failure_on_decode_error() {
         let mut tx = Vec::new();
         let err = serve_build_port(Cursor::new(b"\xffnot-cbor"), &mut tx, b"x").unwrap_err();
         assert!(
-            err.to_string().contains("reading build-port guest request"),
+            err.to_string().contains("reading start command"),
             "unexpected error: {err}"
         );
         assert!(!tx.is_empty());
