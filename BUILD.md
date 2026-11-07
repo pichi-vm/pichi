@@ -380,8 +380,7 @@ compaction. No host block devices or mounts are created by the harness.
 
 For manual submodule tests, `PICHI_TEST_ROOT_FILESYSTEM` can supply a tiny
 ext4 fixture; local Linux runs can create it with `mkfs.ext4` when unset.
-`PICHI_TEST_STRIP` selects an objcopy tool for stripping Linux guest binaries
-on Windows/macOS; local runs default to `strip`.
+Use `PATH` to select a `strip` executable that supports Linux guest binaries.
 
 For manual staged-image qualification, use a rebuilt appliance OCI layout and
 a newly compiled static release Corium. The staged recipe installs guest Arma
