@@ -425,7 +425,8 @@ async fn manifest_create_combines_sources_without_selecting_the_host_platform() 
         let digest = Fixture::put(&fixture.store, &bytes).await;
         value["manifests"][0]["digest"] = json!(digest.to_string());
         value["manifests"][0]["size"] = json!(bytes.len());
-        value["manifests"][0]["platform"]["architecture"] = json!(arch);
+        value["manifests"][0]["platform"] =
+            json!({"os": "pichi", "architecture": arch, "variant": "test-variant"});
         let index = Fixture::put(&fixture.store, &serde_json::to_vec(&value).unwrap()).await;
         fixture.tags.set_tag(&tag, &index).await.unwrap();
         expected.push((tag, digest, bytes));
@@ -437,16 +438,6 @@ async fn manifest_create_combines_sources_without_selecting_the_host_platform() 
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for (arch, (tag, _, _)) in ["amd64", "arm64"].iter().zip(&expected) {
-        let output = fixture.run(&[
-            "manifest", "annotate", list, tag, "--os", "pichi", "--arch", arch,
-        ]);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
     let directory = fixture.directory.path().join("pichi/storage/manifests");
     let lists = std::fs::read_dir(directory)
         .unwrap()
@@ -459,6 +450,8 @@ async fn manifest_create_combines_sources_without_selecting_the_host_platform() 
     {
         assert_eq!(entry["digest"], digest.to_string());
         assert_eq!(entry["size"], bytes.len());
+        assert_eq!(entry["platform"]["os"], "pichi");
+        assert_eq!(entry["platform"]["variant"], "test-variant");
         assert_eq!(fixture.store.get_blob(digest).await.unwrap(), *bytes);
     }
     assert_eq!(value["manifests"][0]["platform"]["architecture"], "amd64");

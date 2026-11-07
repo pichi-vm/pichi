@@ -7,13 +7,12 @@
 //! pichi artifacts are single-platform (`pichi push` == `docker push`), and
 //! `pichi pull` already selects the matching entry from a remote image index
 //! (see `pichi_registry::pick_pichi_entry_from_index`). This is the producer
-//! half: a small three-verb flow that mirrors docker's, since pichi artifacts
-//! carry no architecture of their own (like a docker image whose config lacks
-//! a platform, the arch must be supplied via `annotate`).
+//! half: source indexes retain their platform metadata; bare manifests can
+//! receive a platform through `annotate`.
 //!
-//! - `create <list> <src>...` fetches each already-pushed per-arch manifest
-//!   from the registry (for its digest + size), records them in a local list
-//!   under `<graphroot>/manifests/`, and verifies each is a pichi artifact.
+//! - `create <list> <src>...` reads each source from the local cache, records
+//!   its manifest descriptor and platform in a local list under
+//!   `<graphroot>/manifests/`, and verifies each is a pichi artifact.
 //! - `annotate <list> <src> --os --arch` sets an entry's platform.
 //! - `push <list>` validates every entry has a platform, strips the internal
 //!   bookkeeping annotation, and PUTs the OCI image index to the registry.
@@ -63,23 +62,29 @@ pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
             .with_context(|| format!("invalid source reference: {src}"))?;
         let root = blob_store.resolve(&src_ref, &tag_db).await?;
         let mut metadata = blob_store.metadata(&root).await?;
+        let mut platform = None;
         if metadata.is_index() {
             // Each source identifies one platform; assembly is independent
             // of the host that publishes the combined index.
             let [entry] = metadata.entries()? else {
                 bail!("manifest source {src} must contain exactly one platform manifest");
             };
+            platform = entry.get("platform").cloned();
             (metadata, _) = blob_store.manifest_entry(entry).await?;
         } else {
             metadata.manifest()?;
         }
-        entries.push(json!({
+        let mut descriptor = json!({
             "mediaType": OCI_MANIFEST_MEDIA_TYPE,
             "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
             "digest": metadata.digest.to_string(),
             "size": metadata.bytes.len(),
             "annotations": { SOURCE_REF_ANNOTATION: src },
-        }));
+        });
+        if let Some(platform) = platform {
+            descriptor["platform"] = platform;
+        }
+        entries.push(descriptor);
     }
 
     // Index-level provenance: carry caller annotations verbatim, and stamp
@@ -92,8 +97,7 @@ pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
     let index = build_index(entries, &annotations);
     store_list(config, &list_ref, &index)?;
     println!(
-        "created manifest list {list_ref} with {} manifest(s); annotate each with \
-         `pichi manifest annotate {list_ref} <source> --os <os> --arch <arch>`",
+        "created manifest list {list_ref} with {} manifest(s)",
         args.sources.len()
     );
     Ok(())
