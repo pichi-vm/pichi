@@ -10,6 +10,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::time::Duration;
 
@@ -22,8 +23,6 @@ use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 use crate::cli::{BuildArgs, PullArgs, PullPolicy};
 #[cfg(test)]
 use crate::cli::{DEFAULT_LOCK, DEFAULT_PLAN};
-#[cfg(unix)]
-use crate::cmd::build_port::clear_device_cloexec;
 use crate::cmd::build_port::{
     self, BuildInput, Response, ResponseExt as _, console_arg, create_build_port_pipes,
     serve_build_port,
@@ -31,7 +30,11 @@ use crate::cmd::build_port::{
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
 use crate::cmd::requirements::SlotArgument as _;
-use crate::cmd::run::{DevicePath as _, build_gpt_spec, find_dillo, path_arg};
+use crate::cmd::run::{DevicePath as _, build_gpt_spec, path_arg};
+use crate::cmd::workload::{
+    Outcome, Running,
+    record::{Record, Records},
+};
 use crate::cmd::writable_storage::WritableStorage;
 use crate::config::Config;
 
@@ -61,52 +64,73 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     ensure_build_image(&build_image_ref, config, &db, &blob_store).await?;
 
-    // The build image launches like `pichi run` (BUILD.md §2.6): --pmi,
-    // optional --bootconfig, and a vGPT for the appliance carapace scutes.
-    let (_, build_manifest) = resolve_manifest(&build_image_ref, &db, &blob_store)
-        .await
-        .with_context(|| format!("resolving build image {build_image_ref}"))?;
-    let (pmi, build_scutes) = build_manifest
-        .partition_layers()
-        .with_context(|| format!("build image {build_image_ref} is not bootable"))?;
-    let pmi_path =
-        super::layer::PreparedLayer::prepare_pmi(&build_manifest, pmi, &blob_store).await?;
-    let bootconfig_path =
-        super::boot_config::BootConfigFile::prepare_image(&build_manifest, &blob_store).await?;
+    // Reserve appliance identity and the build cache lease under the same
+    // lock as image removal. Only the guest interprets source plans and locks.
+    let (record, output_dir, pmi_path, bootconfig_path, gpt_specs, cpus, memory, reqs) = layout
+        .with_index_lock(|| async {
+            // The build image launches like `pichi run` (BUILD.md §2.6): --pmi,
+            // optional --bootconfig, and a vGPT for the appliance carapace scutes.
+            let (build_digest, build_manifest) =
+                resolve_manifest(&build_image_ref, &db, &blob_store)
+                    .await
+                    .with_context(|| format!("resolving build image {build_image_ref}"))?;
+            let (pmi, build_scutes) = build_manifest
+                .partition_layers()
+                .with_context(|| format!("build image {build_image_ref} is not bootable"))?;
+            let pmi_path =
+                super::layer::PreparedLayer::prepare_pmi(&build_manifest, pmi, &blob_store).await?;
+            let bootconfig_path =
+                super::boot_config::BootConfigFile::prepare_image(&build_manifest, &blob_store)
+                    .await?;
 
-    let mut gpt_specs = Vec::new();
-    // Only the appliance root is a VM disk. Conglobate opens locked image
-    // inputs through the read-only cache and assembles roots when needed.
-    if !build_scutes.is_empty() {
-        gpt_specs.push(
-            build_gpt_spec(&build_manifest, &build_scutes, &blob_store)
-                .await
-                .with_context(|| format!("building vGPT for build image {build_image_ref}"))?,
-        );
-    }
+            let mut gpt_specs = Vec::new();
+            // Only the appliance root is a VM disk. Conglobate opens locked image
+            // inputs through the read-only cache and assembles roots when needed.
+            if !build_scutes.is_empty() {
+                gpt_specs.push(
+                    build_gpt_spec(&build_manifest, &build_scutes, &blob_store)
+                        .await
+                        .with_context(|| {
+                            format!("building vGPT for build image {build_image_ref}")
+                        })?,
+                );
+            }
+            // Size the build VM from the build image's requirements, with the
+            // operator's --memory/--cpus overriding (but not below required).
+            let reqs = requirements::load_requirements(&build_manifest, &blob_store).await?;
+            let cpus = requirements::Sizing::Cpus.resolve(
+                args.cpus,
+                reqs.as_ref().and_then(Requirements::cpus_required),
+                reqs.as_ref().and_then(Requirements::cpus_recommended),
+            )?;
+            let memory = requirements::Sizing::Memory.resolve(
+                args.memory,
+                reqs.as_ref().and_then(Requirements::memory_required_mib),
+                reqs.as_ref().and_then(Requirements::memory_recommended_mib),
+            )?;
+
+            let record = Records::open(&layout.graphroot)?.reserve(vec![build_digest])?;
+            let output = record.create_build_output()?;
+            Ok((
+                record,
+                output,
+                pmi_path,
+                bootconfig_path,
+                gpt_specs,
+                cpus,
+                memory,
+                reqs.unwrap_or_default(),
+            ))
+        })
+        .await?;
+
     // Thin-launcher mounts (BUILD.md §2.2–§2.3): empty RW output, RO cache,
     // RO repo (git object store / work tree the guest resolves `--ref` against).
-    let output_dir = tempfile::TempDir::new().context("creating build output dir")?;
     let repo_dir = std::fs::canonicalize(&args.dir)
         .with_context(|| format!("canonicalizing repo dir {}", args.dir.display()))?;
     let cache_dir = std::fs::canonicalize(&layout.graphroot)
         .with_context(|| format!("canonicalizing cache {}", layout.graphroot.display()))?;
 
-    // Size the build VM from the build image's requirements, with the
-    // operator's --memory/--cpus overriding (but not below required).
-    let reqs = requirements::load_requirements(&build_manifest, &blob_store).await?;
-    let cpus = requirements::Sizing::Cpus.resolve(
-        args.cpus,
-        reqs.as_ref().and_then(Requirements::cpus_required),
-        reqs.as_ref().and_then(Requirements::cpus_recommended),
-    )?;
-    let memory = requirements::Sizing::Memory.resolve(
-        args.memory,
-        reqs.as_ref().and_then(Requirements::memory_required_mib),
-        reqs.as_ref().and_then(Requirements::memory_recommended_mib),
-    )?;
-
-    let reqs = reqs.unwrap_or_default();
     let build_input = BuildInput {
         r#ref: git_ref,
         plan,
@@ -127,7 +151,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         &gpt_specs,
         &repo_dir,
         &cache_dir,
-        output_dir.path(),
+        &output_dir,
         Some(&console),
         memory,
         cpus,
@@ -137,7 +161,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         reqs.storage.as_ref(),
         args.storage,
         None,
-        &layout.graphroot.join("writable"),
+        &record.storage_directory(),
     )?;
     if let Some(backing) = &storage {
         argv.extend([
@@ -156,16 +180,28 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow!("pichi build requires -t <tag> to name the result"))?;
 
-    let dillo = find_dillo();
+    if !args.quiet {
+        eprintln!("build workload {}", record.id());
+    }
     let log = args
         .quiet
         .then(|| super::build_output::BuildLog::create(&layout.runroot))
         .transpose()?;
     let result: Result<_> = async {
-        boot_serve_and_wait(&dillo, &argv, pipes, response, log.as_ref()).await?;
-        drop(storage);
+        boot_serve_and_wait(
+            &record,
+            &argv,
+            pipes,
+            response,
+            log.as_ref(),
+            storage
+                .map(WritableStorage::into_monitor)
+                .into_iter()
+                .collect(),
+        )
+        .await?;
         // Explicit build success and successful VM exit precede OCI import.
-        let imported = crate::cmd::load::OciLayout::read(output_dir.path(), &blob_store).await?;
+        let imported = crate::cmd::load::OciLayout::read(&output_dir, &blob_store).await?;
         imported
             .import_build(&blob_store, &db, tag)
             .await
@@ -176,6 +212,8 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         Some(log) => log.failure(error),
         None => error,
     })?;
+    record.release_runtime_files()?;
+    record.release_build_output()?;
     if args.quiet {
         println!("{digest}");
     } else {
@@ -354,119 +392,69 @@ pub(crate) async fn resolve_manifest(
 }
 
 /// Boot the build VM, serve the build-port request/response on
-/// `dev.pichi.build`, and wait for power-off. Unlike `pichi run` (which
-/// `exec`s dillo), build spawns and waits so it can take the OCI output.
+/// `dev.pichi.build`, and wait for power-off. Build adds its direct named-port
+/// exchange to the shared monitor launch, including its RUST_LOG default.
 async fn boot_serve_and_wait(
-    dillo: &Path,
+    record: &Record,
     args: &[String],
     pipes: build_port::BuildPortPipes,
     response: Vec<u8>,
     log: Option<&super::build_output::BuildLog>,
+    held: Vec<std::fs::File>,
 ) -> Result<()> {
-    log::info!("boot build VM: {} {}", dillo.display(), args.join(" "));
-
     let build_port::BuildPortPipes {
         host_tx,
         host_rx,
-        device_rx_fd,
-        device_tx_fd,
         device_rx,
         device_tx,
+        ..
     } = pipes;
-
-    let mut cmd = tokio::process::Command::new(dillo);
-    cmd.args(args);
-    if std::env::var_os("RUST_LOG").is_none() {
-        cmd.env("RUST_LOG", "warn");
-    }
-    if let Some(log) = log {
-        log.attach(&mut cmd)?;
-    }
-    // Tear down dillo if the host drops the child (exchange/error paths).
-    cmd.kill_on_drop(true);
-
-    #[cfg(unix)]
-    {
-        // Clear CLOEXEC in the child so `pipe:N` fds survive exec under the
-        // numbers named in `--console`.
-        #[allow(unsafe_code)]
-        // SAFETY: the closure only fcntl-clears FD_CLOEXEC on descriptors this
-        // process created and still owns (`device_rx` / `device_tx` below).
-        unsafe {
-            cmd.pre_exec(move || {
-                clear_device_cloexec(device_rx_fd, device_tx_fd)
-                    .map_err(|err| std::io::Error::other(err.to_string()))
-            });
-        }
-    }
-    #[cfg(windows)]
-    {
-        // FDs are only consumed by the unix pre_exec path; silence -D warnings.
-        let _ = (device_rx_fd, device_tx_fd);
-        // tokio::process::Command does not wrap inherit_handles; apply it on
-        // the inner std::process::Command (nightly feature gated in lib.rs).
-        use std::os::windows::process::CommandExt as _;
-        cmd.as_std_mut().inherit_handles(true);
+    let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+    let mut running =
+        Running::start(record, &args, vec![device_rx, device_tx], held, false).await?;
+    let (done, mut served) = tokio::sync::oneshot::channel();
+    // Blocking named-port I/O has no monitor/VM ownership and must not keep
+    // the async runtime alive if a missing result leaves cleanup unknown.
+    let worker = std::thread::Builder::new()
+        .name("pichi-build-port".into())
+        .spawn(move || {
+            let _ = done.send(serve_build_port(host_rx, host_tx, &response));
+        });
+    if let Err(error) = worker {
+        let cleanup = running.terminate(record).await;
+        return Err(error).context(format!(
+            "start build-port reader; monitor cleanup: {cleanup:?}"
+        ));
     }
 
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawning dillo at {}", dillo.display()))?;
-    // Child has inherited the device ends; drop our copies.
-    drop(device_rx);
-    drop(device_tx);
-
-    let mut serve =
-        tokio::task::spawn_blocking(move || serve_build_port(host_rx, host_tx, &response));
-
-    let status = tokio::select! {
-        serve_result = &mut serve => {
-            match serve_result.context("build-port task join")? {
-                Ok(()) => child.wait().await.context("waiting for build VM")?,
-                Err(err) => {
-                    // dillo often exits first (e.g. invalid boot configuration). The
-                    // failure-response write then hits Broken pipe — secondary.
-                    // Prefer the guest/dillo exit so CI surfaces the real cause.
-                    match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
-                        Ok(Ok(st)) => {
-                            bail!(
-                                "build-port exchange failed after guest/dillo exit ({st}): {err}"
-                            );
-                        }
-                        Ok(Err(wait_err)) => {
-                            return Err(err).context(format!(
-                                "build-port exchange failed (also waiting for build VM: {wait_err})"
-                            ));
-                        }
-                        Err(_elapsed) => {
-                            let _ = child.start_kill();
-                            return Err(err).context(
-                                "build-port exchange failed (dillo still running; killed)",
-                            );
-                        }
-                    }
-                }
+    let result = async {
+        tokio::select! {
+            response = &mut served => {
+                response.context("build-port reader stopped")??;
+                running.wait(log.map(|log| &log.file)).await
+            }
+            result = running.wait(log.map(|log| &log.file)) => {
+                let result = result?;
+                tokio::time::timeout(Duration::from_secs(5), &mut served).await
+                    .with_context(|| format!("build-port exchange did not finish after {:?}", result.leader))?
+                    .context("build-port reader stopped")?
+                    .with_context(|| format!("build-port exchange failed after {:?}", result.leader))?;
+                Ok(result)
             }
         }
-        status = child.wait() => {
-            let status = status.context("waiting for build VM")?;
-            match serve.await {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    bail!(
-                        "guest exited before completing build-port exchange ({status}): {err}"
-                    );
-                }
-                Err(join) => {
-                    return Err(join).context("build-port task join");
-                }
-            }
-            status
+    }.await;
+    let completion = match result {
+        Ok(result) => result,
+        Err(error) => {
+            // No PID lookup: the authenticated live monitor owns termination.
+            // Failure keeps the retained output and all uncertain image pins.
+            let cleanup = running.terminate(record).await;
+            return Err(error).context(format!("build failed; monitor cleanup: {cleanup:?}"));
         }
     };
-
-    if !status.success() {
-        bail!("build VM exited with {status}");
+    let code = Outcome(completion).code()?;
+    if code != 0 {
+        bail!("build VM exited with status {code}");
     }
     Ok(())
 }
@@ -569,8 +557,8 @@ mod tests {
         assert_eq!(spec.slot, None);
         assert_eq!(spec.ports.len(), 1);
         assert_eq!(spec.ports[0].name, build_port::BUILD_PORT_NAME);
-        assert!(spec.ports[0].rx.is_some());
-        assert!(spec.ports[0].tx.is_some());
+        assert_eq!(spec.ports[0].rx.map(dillo_config::PipeRef::number), Some(3));
+        assert_eq!(spec.ports[0].tx.map(dillo_config::PipeRef::number), Some(4));
     }
 
     #[test]

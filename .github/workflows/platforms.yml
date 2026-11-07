@@ -95,6 +95,35 @@ jobs:
             ${{ github.workspace }}/appliance/dillo/target
           save-if: ${{ runner.environment == 'github-hosted' || github.ref == 'refs/heads/main' }}
 
+      - name: 📦 Install Python with TOML support
+        if: runner.os != 'macOS'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: 📦 Install relocatable Python on the native Mac runner
+        if: runner.os == 'macOS'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/pichi-python
+        with:
+          python-version: '3.13'
+          activate-environment: true
+          venv-path: ${{ runner.temp }}/pichi-python-env
+          enable-cache: false
+          cache-local-path: ${{ runner.temp }}/pichi-uv-cache
+
+      - name: 🔨 Build the matching native process monitor
+        run: python3 .github/scripts/build_monitor.py
+
+      - name: ⚙️ Run native Windows tests outside restrictive Cargo Jobs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $script = (Resolve-Path .github/scripts/windows-test-runner.ps1).Path
+          $runner = ConvertTo-Json -Compress -InputObject @('pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $script)
+          Add-Content -LiteralPath .cargo/config.toml -Value "`n[target.x86_64-pc-windows-msvc]`nrunner = $runner"
+
       - name: 📦 Install packaged Dillo
         if: runner.os == 'Linux'
         run: |
@@ -113,7 +142,7 @@ jobs:
         if: runner.os != 'Linux'
         working-directory: appliance/dillo
         run: |
-          cargo "+$NIGHTLY" --config packaging/cargo-config.toml build --locked --release --bin dillo
+          cargo "+$NIGHTLY" --config .copr/cargo-config.toml build --locked --release --bin dillo
           suffix=''
           if [ "$RUNNER_OS" = Windows ]; then suffix='.exe'; fi
           dillo="$GITHUB_WORKSPACE/appliance/dillo/target/release/dillo$suffix"
@@ -148,6 +177,13 @@ jobs:
           ZOT_ASSET: ${{ matrix.zot_asset }}
           ZOT_SHA256: ${{ matrix.zot_sha256 }}
         run: bash .github/scripts/test-registry.sh
+
+      - name: 🧪 Verify native monitor and opaque build channel
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+        run: |
+          cargo test --locked -p pichi --lib native_monitor_launch_and_async_control -- --ignored --nocapture
+          cargo test --locked -p pichi --test cmd_run build_channel_preserves_guest_first_exchange -- --ignored --nocapture
 
       - name: 🔨 Build candidate appliance
         if: inputs.build-appliance
@@ -193,3 +229,7 @@ jobs:
             ${{ runner.temp }}/pichi command smoke */*.log
             ${{ runner.temp }}/pichi command smoke */pichi.yaml
             ${{ runner.temp }}/pichi command smoke */pichi.lock
+
+      - name: 🧹 Remove temporary monitor checkout
+        if: ${{ always() && env.PICHI_MONITOR_SOURCE != '' }}
+        run: python3 .github/scripts/build_monitor.py --cleanup

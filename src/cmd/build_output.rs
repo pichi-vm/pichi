@@ -12,7 +12,7 @@ use std::{
 
 #[derive(Debug)]
 pub(super) struct BuildLog {
-    file: File,
+    pub(super) file: File,
     path: PathBuf,
 }
 
@@ -26,14 +26,6 @@ impl BuildLog {
             .tempfile_in(directory)?
             .keep()?;
         Ok(Self { file, path })
-    }
-
-    pub(super) fn attach(&self, command: &mut tokio::process::Command) -> Result<()> {
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(self.file.try_clone()?)
-            .stderr(self.file.try_clone()?);
-        Ok(())
     }
 
     pub(super) fn failure(&self, error: anyhow::Error) -> anyhow::Error {

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use super::process::{ChildExt as _, CommandExt as _};
+use super::process::ChildExt as _;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,6 +34,16 @@ impl Builds {
 
     pub fn new(name: &str) -> Self {
         let temporary = tempfile::Builder::new().prefix(name).tempdir().unwrap();
+        #[cfg(windows)]
+        {
+            // Retained evidence may live beneath a shared runner directory.
+            // Protect this new, empty fixture before creating workload state.
+            let user = win_custody::current_user_sid_string().unwrap();
+            win_custody::SecurityDescriptor::from_sddl(&format!("D:P(A;OICI;FA;;;{user})"))
+                .unwrap()
+                .apply_to_tree(temporary.path(), true)
+                .unwrap();
+        }
         let directory = temporary.path().to_owned();
         let cache = directory.join("cache");
         fs::create_dir(&cache).unwrap();
@@ -153,11 +163,11 @@ impl Builds {
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
-            .spawn_vm()
+            .spawn()
             .unwrap();
         let status = child.wait_timeout(Duration::from_secs(600)).unwrap();
         if status.is_none() {
-            child.kill_vm().unwrap();
+            child.kill_vm(&self.cache).unwrap();
             panic!("build timed out: {}", repo.join("build.log").display());
         }
         status.unwrap().success()
@@ -173,11 +183,11 @@ impl Builds {
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
-            .spawn_vm()
+            .spawn()
             .unwrap();
         let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
         if status.is_none() {
-            child.kill_vm().unwrap();
+            child.kill_vm(&self.cache).unwrap();
             panic!("boot timed out: {}", path.display());
         }
         let text = fs::read_to_string(&path).unwrap();

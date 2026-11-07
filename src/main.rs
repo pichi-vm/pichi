@@ -7,7 +7,7 @@
 //! This binary owns image management — pulling, pushing, importing, and
 //! inspecting OCI artifacts in the local content-addressed cache. Booting a
 //! VM is delegated to the separate `dillo` launcher: `pichi run` derives the
-//! device set from the cached artifact, then `exec()`s `dillo`.
+//! device set from the cached artifact, then launches it through madrillo.
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
@@ -63,22 +63,44 @@ enum Command {
     },
     /// Update the lock for a working-tree plan.
     Update(cli::UpdateArgs),
-    /// Boot a cached artifact by preparing the environment and exec'ing dillo.
+    /// Boot a cached artifact under madrillo supervision.
     Run(cli::RunArgs),
+    /// Attach to a workload's live console.
+    Attach(cli::AttachArgs),
+
+    /// Print retained console output for a workload.
+    Logs(cli::WorkloadArgs),
+
+    /// Wait for a workload and print its exit status.
+    Wait(cli::WorkloadArgs),
+
+    /// Shut down a workload, forcing cleanup after the grace period.
+    Stop(cli::StopArgs),
+
+    /// List retained workloads, including unknown and completed workloads.
+    Ps,
+
+    #[command(hide = true)]
+    CleanupWorkload { path: std::path::PathBuf },
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> anyhow::Result<NativeExit> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     let cli = Cli::parse();
 
-    let config = config::Config::load().context("failed to load pichi config")?;
+    let config = if matches!(cli.command, Command::CleanupWorkload { .. }) {
+        config::Config::default()
+    } else {
+        config::Config::load().context("failed to load pichi config")?
+    };
 
     // Every command runs on the one async runtime. Commands whose work is
     // purely local fs/CPU offload their blocking parts via `spawn_blocking`
     // internally; network commands are async end to end.
     match cli.command {
+        Command::CleanupWorkload { path } => cmd::workload::Workload::cleanup(&path),
         Command::System { cmd } => match cmd {
             cli::SystemCmd::Info(args) => system::run(args, &config).await,
             cli::SystemCmd::Prune(args) => cmd::prune::run(args, &config).await,
@@ -102,6 +124,49 @@ async fn main() -> anyhow::Result<()> {
             cli::ManifestCmd::Push(args) => cmd::manifest::push(args, &config).await,
         },
         Command::Update(args) => cmd::update::run(args, &config).await,
-        Command::Run(args) => cmd::run::run(args, &config).await,
+        Command::Run(args) => return Ok(NativeExit(cmd::run::run(args, &config).await?)),
+        Command::Attach(args) => {
+            return Ok(NativeExit(
+                cmd::workload::Workload::open(args.id, &config)?
+                    .attach(args.interactive)
+                    .await?,
+            ));
+        }
+        Command::Wait(args) => {
+            println!(
+                "{}",
+                cmd::workload::Workload::open(args.id, &config)?
+                    .wait()
+                    .await?
+                    .code()?
+            );
+            Ok(())
+        }
+        Command::Logs(args) => {
+            cmd::workload::Workload::open(args.id, &config)?
+                .logs()
+                .await
+        }
+        Command::Stop(args) => {
+            cmd::workload::Workload::open(args.id, &config)?
+                .stop(std::time::Duration::from_secs(u64::from(args.time)))
+                .await?
+                .code()?;
+            println!("{}", args.id);
+            Ok(())
+        }
+        Command::Ps => cmd::workload::Workload::list(&config).await,
+    }?;
+    Ok(NativeExit(0))
+}
+
+#[derive(Debug)]
+struct NativeExit(u32);
+
+impl std::process::Termination for NativeExit {
+    fn report(self) -> std::process::ExitCode {
+        // Preserve all Windows status bits; Unix applies its native low byte.
+        // The command and runtime have already dropped their resources here.
+        std::process::exit(self.0.cast_signed())
     }
 }
