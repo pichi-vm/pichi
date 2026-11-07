@@ -14,7 +14,7 @@ use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore};
 use wait_timeout::ChildExt;
 
 use super::process::{ChildExt as _, CommandExt as _};
-use super::{DILLO_BIN, PICHI_BIN, SMOKE_SOURCE_REF};
+use super::{PICHI_BIN, SMOKE_SOURCE_REF};
 
 #[derive(Debug)]
 pub struct GitRepo {
@@ -208,7 +208,7 @@ impl SubmoduleFixture {
         let start = Instant::now();
         let mut child = Command::new(PICHI_BIN)
             .env("XDG_DATA_HOME", &self.graphroot)
-            .env("PICHI_DILLO", DILLO_BIN)
+            .env("PATH", super::dillo_path())
             .stdin(Stdio::null())
             .args([
                 "build",

@@ -19,7 +19,6 @@ use wait_timeout::ChildExt as _;
 struct Smoke {
     directory: PathBuf,
     binary: PathBuf,
-    dillo: PathBuf,
     cache: PathBuf,
 }
 
@@ -36,9 +35,6 @@ impl Smoke {
         Self {
             binary: std::env::var_os("PICHI_SMOKE_BIN")
                 .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_pichi")), PathBuf::from),
-            dillo: std::env::var_os("PICHI_DILLO")
-                .expect("PICHI_DILLO must select native Dillo")
-                .into(),
             cache: directory.join("cache"),
             directory,
         }
@@ -49,7 +45,6 @@ impl Smoke {
         let log = fs::File::create(&path).unwrap();
         let mut child = Command::new(&self.binary)
             .env("XDG_DATA_HOME", &self.cache)
-            .env("PICHI_DILLO", &self.dillo)
             .args(args)
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
@@ -271,7 +266,7 @@ impl Smoke {
 }
 
 #[test]
-#[ignore = "requires a native hypervisor, PICHI_DILLO, and a local registry"]
+#[ignore = "requires a native hypervisor, Dillo on PATH, and a local registry"]
 fn every_command_builds_and_boots() {
     let mut smoke = Smoke::new();
     if std::env::var_os("PICHI_SMOKE_BIN").is_none() {

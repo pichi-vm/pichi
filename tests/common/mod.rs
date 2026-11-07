@@ -37,6 +37,20 @@ pub const DILLO_BIN: &str = "dillo";
 pub const DILLO_BIN: &str = env!("CARGO_BIN_FILE_DILLO_dillo");
 pub const PICHI_BIN: &str = env!("CARGO_BIN_EXE_pichi");
 
+/// Put the native artifact on the child search path; Linux uses installed Dillo.
+pub fn dillo_path() -> std::ffi::OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    if cfg!(target_os = "linux") {
+        path
+    } else {
+        std::env::join_paths(
+            std::iter::once(PathBuf::from(DILLO_BIN).parent().unwrap().to_owned())
+                .chain(std::env::split_paths(&path)),
+        )
+        .unwrap()
+    }
+}
+
 /// Run the `pichi` binary against an isolated cache (`graphroot` via
 /// `XDG_DATA_HOME`) with installed Dillo on Linux or the native build elsewhere.
 /// `envs` adds extra environment. Returns the captured output; use
@@ -44,7 +58,7 @@ pub const PICHI_BIN: &str = env!("CARGO_BIN_EXE_pichi");
 pub fn pichi(graphroot: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(PICHI_BIN);
     cmd.env("XDG_DATA_HOME", graphroot)
-        .env("PICHI_DILLO", DILLO_BIN)
+        .env("PATH", dillo_path())
         .args(args);
     if args.first() == Some(&"build") {
         cmd.args(["--build-image", build_image()]);
