@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+version: 1
+stages:
+  smoke:
+    extend: qualification.local/builder:smoke
+    steps:
+      - copy: {path: message.txt, into: /pichi-smoke-message}
+      - copy: {path: pichi-smoke.service, into: /usr/lib/systemd/system/pichi-smoke.service}
+image:
+  root: smoke
+  boot:
+    inherit: qualification.local/builder:smoke
+    extend:
+      corium.root: ""
+      kernel.systemd.unit: pichi-smoke.service
+requirements:
+  slot: pci
+  memory: {required: 2048}

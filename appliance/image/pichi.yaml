@@ -4,38 +4,6 @@
 version: 1
 
 stages:
-  tools:
-    extend: ghcr.io/pichi-vm/fedora:43
-    mounts:
-      /tmp: tmpfs
-    steps:
-      - exec:
-          command: >-
-            dnf -y --setopt=install_weak_deps=False install
-            gcc rust cargo rust-src llvm-devel
-          network: true
-      - exec:
-          command: >-
-            cargo install --locked --version '=0.13.0' --root /usr
-            --no-default-features --features llvm-21 bpf-linker
-          network: true
-  engine:
-    use: tools
-    steps:
-      - copy: { path: deps/conglobate, into: /build/conglobate/ }
-      - exec:
-          command: >-
-            cargo install --locked --path /build/conglobate
-            --features cli --root /mnt
-          network: true
-  policy:
-    use: tools
-    steps:
-      - copy: { path: appliance/lsm, into: /build/lsm/ }
-      - exec:
-          command: >-
-            RUSTC_BOOTSTRAP=1 cargo install --locked --path /build/lsm --root /mnt
-          network: true
   appliance:
     extend: ghcr.io/pichi-vm/fedora:43
     mounts:
@@ -43,14 +11,13 @@ stages:
       /tmp: tmpfs
       /var: tmpfs
     steps:
+      - copy: { path: appliance/image/pichi.repo, into: /etc/yum.repos.d/pichi.repo }
       - exec:
           command: >-
             dnf -y --setopt=install_weak_deps=False --exclude='kernel*' install
-            systemd-networkd systemd-resolved e2fsprogs dosfstools
+            conglobate pichi-lsm
           network: true
-      - copy: { from: engine, path: /bin/conglobate, into: /usr/bin/conglobate }
-      - copy: { from: policy, path: /bin/lsm, into: /usr/libexec/conglobate-lsm }
-      - copy: { path: appliance/image/units, into: /usr/lib/systemd/system/ }
+      - copy: { path: appliance/image/pichi-lsm.conf, into: /etc/systemd/system/conglobate-build.service.d/pichi-lsm.conf }
       - copy: { path: appliance/image/10-build.network, into: /usr/lib/systemd/network/10-build.network }
       - exec:
           command: >-

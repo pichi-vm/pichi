@@ -125,16 +125,14 @@ on the host; `pichi build` remains a thin launcher and consumes a committed
 plan and lock in the appliance.
 
 `-b`/`--build-image` selects the build appliance image. When it is omitted,
-pichi uses the digest-pinned default. If that image is not already cached,
+pichi uses `ghcr.io/pichi-vm/pichi-build:latest`. If that image is not already cached,
 the first build pulls it and continues. Full contract: [BUILD.md](BUILD.md).
 
 ## Source checkout
 
-Initialize the pinned Conglobate source before building:
-
-```sh
-git submodule update --init --recursive
-```
+Cargo fetches the pinned Conglobate library as a Git dependency. No submodule
+checkout is needed to build Pichi. The native Windows/macOS CI jobs initialize
+`appliance/dillo` to build their launcher.
 
 ## License
 

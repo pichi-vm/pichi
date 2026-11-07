@@ -158,37 +158,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "arma"
-version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma?rev=3297920b46122689fb13ca41acd61cbe94ac1de7#3297920b46122689fb13ca41acd61cbe94ac1de7"
-dependencies = [
- "anyhow",
- "ciborium",
- "clap",
- "devtree",
- "flate2",
- "goblin",
- "lzma-rust2",
- "pmi",
- "regex",
- "ruzstd",
- "tatu",
- "thiserror 2.0.18",
- "vm-fdt",
- "zerocopy",
-]
-
-[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
-
-[[package]]
-name = "arrayvec"
-version = "0.7.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f02882884d3e1bc524fb12c79f107f6ad0e1cfd498c536ffb494301740995dfe"
 
 [[package]]
 name = "assert_cmd"
@@ -521,6 +494,7 @@ dependencies = [
 [[package]]
 name = "conglobate"
 version = "0.2.0"
+source = "git+https://github.com/pichi-vm/conglobate?rev=bb1c85852fda48b626fd278f8532af8939a6207d#bb1c85852fda48b626fd278f8532af8939a6207d"
 dependencies = [
  "hex",
  "humantime-serde",
@@ -1111,23 +1085,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dtb2acpi"
-version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma?rev=3297920b46122689fb13ca41acd61cbe94ac1de7#3297920b46122689fb13ca41acd61cbe94ac1de7"
-dependencies = [
- "devtree",
- "zerocopy",
-]
-
-[[package]]
-name = "dtb2e820"
-version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma?rev=3297920b46122689fb13ca41acd61cbe94ac1de7#3297920b46122689fb13ca41acd61cbe94ac1de7"
-dependencies = [
- "devtree",
-]
-
-[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1388,17 +1345,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
-]
-
-[[package]]
-name = "goblin"
-version = "0.10.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17582616a7718cca54cec18e534a76c7c4aec11a8b9a85695712f262fd15a4c8"
-dependencies = [
- "log",
- "plain",
- "scroll",
 ]
 
 [[package]]
@@ -2012,15 +1958,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
-name = "lzma-rust2"
-version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490750560fa7851fbbf5d3ab1a8750f09350ed361ed8aed85b1e1e40587812ee"
-dependencies = [
- "sha2 0.11.1",
-]
-
-[[package]]
 name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2279,7 +2216,6 @@ name = "pichi"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arma",
  "assert_cmd",
  "burrow",
  "bytes",
@@ -2382,12 +2318,6 @@ name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
-
-[[package]]
-name = "plain"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pmi"
@@ -2849,26 +2779,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "scroll"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1257cd4248b4132760d6524d6dda4e053bc648c9070b960929bf50cfb1e7add"
-dependencies = [
- "scroll_derive",
-]
-
-[[package]]
-name = "scroll_derive"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed76efe62313ab6610570951494bdaa81568026e0318eaa55f167de70eeea67d"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.118",
-]
-
-[[package]]
 name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3192,17 +3102,6 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-io-kit",
  "windows",
-]
-
-[[package]]
-name = "tatu"
-version = "0.1.0"
-source = "git+https://github.com/pichi-vm/arma?rev=3297920b46122689fb13ca41acd61cbe94ac1de7#3297920b46122689fb13ca41acd61cbe94ac1de7"
-dependencies = [
- "arrayvec",
- "devtree",
- "dtb2acpi",
- "dtb2e820",
 ]
 
 [[package]]
@@ -3569,12 +3468,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vm-fdt"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e21282841a059bb62627ce8441c491f09603622cd5a21c43bfedc85a2952f23"
 
 [[package]]
 name = "vm-memory"
