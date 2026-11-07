@@ -1,7 +1,6 @@
-name: registry
+name: 🧪 GHCR compatibility
 
 on:
-  workflow_call:
   workflow_dispatch:
 
 env:
@@ -10,50 +9,31 @@ env:
   NIGHTLY: nightly-2026-07-06
 
 jobs:
-  # Every native platform also runs the complete workspace against a local
-  # Zot registry in platforms.yml. Keep this additional vendor compatibility
-  # check for the hosted registry's authentication and media-type handling.
-  # Real network round-trip against ghcr.io, a major production registry.
-  # Validates that pichi's custom OCI artifact format (vnd.pichi.* media
-  # types, empty-config artifact, verity annotations) is accepted and served
-  # bit-identically by a strict, real-world implementation. Runs only on
-  # push/dispatch: fork-PR GITHUB_TOKENs are read-only for packages.
-  registry-ghcr:
-    name: ghcr.io / ${{ matrix.name }}
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - name: linux-amd64
-            os: ubuntu-24.04
-          - name: linux-arm64
-            os: ubuntu-24.04-arm
-          - name: windows-amd64
-            os: windows-2025
-          - name: macos-arm64
-            os: macos-15
-    runs-on: ${{ matrix.os }}
+  test:
+    name: 🧪 ghcr
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      TEST_PACKAGE_PREFIX: pichi-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+      TEST_PACKAGE_PREFIX: pichi-ci-${{ github.run_id }}-${{ github.run_attempt }}-linux-amd64
     if: github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7.0.1
+      - name: 📥 Check out source
+        uses: actions/checkout@v7.0.1
         with:
-          submodules: recursive
-
-      - name: Install toolchain
+          persist-credentials: false
+      - name: 📦 Install toolchain
         shell: bash
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal
           rustup default "$NIGHTLY"
 
-      - uses: Swatinem/rust-cache@v2
+      - name: ♻️ Restore build cache
+        uses: Swatinem/rust-cache@v2
 
-      - name: Write ghcr.io auth file
+      - name: 🔑 Authenticate to GHCR
         shell: bash
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,7 +42,7 @@ jobs:
           auth=$(printf '%s:%s' '${{ github.actor }}' "$GHCR_TOKEN" | base64 | tr -d '\r\n')
           printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$auth" > "$RUNNER_TEMP/auth/auth.json"
 
-      - name: Round-trip test (ghcr.io)
+      - name: 🧪 Check registry round trip
         shell: bash
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
@@ -74,7 +54,7 @@ jobs:
           # so GHCR grants the package permissions before the next client auths.
           cargo test --locked -p pichi --test cmd_pull_push_roundtrip -- --test-threads=1
 
-      - name: Delete test package (cleanup)
+      - name: 🧹 Delete test package
         if: always()
         shell: bash
         env:

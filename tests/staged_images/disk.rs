@@ -8,7 +8,7 @@ use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::Path;
 
 /// Independent inspection of GPT bytes from the actual emitted snapshot chain.
-/// This test reader handles the writer's uncompressed 4 KiB snapshot stores.
+/// Decode compressed layers before inspecting their 4 KiB snapshot stores.
 pub(crate) struct Disk {
     files: Vec<File>,
     chunks: BTreeMap<u64, (usize, u64)>,
@@ -21,8 +21,18 @@ impl From<&Image> for Disk {
             chunks: BTreeMap::new(),
         };
         for layer in image.layers("scute") {
-            assert_eq!(layer["mediaType"], "application/vnd.pichi.scute.v1");
-            let mut file = File::open(image.layer_path(&layer)).unwrap();
+            let source = File::open(image.layer_path(&layer)).unwrap();
+            let mut file = match layer["mediaType"].as_str().unwrap() {
+                "application/vnd.pichi.scute.v1" => source,
+                "application/vnd.pichi.scute.v1+zstd" => {
+                    let mut decoder = ruzstd::decoding::StreamingDecoder::new(source).unwrap();
+                    let mut file = tempfile::tempfile().unwrap();
+                    std::io::copy(&mut decoder, &mut file).unwrap();
+                    file.rewind().unwrap();
+                    file
+                }
+                other => panic!("unexpected snapshot media type: {other}"),
+            };
             let length = file.metadata().unwrap().len();
             let mut header = [0u8; 16];
             file.read_exact(&mut header).unwrap();

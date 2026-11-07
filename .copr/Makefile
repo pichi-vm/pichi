@@ -7,7 +7,6 @@
 .PHONY: srpm
 srpm:
 	dnf -y install rpm-build tar gzip git
-	git submodule update --init --recursive deps/conglobate
 	name=$$(rpmspec -q --srpm --qf '%{name}-%{version}' "$(spec)")
 	mkdir -p "$(outdir)"
 	tar --exclude-vcs --exclude=target --exclude=vendor \

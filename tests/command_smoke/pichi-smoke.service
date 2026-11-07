@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Verify Pichi build output
+After=local-fs.target
+[Service]
+Type=oneshot
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/hvc0
+ExecStart=/bin/sh -ec 'test "$(cat /pichi-smoke-message)" = PICHI_SMOKE_CONTENT; echo PICHI_SMOKE_OK; systemctl --no-block poweroff'

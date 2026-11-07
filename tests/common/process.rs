@@ -6,7 +6,7 @@
 use std::io;
 use std::process::{Child, Command};
 
-pub trait CommandExt {
+pub(crate) trait CommandExt {
     fn spawn_vm(&mut self) -> io::Result<Child>;
 }
 
@@ -21,7 +21,7 @@ impl CommandExt for Command {
     }
 }
 
-pub trait ChildExt {
+pub(crate) trait ChildExt {
     fn kill_vm(&mut self) -> io::Result<()>;
 }
 
