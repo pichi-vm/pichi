@@ -23,6 +23,12 @@
 
 #![allow(missing_docs)]
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 use std::path::PathBuf;
 
 use assert_cmd::Command;
@@ -98,7 +104,15 @@ async fn push_skips_existing_blobs() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", &tag])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            &tag,
+        ])
         .assert()
         .success();
 
@@ -144,7 +158,15 @@ async fn push_then_pull_succeeds() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", &tag])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            &tag,
+        ])
         .assert()
         .success();
     let db_before = FilesystemTagDb::open(&g).unwrap();

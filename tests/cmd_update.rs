@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 use conglobate::plan::{Lock, Remote};
 use std::{
     collections::BTreeMap,
@@ -56,7 +62,15 @@ impl Project {
 
     fn import(&self, reference: &str, byte: u8) -> String {
         fs::write(self.0.path().join("input.raw"), vec![byte; 64 * 1024]).unwrap();
-        Self::success(self.run(&["import", "raw", "input.raw", "-t", reference]));
+        Self::success(self.run(&[
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            "input.raw",
+            "-t",
+            reference,
+        ]));
         Self::success(self.run(&["inspect", "--format", "{{ digest }}", reference]))
             .trim()
             .into()

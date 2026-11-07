@@ -41,6 +41,7 @@ fs4.workspace = true
 hex.workspace = true
 humansize.workspace = true
 log.workspace = true
+object.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

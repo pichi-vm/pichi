@@ -102,6 +102,9 @@ pub enum ImportCmd {
 /// Args for `pichi import raw <raw-image> [-t <tag>]` (IMPORT-01..07).
 #[derive(Debug, ClapArgs)]
 pub struct ImportRawArgs {
+    /// Target architecture; opaque disk images do not identify one.
+    #[arg(long, value_parser = ["amd64", "arm64"])]
+    pub arch: String,
     /// Path to the raw image file to import (treated as opaque bytes per
     /// CONTEXT D-06 — no GPT parse, no CRC, no partition-table inspection).
     pub raw_image: std::path::PathBuf,
@@ -128,6 +131,10 @@ pub struct ImportRawArgs {
 /// combined in. The carapace reference is read-only — its tag is never changed.
 #[derive(Debug, ClapArgs)]
 pub struct ImportPmiArgs {
+    /// Target architecture when it cannot be read from the PMI's PE header.
+    /// Must agree with the header when the architecture is known.
+    #[arg(long, value_parser = ["amd64", "arm64"])]
+    pub arch: Option<String>,
     /// Pre-built PMI file. Boot configuration requires compatible reservations
     /// in every launch target. Import does not prove the guest will boot.
     pub pmi: std::path::PathBuf,
@@ -367,6 +374,7 @@ impl TryFrom<ImportRawArgs> for crate::cmd::import::raw::ImportArgs {
         let annotations = crate::cmd::import::parse_annotations(&a.annotations)?;
         Ok(Self {
             raw_image: a.raw_image,
+            arch: a.arch,
             tag: a.tag,
             quiet: a.quiet,
             created_rfc3339: String::new(), // overwritten by cmd::import::run_raw

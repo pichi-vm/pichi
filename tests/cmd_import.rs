@@ -7,6 +7,12 @@
 //! tests/cmd_tag.rs:60). Each test writes a small fixture file in the
 //! TempDir and points `pichi import` at it.
 
+const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
+    "arm64"
+} else {
+    "amd64"
+};
+
 #[path = "support/index.rs"]
 mod index;
 
@@ -44,7 +50,15 @@ async fn import_happy_path() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "myapp:base"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "myapp:base",
+        ])
         .assert()
         .success();
 
@@ -102,7 +116,15 @@ async fn import_accepts_non_gpt_input() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "tar:opaque"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "tar:opaque",
+        ])
         .assert()
         .success();
 }
@@ -156,7 +178,15 @@ async fn bottom_scute_salt_is_zero_prefix_e2e() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "salt:check"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "salt:check",
+        ])
         .assert()
         .success();
 
@@ -191,7 +221,15 @@ async fn import_without_pmi_has_no_pmi_layer() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "nopmi:base"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "nopmi:base",
+        ])
         .assert()
         .success();
 
@@ -226,7 +264,15 @@ async fn manifest_has_locked_verity_params_e2e() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .args(["import", "raw", raw.to_str().unwrap(), "-t", "params:check"])
+        .args([
+            "import",
+            "raw",
+            "--arch",
+            TEST_ARCH,
+            raw.to_str().unwrap(),
+            "-t",
+            "params:check",
+        ])
         .assert()
         .success();
 

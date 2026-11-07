@@ -33,6 +33,7 @@ use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use super::{boot_config::BootConfigFile, cache::ImageStore as _};
 use crate::cli::{ImportPmiArgs, ImportRawArgs};
 use crate::cmd::manifest_ext::ManifestExt as _;
+use crate::cmd::platform::PlatformExt as _;
 use crate::config::Config as PichiConfig;
 
 /// `pichi import raw` — import a raw image as a base carapace (IMPORT-01..07).
@@ -75,6 +76,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         .await
         .with_context(|| format!("reading PMI file: {}", args.pmi.display()))?;
     let pmi_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&pmi_bytes).into());
+    let platform = conglobate::artifact::Platform::from_pmi(&pmi_bytes, args.arch.as_deref())?;
 
     let bootconfig = match &args.bootconfig {
         Some(path) => Some(BootConfigFile::read(path).await?),
@@ -95,7 +97,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     // `--carapace`, start from an empty scute-less manifest (a PMI-only
     // bootable artifact).
     let mut manifest = match &args.carapace {
-        Some(carapace) => carapace_scutes_manifest(&blob_store, &db, carapace).await?,
+        Some(carapace) => carapace_scutes_manifest(&blob_store, &db, carapace, &platform).await?,
         None => scuteless_manifest(),
     };
     // Merge caller-supplied provenance annotations. Structural verity-chain keys
@@ -152,7 +154,9 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         .await
         .with_context(|| format!("put_blob manifest {manifest_digest}"))?;
     BootConfigFile::validate_image(&manifest, &blob_store).await?;
-    let index = blob_store.local_index(&manifest_digest, None).await?;
+    let index = blob_store
+        .local_index(&manifest_digest, Some(platform))
+        .await?;
 
     if let Some(dest_key) = &dest_key {
         db.set_tag_locked(dest_key, &index)
@@ -179,6 +183,7 @@ async fn carapace_scutes_manifest(
     blob_store: &FilesystemBlobStore,
     db: &FilesystemTagDb,
     carapace: &str,
+    platform: &conglobate::artifact::Platform,
 ) -> Result<Manifest> {
     // Accept a bare `sha256:<hex>` image digest directly — that is exactly
     // what `pichi import raw` prints, so an untagged carapace is referenceable
@@ -191,7 +196,22 @@ async fn carapace_scutes_manifest(
             .with_context(|| format!("invalid carapace reference: {carapace}"))?;
         blob_store.resolve(&carapace_ref, db).await?
     };
-    let (_, mut manifest) = blob_store.manifest(&src_digest).await?;
+    let metadata = blob_store.metadata(&src_digest).await?;
+    let mut manifest = if metadata.is_index() {
+        let selected = pichi_registry::pick_pichi_entry_from_index(
+            &metadata.bytes,
+            &platform.os,
+            &platform.architecture,
+        )?;
+        let entry = metadata
+            .entries()?
+            .iter()
+            .find(|entry| entry["digest"] == selected)
+            .context("selected carapace platform is missing")?;
+        blob_store.manifest_entry(entry).await?.1
+    } else {
+        metadata.manifest()?
+    };
     if manifest.scute_layers().is_empty() {
         bail!("{carapace} is not a carapace (no scute layers)");
     }
