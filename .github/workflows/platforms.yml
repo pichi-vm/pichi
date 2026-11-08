@@ -7,10 +7,6 @@ on:
         description: Build and test a local candidate appliance on each platform
         type: boolean
         default: false
-      compatibility:
-        description: Report previous-version build compatibility (non-blocking)
-        type: boolean
-        default: true
       previous-appliance:
         description: Digest-pinned appliance from the change base
         type: string
@@ -27,7 +23,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   NIGHTLY: nightly-2026-07-06
-  PICHI_TEST_COMPATIBILITY: ${{ inputs.compatibility }}
   PICHI_TEST_PREVIOUS_BUILD_IMAGE: ${{ inputs.previous-appliance }}
 
 jobs:

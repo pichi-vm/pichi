@@ -4,13 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
     inputs:
-      compatibility:
-        description: Report previous-version build compatibility (non-blocking)
-        type: boolean
-        default: true
       rebuild-appliance:
         description: Build and test candidate appliances
         type: boolean
@@ -101,7 +96,6 @@ jobs:
     with:
       build-appliance: ${{ needs.checks.outputs.appliance == 'true' }}
       previous-appliance: ${{ needs.checks.outputs.previous }}
-      compatibility: ${{ github.event_name == 'workflow_dispatch' && inputs.compatibility || github.event_name != 'workflow_dispatch' && !contains(github.event.pull_request.labels.*.name, 'skip-compatibility') }}
 
   publish:
     name: 🚀 publish

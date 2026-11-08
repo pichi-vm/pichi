@@ -32,12 +32,6 @@ run_case "$required"
 echo '::endgroup::'
 printf '| Pichi | Appliance | Result |\n| --- | --- | --- |\n| Current | %s | PASS (required) |\n' "$required" >> "$summary"
 
-if [ "${PICHI_TEST_COMPATIBILITY:-true}" != true ]; then
-  echo '::notice::Compatibility checks explicitly disabled; required command/build/boot coverage passed.'
-  echo 'Compatibility checks explicitly disabled.' >> "$summary"
-  exit 0
-fi
-
 # Compare with the base revision even when the source default pin has changed.
 if [ -n "$candidate" ] || [[ "$previous" != ghcr.io/pichi-vm/pichi-build@* ]]; then
   echo '::group::🧪 Compatibility: current Pichi / previous appliance'
