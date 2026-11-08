@@ -86,6 +86,7 @@ burrow = { workspace = true }
 [workspace]
 resolver = "2"
 members = [
+    "appliance/guest",
     # pichi-owned library crates (nested by their sole consumer, the root
     # `pichi` crate).
     "deps/pichi-storage",

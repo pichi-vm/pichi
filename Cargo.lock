@@ -2261,6 +2261,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pichi-guest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ciborium",
+ "pichi-launch",
+ "rustix",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "pichi-launch"
 version = "0.1.0"
 dependencies = [
