@@ -381,8 +381,8 @@ Builds use 3.5 GiB and boots use 2 GiB. Linux requires at least 1792 free
 repositories. Builds retain both the original and packed scute during
 compaction. No host block devices or mounts are created by the harness.
 
-For manual submodule tests, `PICHI_TEST_ROOT_FILESYSTEM` can supply a tiny
-ext4 fixture; local Linux runs can create it with `mkfs.ext4` when unset.
+Manual submodule tests create their ext4 fixture with `mkfs.ext4` from `PATH`.
+Install that tool on the host before running this optional suite.
 Use `PATH` to select a `strip` executable that supports Linux guest binaries.
 
 For manual staged-image qualification, use a newly compiled static release Corium. The staged recipe installs guest Arma
