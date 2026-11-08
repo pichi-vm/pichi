@@ -41,8 +41,7 @@ try {
                         'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'APPDATA',
                         'MADRILLO_BIN',
                         'RUNNER_TEMP', 'CI', 'GITHUB_ACTIONS',
-                        'RUNNER_TRACKING_ID', 'PICHI_TEST_REGISTRY',
-                        'PICHI_TEST_REPLACEMENT_CORIUM')) {
+                        'RUNNER_TRACKING_ID', 'PICHI_TEST_REGISTRY')) {
         $value = [Environment]::GetEnvironmentVariable($name)
         if ($null -ne $value) { $environment[$name] = $value }
     }
