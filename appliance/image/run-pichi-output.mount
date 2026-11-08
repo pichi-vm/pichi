@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Pichi build output
+
+[Mount]
+What=output
+Where=/run/pichi/output
+Type=virtiofs

@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Pichi build image cache
+
+[Mount]
+What=cache
+Where=/run/pichi/cache
+Type=virtiofs
+Options=ro
