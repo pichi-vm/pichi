@@ -145,7 +145,7 @@ pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
 # Pin the library independently of the packaged build appliance.
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "bb1c85852fda48b626fd278f8532af8939a6207d", default-features = false }
+conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "401a86c1dc1bc40ce929087c899e736729961a9e", default-features = false }
 # Error handling
 anyhow = "1"
 thiserror = "2"

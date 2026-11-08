@@ -414,6 +414,16 @@ mod tests {
     }
 
     #[test]
+    fn mount_opt_outs_preserve_image_input_discovery() {
+        let plan = Plan::from_yaml("version: 1\nimage: root\nstages: {root: {extend: registry.test/base:1, mounts: {/var: none, /var/cache: tmpfs}}}").unwrap();
+        let inputs = plan.inputs().unwrap();
+        assert_eq!(
+            inputs.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["registry.test/base:1"]
+        );
+    }
+
+    #[test]
     fn discovery_keeps_only_selected_ordinary_inputs() {
         let plan = Plan::from_yaml(
             r#"
