@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+version: 1
+
+stages:
+  inspected:
+    use: !bootstrap ghcr.io/pichi-vm/pichi-build:latest
+    format: { size: 64MiB }
+    steps:
+      - exec:
+          command: |
+            kernel=$(uname -r)
+            for package in kernel-core kernel-modules; do
+              test "$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}' "$package")" = "$kernel"
+            done
+            rpm -q kernel-core kernel-modules
+            modules="/usr/lib/modules/$kernel"
+            sha256sum "$modules/config" "$modules/modules.dep"
+            grep -Fx CONFIG_BPF_LSM=y "$modules/config"
+            grep -Fx CONFIG_DEBUG_INFO_BTF=y "$modules/config"
+            for option in EXT4_FS VIRTIO_BLK VIRTIO_PCI VIRTIO_NET VIRTIO_FS \
+              FUSE_FS BLK_DEV_LOOP FAT_FS VFAT_FS DM_VERITY; do
+              grep -E "^CONFIG_$option=(y|m)$" "$modules/config"
+            done
+            echo PICHI_KERNEL_MODULES_OK
+
+image: inspected
