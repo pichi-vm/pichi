@@ -22,9 +22,6 @@ stages:
       - exec:
           command: |
             dnf -y --installroot=/mnt --use-host-config --releasever=43 --setopt=install_weak_deps=False \
-              --repofrompath=pichi,https://download.copr.fedorainfracloud.org/results/npmccallum/pichi/fedora-43-$(uname -m)/ \
-              --setopt=pichi.gpgcheck=True \
-              --setopt=pichi.gpgkey=https://download.copr.fedorainfracloud.org/results/npmccallum/pichi/pubkey.gpg \
               install arma filesystem systemd systemd-udev kernel-core bash coreutils dnf glibc-minimal-langpack ca-certificates cpio kmod device-mapper util-linux
             mkdir -p /mnt/dev /mnt/proc /mnt/sys /mnt/run
             printf 'base root\n' > /mnt/root-marker
