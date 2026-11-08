@@ -41,8 +41,7 @@ impl Smoke {
         let directory = directory.keep();
         eprintln!("Smoke evidence: {}", directory.display());
         Self {
-            binary: std::env::var_os("PICHI_SMOKE_BIN")
-                .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_pichi")), PathBuf::from),
+            binary: PathBuf::from("/usr/bin/pichi"),
             cache: directory.join("cache"),
             directory,
         }

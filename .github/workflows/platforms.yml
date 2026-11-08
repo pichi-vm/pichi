@@ -27,8 +27,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   NIGHTLY: nightly-2026-07-06
-  PICHI_TEST_COMPATIBILITY: ${{ inputs.compatibility }}
-  PICHI_TEST_PREVIOUS_BUILD_IMAGE: ${{ inputs.previous-appliance }}
 
 jobs:
   test:
@@ -101,9 +99,6 @@ jobs:
           enable-cache: false
           cache-local-path: ${{ runner.temp }}/pichi-uv-cache
 
-      - name: 🔨 Build the matching native process monitor
-        run: python3 .github/scripts/build_monitor.py
-
       - name: ⚙️ Run native Windows tests outside restrictive Cargo Jobs
         if: runner.os == 'Windows'
         shell: pwsh
@@ -112,19 +107,14 @@ jobs:
           $runner = ConvertTo-Json -Compress -InputObject @('pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $script)
           Add-Content -LiteralPath .cargo/config.toml -Value "`n[target.x86_64-pc-windows-msvc]`nrunner = $runner"
 
-      - name: 📦 Install packaged Dillo
+      - name: Install the packaged build runtime
         if: runner.os == 'Linux'
         run: |
           sudo add-apt-repository --yes ppa:nmccallum/pichi
-          sudo apt-get install -y dillo-vm
-          dpkg-query -W dillo-vm
-
-      - name: 📦 Install Pichi for compatibility checks
-        if: runner.os == 'Linux' && inputs.compatibility
-        run: |
-          if ! sudo apt-get install -y pichi; then
-            echo '::warning::Packaged Pichi unavailable; compatibility checks will report failure.'
-          fi
+          sudo apt-get install -y dillo-vm pichi madrillo
+          dpkg-query -W -f '${Package} ${Version} ${Architecture}\n' dillo-vm pichi madrillo
+          test "$(dpkg-query -W -f '${Version}' pichi)" = '0.1.0~dev+202611080202~ubuntu24.04.1'
+          sha256sum /usr/bin/pichi /usr/bin/dillo /usr/bin/madrillo
 
       - name: 🔨 Build native Dillo
         if: runner.os != 'Linux'
@@ -166,13 +156,6 @@ jobs:
           ZOT_SHA256: ${{ matrix.zot_sha256 }}
         run: bash .github/scripts/test-registry.sh
 
-      - name: 🧪 Verify native monitor and opaque build channel
-        env:
-          CARGO_BUILD_RUSTFLAGS: "-D warnings"
-        run: |
-          cargo test --locked -p pichi --lib native_monitor_launch_and_async_control -- --ignored --nocapture
-          cargo test --locked -p pichi --test cmd_run build_channel_preserves_guest_first_exchange -- --ignored --nocapture
-
       - name: ⚙️ Create private Windows appliance cache
         if: inputs.build-appliance && runner.os == 'Windows'
         shell: pwsh
@@ -204,16 +187,19 @@ jobs:
           "${pichi[@]}" save qualification.local/appliance:build -o "$RUNNER_TEMP/appliance-layout"
           echo "PICHI_TEST_BUILD_IMAGE_LAYOUT=$RUNNER_TEMP/appliance-layout" >> "$GITHUB_ENV"
 
-      - name: 🧪 Exercise commands and build compatibility
+      - name: Exercise commands, build and boot with the packaged runtime
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
           ZOT_ASSET: ${{ matrix.zot_asset }}
           ZOT_SHA256: ${{ matrix.zot_sha256 }}
-        run: bash .github/scripts/test-registry.sh bash .github/scripts/test-commands.sh
+        run: |
+          command -v pichi dillo madrillo
+          bash .github/scripts/test-registry.sh cargo test --locked --test command_smoke -- \
+            --ignored --exact every_command_builds_and_boots --nocapture
 
       - name: Verify SELinux labeling inside the build namespace
         run: |
-          pichi="$GITHUB_WORKSPACE/target/debug/pichi"
+          pichi=/usr/bin/pichi
           image=$(sed -n 's/^pub const DEFAULT_BUILD_IMAGE: &str = "\(.*\)";$/\1/p' src/cmd/build.rs)
           "$pichi" pull "$image"
           "$pichi" inspect "$image" > "$RUNNER_TEMP/namespace-label-builder.json"
@@ -248,7 +234,3 @@ jobs:
             ${{ runner.temp }}/pichi command smoke */*.log
             ${{ runner.temp }}/pichi command smoke */pichi.yaml
             ${{ runner.temp }}/pichi command smoke */pichi.lock
-
-      - name: 🧹 Remove temporary monitor checkout
-        if: ${{ always() && env.PICHI_MONITOR_SOURCE != '' }}
-        run: python3 .github/scripts/build_monitor.py --cleanup
