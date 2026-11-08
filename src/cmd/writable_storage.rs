@@ -112,6 +112,18 @@ impl WritableStorage {
                 bytes - length <= available,
                 "insufficient host space for storage allocation"
             );
+            #[cfg(windows)]
+            {
+                let output = std::process::Command::new("fsutil")
+                    .args(["sparse", "setflag"])
+                    .arg(&path)
+                    .output()
+                    .context("marking writable storage sparse")?;
+                ensure!(
+                    output.status.success(),
+                    "marking writable storage sparse: {output:?}"
+                );
+            }
             file.set_len(bytes).context("sizing writable storage")?;
         }
         Ok(Some(Self {
@@ -142,7 +154,37 @@ impl WritableStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    #[test]
+    fn unwritten_capacity_does_not_allocate_disk_blocks() {
+        let directory = tempfile::tempdir().unwrap();
+        let size = 256 * MIB;
+        let storage = WritableStorage::prepare(None, Some(256), None, directory.path())
+            .unwrap()
+            .unwrap();
+        let mut file = File::options()
+            .read(true)
+            .write(true)
+            .open(&storage.path)
+            .unwrap();
+        file.seek(SeekFrom::End(-4)).unwrap();
+        file.write_all(b"data").unwrap();
+        file.sync_all().unwrap();
+        assert_eq!(file.metadata().unwrap().len(), size);
+        file.rewind().unwrap();
+        let mut bytes = [1; 4];
+        file.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, [0; 4]);
+        file.seek(SeekFrom::End(-4)).unwrap();
+        file.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"data");
+        let allocated = fs4::FileExt::allocated_size(&file).unwrap();
+        assert!(
+            allocated < size / 2,
+            "allocated {allocated} of {size} bytes"
+        );
+    }
 
     #[test]
     fn disposable_storage_is_sized_locked_and_removed() {
@@ -181,10 +223,15 @@ mod tests {
             .unwrap();
         drop(storage);
         assert!(WritableStorage::prepare(None, Some(1), Some(&path), directory.path()).is_err());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 2 * MIB);
+        let storage = WritableStorage::prepare(None, Some(4), Some(&path), directory.path())
+            .unwrap()
+            .unwrap();
+        drop(storage);
         let mut data = [0; 13];
         File::open(&path).unwrap().read_exact(&mut data).unwrap();
         assert_eq!(&data, b"existing data");
-        assert_eq!(std::fs::metadata(path).unwrap().len(), 2 * MIB);
+        assert_eq!(std::fs::metadata(path).unwrap().len(), 4 * MIB);
     }
 
     #[test]

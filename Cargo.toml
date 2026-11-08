@@ -78,6 +78,7 @@ widestring = "1"
 win-custody = "=0.1.2"
 
 [dev-dependencies]
+fs4 = { workspace = true, features = ["sync"] }
 gpt.workspace = true
 assert_cmd.workspace = true
 tempfile.workspace = true
