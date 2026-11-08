@@ -92,9 +92,8 @@ pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
                     let entry = entry
                         .with_context(|| format!("read_dir entry in {}", blob_dir.display()))?;
                     let name_os = entry.file_name();
-                    let name = match name_os.to_str() {
-                        Some(s) => s,
-                        None => continue, // non-UTF8 names: not our blobs
+                    let Some(name) = name_os.to_str() else {
+                        continue;
                     };
 
                     // D-prune-L2: 64-lowercase-hex predicate is the SOLE
@@ -150,9 +149,8 @@ pub async fn run(args: PruneArgs, config: &Config) -> Result<()> {
                         format!("read_dir entry in {} (headless sweep)", blob_dir.display())
                     })?;
                     let path = entry.path();
-                    let ext = match path.extension().and_then(|e| e.to_str()) {
-                        Some(e) => e,
-                        None => continue,
+                    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                        continue;
                     };
                     if !matches!(ext, "deflated" | "verity" | "prepared") {
                         continue;
@@ -282,9 +280,7 @@ mod tests {
             .join("blobs")
             .join("sha256");
         // Either absent or empty; both acceptable.
-        let count = std::fs::read_dir(&blobs)
-            .map(std::iter::Iterator::count)
-            .unwrap_or(0);
+        let count = std::fs::read_dir(&blobs).map_or(0, std::iter::Iterator::count);
         assert_eq!(count, 0, "empty cache: blobs/sha256/ must be empty");
     }
 

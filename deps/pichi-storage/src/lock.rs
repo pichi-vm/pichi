@@ -107,6 +107,7 @@ mod tests {
         // Second non-blocking attempt should report contention.
         let second = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&lock_path)

@@ -481,7 +481,7 @@ async fn manifest_create_rejects_ambiguous_or_invalid_sources_before_writing() {
             "size" => value["manifests"][0]["size"] = json!(1),
             "media-type" => {
                 value["manifests"][0]["mediaType"] =
-                    json!("application/vnd.oci.image.index.v1+json")
+                    json!("application/vnd.oci.image.index.v1+json");
             }
             "digest" => std::fs::write(fixture.store.blob_path(&fixture.manifest), b"{}").unwrap(),
             _ => unreachable!(),
@@ -603,10 +603,10 @@ async fn publishers_wait_for_collection_before_writing_blobs() {
         let raw = fixture.directory.path().join("input.raw");
         std::fs::write(&raw, [71; 8192]).unwrap();
         let saved = fixture.directory.path().join("saved");
-        let tag = registry
-            .filter(|_| kind == "pull")
-            .map(|registry| format!("{registry}/publication-lock:image"))
-            .unwrap_or_else(|| "local:locked".into());
+        let tag = registry.filter(|_| kind == "pull").map_or_else(
+            || "local:locked".into(),
+            |registry| format!("{registry}/publication-lock:image"),
+        );
         if matches!(kind, "load" | "pull") {
             for args in [
                 vec![

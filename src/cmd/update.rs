@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn discovery_keeps_only_selected_ordinary_inputs() {
         let plan = Plan::from_yaml(
-            r#"
+            r"
 version: 1
 stages:
   root: {use: !bootstrap localhost/first}
@@ -438,7 +438,7 @@ stages:
       - copy: {from: extra, path: /x, into: /y}
   unused: {extend: registry.test/unused}
 image: final
-"#,
+",
         )
         .unwrap();
         assert_eq!(
@@ -446,11 +446,11 @@ image: final
             [Remote::new("registry.test/base:latest".into()).unwrap()].into()
         );
         let conflict = Plan::from_yaml(
-            r#"
+            r"
 version: 1
 stages: {root: {use: !bootstrap registry.test/base}}
 image: {root: root, boot: registry.test/base:latest}
-"#,
+",
         )
         .unwrap();
         assert!(conflict.inputs().is_err());
@@ -496,7 +496,7 @@ image: {root: root, boot: registry.test/base:latest}
             "{extract: {from: registry.test/boot:1, path: /boot.pmi}}",
             "{extract: {from: firmware, path: /boot.pmi}}",
         ] {
-            let plan: Plan = serde_saphyr::from_str(&format!(r#"
+            let plan: Plan = serde_saphyr::from_str(&format!(r"
 version: 1
 stages:
   tools: {{use: registry.test/tools:1}}
@@ -506,7 +506,7 @@ stages:
   firmware: {{extend: registry.test/boot:1}}
   unused: {{extend: registry.test/unused:1}}
 image: {{root: root, boot: {boot}}}
-"#)).unwrap();
+")).unwrap();
             assert_eq!(
                 plan.inputs().unwrap(),
                 [

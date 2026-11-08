@@ -323,7 +323,7 @@ fn workload() {
                     io::stdout().flush().unwrap();
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(5))
+                    std::thread::sleep(Duration::from_millis(5));
                 }
                 Err(error) => panic!("resize listener failed: {error}"),
             }

@@ -98,7 +98,10 @@ impl Console {
             input,
             interactive,
             keys: DetachKeys::default(),
+            #[cfg(unix)]
             signals: Signals::open()?,
+            #[cfg(windows)]
+            signals: Signals {},
         })
     }
 
@@ -172,6 +175,7 @@ struct Signals {
 }
 
 impl Signals {
+    #[cfg(unix)]
     fn open() -> Result<Self> {
         Ok(Self {
             #[cfg(unix)]

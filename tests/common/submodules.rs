@@ -97,12 +97,12 @@ pub struct SubmoduleFixture {
 }
 
 impl SubmoduleFixture {
-    pub async fn new() -> Self {
+    pub fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let graphroot = tmp.path().join("graph");
         std::fs::create_dir_all(&graphroot).unwrap();
         super::prepare_build_image(&graphroot);
-        let index = super::seed_smoke_source_carapace(&graphroot, tmp.path()).await;
+        let index = super::seed_smoke_source_carapace(&graphroot, tmp.path());
         let repo = GitRepo::new(tmp.path().join("repo"));
         repo.write(
             "pichi.lock",

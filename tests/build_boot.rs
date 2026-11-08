@@ -40,7 +40,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     prepare_build_image(g);
 
     // Seed an authenticated index and record its actual digest.
-    let index = seed_smoke_source_carapace(g, tmp.path()).await;
+    let index = seed_smoke_source_carapace(g, tmp.path());
 
     // Start with the pinned smoke context and exercise current requirements
     // through plan export, guest output import and host config inspection.

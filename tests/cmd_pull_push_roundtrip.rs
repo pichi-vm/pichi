@@ -47,7 +47,7 @@ fn graphroot(tmp: &TempDir) -> PathBuf {
 /// `{ "sha256:<hex>" -> bytes }`. Empty map when the dir doesn't exist (which
 /// is the expected post-rmi state when the tag's blobs were the only ones
 /// cached).
-fn snapshot_cache(graphroot: &PathBuf) -> BTreeMap<String, Vec<u8>> {
+fn snapshot_cache(graphroot: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
     let blobs_dir = graphroot.join("blobs").join("sha256");
     let mut snap = BTreeMap::new();
     if !blobs_dir.exists() {
