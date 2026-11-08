@@ -258,6 +258,9 @@ jobs:
 
       - name: Qualify the published default appliance
         run: |
+          cargo --config .cargo/config.toml install --locked --git https://github.com/pichi-vm/corium \
+            --rev c33ae0e01d58b657f8f62cb91672885326a903b9 \
+            --target "${{ matrix.guest_musl }}" --root tests/fixtures/native-handoff/corium-release corium
           suffix=''
           if [ "$RUNNER_OS" = Windows ]; then suffix='.exe'; fi
           pichi="$GITHUB_WORKSPACE/target/debug/pichi$suffix"

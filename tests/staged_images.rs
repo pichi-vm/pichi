@@ -254,6 +254,29 @@ image:
     );
     matrix.assert_boot("replacement", &replacement, &["local stage"]);
 
+    let replacement_corium = builds.guest_binary(
+        "replacement-corium",
+        Path::new("tests/fixtures/native-handoff/corium-release/bin/corium"),
+    );
+    assert_ne!(
+        fs::read(&corium).unwrap(),
+        fs::read(&replacement_corium).unwrap(),
+        "replacement must exercise different Corium executable bytes"
+    );
+    let replacement_plan = include_str!("staged_images/firmware.yaml").replace(
+        "qualification.local/base:1",
+        "qualification.local/extended:1",
+    );
+    let new_firmware = builds.build(
+        "new-firmware",
+        &replacement_plan,
+        &[("corium", &replacement_corium)],
+    );
+    assert_eq!(new_firmware.layers("scute"), extended.layers("scute"));
+    assert_ne!(new_firmware.bytes("pmi"), extended.bytes("pmi"));
+    assert_eq!(new_firmware.boot_config(), extended.boot_config());
+    matrix.assert_boot("new-firmware", &new_firmware, &["local stage"]);
+
     for (name, yaml, counts) in [
         (
             "root-only",
