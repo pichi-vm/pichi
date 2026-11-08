@@ -206,30 +206,6 @@ impl Smoke {
     }
 
     fn build_and_boot(&self) {
-        if let Some(layout) = std::env::var_os("PICHI_TEST_BUILD_IMAGE_LAYOUT") {
-            self.run(
-                "load-appliance",
-                &[
-                    "load",
-                    layout.to_str().unwrap(),
-                    "--tag",
-                    "qualification.local/builder:smoke",
-                ],
-            );
-        } else {
-            self.run(
-                "pull-appliance",
-                &["pull", pichi::cmd::build::DEFAULT_BUILD_IMAGE],
-            );
-            self.run(
-                "tag-appliance",
-                &[
-                    "tag",
-                    pichi::cmd::build::DEFAULT_BUILD_IMAGE,
-                    "qualification.local/builder:smoke",
-                ],
-            );
-        }
         eprintln!(
             "Appliance: {}",
             self.inspect("qualification.local/builder:smoke")["digest"]
@@ -320,6 +296,37 @@ impl Smoke {
 fn every_command_builds_and_boots() {
     let mut smoke = Smoke::new();
     smoke.commands();
+    smoke.run(
+        "pull-appliance",
+        &["pull", pichi::cmd::build::DEFAULT_BUILD_IMAGE],
+    );
+    smoke.run(
+        "tag-appliance",
+        &[
+            "tag",
+            pichi::cmd::build::DEFAULT_BUILD_IMAGE,
+            "qualification.local/builder:smoke",
+        ],
+    );
+    smoke.build_and_boot();
+    fs::remove_dir_all(&smoke.directory).unwrap();
+}
+
+#[test]
+#[ignore = "requires a native hypervisor, Dillo on PATH, a local registry, and tests/fixtures/appliance-layout"]
+fn candidate_appliance_builds_and_boots() {
+    let mut smoke = Smoke::new();
+    smoke.commands();
+    let layout = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/appliance-layout");
+    smoke.run(
+        "load-appliance",
+        &[
+            "load",
+            layout.to_str().unwrap(),
+            "--tag",
+            "qualification.local/builder:smoke",
+        ],
+    );
     smoke.build_and_boot();
     fs::remove_dir_all(&smoke.directory).unwrap();
 }

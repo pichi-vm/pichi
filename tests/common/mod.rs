@@ -3,11 +3,10 @@
 
 //! Shared helpers for the build/boot end-to-end tests.
 //!
-//! The build image is the shipping default, or an explicitly rebuilt OCI
-//! layout supplied with `PICHI_TEST_BUILD_IMAGE_LAYOUT` for qualification.
-//! [`prepare_build_image`] imports it into the isolated test cache. The
-//! Source roots are partitioned GPT fixtures; firmware production and runtime
-//! boot verification use the same stage and image paths as user builds.
+//! The build image is the shipping default. [`prepare_build_image`] imports it
+//! into the isolated test cache. Source roots are partitioned GPT fixtures;
+//! firmware production and runtime boot verification use the same stage and
+//! image paths as user builds.
 
 #![cfg(feature = "vm-tests")]
 // Each integration test binary that `mod common;`s this file uses a subset of
@@ -69,38 +68,17 @@ pub fn pichi(graphroot: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::pro
     cmd.output().expect("spawn pichi")
 }
 
-/// Select an explicitly rebuilt appliance during cross-project qualification.
-/// With no fixture override, exercise the shipping default.
+/// Exercise the shipping default appliance.
 pub fn build_image() -> &'static str {
-    if std::env::var_os("PICHI_TEST_BUILD_IMAGE_LAYOUT").is_some() {
-        "qualification.local/builder:staged"
-    } else {
-        pichi::cmd::build::DEFAULT_BUILD_IMAGE
-    }
+    pichi::cmd::build::DEFAULT_BUILD_IMAGE
 }
 
 pub fn prepare_build_image(graphroot: &Path) {
     Hypervisor::prepare();
-    if let Some(layout) = std::env::var_os("PICHI_TEST_BUILD_IMAGE_LAYOUT") {
-        assert_pichi_ok(
-            "load rebuilt appliance",
-            &pichi(
-                graphroot,
-                &[],
-                &[
-                    "load",
-                    Path::new(&layout).to_str().unwrap(),
-                    "--tag",
-                    build_image(),
-                ],
-            ),
-        );
-    } else {
-        assert_pichi_ok(
-            "pull official build image",
-            &pichi(graphroot, &[], &["pull", build_image()]),
-        );
-    }
+    assert_pichi_ok(
+        "pull official build image",
+        &pichi(graphroot, &[], &["pull", build_image()]),
+    );
 }
 
 struct Hypervisor;
