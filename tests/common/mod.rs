@@ -150,10 +150,6 @@ pub fn make_root_disk(path: &Path) {
 /// Locked Conglobate smoke reference (must match stage input and lock key).
 pub const SMOKE_SOURCE_REF: &str = "qualification.local/fedora:43";
 
-/// Conglobate revision supplying the locked context for the real build smoke.
-/// Matches the published appliance's source revision.
-pub const SMOKE_CONGLOBATE_REF: &str = "d3f395acecdfd95c75ed545d2bc03ba409a99298";
-
 /// Conglobate smoke context under the repo mount.
 pub const SMOKE_CONTEXT: &str = "tests/distro/context";
 pub const SMOKE_PLAN: &str = "plan.yaml";
@@ -199,76 +195,20 @@ pub async fn seed_smoke_source_carapace(graphroot: &Path, tmp: &Path) -> String 
     tag_digest(graphroot, SMOKE_SOURCE_REF)
 }
 
-/// Commit the smoke context from the appliance source revision into a fresh
-/// repository. Read the sibling checkout without changing it; CI clones the
-/// source when that checkout is absent.
+/// Commit the local smoke context into a fresh repository.
 pub fn prepare_smoke_repo(tmp: &Path, index: &str) -> (PathBuf, String) {
-    let sibling = Path::new(env!("CARGO_MANIFEST_DIR")).join("../conglobate");
-    let has_commit = Command::new("git")
-        .args([
-            "cat-file",
-            "-e",
-            &format!("{SMOKE_CONGLOBATE_REF}^{{commit}}"),
-        ])
-        .current_dir(&sibling)
-        .status()
-        .is_ok_and(|status| status.success());
-    let source = if has_commit {
-        sibling
-    } else {
-        let source = tmp.join("conglobate-source");
-        assert!(
-            Command::new("git")
-                .args([
-                    "clone",
-                    "-q",
-                    "--no-checkout",
-                    "https://github.com/pichi-vm/conglobate.git"
-                ])
-                .arg(&source)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(
-            Command::new("git")
-                .args(["fetch", "-q", "origin", SMOKE_CONGLOBATE_REF])
-                .current_dir(&source)
-                .status()
-                .unwrap()
-                .success()
-        );
-        source
-    };
     let repo = tmp.join("smoke-repo");
     let context = repo.join(SMOKE_CONTEXT);
     std::fs::create_dir_all(&context).unwrap();
-    for name in [SMOKE_PLAN, "message.txt"] {
-        let output = Command::new("git")
-            .args([
-                "show",
-                &format!("{SMOKE_CONGLOBATE_REF}:{SMOKE_CONTEXT}/{name}"),
-            ])
-            .current_dir(&source)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "read pinned {name}");
-        std::fs::write(context.join(name), output.stdout).unwrap();
-    }
+    std::fs::write(context.join(SMOKE_PLAN), include_str!("context/plan.yaml")).unwrap();
+    std::fs::write(
+        context.join("message.txt"),
+        include_str!("context/message.txt"),
+    )
+    .unwrap();
     std::fs::write(
         context.join(SMOKE_LOCK),
         format!("version: 1\nimages:\n  {SMOKE_SOURCE_REF}: {index}\n"),
-    )
-    .unwrap();
-    // The tiny seed has no shell. Retain the upstream COPY, omitting its
-    // Fedora-specific exec assertions, and commit those exact fixture inputs.
-    let plan = std::fs::read_to_string(context.join(SMOKE_PLAN)).unwrap();
-    std::fs::write(
-        context.join(SMOKE_PLAN),
-        format!(
-            "{}image: rootfs\n",
-            plan.split("    - exec:").next().unwrap()
-        ),
     )
     .unwrap();
     for args in [

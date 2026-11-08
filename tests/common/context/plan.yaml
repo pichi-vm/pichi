@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# COPY consumes committed context bytes from the local smoke seed.
+version: 1
+stages:
+  rootfs:
+    extend: qualification.local/fedora:43
+    steps:
+    - copy:
+        path: message.txt
+        into: /etc/conglobate-context-check
+image: rootfs
