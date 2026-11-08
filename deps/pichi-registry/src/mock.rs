@@ -128,66 +128,75 @@ impl MockRegistry {
 }
 
 impl Registry for MockRegistry {
-    async fn pull_manifest_by_tag(&self, reference: &Reference) -> Result<(Bytes, Digest)> {
-        let key_tag = match &reference.kind {
-            conglobate::artifact::ReferenceKind::Tag(t) => t.clone(),
-            conglobate::artifact::ReferenceKind::Digest(d) => {
-                // Digest-form refs go straight to manifests by digest.
-                let mkey = (
-                    reference.registry.clone(),
-                    reference.repo.clone(),
-                    d.clone(),
-                );
-                let bytes = self
-                    .manifests
-                    .lock()
-                    .expect("manifests mutex poisoned")
-                    .get(&mkey)
-                    .cloned()
-                    .ok_or_else(|| RegistryError::NotFound(format!("manifest {reference}")))?;
-                return Ok((bytes, d.clone()));
-            }
-        };
-        let tag_key = (reference.registry.clone(), reference.repo.clone(), key_tag);
-        let digest = self
-            .tags
-            .lock()
-            .expect("tags mutex poisoned")
-            .get(&tag_key)
-            .cloned()
-            .ok_or_else(|| RegistryError::NotFound(format!("tag {reference}")))?;
-        let mkey = (
-            reference.registry.clone(),
-            reference.repo.clone(),
-            digest.clone(),
-        );
-        let bytes = self
-            .manifests
-            .lock()
-            .expect("manifests mutex poisoned")
-            .get(&mkey)
-            .cloned()
-            .ok_or_else(|| {
-                RegistryError::NotFound(format!(
-                    "manifest blob for tag {reference} (digest {digest})"
-                ))
-            })?;
-        Ok((bytes, digest))
+    fn pull_manifest_by_tag(
+        &self,
+        reference: &Reference,
+    ) -> impl std::future::Future<Output = Result<(Bytes, Digest)>> {
+        futures_util::future::lazy(move |_| {
+            let key_tag = match &reference.kind {
+                conglobate::artifact::ReferenceKind::Tag(t) => t.clone(),
+                conglobate::artifact::ReferenceKind::Digest(d) => {
+                    // Digest-form refs go straight to manifests by digest.
+                    let mkey = (
+                        reference.registry.clone(),
+                        reference.repo.clone(),
+                        d.clone(),
+                    );
+                    let bytes = self
+                        .manifests
+                        .lock()
+                        .expect("manifests mutex poisoned")
+                        .get(&mkey)
+                        .cloned()
+                        .ok_or_else(|| RegistryError::NotFound(format!("manifest {reference}")))?;
+                    return Ok((bytes, d.clone()));
+                }
+            };
+            let tag_key = (reference.registry.clone(), reference.repo.clone(), key_tag);
+            let digest = self
+                .tags
+                .lock()
+                .expect("tags mutex poisoned")
+                .get(&tag_key)
+                .cloned()
+                .ok_or_else(|| RegistryError::NotFound(format!("tag {reference}")))?;
+            let mkey = (
+                reference.registry.clone(),
+                reference.repo.clone(),
+                digest.clone(),
+            );
+            let bytes = self
+                .manifests
+                .lock()
+                .expect("manifests mutex poisoned")
+                .get(&mkey)
+                .cloned()
+                .ok_or_else(|| {
+                    RegistryError::NotFound(format!(
+                        "manifest blob for tag {reference} (digest {digest})"
+                    ))
+                })?;
+            Ok((bytes, digest))
+        })
     }
 
-    async fn pull_manifest_by_digest(
+    fn pull_manifest_by_digest(
         &self,
         registry: &str,
         repo: &str,
         digest: &Digest,
-    ) -> Result<Bytes> {
-        let key = (registry.to_string(), repo.to_string(), digest.clone());
-        self.manifests
-            .lock()
-            .expect("manifests mutex poisoned")
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| RegistryError::NotFound(format!("manifest {registry}/{repo}@{digest}")))
+    ) -> impl std::future::Future<Output = Result<Bytes>> {
+        futures_util::future::lazy(move |_| {
+            let key = (registry.to_string(), repo.to_string(), digest.clone());
+            self.manifests
+                .lock()
+                .expect("manifests mutex poisoned")
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| {
+                    RegistryError::NotFound(format!("manifest {registry}/{repo}@{digest}"))
+                })
+        })
     }
 
     async fn pull_blob<W: AsyncWrite + Unpin + Send>(
@@ -222,75 +231,94 @@ impl Registry for MockRegistry {
         Ok(())
     }
 
-    async fn pull_blob_stream(
+    fn pull_blob_stream(
         &self,
         registry: &str,
         repo: &str,
         digest: &Digest,
         _size: u64,
-    ) -> Result<futures_util::stream::BoxStream<'static, std::io::Result<Bytes>>> {
-        let key = (registry.to_string(), repo.to_string(), digest.clone());
-        let bytes = self
-            .blobs
-            .lock()
-            .expect("blobs mutex poisoned")
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| RegistryError::NotFound(format!("blob {registry}/{repo}@{digest}")))?;
-        let actual = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
-        if actual != *digest {
-            return Err(RegistryError::DigestMismatch {
-                expected: digest.clone(),
-                actual,
-            });
-        }
-        let chunk = Bytes::from(bytes);
-        Ok(Box::pin(futures_util::stream::once(async move {
-            Ok::<Bytes, std::io::Error>(chunk)
-        })))
+    ) -> impl std::future::Future<
+        Output = Result<futures_util::stream::BoxStream<'static, std::io::Result<Bytes>>>,
+    > {
+        futures_util::future::lazy(move |_| {
+            let key = (registry.to_string(), repo.to_string(), digest.clone());
+            let bytes = self
+                .blobs
+                .lock()
+                .expect("blobs mutex poisoned")
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| {
+                    RegistryError::NotFound(format!("blob {registry}/{repo}@{digest}"))
+                })?;
+            let actual = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+            if actual != *digest {
+                return Err(RegistryError::DigestMismatch {
+                    expected: digest.clone(),
+                    actual,
+                });
+            }
+            let chunk = bytes;
+            Ok(Box::pin(futures_util::stream::once(async move {
+                Ok::<Bytes, std::io::Error>(chunk)
+            }))
+                as futures_util::stream::BoxStream<
+                    'static,
+                    std::io::Result<Bytes>,
+                >)
+        })
     }
 
-    async fn head_blob(&self, registry: &str, repo: &str, digest: &Digest) -> Result<bool> {
-        let key = (registry.to_string(), repo.to_string(), digest.clone());
-        Ok(self
-            .blobs
-            .lock()
-            .expect("blobs mutex poisoned")
-            .contains_key(&key))
+    fn head_blob(
+        &self,
+        registry: &str,
+        repo: &str,
+        digest: &Digest,
+    ) -> impl std::future::Future<Output = Result<bool>> {
+        futures_util::future::lazy(move |_| {
+            let key = (registry.to_string(), repo.to_string(), digest.clone());
+            Ok(self
+                .blobs
+                .lock()
+                .expect("blobs mutex poisoned")
+                .contains_key(&key))
+        })
     }
 
-    async fn push_manifest(
+    fn push_manifest(
         &self,
         reference: &Reference,
         media_type: &str,
         bytes: Bytes,
-    ) -> Result<Digest> {
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
-        let mkey = (
-            reference.registry.clone(),
-            reference.repo.clone(),
-            digest.clone(),
-        );
-        self.manifests
-            .lock()
-            .expect("manifests mutex poisoned")
-            .insert(mkey, bytes);
-        if let conglobate::artifact::ReferenceKind::Tag(t) = &reference.kind {
-            let tag_key = (
+    ) -> impl std::future::Future<Output = Result<Digest>> {
+        futures_util::future::lazy(move |_| {
+            let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
+            let mkey = (
                 reference.registry.clone(),
                 reference.repo.clone(),
-                t.clone(),
+                digest.clone(),
             );
-            self.tags
+            self.manifests
                 .lock()
-                .expect("tags mutex poisoned")
-                .insert(tag_key, digest.clone());
-        }
-        self.pushed_manifests_log
-            .lock()
-            .expect("pushed_manifests_log mutex poisoned")
-            .push((reference.clone(), media_type.to_string(), digest.clone()));
-        Ok(digest)
+                .expect("manifests mutex poisoned")
+                .insert(mkey, bytes);
+            if let conglobate::artifact::ReferenceKind::Tag(t) = &reference.kind {
+                let tag_key = (
+                    reference.registry.clone(),
+                    reference.repo.clone(),
+                    t.clone(),
+                );
+                self.tags
+                    .lock()
+                    .expect("tags mutex poisoned")
+                    .insert(tag_key, digest.clone());
+            }
+            self.pushed_manifests_log
+                .lock()
+                .expect("pushed_manifests_log mutex poisoned")
+                .push((reference.clone(), media_type.to_string(), digest.clone()));
+            Ok(digest)
+        })
     }
 
     async fn push_blob_stream<S>(
@@ -329,33 +357,35 @@ impl Registry for MockRegistry {
         Ok(())
     }
 
-    async fn try_blob_mount(
+    fn try_blob_mount(
         &self,
         registry: &str,
         target_repo: &str,
         source_repo: &str,
         digest: &Digest,
-    ) -> Result<bool> {
-        let src_key = (
-            registry.to_string(),
-            source_repo.to_string(),
-            digest.clone(),
-        );
-        let blobs = self.blobs.lock().expect("blobs mutex poisoned");
-        let Some(bytes) = blobs.get(&src_key).cloned() else {
-            return Ok(false);
-        };
-        drop(blobs);
-        let dst_key = (
-            registry.to_string(),
-            target_repo.to_string(),
-            digest.clone(),
-        );
-        self.blobs
-            .lock()
-            .expect("blobs mutex poisoned")
-            .insert(dst_key, bytes);
-        Ok(true)
+    ) -> impl std::future::Future<Output = Result<bool>> {
+        futures_util::future::lazy(move |_| {
+            let src_key = (
+                registry.to_string(),
+                source_repo.to_string(),
+                digest.clone(),
+            );
+            let blobs = self.blobs.lock().expect("blobs mutex poisoned");
+            let Some(bytes) = blobs.get(&src_key).cloned() else {
+                return Ok(false);
+            };
+            drop(blobs);
+            let dst_key = (
+                registry.to_string(),
+                target_repo.to_string(),
+                digest.clone(),
+            );
+            self.blobs
+                .lock()
+                .expect("blobs mutex poisoned")
+                .insert(dst_key, bytes);
+            Ok(true)
+        })
     }
 }
 
@@ -365,8 +395,7 @@ impl Registry for MockRegistry {
 mod tests {
     use super::*;
     use std::future::Future;
-    use std::sync::Arc;
-    use std::task::{Context, Poll, Wake};
+    use std::task::{Context, Poll, Waker};
 
     /// Minimal block_on for tests. The mock's futures resolve on first poll
     /// (no real await happens), so we never need a tokio runtime. Uses
@@ -382,12 +411,7 @@ mod tests {
     /// path; if a future re-polls itself with a noop waker, panicking is
     /// the correct response.
     fn block_on<F: Future>(fut: F) -> F::Output {
-        struct NoopWaker;
-        impl Wake for NoopWaker {
-            fn wake(self: Arc<Self>) {}
-        }
-        let waker = Arc::new(NoopWaker).into();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(Waker::noop());
         let mut fut = Box::pin(fut);
         // Cap iterations: if Pending under a noop waker means nobody will
         // ever wake us, so continuing to poll is a no-progress busy loop.
