@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+version: 1
+
+stages:
+  labeled:
+    use: !bootstrap localhost/label-tools
+    format: { size: 64MiB }
+    steps:
+      - exec:
+          command: |
+            read inside outside count < /proc/self/uid_map
+            test "$inside $outside $count" = '0 100000 65536'
+            read inside outside count < /proc/self/gid_map
+            test "$inside $outside $count" = '0 100000 65536'
+            touch /mnt/label
+            chcon system_u:object_r:usr_t:s0 /mnt/label
+            test "$(stat -c %C /mnt/label)" = system_u:object_r:usr_t:s0
+            echo PICHI_NAMESPACE_LABEL_OK
+
+image: labeled
