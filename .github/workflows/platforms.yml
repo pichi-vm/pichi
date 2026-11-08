@@ -21,8 +21,25 @@ env:
   NIGHTLY: nightly-2026-07-06
 
 jobs:
+  fixtures:
+    name: Prepare native qualification fixture
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create the source filesystem
+        run: |
+          mkdir -p "$RUNNER_TEMP/root"
+          printf 'ID=fedora\nVERSION_ID=43\n' > "$RUNNER_TEMP/root/os-release"
+          mkfs.ext4 -q -F -b 4096 -E lazy_itable_init=0 \
+            -d "$RUNNER_TEMP/root" "$RUNNER_TEMP/root.ext4" 16M
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualification-root
+          path: ${{ runner.temp }}/root.ext4
+          if-no-files-found: error
+
   test:
     name: 🧪 ${{ matrix.name }}
+    needs: fixtures
     strategy:
       fail-fast: true
       matrix:
@@ -61,11 +78,24 @@ jobs:
 
       - name: 📦 Install toolchain
         run: |
-          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src,clippy
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src,clippy,llvm-tools
           rustup default "$NIGHTLY"
           rustup target add x86_64-unknown-none aarch64-unknown-none-softfloat "${{ matrix.guest_musl }}"
           git config --global core.longpaths true
           git config --global core.autocrlf false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: qualification-root
+          path: tests/fixtures/native-handoff
+
+      - name: Prepare portable fixture tools
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          suffix=''
+          if [ "$RUNNER_OS" = Windows ]; then suffix='.exe'; fi
+          cp "$(rustc --print sysroot)/lib/rustlib/$host/bin/llvm-objcopy$suffix" \
+            "tests/fixtures/native-handoff/strip$suffix"
 
       - name: 📥 Initialize native Dillo source
         if: runner.os != 'Linux'
@@ -226,6 +256,23 @@ jobs:
           path: tests/fixtures/appliance-layout
           if-no-files-found: error
 
+      - name: Qualify the published default appliance
+        run: |
+          suffix=''
+          if [ "$RUNNER_OS" = Windows ]; then suffix='.exe'; fi
+          pichi="$GITHUB_WORKSPACE/target/debug/pichi$suffix"
+          default=$(sed -n 's/^pub const DEFAULT_BUILD_IMAGE: &str = "\(.*\)";$/\1/p' src/cmd/build.rs)
+          "$pichi" pull "$default"
+          "$pichi" inspect "$default" | tee "$RUNNER_TEMP/default-native-image.json"
+          "$pichi" save "$default" -o tests/fixtures/native-handoff/appliance-layout
+          vm_tests=(--locked -p pichi --features vm-tests --test build_boot --test build_submodules --test staged_images)
+          cargo test "${vm_tests[@]}" -- --list | tr -d '\r' | tee "$RUNNER_TEMP/default-native-list.txt"
+          for test in pichi_build_boots_official_image_to_poweroff pichi_build_checks_committed_submodule_stores staged_images_create_extend_and_compose; do
+            grep -Fxq "$test: test" "$RUNNER_TEMP/default-native-list.txt"
+          done
+          cargo test "${vm_tests[@]}" --no-fail-fast -- --test-threads=1 --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/default-native-tests.log"
+
       - name: ⬆️ Upload failed-command logs
         if: ${{ !cancelled() }}
         timeout-minutes: 3
@@ -235,9 +282,16 @@ jobs:
           path: |
             ${{ runner.temp }}/zot.log
             ${{ runner.temp }}/command-tests.txt
+            ${{ runner.temp }}/default-native-image.json
+            ${{ runner.temp }}/default-native-list.txt
+            ${{ runner.temp }}/default-native-tests.log
             ${{ runner.temp }}/pichi command smoke */*.log
             ${{ runner.temp }}/pichi command smoke */pichi.yaml
             ${{ runner.temp }}/pichi command smoke */pichi.lock
+
+      - name: Remove qualification fixtures
+        if: always()
+        run: rm -rf tests/fixtures/native-handoff
 
       - name: 🧹 Remove temporary monitor checkout
         if: ${{ always() && env.PICHI_MONITOR_SOURCE != '' }}

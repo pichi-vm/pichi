@@ -76,8 +76,17 @@ pub fn build_image() -> &'static str {
 pub fn prepare_build_image(graphroot: &Path) {
     Hypervisor::prepare();
     assert_pichi_ok(
-        "pull official build image",
-        &pichi(graphroot, &[], &["pull", build_image()]),
+        "load captured default build image",
+        &pichi(
+            graphroot,
+            &[],
+            &[
+                "load",
+                "tests/fixtures/native-handoff/appliance-layout",
+                "--tag",
+                build_image(),
+            ],
+        ),
     );
 }
 
@@ -129,22 +138,9 @@ pub fn assert_pichi_ok(label: &str, out: &std::process::Output) {
     );
 }
 
-/// Build the tiny source root used by smoke and submodule tests.
+/// Wrap the same portable filesystem for every native host.
 pub fn make_root_disk(path: &Path) {
-    let filesystem = path.with_extension("filesystem");
-    let dir = path.with_extension("src");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("os-release"), "ID=fedora\nVERSION_ID=43\n").unwrap();
-    let status = Command::new("mkfs.ext4")
-        .args(["-q", "-F", "-b", "4096"])
-        .arg("-d")
-        .arg(&dir)
-        .arg(&filesystem)
-        .arg("16M")
-        .status()
-        .expect("run mkfs.ext4");
-    assert!(status.success(), "mkfs.ext4 failed");
-    root_disk::RootDisk::write(&filesystem, path);
+    root_disk::RootDisk::write(Path::new("tests/fixtures/native-handoff/root.ext4"), path);
 }
 
 /// Locked Conglobate smoke reference (must match stage input and lock key).

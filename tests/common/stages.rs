@@ -22,11 +22,14 @@ impl Builds {
     pub fn guest_binary(&self, name: &str, source: &Path) -> PathBuf {
         let path = self.directory.join(name);
         fs::copy(source, &path).unwrap();
-        let status = Command::new("strip")
-            .arg("--strip-debug")
-            .arg(&path)
-            .status()
-            .unwrap();
+        let status = Command::new(
+            Path::new("tests/fixtures/native-handoff/strip")
+                .with_extension(std::env::consts::EXE_EXTENSION),
+        )
+        .arg("--strip-debug")
+        .arg(&path)
+        .status()
+        .unwrap();
         assert!(status.success(), "strip guest executable");
         assert!(fs::metadata(&path).unwrap().len() < 16 * 1024 * 1024);
         path
