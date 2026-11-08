@@ -49,3 +49,4 @@ requirements:
   slot: pci
   cpus: { recommended: 2 }
   memory: { required: 2048, recommended: 4096 }
+  storage: { required: 10240, recommended: max }
