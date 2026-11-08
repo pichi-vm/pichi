@@ -129,13 +129,8 @@ pub fn assert_pichi_ok(label: &str, out: &std::process::Output) {
     );
 }
 
-/// Build the tiny source root used by smoke and submodule tests. CI supplies
-/// the same ext4 bytes to every host; local Linux runs can generate them.
+/// Build the tiny source root used by smoke and submodule tests.
 pub fn make_root_disk(path: &Path) {
-    if let Some(filesystem) = std::env::var_os("PICHI_TEST_ROOT_FILESYSTEM") {
-        root_disk::RootDisk::write(Path::new(&filesystem), path);
-        return;
-    }
     let filesystem = path.with_extension("filesystem");
     let dir = path.with_extension("src");
     std::fs::create_dir_all(&dir).unwrap();
@@ -147,7 +142,7 @@ pub fn make_root_disk(path: &Path) {
         .arg(&filesystem)
         .arg("16M")
         .status()
-        .expect("run mkfs.ext4 or set PICHI_TEST_ROOT_FILESYSTEM to the CI fixture");
+        .expect("run mkfs.ext4");
     assert!(status.success(), "mkfs.ext4 failed");
     root_disk::RootDisk::write(&filesystem, path);
 }
