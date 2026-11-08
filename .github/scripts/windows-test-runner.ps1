@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-# Cargo target runner for native tests requiring independent child lifetimes.
+# CI launcher for commands requiring independent child lifetimes.
 # WMI is CI infrastructure only. The product uses native Job breakaway and
 # still refuses a caller Job that forbids it. The pinned Cargo predates its
 # breakaway fix (rust-lang/cargo#17527), so execute built tests outside its Job.
@@ -26,7 +26,7 @@ if ($args.Count -eq 2 -and $args[0] -eq '--request') {
     exit $code
 }
 
-if ($args.Count -lt 1) { throw 'Expected a Cargo-built test executable' }
+if ($args.Count -lt 1) { throw 'Expected an executable' }
 $executable = (Resolve-Path -LiteralPath $args[0]).Path
 $testArguments = @($args | Select-Object -Skip 1)
 $root = Join-Path ([IO.Path]::GetTempPath()) ('pichi-test-' + [guid]::NewGuid())
@@ -38,6 +38,7 @@ try {
     # Preserve only explicit, non-secret tool and fixture settings.
     foreach ($name in @('PATH', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP',
                         'CARGO_HOME', 'CARGO_TARGET_DIR', 'RUSTUP_HOME', 'CARGO_NET_GIT_FETCH_WITH_CLI',
+                        'XDG_DATA_HOME',
                         'PICHI_MADRILLO', 'MADRILLO_BIN', 'PICHI_DILLO', 'PICHI_SMOKE_BIN',
                         'PICHI_TEST_PREVIOUS_BUILD_IMAGE', 'RUNNER_TEMP', 'CI', 'GITHUB_ACTIONS',
                         'RUNNER_TRACKING_ID', 'PICHI_TEST_REGISTRY', 'PICHI_CONFIG',
