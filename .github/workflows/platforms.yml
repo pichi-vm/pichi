@@ -205,15 +205,18 @@ jobs:
           "${pichi[@]}" build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
             --build-image "$builder" \
             --memory 8192 -t qualification.local/appliance:build
-          "${pichi[@]}" save qualification.local/appliance:build -o "$RUNNER_TEMP/appliance-layout"
-          echo "PICHI_TEST_BUILD_IMAGE_LAYOUT=$RUNNER_TEMP/appliance-layout" >> "$GITHUB_ENV"
+          rm -rf tests/fixtures/appliance-layout
+          "${pichi[@]}" save qualification.local/appliance:build -o tests/fixtures/appliance-layout
 
       - name: 🧪 Exercise commands and build
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
           ZOT_ASSET: ${{ matrix.zot_asset }}
           ZOT_SHA256: ${{ matrix.zot_sha256 }}
-        run: bash .github/scripts/test-registry.sh bash .github/scripts/test-commands.sh
+        run: |
+          test=every_command_builds_and_boots
+          if [ '${{ inputs.build-appliance }}' = true ]; then test=candidate_appliance_builds_and_boots; fi
+          bash .github/scripts/test-registry.sh bash .github/scripts/test-commands.sh "$test"
 
       - name: ⬆️ Upload qualified appliance
         if: inputs.build-appliance && runner.os == 'Linux' && github.ref == 'refs/heads/main'
@@ -221,7 +224,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: appliance-oci-${{ runner.arch == 'X64' && 'amd64' || 'arm64' }}
-          path: ${{ runner.temp }}/appliance-layout
+          path: tests/fixtures/appliance-layout
           if-no-files-found: error
 
       - name: ⬆️ Upload failed-command logs

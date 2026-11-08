@@ -349,9 +349,8 @@ images:
 
 The smoke test imports a small GPT disk, retains its actual platform index,
 and uses `pichi update` to produce the lock. It prunes the cache and builds
-from the committed lock. `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a rebuilt
-OCI appliance layout for cross-project qualification; otherwise the smoke
-uses the shipping default. Staged plans require an appliance built with the
+from the committed lock. The manual suites use the shipping default appliance.
+Staged plans require an appliance built with the
 matching Conglobate engine; `--build-image` selects it explicitly. The default image is
 `ghcr.io/pichi-vm/pichi-build:latest`. CI advances this tag after required
 current-version tests pass.
@@ -382,13 +381,11 @@ For manual submodule tests, `PICHI_TEST_ROOT_FILESYSTEM` can supply a tiny
 ext4 fixture; local Linux runs can create it with `mkfs.ext4` when unset.
 Use `PATH` to select a `strip` executable that supports Linux guest binaries.
 
-For manual staged-image qualification, use a rebuilt appliance OCI layout and
-a newly compiled static release Corium. The staged recipe installs guest Arma
+For manual staged-image qualification, use a newly compiled static release Corium. The staged recipe installs guest Arma
 from signed COPR packages. Corium's release binary replaces the test artifact's
 firmware while preserving the selected root.
 
 ```sh
-PICHI_TEST_BUILD_IMAGE_LAYOUT=/path/to/appliance-oci \
 PICHI_TEST_REPLACEMENT_CORIUM=/path/to/release/corium \
 cargo +nightly-2026-07-06 test --locked --features vm-tests --test staged_images -- --nocapture
 ```
@@ -608,7 +605,10 @@ known payload into a derived bootable image; a guest service verifies the payloa
 and powers off. The test requires its success marker and a successful exit.
 
 The current commit runs against the candidate when rebuilt, otherwise the
-published default appliance. Both paths are required to pass.
+published default appliance. CI selects the corresponding ignored test explicitly:
+`candidate_appliance_builds_and_boots` loads `tests/fixtures/appliance-layout`, while
+`every_command_builds_and_boots` pulls the published default. A candidate run
+fails if its layout is missing; it never falls back to the published image.
 `PATH` selects native Dillo; Linux installs Dillo from the PPA, while Windows
 and macOS build it natively. The smoke test always uses Cargo's Pichi executable.
 

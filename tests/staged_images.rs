@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Cross-project acceptance against the shipping or explicitly rebuilt appliance.
+//! Cross-project acceptance against the shipping appliance.
 //! Every supported host runs the same builds and boots on its native hypervisor.
 #![cfg(feature = "vm-tests")]
 
