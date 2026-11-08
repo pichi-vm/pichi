@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Native all-command acceptance. Explicitly invoked by CI, never silently
-//! skipped for a missing registry or hypervisor. Exercises the current commit.
+//! skipped for a missing registry or hypervisor. Exercises the installed package.
 
 #[path = "common/process.rs"]
 mod process;
@@ -40,7 +40,7 @@ impl Smoke {
         let directory = directory.keep();
         eprintln!("Smoke evidence: {}", directory.display());
         Self {
-            binary: env!("CARGO_BIN_EXE_pichi").into(),
+            binary: "/usr/bin/pichi".into(),
             cache: directory.join("cache"),
             directory,
         }
