@@ -22,6 +22,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};

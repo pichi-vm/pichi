@@ -38,13 +38,13 @@ try {
     # Preserve only explicit, non-secret tool and fixture settings.
     foreach ($name in @('PATH', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP',
                         'CARGO_HOME', 'CARGO_TARGET_DIR', 'RUSTUP_HOME', 'CARGO_NET_GIT_FETCH_WITH_CLI',
-                        'XDG_DATA_HOME',
-                        'PICHI_MADRILLO', 'MADRILLO_BIN', 'PICHI_DILLO', 'PICHI_SMOKE_BIN',
+                        'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'APPDATA',
+                        'MADRILLO_BIN', 'PICHI_SMOKE_BIN',
                         'PICHI_TEST_PREVIOUS_BUILD_IMAGE', 'RUNNER_TEMP', 'CI', 'GITHUB_ACTIONS',
-                        'RUNNER_TRACKING_ID', 'PICHI_TEST_REGISTRY', 'PICHI_CONFIG',
+                        'RUNNER_TRACKING_ID', 'PICHI_TEST_REGISTRY',
                         'PICHI_TEST_REPO_BASE', 'PICHI_TEST_BUILD_IMAGE_LAYOUT',
-                        'PICHI_TEST_ROOT_FILESYSTEM', 'PICHI_TEST_EVIDENCE',
-                        'PICHI_TEST_GUEST_ARMA', 'PICHI_TEST_STRIP', 'PICHI_TEST_REPLACEMENT_CORIUM')) {
+                        'PICHI_TEST_ROOT_FILESYSTEM',
+                        'PICHI_TEST_GUEST_ARMA', 'PICHI_TEST_REPLACEMENT_CORIUM')) {
         $value = [Environment]::GetEnvironmentVariable($name)
         if ($null -ne $value) { $environment[$name] = $value }
     }

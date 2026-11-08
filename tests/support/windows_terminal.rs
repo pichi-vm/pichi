@@ -40,7 +40,10 @@ impl Workload {
         let mut command = Command::new(env!("CARGO_BIN_EXE_pichi"));
         command
             .env("XDG_DATA_HOME", self.root.path())
-            .env("PICHI_DILLO", &self.stub)
+            .env(
+                "PATH",
+                super::executable_path::prepend(self.stub.parent().unwrap()),
+            )
             .env(
                 "PICHI_TEST_TERMINAL_FIXTURE",
                 std::env::current_exe().unwrap(),
@@ -141,7 +144,10 @@ impl Terminal {
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pichi"));
         command.args(arguments);
         command.env("XDG_DATA_HOME", workload.root.path());
-        command.env("PICHI_DILLO", &workload.stub);
+        command.env(
+            "PATH",
+            super::executable_path::prepend(workload.stub.parent().unwrap()),
+        );
         command.env(
             "PICHI_TEST_TERMINAL_FIXTURE",
             std::env::current_exe().unwrap(),

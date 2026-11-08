@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires PICHI_MADRILLO; no workload is executed"]
+    #[ignore = "requires madrillo on PATH; no workload is executed"]
     async fn startup_failure_reports_monitor_diagnostic() -> Result<()> {
         let root = tempfile::tempdir()?;
         let graphroot = root.path().join("cache");
@@ -746,23 +746,11 @@ impl Running {
     }
 
     fn executable() -> PathBuf {
-        if let Some(path) = std::env::var_os("PICHI_MADRILLO") {
-            return path.into();
-        }
-        let name = if cfg!(windows) {
+        PathBuf::from(if cfg!(windows) {
             "madrillo.exe"
         } else {
             "madrillo"
-        };
-        if let Ok(current) = std::env::current_exe()
-            && let Some(parent) = current.parent()
-        {
-            let path = parent.join(name);
-            if path.is_file() {
-                return path;
-            }
-        }
-        name.into()
+        })
     }
 }
 

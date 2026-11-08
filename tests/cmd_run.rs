@@ -6,6 +6,9 @@
 //! A native executable records the launcher arguments on every host.
 #![allow(clippy::unwrap_used)]
 
+#[path = "support/executable_path.rs"]
+mod executable_path;
+
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
@@ -151,7 +154,7 @@ fn make_stub_dillo(dir: &Path) -> PathBuf {
         std::fs::read(
             directory
                 .path()
-                .join(format!("dillo-stub{}", std::env::consts::EXE_SUFFIX)),
+                .join(format!("dillo{}", std::env::consts::EXE_SUFFIX)),
         )
         .unwrap()
     });
@@ -173,6 +176,10 @@ async fn build_channel_preserves_guest_first_exchange() {
     let fixture =
         monitor.with_file_name(format!("madrillo-fixture{}", std::env::consts::EXE_SUFFIX));
     let root = TempDir::new().unwrap();
+    let child = root
+        .path()
+        .join(format!("dillo{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(&fixture, &child).unwrap();
     populate_bootable(&graphroot(&root), "contract:1").await;
     let marker = root.path().join("port-exchange.json");
     let mut request = Vec::new();
@@ -202,8 +209,7 @@ async fn build_channel_preserves_guest_first_exchange() {
     let result = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", root.path())
-        .env("PICHI_DILLO", fixture)
-        .env("PICHI_MADRILLO", monitor)
+        .env("PATH", executable_path::prepend(root.path()))
         .env(
             "MADRILLO_FIXTURE_PORT_EXCHANGE",
             serde_json::json!({"request":request,"response":response,"marker":marker}).to_string(),
@@ -256,7 +262,7 @@ async fn run_defaults_to_warnings_and_preserves_log_overrides() {
         let mut command = Command::cargo_bin("pichi").unwrap();
         command
             .env("XDG_DATA_HOME", tmp.path())
-            .env("PATH", stub.parent().unwrap())
+            .env("PATH", executable_path::prepend(stub.parent().unwrap()))
             .env_remove("RUST_LOG");
         if let Some(value) = configured {
             command.env("RUST_LOG", value);
@@ -281,7 +287,7 @@ async fn run_execs_dillo_with_manifest_derived_devices() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .env("PATH", stub.parent().unwrap())
+        .env("PATH", executable_path::prepend(stub.parent().unwrap()))
         .args(["run", "myapp:1"])
         .assert()
         .success();
@@ -419,7 +425,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 Command::cargo_bin("pichi")
                     .unwrap()
                     .env("XDG_DATA_HOME", destination.path())
-                    .env("PATH", dillo.parent().unwrap())
+                    .env("PATH", executable_path::prepend(dillo.parent().unwrap()))
                     .args(["run", tag])
                     .assert()
                     .success();
@@ -496,7 +502,7 @@ async fn run_resolves_cached_index_references() {
             let assert = Command::cargo_bin("pichi")
                 .unwrap()
                 .env("XDG_DATA_HOME", tmp.path())
-                .env("PATH", stub.parent().unwrap())
+                .env("PATH", executable_path::prepend(stub.parent().unwrap()))
                 .args(["run", &reference])
                 .assert();
             if !index_stored {
@@ -531,7 +537,7 @@ async fn run_forwards_cpus_and_memory() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .env("PATH", stub.parent().unwrap())
+        .env("PATH", executable_path::prepend(stub.parent().unwrap()))
         .args(["run", "--cpus", "2", "--memory", "2048", "myapp:1"])
         .assert()
         .success();
@@ -561,7 +567,7 @@ async fn run_missing_ref_auto_pulls() {
     let assert = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .env("PATH", stub.parent().unwrap())
+        .env("PATH", executable_path::prepend(stub.parent().unwrap()))
         .args(["run", "127.0.0.1:1/ghost:1"])
         .assert()
         .failure();
@@ -589,7 +595,7 @@ async fn run_propagates_dillo_exit_status_with_spaced_paths() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .env("PATH", stub.parent().unwrap())
+        .env("PATH", executable_path::prepend(stub.parent().unwrap()))
         .env("PICHI_TEST_DILLO_EXIT", "7")
         .args(["run", "exit-status:1"])
         .assert()
@@ -614,7 +620,7 @@ async fn image_config_defaults_and_manual_allocations_are_enforced() {
         let mut command = Command::cargo_bin("pichi").unwrap();
         command
             .env("XDG_DATA_HOME", tmp.path())
-            .env("PATH", stub.parent().unwrap())
+            .env("PATH", executable_path::prepend(stub.parent().unwrap()))
             .env_remove("RUST_LOG")
             .args(["run", "sized:1"])
             .args(extra);
@@ -642,7 +648,7 @@ async fn image_config_defaults_and_manual_allocations_are_enforced() {
     let output = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .env("PATH", stub.parent().unwrap())
+        .env("PATH", executable_path::prepend(stub.parent().unwrap()))
         .args(["run", "sized:1", "--cpus", "1"])
         .assert()
         .failure()
@@ -679,7 +685,7 @@ async fn detached_storage_stays_reserved_until_workload_exit() {
         let mut command = Command::cargo_bin("pichi").unwrap();
         command
             .env("XDG_DATA_HOME", tmp.path())
-            .env("PICHI_DILLO", &stub)
+            .env("PATH", executable_path::prepend(stub.parent().unwrap()))
             .env("PICHI_TEST_STORAGE", "1")
             .args(["run", "-d", "--storage", "2", "storage:detached"]);
         if retained {
@@ -710,7 +716,7 @@ async fn detached_storage_stays_reserved_until_workload_exit() {
         Command::cargo_bin("pichi")
             .unwrap()
             .env("XDG_DATA_HOME", tmp.path())
-            .env("PICHI_DILLO", &stub)
+            .env("PATH", executable_path::prepend(stub.parent().unwrap()))
             .args(["run", "-d", "--storage-file"])
             .arg(&path)
             .arg("storage:detached")
@@ -728,7 +734,7 @@ async fn detached_storage_stays_reserved_until_workload_exit() {
             Command::cargo_bin("pichi")
                 .unwrap()
                 .env("XDG_DATA_HOME", tmp.path())
-                .env("PICHI_DILLO", &stub)
+                .env("PATH", executable_path::prepend(stub.parent().unwrap()))
                 .args(["run", "--storage-file"])
                 .arg(&path)
                 .arg("storage:detached")
@@ -766,7 +772,7 @@ async fn vm_timeout_cleanup_stops_workloads_after_client_exit() {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"));
         command
             .env("XDG_DATA_HOME", tmp.path())
-            .env("PICHI_DILLO", stub)
+            .env("PATH", executable_path::prepend(stub.parent().unwrap()))
             .env("PICHI_TEST_STORAGE", "1")
             .env("PICHI_TEST_DILLO_WAIT_FOR_EOF", "1")
             .args(["run", "--storage", "2", "--storage-file"])
@@ -833,7 +839,7 @@ async fn writable_storage_lives_through_the_child_and_is_cleaned_on_exit() {
             let mut command = Command::cargo_bin("pichi").unwrap();
             command
                 .env("XDG_DATA_HOME", tmp.path())
-                .env("PATH", stub.parent().unwrap())
+                .env("PATH", executable_path::prepend(stub.parent().unwrap()))
                 .env("PICHI_TEST_STORAGE", "1")
                 .env("PICHI_TEST_DILLO_EXIT", exit.to_string())
                 .args(["run", "storage:1"]);
@@ -871,7 +877,7 @@ async fn cpu_max_uses_host_availability_as_the_default() {
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
-        .env("PATH", stub.parent().unwrap())
+        .env("PATH", executable_path::prepend(stub.parent().unwrap()))
         .args(["run", "max:1"])
         .assert()
         .success();

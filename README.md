@@ -141,8 +141,8 @@ the first build pulls it and continues. Full contract: [BUILD.md](BUILD.md).
 
 ## Workload supervision
 
-Set `PICHI_MADRILLO` to its executable (otherwise a sibling executable or PATH is used), and use a
-dillo build whose console closure requests shutdown. Foreground run prints its
+Install `madrillo` and `dillo` on PATH. Dillo must support console closure
+requesting shutdown. Foreground run prints its
 ID on stderr; detached run prints it on stdout. Host terminals use raw input with
 `-i`; Ctrl-P Ctrl-Q detaches. Piped input remains binary. Input EOF releases
 ownership while madrillo keeps dillo's liveness pipe open. Attachment is live

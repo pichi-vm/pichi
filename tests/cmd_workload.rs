@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Actual pichi → madrillo launch and CLI reconnection; Unix fixture programs.
-//! PICHI_MADRILLO (or PATH) must provide the real monitor executable.
+//! PATH must provide the real monitor executable.
 
 #![cfg(unix)]
 #![forbid(unsafe_code)]
 #![allow(clippy::unwrap_used)]
+
+#[path = "support/executable_path.rs"]
+mod executable_path;
 
 use assert_cmd::Command;
 use conglobate::artifact::{
@@ -48,7 +51,7 @@ impl WorkloadFixture {
         tags.set_tag("docker.io/library/fixture:1", &digest)
             .await
             .unwrap();
-        let path = root.path().join("dillo-fixture");
+        let path = root.path().join("dillo");
         std::fs::write(&path, format!("#!/usr/bin/env python3\n{program}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         Self {
@@ -149,9 +152,10 @@ impl WorkloadFixture {
 
     fn native_command(&self) -> std::process::Command {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"));
-        command
-            .env("XDG_DATA_HOME", self.root.path())
-            .env("PICHI_DILLO", &self.program);
+        command.env("XDG_DATA_HOME", self.root.path()).env(
+            "PATH",
+            executable_path::prepend(self.program.parent().unwrap()),
+        );
         command
     }
 }
@@ -509,7 +513,10 @@ finally:
             "/tests/support/workload_terminal.py"
         ))
         .env("XDG_DATA_HOME", fixture.root.path())
-        .env("PICHI_DILLO", &fixture.program)
+        .env(
+            "PATH",
+            executable_path::prepend(fixture.program.parent().unwrap()),
+        )
         .env("PICHI_BIN", env!("CARGO_BIN_EXE_pichi"))
         .timeout(Duration::from_secs(35))
         .assert()
