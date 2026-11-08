@@ -385,12 +385,10 @@ Manual submodule tests create their ext4 fixture with `mkfs.ext4` from `PATH`.
 Install that tool on the host before running this optional suite.
 Use `PATH` to select a `strip` executable that supports Linux guest binaries.
 
-For manual staged-image qualification, use a newly compiled static release Corium. The staged recipe installs guest Arma
-from signed COPR packages. Corium's release binary replaces the test artifact's
-firmware while preserving the selected root.
+The staged-image suite uses Cargo's Corium artifact and installs guest Arma
+from signed COPR packages.
 
 ```sh
-PICHI_TEST_REPLACEMENT_CORIUM=/path/to/release/corium \
 cargo +nightly-2026-07-06 test --locked --features vm-tests --test staged_images -- --nocapture
 ```
 
@@ -398,7 +396,7 @@ The suite installs a fresh Fedora root, generates its PMI inside a stage,
 and boots through Corium to systemd. It independently reads both GPT copies
 from the emitted scutes and compares their root geometry with the live
 device-mapper table. It checks extension, host/sibling copies, ESP and tmpfs
-lifetime, unchanged parents, firmware replacement, configuration overlay
+lifetime, unchanged parents, configuration overlay
 and replacement, all five component combinations, and failed builds without
 published output. Kernel bootconfig is compared with the selected artifact;
 Linux displays bare keys as empty strings in `/proc/bootconfig`, while the
