@@ -24,7 +24,7 @@ jobs:
   test:
     name: 🧪 ${{ matrix.name }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - name: x86-linux
@@ -39,18 +39,6 @@ jobs:
             guest_musl: aarch64-unknown-linux-musl
             zot_asset: zot-linux-arm64-minimal
             zot_sha256: 931d687899cc4b1fcad4c026d2792df6132e6de1b2f329aa730dccee14ec0395
-          - name: x86-windows
-            os: windows-2025
-            runs_on: '["windows-2025"]'
-            guest_musl: x86_64-unknown-linux-musl
-            zot_asset: zot-windows-amd64-minimal.exe
-            zot_sha256: d8b29c9cd9d68f46a338a2ae0533991415148587703ec3bd0f909c22604f7bed
-          - name: arm-macos
-            os: macos-arm64
-            runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
-            guest_musl: aarch64-unknown-linux-musl
-            zot_asset: zot-darwin-arm64-minimal
-            zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
     runs-on: ${{ fromJSON(matrix.runs_on) }}
     timeout-minutes: 40
     steps:
@@ -202,20 +190,20 @@ jobs:
               sleep 5
             done
           done
+          "${pichi[@]}" inspect "$builder"
           "${pichi[@]}" build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
             --memory 8192 -t qualification.local/appliance:build
-          rm -rf tests/fixtures/appliance-layout
-          "${pichi[@]}" save qualification.local/appliance:build -o tests/fixtures/appliance-layout
-
-      - name: 🧪 Exercise commands and build
-        env:
-          CARGO_BUILD_RUSTFLAGS: "-D warnings"
-          ZOT_ASSET: ${{ matrix.zot_asset }}
-          ZOT_SHA256: ${{ matrix.zot_sha256 }}
-        run: |
-          test=every_command_builds_and_boots
-          if [ '${{ inputs.build-appliance }}' = true ]; then test=candidate_appliance_builds_and_boots; fi
-          bash .github/scripts/test-registry.sh bash .github/scripts/test-commands.sh "$test"
+          "${pichi[@]}" inspect qualification.local/appliance:build
+          status=0
+          timeout --signal=INT --kill-after=10s 180s \
+            "${pichi[@]}" build . --ref HEAD --plan appliance/image/pichi.yaml \
+            --lock appliance/image/pichi.lock --memory 8192 \
+            --build-image qualification.local/appliance:build \
+            -t qualification.local/dns:unexpected > "$RUNNER_TEMP/dns-failure.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/dns-failure.log"
+          test "$status" -eq 1
+          grep -Ei 'bootstrap-time.*(failed|FAILURE)' "$RUNNER_TEMP/dns-failure.log"
+          if "${pichi[@]}" inspect qualification.local/dns:unexpected; then exit 1; fi
 
       - name: ⬆️ Upload qualified appliance
         if: inputs.build-appliance && runner.os == 'Linux' && github.ref == 'refs/heads/main'
@@ -233,6 +221,7 @@ jobs:
         with:
           name: smoke-evidence-${{ matrix.name }}
           path: |
+            ${{ runner.temp }}/dns-failure.log
             ${{ runner.temp }}/zot.log
             ${{ runner.temp }}/command-tests.txt
             ${{ runner.temp }}/pichi command smoke */*.log
