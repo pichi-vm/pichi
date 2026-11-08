@@ -61,7 +61,7 @@ Host steps, in order:
 1. Prepare an **empty** host output directory (RW).
 2. Prepare a **read-only** cache of pichi images / carapaces the build needs.
 3. Prepare the build-input payload (see §4) — do not push it yet.
-4. Launch **Conglobate's pichi image** via dillo with both rx and tx pipe
+4. Launch the **Pichi build appliance** via dillo with both rx and tx pipe
    ends on named console `dev.pichi.build` (bidirectional; not rx-only).
 5. After dillo starts, wait for the guest's build-input request on the
    port, then write the prepared response (hold-until-open / Linux discard).
@@ -172,12 +172,16 @@ Conglobate emits only the OCI layout (`oci-layout`, `index.json`, and
 `blobs/`). The host rejects `build.yaml`, `inventory.cbor`, and loose disk
 files beside it. Build identity is carried by the manifest annotations.
 
-### 2.6 Conglobate ships a pichi image
+### 2.6 Pichi builds the appliance
 
-The Conglobate **build appliance** (its build machine image) is a normal pichi image shipped from
-the Conglobate repository (bootstrap). Fedora and carapace similarly each
-ship a pichi image for their roles. `pichi build` launches that image the
-same way `pichi run` launches any other bootable artifact.
+This repository builds the [appliance](appliance/) from a locked Fedora image
+and signed Conglobate and LSM packages. Conglobate owns the guest command,
+build service and mount units; LSM owns the policy, loader and loader service.
+Pichi owns image composition and appliance-specific configuration.
+
+Fedora and Ubuntu build their own base images in their own repositories using
+`pichi build`. The command launches the build appliance the same way
+`pichi run` launches any other bootable artifact.
 
 ### 2.7 Retired stories (must not return)
 
@@ -208,7 +212,7 @@ pichi (thin launcher)
   │  virtiofs: repo / cache / output
   │  named console dev.pichi.build (rx+tx pipes)
   ▼
-dillo  ──boots──►  Conglobate pichi image
+dillo  ──boots──►  Pichi build appliance
                       │  writes ["start", 1, null]
                       │     ◄── host success/failure CBOR
                       │  builds from /run/pichi/{repo,cache}
@@ -484,9 +488,10 @@ alongside successful VM exit before the host imports any output.
 | --------- | ---- |
 | **pichi** (`pichi build`) | Thin launcher: dirs, build-port CBOR, dillo launch, import OCI on success |
 | **dillo** | VMM + virtiofs + named console wiring |
-| **Conglobate image** | Guest appliance: init/wrapper, invoke Conglobate, export annotated OCI, shut down |
-| **Conglobate binary / lib** | Plans, locks, build execution, OCI layout, image-manifest build annotations (see its DESIGN.md) |
-| **fedora / carapace images** | Each ships its own pichi image for bootstrap / base roles |
+| **Pichi build appliance** | Image composition, appliance configuration and package-unit enablement |
+| **Conglobate binary / lib** | Plans, locks, build execution, OCI layout, image-manifest build annotations, guest command, build service and mount units (see its DESIGN.md) |
+| **LSM package** | Labeling policy, loader and loader service |
+| **Fedora / Ubuntu images** | Each repository builds its own base image with the Pichi command |
 
 Pichi does not interpret Conglobate private intermediates to reconstruct
 the image. The output mount's OCI layout is the product.
