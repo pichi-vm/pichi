@@ -624,9 +624,9 @@ timeouts bound failures. Failed command logs are uploaded; successful smoke
 storage is removed.
 
 The staged-image and submodule suites remain available with `--features vm-tests`
-for targeted local investigation. GHCR compatibility remains a manual workflow.
-Neither is automatic PR work. PPA source publication remains independent; its source preparation vendors the
-Git dependency directly, without flattening a submodule.
+for targeted local investigation. Neither is automatic PR work. PPA source
+publication remains independent; its source preparation vendors the Git
+dependency directly, without flattening a submodule.
 
 To run the native command test locally, start a local registry (or use
 `.github/scripts/test-registry.sh` with its pinned Zot asset/hash environment),
