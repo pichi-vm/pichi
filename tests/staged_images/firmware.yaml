@@ -10,30 +10,17 @@ stages:
     steps:
       - copy: {path: corium, into: /tmp/corium}
       - exec:
-          command: |
-            chmod +x /tmp/corium
-            set -- /usr/lib/modules/*
-            test "$#" -eq 1
-            modules=$1
-            kernel_version=$(basename "$modules")
-            mkdir -p /tmp/initrd /out
-            cp /tmp/corium /tmp/initrd/init
-            : > /tmp/module-list
-            for module in virtio_pci virtio_blk virtio_console dm_mod dm_zero dm_snapshot dm_verity ext4; do
-              modprobe --set-version "$kernel_version" --show-depends "$module" >> /tmp/module-list
-            done
-            while read -r action path extra; do
-              if test "$action" = insmod; then
-                path=$(readlink -f "$path")
-                install -D -m0644 "$path" "/tmp/initrd$path"
-              fi
-            done < /tmp/module-list
-            (cd /tmp/initrd && find . -print0 | cpio --null --create --format=newc --quiet) > /tmp/initrd.cpio
-            arma build --kernel "$modules/vmlinuz" --config "$modules/config" --initrd /tmp/initrd.cpio --cmdline bootconfig --dtb attached /out/boot.pmi
+          command: >-
+            arma build --kernel /usr/lib/modules/*/vmlinuz
+            --config /usr/lib/modules/*/config --initrd /tmp/corium
+            --module virtio_pci --module virtio_blk --module virtio_console
+            --module dm_mod --module dm_zero --module dm_snapshot
+            --module dm_verity --module ext4
+            --cmdline bootconfig --dtb attached /boot.pmi
 image:
   root: qualification.local/base:1
   boot:
-    extract: {from: firmware, path: /out/boot.pmi}
+    extract: {from: firmware, path: /boot.pmi}
     define:
       corium.root: ""
       corium.log: debug
