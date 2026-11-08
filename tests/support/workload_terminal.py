@@ -45,7 +45,7 @@ class Terminal:
         self.resize(*size)
         self.process = subprocess.Popen(
             [sys.executable, "-c", SESSION,
-             "restore" if check_restoration else "hangup", os.environ["PICHI_BIN"], *arguments],
+             "restore" if check_restoration else "hangup", sys.argv[1], *arguments],
             stdin=self.slave, stdout=self.slave, stderr=self.slave,
             start_new_session=True,
             preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
@@ -140,18 +140,18 @@ try:
     with Terminal(["attach", "-i", identity]) as terminal:
         terminal.send(b"reattached\x03\n")
         terminal.receive(b"reattached\x03")
-        stopped = subprocess.run([os.environ["PICHI_BIN"], "stop", identity],
+        stopped = subprocess.run([sys.argv[1], "stop", identity],
                                  capture_output=True, timeout=10)
         assert stopped.returncode == 0, stopped.stderr
         terminal.restored(0)
     # A workload launched detached acquires its first size on later attachment.
-    started = subprocess.run([os.environ["PICHI_BIN"], "run", "-d", "fixture:1"],
+    started = subprocess.run([sys.argv[1], "run", "-d", "fixture:1"],
                              capture_output=True, timeout=5)
     assert started.returncode == 0, started.stderr
     identity = started.stdout.decode().strip()
     with Terminal(["attach", "-i", identity], size=(132, 43)) as terminal:
         terminal.receive(b"size=132x43")
-        stopped = subprocess.run([os.environ["PICHI_BIN"], "stop", identity],
+        stopped = subprocess.run([sys.argv[1], "stop", identity],
                                  capture_output=True, timeout=10)
         assert stopped.returncode == 0, stopped.stderr
         terminal.restored(0)
@@ -159,5 +159,5 @@ try:
 finally:
     # Only records in this test's private storage root are eligible for cleanup.
     for record in records.glob("*"):
-        subprocess.run([os.environ["PICHI_BIN"], "stop", "--time", "0", record.name],
+        subprocess.run([sys.argv[1], "stop", "--time", "0", record.name],
                        capture_output=True, timeout=10)

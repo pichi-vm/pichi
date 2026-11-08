@@ -517,7 +517,7 @@ finally:
             "PATH",
             executable_path::prepend(fixture.program.parent().unwrap()),
         )
-        .env("PICHI_BIN", env!("CARGO_BIN_EXE_pichi"))
+        .arg(env!("CARGO_BIN_EXE_pichi"))
         .timeout(Duration::from_secs(35))
         .assert()
         .success();
