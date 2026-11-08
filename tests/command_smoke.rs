@@ -337,7 +337,6 @@ fn command_stdout_excludes_diagnostics() {
     let smoke = Smoke {
         directory: directory.path().to_owned(),
         binary: if cfg!(windows) { "cmd.exe" } else { "/bin/sh" }.into(),
-        dillo: "unused".into(),
         cache: directory.path().join("cache"),
     };
     let arguments: &[&str] = if cfg!(windows) {
