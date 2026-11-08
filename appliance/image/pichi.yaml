@@ -15,9 +15,11 @@ stages:
       - exec:
           command: >-
             dnf -y --setopt=install_weak_deps=False --exclude='kernel*' install
-            conglobate pichi-lsm
+            conglobate pichi-lsm chrony
           network: true
       - copy: { path: appliance/image/pichi-lsm.conf, into: /etc/systemd/system/conglobate-build.service.d/pichi-lsm.conf }
+      - copy: { path: appliance/image/bootstrap-time.service, into: /etc/systemd/system/bootstrap-time.service }
+      - copy: { path: appliance/image/bootstrap-time.conf, into: /etc/systemd/system/conglobate-build.service.d/bootstrap-time.conf }
       - copy: { path: appliance/image/10-build.network, into: /usr/lib/systemd/network/10-build.network }
       - exec:
           command: >-
@@ -28,7 +30,7 @@ stages:
       - exec:
           command: touch /etc/resolv.conf
       - exec:
-          command: touch /usr/lib/clock-epoch
+          command: systemctl --root=/ mask chronyd.service
 
 image:
   root: appliance

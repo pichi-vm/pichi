@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Establish build appliance time with NTP then NTS
+Wants=network-online.target
+Requires=systemd-resolved.service
+After=network-online.target systemd-resolved.service
+FailureAction=poweroff
+
+[Service]
+Type=oneshot
+RuntimeDirectory=chrony
+BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf
+# Command-line directives bypass the distribution's chrony.conf.
+# Plain NTP only bootstraps the clock for normal TLS certificate validation.
+ExecStart=/usr/sbin/chronyd -d -q -t 60 -u root "server time.cloudflare.com iburst"
+ExecStart=/usr/sbin/chronyd -d -q -t 60 -u root "server time.cloudflare.com iburst nts"
+TimeoutStartSec=150
+RemainAfterExit=yes
