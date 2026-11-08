@@ -145,18 +145,19 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let pipes = create_build_port_pipes().context("creating build-port pipes")?;
     let console = console_arg(pipes.device_rx_fd, pipes.device_tx_fd);
 
-    let mut argv = build_dillo_args(
-        &pmi_path,
-        bootconfig_path.as_deref(),
-        &gpt_specs,
-        &repo_dir,
-        &cache_dir,
-        &output_dir,
-        Some(&console),
-        memory,
+    let mut argv = BuildLaunch {
+        pmi_path: &pmi_path,
+        bootconfig_path: bootconfig_path.as_deref(),
+        gpt_specs: &gpt_specs,
+        repo_dir: &repo_dir,
+        cache_dir: &cache_dir,
+        output_dir: &output_dir,
+        console: Some(&console),
+        memory_mib: memory,
         cpus,
-        &reqs,
-    );
+        requirements: &reqs,
+    }
+    .args();
     let storage = WritableStorage::prepare(
         reqs.storage.as_ref(),
         args.storage,
@@ -224,72 +225,88 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
 /// Assemble the `dillo` argument vector for the build VM (program name
 /// excluded). The pure core, split out for testing without a boot.
-pub(crate) fn build_dillo_args(
-    pmi_path: &Path,
-    bootconfig_path: Option<&Path>,
-    gpt_specs: &[String],
-    repo_dir: &Path,
-    cache_dir: &Path,
-    output_dir: &Path,
-    console: Option<&str>,
+struct BuildLaunch<'a> {
+    pmi_path: &'a Path,
+    bootconfig_path: Option<&'a Path>,
+    gpt_specs: &'a [String],
+    repo_dir: &'a Path,
+    cache_dir: &'a Path,
+    output_dir: &'a Path,
+    console: Option<&'a str>,
     memory_mib: Option<u32>,
     cpus: Option<u32>,
-    requirements: &Requirements,
-) -> Vec<String> {
-    let bus = requirements.slot.as_argument();
-    let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(pmi_path)];
-    // Use the same native boot configuration as the image run path.
-    if let Some(bootconfig) = bootconfig_path {
-        argv.push("--bootconfig".to_string());
-        argv.push(path_arg(bootconfig));
-    }
-    if let Some(m) = memory_mib {
-        argv.push("--memory".to_string());
-        argv.push(m.to_string());
-    }
-    if let Some(c) = cpus {
-        argv.push("--cpus".to_string());
-        argv.push(c.to_string());
-    }
-    // Virtiofs tags by convention (BUILD.md §2.3).
-    argv.push("--fs".to_string());
-    argv.push(format!(
-        "tag={REPO_TAG},source={},readonly,bus={bus}",
-        repo_dir.key_value_arg()
-    ));
-    argv.push("--fs".to_string());
-    argv.push(format!(
-        "tag={CACHE_TAG},source={},readonly,bus={bus}",
-        cache_dir.key_value_arg()
-    ));
-    argv.push("--fs".to_string());
-    argv.push(format!(
-        "tag={OUTPUT_TAG},source={},bus={bus}",
-        output_dir.key_value_arg()
-    ));
-    argv.push("--console".to_string());
-    argv.push(format!("{},bus={bus}", console.unwrap_or("endpoint=stdio")));
-    // Attach the appliance carapace. Locked build inputs remain in the
-    // cache; the guest output manifest owns their inherited layers.
-    for spec in gpt_specs {
-        argv.push("--gpt".to_string());
-        argv.push(format!("{spec},bus={bus}"));
-    }
-    // User-mode NIC for stages that opt in with `network: true`.
-    if requirements.interfaces.is_empty() {
-        argv.extend(["--net".into(), format!("{USER_NET_SPEC},bus={bus}")]);
-    } else {
-        for interface in requirements.interfaces.values() {
-            argv.extend([
-                "--net".into(),
-                format!(
-                    "{USER_NET_SPEC},bus={}",
-                    interface.slot.unwrap_or(requirements.slot).as_argument()
-                ),
-            ]);
+    requirements: &'a Requirements,
+}
+
+impl BuildLaunch<'_> {
+    fn args(self) -> Vec<String> {
+        let Self {
+            pmi_path,
+            bootconfig_path,
+            gpt_specs,
+            repo_dir,
+            cache_dir,
+            output_dir,
+            console,
+            memory_mib,
+            cpus,
+            requirements,
+        } = self;
+        let bus = requirements.slot.as_argument();
+        let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(pmi_path)];
+        // Use the same native boot configuration as the image run path.
+        if let Some(bootconfig) = bootconfig_path {
+            argv.push("--bootconfig".to_string());
+            argv.push(path_arg(bootconfig));
         }
+        if let Some(m) = memory_mib {
+            argv.push("--memory".to_string());
+            argv.push(m.to_string());
+        }
+        if let Some(c) = cpus {
+            argv.push("--cpus".to_string());
+            argv.push(c.to_string());
+        }
+        // Virtiofs tags by convention (BUILD.md §2.3).
+        argv.push("--fs".to_string());
+        argv.push(format!(
+            "tag={REPO_TAG},source={},readonly,bus={bus}",
+            repo_dir.key_value_arg()
+        ));
+        argv.push("--fs".to_string());
+        argv.push(format!(
+            "tag={CACHE_TAG},source={},readonly,bus={bus}",
+            cache_dir.key_value_arg()
+        ));
+        argv.push("--fs".to_string());
+        argv.push(format!(
+            "tag={OUTPUT_TAG},source={},bus={bus}",
+            output_dir.key_value_arg()
+        ));
+        argv.push("--console".to_string());
+        argv.push(format!("{},bus={bus}", console.unwrap_or("endpoint=stdio")));
+        // Attach the appliance carapace. Locked build inputs remain in the
+        // cache; the guest output manifest owns their inherited layers.
+        for spec in gpt_specs {
+            argv.push("--gpt".to_string());
+            argv.push(format!("{spec},bus={bus}"));
+        }
+        // User-mode NIC for stages that opt in with `network: true`.
+        if requirements.interfaces.is_empty() {
+            argv.extend(["--net".into(), format!("{USER_NET_SPEC},bus={bus}")]);
+        } else {
+            for interface in requirements.interfaces.values() {
+                argv.extend([
+                    "--net".into(),
+                    format!(
+                        "{USER_NET_SPEC},bus={}",
+                        interface.slot.unwrap_or(requirements.slot).as_argument()
+                    ),
+                ]);
+            }
+        }
+        argv
     }
-    argv
 }
 
 /// dillo `--net` value for a user-mode (NAT + DHCP) interface — the only kind
@@ -304,8 +321,7 @@ pub const DEFAULT_BUILD_IMAGE: &str = "ghcr.io/pichi-vm/pichi-build:latest";
 /// Resolve the build appliance: `-b`/`--build-image`, else
 /// [`DEFAULT_BUILD_IMAGE`].
 fn resolve_build_image(flag: Option<&str>) -> String {
-    flag.map(str::to_owned)
-        .unwrap_or_else(|| DEFAULT_BUILD_IMAGE.to_owned())
+    flag.map_or_else(|| DEFAULT_BUILD_IMAGE.to_owned(), str::to_owned)
 }
 
 /// Pull the resolved appliance when it is not already cached.
@@ -359,7 +375,7 @@ pub(crate) fn canonicalize_reference(s: &str) -> std::borrow::Cow<'_, str> {
     };
     let name = &s[..at];
     let digest = &s[at..]; // includes '@'
-    let search_from = name.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let search_from = name.rfind('/').map_or(0, |i| i + 1);
     let Some(rel_colon) = name[search_from..].find(':') else {
         return std::borrow::Cow::Borrowed(s);
     };
@@ -473,18 +489,7 @@ mod tests {
     #[tokio::test]
     async fn argv_has_pmi_repo_cache_output_console_and_one_gpt() {
         let console = console_arg(3, 4);
-        let argv = build_dillo_args(
-            Path::new("/cache/blobs/sha256/deadbeef"),
-            None,
-            &["partitions=[[path=/c,partuuid=11111111-2222-3333-4444-555555555555,typeguid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,label=c:x]]".to_string()],
-            Path::new("/proj"),
-            Path::new("/var/cache/pichi"),
-            Path::new("/run/out"),
-            Some(&console),
-            Some(4096),
-            Some(8),
-            &Requirements::default(),
-        );
+        let argv = BuildLaunch { pmi_path: Path::new("/cache/blobs/sha256/deadbeef"), bootconfig_path: None, gpt_specs: &["partitions=[[path=/c,partuuid=11111111-2222-3333-4444-555555555555,typeguid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,label=c:x]]".to_string()], repo_dir: Path::new("/proj"), cache_dir: Path::new("/var/cache/pichi"), output_dir: Path::new("/run/out"), console: Some(&console), memory_mib: Some(4096), cpus: Some(8), requirements: &Requirements::default() }.args();
 
         // --pmi <path>
         let pmi_i = argv.iter().position(|a| a == "--pmi").unwrap();
@@ -569,18 +574,19 @@ mod tests {
         }))
         .unwrap();
         let path = Path::new("/fixture");
-        let argv = build_dillo_args(
-            path,
-            None,
-            &[],
-            path,
-            path,
-            path,
-            None,
-            None,
-            None,
-            &requirements,
-        );
+        let argv = BuildLaunch {
+            pmi_path: path,
+            bootconfig_path: None,
+            gpt_specs: &[],
+            repo_dir: path,
+            cache_dir: path,
+            output_dir: path,
+            console: None,
+            memory_mib: None,
+            cpus: None,
+            requirements: &requirements,
+        }
+        .args();
         assert!(!argv.iter().any(|arg| arg == "--bus"));
         let mut networks = Vec::new();
         for pair in argv.windows(2) {
@@ -614,18 +620,19 @@ mod tests {
             r#"/home/test/a "quoted", [project]"#,
         ] {
             let path = Path::new(path);
-            let argv = build_dillo_args(
-                path,
-                None,
-                &[],
-                path,
-                path,
-                path,
-                None,
-                None,
-                None,
-                &Requirements::default(),
-            );
+            let argv = BuildLaunch {
+                pmi_path: path,
+                bootconfig_path: None,
+                gpt_specs: &[],
+                repo_dir: path,
+                cache_dir: path,
+                output_dir: path,
+                console: None,
+                memory_mib: None,
+                cpus: None,
+                requirements: &Requirements::default(),
+            }
+            .args();
             for pair in argv.windows(2).filter(|pair| pair[0] == "--fs") {
                 assert_eq!(parse_fs(&pair[1]).source, path);
             }
@@ -634,18 +641,19 @@ mod tests {
 
     #[tokio::test]
     async fn argv_omits_resource_flags_when_unset() {
-        let argv = build_dillo_args(
-            Path::new("/p.pmi"),
-            None,
-            &[],
-            Path::new("/proj"),
-            Path::new("/cache"),
-            Path::new("/out"),
-            None,
-            None,
-            None,
-            &Requirements::default(),
-        );
+        let argv = BuildLaunch {
+            pmi_path: Path::new("/p.pmi"),
+            bootconfig_path: None,
+            gpt_specs: &[],
+            repo_dir: Path::new("/proj"),
+            cache_dir: Path::new("/cache"),
+            output_dir: Path::new("/out"),
+            console: None,
+            memory_mib: None,
+            cpus: None,
+            requirements: &Requirements::default(),
+        }
+        .args();
         assert!(!argv.iter().any(|a| a == "--memory"));
         assert!(!argv.iter().any(|a| a == "--cpus"));
         assert!(!argv.iter().any(|a| a == "--gpt"));
@@ -655,18 +663,19 @@ mod tests {
 
     #[tokio::test]
     async fn argv_passes_bootconfig_when_present() {
-        let argv = build_dillo_args(
-            Path::new("/p.pmi"),
-            Some(Path::new("/cache/blobs/sha256/bootconfigdead")),
-            &[],
-            Path::new("/proj"),
-            Path::new("/cache"),
-            Path::new("/out"),
-            None,
-            None,
-            None,
-            &Requirements::default(),
-        );
+        let argv = BuildLaunch {
+            pmi_path: Path::new("/p.pmi"),
+            bootconfig_path: Some(Path::new("/cache/blobs/sha256/bootconfigdead")),
+            gpt_specs: &[],
+            repo_dir: Path::new("/proj"),
+            cache_dir: Path::new("/cache"),
+            output_dir: Path::new("/out"),
+            console: None,
+            memory_mib: None,
+            cpus: None,
+            requirements: &Requirements::default(),
+        }
+        .args();
         let i = argv
             .iter()
             .position(|a| a == "--bootconfig")
@@ -761,18 +770,19 @@ mod tests {
         use std::time::Duration;
 
         let console = console_arg(5, 6);
-        let argv = build_dillo_args(
-            Path::new("/cache/blobs/sha256/deadbeef"),
-            None,
-            &[],
-            Path::new("/proj"),
-            Path::new("/var/cache/pichi"),
-            Path::new("/run/out"),
-            Some(&console),
-            None,
-            None,
-            &Requirements::default(),
-        );
+        let argv = BuildLaunch {
+            pmi_path: Path::new("/cache/blobs/sha256/deadbeef"),
+            bootconfig_path: None,
+            gpt_specs: &[],
+            repo_dir: Path::new("/proj"),
+            cache_dir: Path::new("/var/cache/pichi"),
+            output_dir: Path::new("/run/out"),
+            console: Some(&console),
+            memory_mib: None,
+            cpus: None,
+            requirements: &Requirements::default(),
+        }
+        .args();
         let fs_values: Vec<&String> = argv
             .iter()
             .enumerate()
