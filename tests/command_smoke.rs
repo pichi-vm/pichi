@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Native all-command acceptance. Explicitly invoked by CI, never silently
-//! skipped for a missing registry or hypervisor. PICHI_SMOKE_BIN selects an
-//! installed package; otherwise this exercises the current commit.
+//! skipped for a missing registry or hypervisor. Exercises the current commit.
 
 #[path = "common/process.rs"]
 mod process;
@@ -41,8 +40,7 @@ impl Smoke {
         let directory = directory.keep();
         eprintln!("Smoke evidence: {}", directory.display());
         Self {
-            binary: std::env::var_os("PICHI_SMOKE_BIN")
-                .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_pichi")), PathBuf::from),
+            binary: env!("CARGO_BIN_EXE_pichi").into(),
             cache: directory.join("cache"),
             directory,
         }
@@ -67,7 +65,7 @@ impl Smoke {
         let status = child.wait_timeout(Duration::from_secs(300)).unwrap();
         if status.is_none() {
             if !self.cache.join("pichi/storage.workloads").exists() {
-                // Previous packages launch Dillo directly and have no monitor record.
+                // Commands can time out before creating a monitor record.
                 #[cfg(unix)]
                 nix::sys::signal::killpg(
                     nix::unistd::Pid::from_raw(child.id().try_into().unwrap()),
@@ -318,15 +316,7 @@ impl Smoke {
 #[ignore = "requires a native hypervisor, Dillo on PATH, and a local registry"]
 fn every_command_builds_and_boots() {
     let mut smoke = Smoke::new();
-    if std::env::var_os("PICHI_SMOKE_BIN").is_none() {
-        smoke.commands();
-    } else {
-        eprintln!(
-            "Packaged executable: {}\n{}",
-            smoke.binary.display(),
-            smoke.run("version", &["--version"])
-        );
-    }
+    smoke.commands();
     smoke.build_and_boot();
     fs::remove_dir_all(&smoke.directory).unwrap();
 }

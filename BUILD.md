@@ -612,21 +612,10 @@ all three manifest operations, and both system operations. The build copies a
 known payload into a derived bootable image; a guest service verifies the payload
 and powers off. The test requires its success marker and a successful exit.
 
-Build compatibility combinations, each with independent test storage:
-
-| Executable | Published, digest-pinned appliance | Candidate, when rebuilt |
-| --- | --- | --- |
-| Current commit, every platform | Build and boot | Build and boot |
-| Installed Pichi package, both Linux platforms | Build and boot | Build and boot |
-
-Windows/macOS package combinations are deferred until native packaging exists.
-The test logs executable versions and appliance digests. `PICHI_SMOKE_BIN` selects
-a packaged executable; otherwise Cargo's current executable is used.
-`PATH` selects native Dillo; `PICHI_TEST_BUILD_IMAGE_LAYOUT` selects a
-candidate OCI layout; omitting it uses `PICHI_TEST_PREVIOUS_BUILD_IMAGE`, pinned from the change base
-by CI (or `DEFAULT_BUILD_IMAGE` for local runs). Packaged executable combinations
-exercise update, build and run; full command coverage uses the current executable. Both Linux runners
-install Pichi and Dillo from the PPA. Windows and macOS build native Dillo.
+The current commit runs against the candidate when rebuilt, otherwise the
+published appliance. It also reports compatibility with the previous appliance.
+`PATH` selects native Dillo; Linux installs Dillo from the PPA, while Windows
+and macOS build it natively. The smoke test always uses Cargo's Pichi executable.
 
 Current Pichi against the candidate (or published appliance when no candidate
 is built) is required. Other combinations report failures as warnings and a
@@ -663,8 +652,7 @@ cargo test --locked --test command_smoke -- \
 ```
 
 Acceptance for CI changes: all four platforms pass all command checks; both
-required current-version build/boot paths pass; Linux reports both executable
-versions; compatibility failures are visible but non-blocking and explicitly
+required current-version build/boot paths pass; compatibility failures are visible but non-blocking and explicitly
 skippable; required candidate/test failures block publication; successful main
 candidates advance `:latest`, the Pichi default; PRs never publish; skipped
 candidate steps do not skip platform tests; native fail-fast cancels sibling work.

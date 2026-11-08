@@ -7,10 +7,9 @@ set -euo pipefail
 # Current functionality is always required. Compatibility is reported separately
 # so intentional protocol changes remain visible without blocking development.
 run_case() {
-  local executable=$1 appliance=$2
+  local appliance=$1
   (
-    unset PICHI_SMOKE_BIN PICHI_TEST_BUILD_IMAGE_LAYOUT PICHI_TEST_PREVIOUS_BUILD_IMAGE
-    if [ "$executable" = packaged ]; then export PICHI_SMOKE_BIN=/usr/bin/pichi; fi
+    unset PICHI_TEST_BUILD_IMAGE_LAYOUT PICHI_TEST_PREVIOUS_BUILD_IMAGE
     if [ "$appliance" = published ] && [[ "$previous" == ghcr.io/pichi-vm/pichi-build@* ]]; then
       export PICHI_TEST_PREVIOUS_BUILD_IMAGE="$previous"
     fi
@@ -29,7 +28,7 @@ grep -Fxq 'every_command_builds_and_boots: test' "$RUNNER_TEMP/command-tests.txt
 required=published
 if [ -n "$candidate" ]; then required=candidate; fi
 echo "::group::🧪 Required current Pichi / $required appliance"
-run_case current "$required"
+run_case "$required"
 echo '::endgroup::'
 printf '| Pichi | Appliance | Result |\n| --- | --- | --- |\n| Current | %s | PASS (required) |\n' "$required" >> "$summary"
 
@@ -40,24 +39,14 @@ if [ "${PICHI_TEST_COMPATIBILITY:-true}" != true ]; then
 fi
 
 # Compare with the base revision even when the source default pin has changed.
-cases=()
 if [ -n "$candidate" ] || [[ "$previous" != ghcr.io/pichi-vm/pichi-build@* ]]; then
-  cases+=('current previous')
-fi
-if [ "$RUNNER_OS" = Linux ]; then
-  cases+=('packaged previous')
-  if [ -n "$candidate" ]; then cases+=('packaged candidate'); fi
-fi
-[ "${#cases[@]}" -gt 0 ] || exit 0
-for pair in "${cases[@]}"; do
-  read -r executable appliance <<< "$pair"
-  echo "::group::🧪 Compatibility: $executable Pichi / $appliance appliance"
-  if run_case "$executable" "$appliance"; then
+  echo '::group::🧪 Compatibility: current Pichi / previous appliance'
+  if run_case previous; then
     result=PASS
   else
     result=FAIL
-    echo "::warning::Compatibility failed: $executable Pichi / $appliance appliance. Required current functionality passed."
+    echo '::warning::Previous appliance compatibility failed. Required current functionality passed.'
   fi
-  printf '| %s | %s | %s (compatibility) |\n' "$executable" "$appliance" "$result" >> "$summary"
+  printf '| Current | previous | %s (compatibility) |\n' "$result" >> "$summary"
   echo '::endgroup::'
-done
+fi

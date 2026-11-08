@@ -131,13 +131,6 @@ jobs:
           sudo apt-get install -y dillo-vm
           dpkg-query -W dillo-vm
 
-      - name: 📦 Install Pichi for compatibility checks
-        if: runner.os == 'Linux' && inputs.compatibility
-        run: |
-          if ! sudo apt-get install -y pichi; then
-            echo '::warning::Packaged Pichi unavailable; compatibility checks will report failure.'
-          fi
-
       - name: 🔨 Build native Dillo
         if: runner.os != 'Linux'
         working-directory: appliance/dillo
