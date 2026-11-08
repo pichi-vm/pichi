@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Pichi build repository
+
+[Mount]
+What=repo
+Where=/run/pichi/repo
+Type=virtiofs
+Options=ro

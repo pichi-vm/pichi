@@ -17,6 +17,9 @@ stages:
             dnf -y --setopt=install_weak_deps=False --exclude='kernel*' install
             conglobate pichi-lsm chrony
           network: true
+      - copy: { path: appliance/image/run-pichi-repo.mount, into: /usr/lib/systemd/system/run-pichi-repo.mount }
+      - copy: { path: appliance/image/run-pichi-cache.mount, into: /usr/lib/systemd/system/run-pichi-cache.mount }
+      - copy: { path: appliance/image/run-pichi-output.mount, into: /usr/lib/systemd/system/run-pichi-output.mount }
       - copy: { path: appliance/image/pichi-lsm.conf, into: /etc/systemd/system/conglobate-build.service.d/pichi-lsm.conf }
       - copy: { path: appliance/image/bootstrap-time.service, into: /etc/systemd/system/bootstrap-time.service }
       - copy: { path: appliance/image/bootstrap-time.conf, into: /etc/systemd/system/conglobate-build.service.d/bootstrap-time.conf }
@@ -24,7 +27,6 @@ stages:
       - exec:
           command: >-
             systemctl --root=/ enable conglobate-build.service
-            run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount
             systemd-networkd.service systemd-resolved.service
             systemd-networkd-wait-online.service
       - exec:

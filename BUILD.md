@@ -199,9 +199,9 @@ files beside it. Build identity is carried by the manifest annotations.
 ### 2.6 Pichi builds the appliance
 
 This repository builds the [appliance](appliance/) from a locked Fedora image
-and signed Conglobate and LSM packages. Conglobate owns the guest command,
-build service and mount units; LSM owns the policy, loader and loader service.
-Pichi owns image composition and appliance-specific configuration.
+and signed Conglobate and LSM packages. Conglobate owns the guest command and
+build service; LSM owns the policy, loader and loader service.
+Pichi owns image composition, transport mounts and appliance-specific configuration.
 
 Fedora and Ubuntu build their own base images in their own repositories using
 `pichi build`. The command launches the build appliance the same way
@@ -517,8 +517,8 @@ alongside successful VM exit before the host imports any output.
 | --------- | ---- |
 | **pichi** (`pichi build`) | Thin launcher: dirs, build-port CBOR, dillo launch, import OCI on success |
 | **dillo** | VMM + virtiofs + named console wiring |
-| **Pichi build appliance** | Image composition, appliance configuration and package-unit enablement |
-| **Conglobate binary / lib** | Plans, locks, build execution, OCI layout, image-manifest build annotations, guest command, build service and mount units (see its DESIGN.md) |
+| **Pichi build appliance** | Image composition, transport mounts, appliance configuration and package-unit enablement |
+| **Conglobate binary / lib** | Plans, locks, build execution, OCI layout, image-manifest build annotations, guest command and build service (see its DESIGN.md) |
 | **LSM package** | Labeling policy, loader and loader service |
 | **Fedora / Ubuntu images** | Each repository builds its own base image with the Pichi command |
 
