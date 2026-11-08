@@ -129,8 +129,8 @@ impl Builds {
         let tag = format!("qualification.local/{name}:1");
         assert!(
             self.execute(&repo, &tag),
-            "build failed: {}",
-            repo.join("build.log").display()
+            "build failed:\n{}",
+            fs::read_to_string(repo.join("build.log")).unwrap()
         );
         let image = self.image(&tag);
         fs::write(
