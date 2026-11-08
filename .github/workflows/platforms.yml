@@ -185,6 +185,17 @@ jobs:
           cargo test --locked -p pichi --lib native_monitor_launch_and_async_control -- --ignored --nocapture
           cargo test --locked -p pichi --test cmd_run build_channel_preserves_guest_first_exchange -- --ignored --nocapture
 
+      - name: ⚙️ Create private Windows appliance cache
+        if: inputs.build-appliance && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $cache = Join-Path $env:RUNNER_TEMP 'appliance-image-cache'
+          New-Item -ItemType Directory -Path $cache -ErrorAction Stop | Out-Null
+          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+          $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)")
+          Set-Acl -LiteralPath $cache -AclObject $acl
+
       - name: 🔨 Build candidate appliance
         if: inputs.build-appliance
         env:
