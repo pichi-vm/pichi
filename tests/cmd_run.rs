@@ -816,18 +816,22 @@ async fn vm_timeout_cleanup_stops_workloads_after_client_exit() {
 
 #[tokio::test]
 async fn writable_storage_lives_through_the_child_and_is_cleaned_on_exit() {
-    for (requirements, expected_bus) in [
+    for (requirements, expected_bus, expected_mib) in [
+        (serde_json::json!({}), dillo_config::Bus::Mmio, 1024),
         (
             serde_json::json!({"storage":{"required":1,"recommended":2}}),
             dillo_config::Bus::Mmio,
+            2,
         ),
         (
             serde_json::json!({"slot":"pci","storage":{"required":1,"recommended":2}}),
             dillo_config::Bus::Pci,
+            2,
         ),
         (
             serde_json::json!({"slot":"pci","storage":{"required":1,"recommended":2,"slot":"mmio"}}),
             dillo_config::Bus::Mmio,
+            2,
         ),
     ] {
         for exit in [0, 7] {
@@ -846,7 +850,7 @@ async fn writable_storage_lives_through_the_child_and_is_cleaned_on_exit() {
             command.assert().code(exit);
             assert_eq!(
                 std::fs::read_to_string(tmp.path().join("storage-capacity.txt")).unwrap(),
-                (2 * 1024 * 1024).to_string()
+                (expected_mib * 1024 * 1024).to_string()
             );
             let path = std::fs::read_to_string(tmp.path().join("storage-path.txt")).unwrap();
             assert!(!Path::new(&path).exists());
