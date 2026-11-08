@@ -152,7 +152,7 @@ jobs:
           test "$(cat /proc/sys/vm/nr_hugepages)" -ge "$want"
 
       - name: 🔎 Check code with Clippy
-        run: cargo clippy --locked --workspace --all-targets
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: 🧪 Run workspace tests
         env:
