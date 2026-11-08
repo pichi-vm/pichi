@@ -42,7 +42,6 @@ try {
                         'MADRILLO_BIN',
                         'RUNNER_TEMP', 'CI', 'GITHUB_ACTIONS',
                         'RUNNER_TRACKING_ID', 'PICHI_TEST_REGISTRY',
-                        'PICHI_TEST_BUILD_IMAGE_LAYOUT',
                         'PICHI_TEST_ROOT_FILESYSTEM',
                         'PICHI_TEST_GUEST_ARMA', 'PICHI_TEST_REPLACEMENT_CORIUM')) {
         $value = [Environment]::GetEnvironmentVariable($name)
