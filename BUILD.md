@@ -619,8 +619,7 @@ and macOS build it natively. The smoke test always uses Cargo's Pichi executable
 
 Current Pichi against the candidate (or published appliance when no candidate
 is built) is required. Other combinations report failures as warnings and a
-result table without blocking CI. The `skip-compatibility` PR label or manual
-`compatibility: false` input skips only those additional combinations.
+result table without blocking CI. Compatibility reporting always runs.
 CI resolves the base revision's appliance reference to a digest before testing,
 so advancing `:latest` cannot change the previous-appliance axis mid-run.
 
@@ -652,8 +651,7 @@ cargo test --locked --test command_smoke -- \
 ```
 
 Acceptance for CI changes: all four platforms pass all command checks; both
-required current-version build/boot paths pass; compatibility failures are visible but non-blocking and explicitly
-skippable; required candidate/test failures block publication; successful main
+required current-version build/boot paths pass; compatibility failures are visible but non-blocking; required candidate/test failures block publication; successful main
 candidates advance `:latest`, the Pichi default; PRs never publish; skipped
 candidate steps do not skip platform tests; native fail-fast cancels sibling work.
 Compare ordinary and candidate runs separately, recording elapsed workflow time,
