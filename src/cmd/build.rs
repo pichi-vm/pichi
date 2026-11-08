@@ -158,7 +158,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         &reqs,
     );
     let storage = WritableStorage::prepare(
-        reqs.storage.as_ref(),
+        Some(&reqs.storage),
         args.storage,
         None,
         &record.storage_directory(),
@@ -166,12 +166,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     if let Some(backing) = &storage {
         argv.extend([
             "--blk".into(),
-            backing.argument(
-                reqs.storage
-                    .as_ref()
-                    .and_then(|r| r.slot)
-                    .unwrap_or(reqs.slot),
-            ),
+            backing.argument(reqs.storage.slot.unwrap_or(reqs.slot)),
         ]);
     }
 

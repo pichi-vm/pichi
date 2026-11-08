@@ -57,6 +57,10 @@ set: available CPU parallelism, allocatable guest memory, or free space on the
 storage backing filesystem. Linux guest memory uses the available, unreserved
 2-MiB hugepage pool; other hosts use available physical memory, rounded to 2 MiB.
 
+When no storage size is specified, Pichi recommends 1024 MiB, raised to any
+image-required minimum. Explicit sizes and existing retained disk sizes take
+precedence; the default recommendation does not impose a minimum.
+
 Pichi attaches one unformatted writable block device alongside the read-only
 image. The distribution decides how to format and mount it. Disposable storage
 is removed after the VM exits. To retain it across runs, provide a raw file:

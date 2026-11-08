@@ -88,7 +88,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
                 build_dillo_args(&manifest, &blob_store, cpus, memory, &requirements).await?;
             let record = Records::open(&layout.graphroot)?.reserve(vec![digest])?;
             let storage = WritableStorage::prepare(
-                requirements.storage.as_ref(),
+                Some(&requirements.storage),
                 args.storage.or(config.run.storage_mib),
                 args.storage_file
                     .as_deref()
@@ -98,13 +98,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
             if let Some(backing) = &storage {
                 dillo_args.extend([
                     "--blk".into(),
-                    backing.argument(
-                        requirements
-                            .storage
-                            .as_ref()
-                            .and_then(|r| r.slot)
-                            .unwrap_or(requirements.slot),
-                    ),
+                    backing.argument(requirements.storage.slot.unwrap_or(requirements.slot)),
                 ]);
             }
             Ok((record, dillo_args, storage))
