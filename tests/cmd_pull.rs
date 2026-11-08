@@ -43,15 +43,8 @@ fn pichi_test_registry() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Repo-base prefix tests append their per-test name to. Preferred: explicit
-/// `PICHI_TEST_REPO_BASE` (e.g. `ghcr.io/shelbyapichi/pichi-ci-test` for the
-/// GHCR CI job). Fallback for the legacy zot-style setup: `{registry}/test`.
+/// Repository prefix for the local registry tests.
 fn test_repo_base() -> Option<String> {
-    if let Ok(base) = std::env::var("PICHI_TEST_REPO_BASE") {
-        if !base.is_empty() {
-            return Some(base);
-        }
-    }
     pichi_test_registry().map(|reg| format!("{reg}/test"))
 }
 
