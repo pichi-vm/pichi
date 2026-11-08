@@ -206,10 +206,6 @@ impl Smoke {
     }
 
     fn build_and_boot(&self) {
-        let previous = std::env::var("PICHI_TEST_PREVIOUS_BUILD_IMAGE")
-            .ok()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| pichi::cmd::build::DEFAULT_BUILD_IMAGE.to_owned());
         if let Some(layout) = std::env::var_os("PICHI_TEST_BUILD_IMAGE_LAYOUT") {
             self.run(
                 "load-appliance",
@@ -221,10 +217,17 @@ impl Smoke {
                 ],
             );
         } else {
-            self.run("pull-appliance", &["pull", &previous]);
+            self.run(
+                "pull-appliance",
+                &["pull", pichi::cmd::build::DEFAULT_BUILD_IMAGE],
+            );
             self.run(
                 "tag-appliance",
-                &["tag", &previous, "qualification.local/builder:smoke"],
+                &[
+                    "tag",
+                    pichi::cmd::build::DEFAULT_BUILD_IMAGE,
+                    "qualification.local/builder:smoke",
+                ],
             );
         }
         eprintln!(

@@ -358,7 +358,7 @@ OCI appliance layout for cross-project qualification; otherwise the smoke
 uses the shipping default. Staged plans require an appliance built with the
 matching Conglobate engine; `--build-image` selects it explicitly. The default image is
 `ghcr.io/pichi-vm/pichi-build:latest`. CI advances this tag after required
-current-version tests pass, even when previous-version compatibility fails.
+current-version tests pass.
 The pinned Conglobate Git library requires `version: 1` in plans and the flat
 digest lock shown above.
 The appliance also includes scute compaction, journal-free ext4 creation and
@@ -597,7 +597,7 @@ candidate builds from changes to appliance inputs, dependency pins and the build
 protocol. This short initial gate avoids a separate routing job or artifact
 polling. Each native platform builds its own candidate only when needed (or with
 manual `rebuild-appliance`). Candidates stay on the runner for command and
-compatibility tests, avoiding the known large-artifact download stall on Avrea.
+build tests, avoiding the known large-artifact download stall on Avrea.
 There are no separate appliance jobs or redundant Fedora qualification builds.
 Only the two Linux jobs upload qualified candidates, and only on main, for the
 publication job. The dependency graph is `checks → platforms → publish`.
@@ -613,18 +613,12 @@ known payload into a derived bootable image; a guest service verifies the payloa
 and powers off. The test requires its success marker and a successful exit.
 
 The current commit runs against the candidate when rebuilt, otherwise the
-published appliance. It also reports compatibility with the previous appliance.
+published default appliance. Both paths are required to pass.
 `PATH` selects native Dillo; Linux installs Dillo from the PPA, while Windows
 and macOS build it natively. The smoke test always uses Cargo's Pichi executable.
 
-Current Pichi against the candidate (or published appliance when no candidate
-is built) is required. Other combinations report failures as warnings and a
-result table without blocking CI. Compatibility reporting always runs.
-CI resolves the base revision's appliance reference to a digest before testing,
-so advancing `:latest` cannot change the previous-appliance axis mid-run.
-
 `publish` runs only on main after rebuilt candidates pass required native tests.
-Compatibility failures never block publication. It publishes the combined index
+It publishes the combined index
 to `ghcr.io/pichi-vm/pichi-build:latest`, pulls into fresh storage, compares both platform
 manifest digests with the candidates, and verifies the retrieved index digest.
 Publication allows up to six pull attempts, ten seconds apart, for registry
@@ -651,7 +645,7 @@ cargo test --locked --test command_smoke -- \
 ```
 
 Acceptance for CI changes: all four platforms pass all command checks; both
-required current-version build/boot paths pass; compatibility failures are visible but non-blocking; required candidate/test failures block publication; successful main
+required current-version build/boot paths pass; required candidate/test failures block publication; successful main
 candidates advance `:latest`, the Pichi default; PRs never publish; skipped
 candidate steps do not skip platform tests; native fail-fast cancels sibling work.
 Compare ordinary and candidate runs separately, recording elapsed workflow time,
