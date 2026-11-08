@@ -9,7 +9,7 @@ Homepage: https://github.com/pichi-vm/pichi
 
 Package: pichi
 Architecture: amd64 arm64
-Depends: ${shlibs:Depends}, ${misc:Depends}, dillo-vm, ca-certificates
+Depends: ${shlibs:Depends}, ${misc:Depends}, dillo-vm, madrillo, ca-certificates
 Description: manage and launch pichi VM images
  Pichi manages virtual machine images as OCI artifacts and launches them
  using dillo. Guest images are obtained separately.
