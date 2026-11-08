@@ -39,7 +39,7 @@ try {
     foreach ($name in @('PATH', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP',
                         'CARGO_HOME', 'CARGO_TARGET_DIR', 'RUSTUP_HOME', 'CARGO_NET_GIT_FETCH_WITH_CLI',
                         'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'APPDATA',
-                        'MADRILLO_BIN', 'PICHI_SMOKE_BIN',
+                        'MADRILLO_BIN',
                         'PICHI_TEST_PREVIOUS_BUILD_IMAGE', 'RUNNER_TEMP', 'CI', 'GITHUB_ACTIONS',
                         'RUNNER_TRACKING_ID', 'PICHI_TEST_REGISTRY',
                         'PICHI_TEST_REPO_BASE', 'PICHI_TEST_BUILD_IMAGE_LAYOUT',

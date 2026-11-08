@@ -275,19 +275,17 @@ impl Smoke {
             "guest did not verify built content:\n{boot}"
         );
         assert!(!boot.contains("Kernel panic"), "{boot}");
-        if std::env::var_os("PICHI_SMOKE_BIN").is_none() {
-            let id = fs::read_to_string(self.directory.join("run.stderr.log"))
-                .unwrap()
-                .lines()
-                .find_map(|line| uuid::Uuid::parse_str(line).ok())
-                .expect("foreground run prints its workload ID")
-                .to_string();
-            assert!(self.run("ps", &["ps"]).contains(&id));
-            assert!(self.run("logs", &["logs", &id]).contains("PICHI_SMOKE_OK"));
-            assert_eq!(self.run("wait", &["wait", &id]).trim(), "0");
-            assert_eq!(self.run("stop", &["stop", &id]).trim(), id);
-            self.run("attach-exited", &["attach", &id]);
-        }
+        let id = fs::read_to_string(self.directory.join("run.stderr.log"))
+            .unwrap()
+            .lines()
+            .find_map(|line| uuid::Uuid::parse_str(line).ok())
+            .expect("foreground run prints its workload ID")
+            .to_string();
+        assert!(self.run("ps", &["ps"]).contains(&id));
+        assert!(self.run("logs", &["logs", &id]).contains("PICHI_SMOKE_OK"));
+        assert_eq!(self.run("wait", &["wait", &id]).trim(), "0");
+        assert_eq!(self.run("stop", &["stop", &id]).trim(), id);
+        self.run("attach-exited", &["attach", &id]);
     }
 }
 
