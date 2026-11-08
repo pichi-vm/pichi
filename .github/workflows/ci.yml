@@ -32,7 +32,6 @@ jobs:
     timeout-minutes: 10
     outputs:
       appliance: ${{ steps.changes.outputs.appliance }}
-      previous: ${{ steps.changes.outputs.previous }}
     steps:
       - name: 📥 Check out source
         uses: actions/checkout@v7.0.1
@@ -57,18 +56,6 @@ jobs:
             base=$GITHUB_SHA^
             head=$GITHUB_SHA
           fi
-          previous=$(git show "$base:src/cmd/build.rs" | sed -n 's/^pub const DEFAULT_BUILD_IMAGE: &str = "\(.*\)";$/\1/p')
-          if [ "$previous" = ghcr.io/pichi-vm/pichi-build:latest ]; then
-            token=$(curl --fail --silent --show-error 'https://ghcr.io/token?service=ghcr.io&scope=repository:pichi-vm/pichi-build:pull' | jq -er .token)
-            digest=$(curl --fail --silent --show-error --head \
-              -H "Authorization: Bearer $token" \
-              -H 'Accept: application/vnd.oci.image.index.v1+json' \
-              https://ghcr.io/v2/pichi-vm/pichi-build/manifests/latest \
-              | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2}')
-            previous="ghcr.io/pichi-vm/pichi-build@$digest"
-          fi
-          [[ "$previous" =~ ^ghcr.io/.+@sha256:[0-9a-f]{64}$ ]]
-          echo "previous=$previous" >> "$GITHUB_OUTPUT"
           changed=$(git diff --name-only "$base" "$head" -- \
             appliance/image deps/pichi-launch \
             Cargo.toml Cargo.lock .gitmodules 'src/cmd/build*.rs' src/cmd/build \
@@ -95,7 +82,6 @@ jobs:
     uses: ./.github/workflows/platforms.yml
     with:
       build-appliance: ${{ needs.checks.outputs.appliance == 'true' }}
-      previous-appliance: ${{ needs.checks.outputs.previous }}
 
   publish:
     name: 🚀 publish

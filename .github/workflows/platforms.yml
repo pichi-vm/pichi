@@ -7,10 +7,6 @@ on:
         description: Build and test a local candidate appliance on each platform
         type: boolean
         default: false
-      previous-appliance:
-        description: Digest-pinned appliance from the change base
-        type: string
-        required: true
 
 permissions:
   contents: read
@@ -23,7 +19,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   NIGHTLY: nightly-2026-07-06
-  PICHI_TEST_PREVIOUS_BUILD_IMAGE: ${{ inputs.previous-appliance }}
 
 jobs:
   test:
@@ -213,7 +208,7 @@ jobs:
           "${pichi[@]}" save qualification.local/appliance:build -o "$RUNNER_TEMP/appliance-layout"
           echo "PICHI_TEST_BUILD_IMAGE_LAYOUT=$RUNNER_TEMP/appliance-layout" >> "$GITHUB_ENV"
 
-      - name: 🧪 Exercise commands and build compatibility
+      - name: 🧪 Exercise commands and build
         env:
           CARGO_BUILD_RUSTFLAGS: "-D warnings"
           ZOT_ASSET: ${{ matrix.zot_asset }}
