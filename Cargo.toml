@@ -27,7 +27,7 @@ devmap-verity.workspace = true
 conglobate = { workspace = true, features = ["yaml"] }
 pichi-launch.workspace = true
 dillo-config.workspace = true
-madrillo = { git = "https://github.com/pichi-vm/madrillo", rev = "013a17ba77bf1841770f39662ab8f587ef8ddcfa", default-features = false }
+madrillo = { git = "https://github.com/pichi-vm/madrillo", branch = "main", default-features = false }
 interprocess = { version = "=2.4.7", features = ["tokio"] }
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true
@@ -56,15 +56,15 @@ ruzstd = "0.9.1"
 crossterm = { version = "0.29", default-features = false, features = ["windows"] }
 
 # Optional guest Corium binaries for `vm-tests` only. Production builds launch
-# Conglobate's shipped appliance; the host consumes its types-only library.
+# Pichi's default build appliance; the host consumes Conglobate's types-only library.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-corium = { git = "https://github.com/pichi-vm/corium", rev = "c33ae0e01d58b657f8f62cb91672885326a903b9", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
+corium = { git = "https://github.com/pichi-vm/corium", branch = "main", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-corium = { git = "https://github.com/pichi-vm/corium", rev = "c33ae0e01d58b657f8f62cb91672885326a903b9", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
+corium = { git = "https://github.com/pichi-vm/corium", branch = "main", artifact = "bin", lib = false, target = "aarch64-unknown-linux-musl", optional = true }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-dillo = { git = "https://github.com/pichi-vm/dillo", rev = "42a2ec1f2facfad4ce469c0a3045ca7ad94cdf80", artifact = "bin", optional = true }
+dillo = { git = "https://github.com/pichi-vm/dillo", branch = "main", artifact = "bin", optional = true }
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]
@@ -138,24 +138,24 @@ uninlined_format_args = "allow"
 
 [workspace.dependencies]
 # Cross-product shared crates
-carapace = { git = "https://github.com/pichi-vm/carapace", rev = "b2365ba4e1cd52ec7f8419c8553390dbe23507de", default-features = false, features = ["image"] }
-devmap-core = { git = "https://github.com/pichi-vm/devmap", rev = "3a2728f617e9272be5224bbf76ffc4deafdfe83b" }
-devmap-verity = { git = "https://github.com/pichi-vm/devmap", rev = "3a2728f617e9272be5224bbf76ffc4deafdfe83b", features = ["sha2"] }
+carapace = { git = "https://github.com/pichi-vm/carapace", branch = "main", default-features = false, features = ["image"] }
+devmap-core = { git = "https://github.com/pichi-vm/devmap", branch = "main" }
+devmap-verity = { git = "https://github.com/pichi-vm/devmap", branch = "main", features = ["sha2"] }
 pmi = { git = "https://github.com/pichi-vm/pmi" }
 devtree = { git = "https://github.com/pichi-vm/devtree" }
 # Dev-only caching URL downloader (shared by arma/dillo/e2e tests).
 burrow = { git = "https://github.com/pichi-vm/burrow" }
 
 # Use Dillo's console schema without linking its VM backends.
-dillo-config = { git = "https://github.com/pichi-vm/dillo", rev = "42a2ec1f2facfad4ce469c0a3045ca7ad94cdf80" }
+dillo-config = { git = "https://github.com/pichi-vm/dillo", branch = "main" }
 
 # pichi-internal crates
 pichi-launch = { path = "deps/pichi-launch" }
 pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
 # conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
-# Pin the library independently of the packaged build appliance.
-conglobate = { git = "https://github.com/pichi-vm/conglobate", rev = "c4d002714df4dde6799a2b7b7e65fc9eb6055a56", default-features = false }
+# Resolve the library independently of the packaged build appliance.
+conglobate = { git = "https://github.com/pichi-vm/conglobate", branch = "main", default-features = false }
 # Error handling
 anyhow = "1"
 thiserror = "2"

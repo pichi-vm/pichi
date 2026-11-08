@@ -74,7 +74,7 @@ jobs:
       - name: ♻️ Restore build cache
         # Avoid sandbox-denied sudo purge (pichi-vm/pichi#188).
         # Temporary fork until https://github.com/Swatinem/rust-cache/pull/400 lands.
-        uses: pichi-vm/rust-cache@c21f30586e995d7bc93110b6538b713925f08b18
+        uses: pichi-vm/rust-cache@fix/macos-purge-spawn-failure
         with:
           workspaces: |
             . -> target
