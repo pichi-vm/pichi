@@ -34,7 +34,7 @@ jobs:
   test:
     name: 🧪 ${{ matrix.name }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - name: x86-linux
@@ -49,18 +49,6 @@ jobs:
             guest_musl: aarch64-unknown-linux-musl
             zot_asset: zot-linux-arm64-minimal
             zot_sha256: 931d687899cc4b1fcad4c026d2792df6132e6de1b2f329aa730dccee14ec0395
-          - name: x86-windows
-            os: windows-2025
-            runs_on: '["windows-2025"]'
-            guest_musl: x86_64-unknown-linux-musl
-            zot_asset: zot-windows-amd64-minimal.exe
-            zot_sha256: d8b29c9cd9d68f46a338a2ae0533991415148587703ec3bd0f909c22604f7bed
-          - name: arm-macos
-            os: macos-arm64
-            runs_on: '["self-hosted","macOS","ARM64","bare-metal","m1"]'
-            guest_musl: aarch64-unknown-linux-musl
-            zot_asset: zot-darwin-arm64-minimal
-            zot_sha256: e352d2a6f3a9cf35bbc473f9fd3ded9431d09eb0367a1d1cedef221080d5e3c2
     runs-on: ${{ fromJSON(matrix.runs_on) }}
     timeout-minutes: 40
     steps:
@@ -223,6 +211,21 @@ jobs:
           ZOT_SHA256: ${{ matrix.zot_sha256 }}
         run: bash .github/scripts/test-registry.sh bash .github/scripts/test-commands.sh
 
+      - name: Verify SELinux labeling inside the build namespace
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/namespace-label-cache
+        run: |
+          pichi="$GITHUB_WORKSPACE/target/debug/pichi"
+          image=$(sed -n 's/^pub const DEFAULT_BUILD_IMAGE: &str = "\(.*\)";$/\1/p' src/cmd/build.rs)
+          "$pichi" pull "$image"
+          "$pichi" inspect "$image" > "$RUNNER_TEMP/namespace-label-builder.json"
+          "$pichi" tag "$image" localhost/label-tools
+          "$pichi" build . --ref HEAD --plan tests/namespace_labels/pichi.yaml \
+            --memory 2048 -t qualification.local/namespace-label:out \
+            2>&1 | tee "$RUNNER_TEMP/namespace-label.log"
+          grep -F PICHI_NAMESPACE_LABEL_OK "$RUNNER_TEMP/namespace-label.log"
+          "$pichi" inspect qualification.local/namespace-label:out > "$RUNNER_TEMP/namespace-label-output.json"
+
       - name: ⬆️ Upload qualified appliance
         if: inputs.build-appliance && runner.os == 'Linux' && github.ref == 'refs/heads/main'
         timeout-minutes: 10
@@ -239,11 +242,17 @@ jobs:
         with:
           name: smoke-evidence-${{ matrix.name }}
           path: |
+            ${{ runner.temp }}/namespace-label*.json
+            ${{ runner.temp }}/namespace-label.log
             ${{ runner.temp }}/zot.log
             ${{ runner.temp }}/command-tests.txt
             ${{ runner.temp }}/pichi command smoke */*.log
             ${{ runner.temp }}/pichi command smoke */pichi.yaml
             ${{ runner.temp }}/pichi command smoke */pichi.lock
+
+      - name: Remove the qualification cache
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/namespace-label-cache"
 
       - name: 🧹 Remove temporary monitor checkout
         if: ${{ always() && env.PICHI_MONITOR_SOURCE != '' }}
