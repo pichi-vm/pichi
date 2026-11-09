@@ -481,8 +481,8 @@ impl OciLayout {
     }
 
     async fn commit(&self, store: &FilesystemBlobStore) -> Result<Vec<Digest>> {
-        // Only fully validated private bytes reach the cache. Rename sidecars
-        // even on cache hits, so old sidecars cannot bypass the fresh rebuild.
+        // Only fully validated private bytes reach the cache. Replace canonical
+        // bytes and sidecars even on cache hits so preparation stays consistent.
         for digest in self.blobs.keys() {
             let source = self.store.blob_path(digest);
             let target = store.blob_path(digest);
@@ -495,7 +495,7 @@ impl OciLayout {
                 let name = file.file_name().context("prepared file has no name")?;
                 tokio::fs::rename(&file, target.prepared_dir().join(name)).await?;
             }
-            store.put_blob_from_path(&source, digest).await?;
+            tokio::fs::rename(&source, &target).await?;
         }
         let mut indexes = Vec::new();
         for root in &self.roots {
@@ -849,6 +849,11 @@ pub(super) mod tests {
         let digest = fixture.write(&output);
         fixture.sidecars(&output);
         for _ in 0..2 {
+            for blob in &fixture.blobs {
+                let digest = Digest::Sha256(Sha256::digest(blob).into());
+                store.put_blob(&digest, blob).await.unwrap();
+                std::fs::write(store.blob_path(&digest), vec![b'x'; blob.len()]).unwrap();
+            }
             let imported = OciLayout::read(&output, &store).await.unwrap();
             let index = imported
                 .import_build(&store, &db, "built:v1")
@@ -873,6 +878,8 @@ pub(super) mod tests {
             );
             assert_eq!(manifest.carapace_root().unwrap(), Some(fixture.tip));
             for (blob, tree) in fixture.blobs.iter().zip(&fixture.trees) {
+                let digest = Digest::Sha256(Sha256::digest(blob).into());
+                assert_eq!(store.get_blob(&digest).await.unwrap(), *blob);
                 let path = store
                     .blob_path(&Digest::Sha256(
                         <sha2::Sha256 as sha2::Digest>::digest(blob).into(),
@@ -886,6 +893,15 @@ pub(super) mod tests {
                 std::fs::write(path, b"stale cache tree").unwrap();
             }
         }
+        let layer = &fixture.manifest["layers"][0];
+        let digest: Digest = layer["digest"].as_str().unwrap().parse().unwrap();
+        let damaged = vec![b'x'; fixture.blobs[0].len()];
+        std::fs::write(output.join("blobs/sha256").join(digest.hex()), &damaged).unwrap();
+        let key = "built:v1".parse::<Reference>().unwrap().to_string();
+        let previous = db.resolve_tag(&key).await.unwrap();
+        assert!(OciLayout::read(&output, &store).await.is_err());
+        assert_eq!(store.get_blob(&digest).await.unwrap(), fixture.blobs[0]);
+        assert_eq!(db.resolve_tag(&key).await.unwrap(), previous);
     }
 
     #[tokio::test]
