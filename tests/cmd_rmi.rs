@@ -252,11 +252,11 @@ async fn rmi_after_import_leaves_no_orphans() {
     );
 }
 
-/// CACHE-04: appliance rmi (base carapace + attached PMI/boot configuration). The PMI and
-/// boot configuration layers have no sidecars (Pitfall 6 — no verity tree). Import a base
-/// carapace, then `pichi attach -t` a PMI + boot configuration to fork an appliance tag.
-/// Pre-rmi: 6 entries (cow + .verity + carapace-manifest + pmi + bootconfig +
-/// appliance-manifest). Removing BOTH tags leaves ZERO files.
+/// CACHE-04: appliance rmi (base carapace + imported PMI/boot configuration).
+/// Boot configuration has a prepared native text file but no verity tree.
+/// Pre-rmi: 9 files (cow + .verity + carapace-manifest + pmi + encoded bootconfig
+/// + native bootconfig + appliance-manifest + two indexes). Removing both tags
+/// leaves zero files.
 #[tokio::test]
 async fn rmi_after_attach_leaves_no_orphans() {
     let tmp = TempDir::new().unwrap();
@@ -305,9 +305,9 @@ async fn rmi_after_attach_leaves_no_orphans() {
 
     let pre_count = count_blob_files(&g);
     assert_eq!(
-        pre_count, 8,
-        "pre-rmi: expected 8 (cow + .verity + carapace-manifest + pmi + bootconfig + \
-         appliance-manifest + two indexes); got {pre_count}"
+        pre_count, 9,
+        "pre-rmi: expected 9 (cow + .verity + carapace-manifest + pmi + encoded bootconfig + \
+         native bootconfig + appliance-manifest + two indexes); got {pre_count}"
     );
 
     Command::cargo_bin("pichi")

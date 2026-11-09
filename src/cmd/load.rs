@@ -64,7 +64,6 @@ impl OciLayout {
         // short-circuit rebuilding: every scute is rebuilt from cow + salt.
         let mut expanded_size = 0u64;
         for (_, manifest) in &layout.manifests {
-            super::boot_config::BootConfigFile::validate_image(manifest, &layout.store).await?;
             let mut roots = ScuteRoots::default();
             for layer in &manifest.layers {
                 if let Some(root) =
@@ -663,13 +662,13 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn layout_import_prepares_compressed_pmi_and_rejects_bad_frames() {
+    async fn layout_import_prepares_boot_payloads_and_rejects_bad_frames() {
         let original = b"opaque PMI, not block aligned";
-        for malformed in [false, true] {
+        for malformed in 0..3 {
             let dir = tempfile::tempdir().unwrap();
             let store = FilesystemBlobStore::new(dir.path().join("cache"));
             let mut fixture = LayoutFixture::new();
-            let wire = if malformed {
+            let wire = if malformed == 1 {
                 b"invalid zstd bytes".to_vec()
             } else {
                 ruzstd::encoding::compress_to_vec(
@@ -686,18 +685,45 @@ pub(super) mod tests {
                     "digest": digest.to_string(), "size": wire.len(),
                 }));
             fixture.blobs.push(wire.clone());
+            let text = b"kernel.console = hvc0;\n";
+            let boot = if malformed == 2 {
+                b"bad bootconfig".to_vec()
+            } else {
+                ruzstd::encoding::compress_to_vec(
+                    text.as_slice(),
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                )
+            };
+            let boot_digest = Digest::Sha256(Sha256::digest(&boot).into());
+            fixture.manifest["layers"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                    "mediaType":"application/vnd.pichi.bootconfig.v1+zstd",
+                    "digest":boot_digest.to_string(),"size":boot.len(),
+                }));
+            fixture.blobs.push(boot);
+
             let input = dir.path().join("layout");
             fixture.write(&input);
             let result = OciLayout::read(&input, &store).await;
-            if malformed {
+            if malformed != 0 {
                 assert!(result.is_err());
                 assert!(!store.blob_path(&digest).exists());
+                assert!(!store.blob_path(&boot_digest).exists());
             } else {
                 result.unwrap().commit(&store).await.unwrap();
                 assert_eq!(std::fs::read(store.blob_path(&digest)).unwrap(), wire);
                 assert_eq!(
                     std::fs::read(store.blob_path(&digest).prepared_dir().join("pmi")).unwrap(),
                     original
+                );
+                assert_eq!(
+                    std::fs::read(super::super::boot_config::BootConfigFile::path(
+                        &store.blob_path(&boot_digest)
+                    ))
+                    .unwrap(),
+                    text
                 );
             }
         }
