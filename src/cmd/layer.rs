@@ -79,7 +79,12 @@ impl PreparedLayer {
     ) -> Result<PathBuf> {
         let path = store.blob_path(&layer.digest_str().parse()?);
         match layer {
-            Layer::Pmi(_) => Ok(path),
+            Layer::Pmi(_) => {
+                // Raw PMI avoids a decoded sidecar, but its canonical bytes
+                // still need the same complete verification at every launch.
+                Self::prepare_cached(manifest, layer, store).await?;
+                Ok(path)
+            }
             Layer::PmiZstd(_) => {
                 Self::prepare_cached(manifest, layer, store).await?;
                 Ok(Self::pmi_path(&path))
@@ -503,14 +508,26 @@ mod tests {
                 assert_eq!(std::fs::read(path).unwrap(), fixture.data);
                 assert_eq!(std::fs::read(&source).unwrap(), fixture.wire);
             }
-            if compressed {
-                // A valid-looking decoded sidecar must never mask a damaged source.
-                std::fs::write(&source, b"damaged wire bytes").unwrap();
+            // Neither raw transport nor a valid-looking decoded sidecar may
+            // mask a damaged canonical source, including same-size corruption.
+            let mut corrupt = fixture.wire.clone();
+            corrupt[0] ^= 1;
+            let mut trailing = fixture.wire.clone();
+            trailing.push(0);
+            for damaged in [b"damaged wire bytes".to_vec(), corrupt, trailing] {
+                std::fs::write(&source, &damaged).unwrap();
                 assert!(
                     PreparedLayer::prepare_pmi(&fixture.manifest, layer, &store)
                         .await
                         .is_err()
                 );
+                assert_eq!(std::fs::read(&source).unwrap(), damaged);
+                if compressed {
+                    assert_eq!(
+                        std::fs::read(PreparedLayer::pmi_path(&source)).unwrap(),
+                        fixture.data
+                    );
+                }
             }
         }
     }

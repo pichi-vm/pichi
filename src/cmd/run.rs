@@ -323,9 +323,8 @@ mod tests {
 
     fn pmi_layer() -> Layer {
         Layer::Pmi(PmiDescriptor {
-            digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                .into(),
-            size: 8192,
+            digest: sha256_digest(b"opaque PMI").to_string(),
+            size: b"opaque PMI".len() as u64,
         })
     }
 
@@ -434,6 +433,10 @@ mod tests {
     async fn build_dillo_args_pmi_only_passes_resources_and_no_gpt() {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
+        blob_store
+            .put_blob(&sha256_digest(b"opaque PMI"), b"opaque PMI")
+            .await
+            .unwrap();
         let m = manifest_with(vec![pmi_layer()]);
 
         let argv = build_dillo_args(
@@ -458,6 +461,10 @@ mod tests {
     async fn build_dillo_args_omits_resource_flags_when_unset() {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
+        blob_store
+            .put_blob(&sha256_digest(b"opaque PMI"), b"opaque PMI")
+            .await
+            .unwrap();
         let m = manifest_with(vec![pmi_layer()]);
 
         let argv = build_dillo_args(&m, &blob_store, None, None, &Requirements::default())
@@ -502,6 +509,10 @@ mod tests {
     async fn build_dillo_args_no_bootconfig_when_absent() {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
+        blob_store
+            .put_blob(&sha256_digest(b"opaque PMI"), b"opaque PMI")
+            .await
+            .unwrap();
         let m = manifest_with(vec![pmi_layer()]);
         let argv = build_dillo_args(&m, &blob_store, None, None, &Requirements::default())
             .await
@@ -677,6 +688,10 @@ mod tests {
                 } else {
                     Layer::Scute(scute)
                 };
+                store
+                    .put_blob(&sha256_digest(b"opaque PMI"), b"opaque PMI")
+                    .await
+                    .unwrap();
                 let mut manifest = manifest_with(vec![pmi_layer(), layer]);
                 assert!(
                     build_dillo_args(&manifest, &store, None, None, &Requirements::default())
