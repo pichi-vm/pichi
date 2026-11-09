@@ -188,6 +188,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         blob_store.put_blob(final_digest, final_bytes).await?;
     }
     blob_store.put_blob(&root.digest, &root.bytes).await?;
+    blob_store.manifest(&root.digest).await?;
     tag_db
         .set_tag_locked(&target_str, &root.digest)
         .await
@@ -706,6 +707,34 @@ mod tests {
         )
         .await
         .expect("index walk should succeed");
+
+        let rejected: Reference = "ghcr.io/example/foo:bad".parse().unwrap();
+        mock.insert_manifest("ghcr.io", "example/foo", "bad", index_bytes.clone());
+        for digest in [&index_digest, &picked_manifest_digest] {
+            let path = blob_store.blob_path(digest);
+            let original = std::fs::read(&path).unwrap();
+            let mut changed = original.clone();
+            changed.push(b' ');
+            std::fs::write(&path, changed).unwrap();
+            let error = pull_inner_with_registry(
+                rejected.clone(),
+                PullPolicy::Always,
+                true,
+                &mock,
+                &blob_store,
+                &db,
+            )
+            .await
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("digest mismatch"));
+            assert!(
+                db.resolve_tag(&rejected.to_string())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            std::fs::write(&path, original).unwrap();
+        }
 
         // Picked manifest IS in BlobStore.
         assert!(
