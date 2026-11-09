@@ -14,7 +14,8 @@ RuntimeDirectory=chrony
 BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf
 # Command-line directives bypass the distribution's chrony.conf.
 # Plain NTP only bootstraps the clock for normal TLS certificate validation.
-ExecStart=/usr/sbin/chronyd -d -q -t 60 -u root "server time.cloudflare.com iburst"
-ExecStart=/usr/sbin/chronyd -d -q -t 60 -u root "server time.cloudflare.com iburst nts"
+# One-shot clock setup needs an offset sample, not frequency tracking.
+ExecStart=/usr/sbin/chronyd -d -q -t 60 -u root "server time.cloudflare.com iburst maxsamples 1"
+ExecStart=/usr/sbin/chronyd -d -q -t 60 -u root "server time.cloudflare.com iburst nts maxsamples 1"
 TimeoutStartSec=150
 RemainAfterExit=yes
