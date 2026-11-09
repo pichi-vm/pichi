@@ -7,6 +7,7 @@
 use std::io::Cursor;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::num::NonZero;
+use std::path::Path;
 
 use devmap_core::{BlockSize, Geometry};
 use devmap_verity::{Algorithm, Format as _, HashType, Header, Parameters, Salt};
@@ -79,6 +80,7 @@ impl VerityParams {
 pub(crate) trait VerityFormat {
     fn format_padded<R: Read, W: Write + Seek>(self, data: R, hash: W) -> io::Result<[u8; 32]>;
     fn root<R: Read>(self, data: R) -> io::Result<[u8; 32]>;
+    fn root_file(self, path: &Path) -> io::Result<[u8; 32]>;
 }
 
 impl VerityFormat for Header {
@@ -111,6 +113,89 @@ impl VerityFormat for Header {
 
     fn root<R: Read>(self, data: R) -> io::Result<[u8; 32]> {
         self.format_padded(data, RootSink::default())
+    }
+
+    fn root_file(self, path: &Path) -> io::Result<[u8; 32]> {
+        let workers = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
+        let hash_size = u64::from(self.parameters.hash.bytes().get());
+        let groups = self.parameters.data.count.get().div_ceil(hash_size / 32);
+        // Bound first-level storage to 16 MiB. Small files and other algorithms
+        // retain the existing streaming implementation.
+        if workers <= 1
+            || self.parameters.data.size.bytes().get() > 64 * 1024
+            || self.parameters.algorithm != Algorithm::Sha256
+            || self.parameters.hash_type != HashType::Normal
+            || self.parameters.data_size()? < 16 * 1024 * 1024
+            || groups
+                .checked_mul(hash_size)
+                .is_none_or(|size| size > 16 * 1024 * 1024)
+        {
+            return self.root(io::BufReader::new(std::fs::File::open(path)?));
+        }
+        ParallelRoot { header: self, path }.root(workers)
+    }
+}
+
+/// Hash independent leaf blocks, then let the standard formatter reduce the
+/// resulting first hash level. No cached hashes or roots are trusted.
+struct ParallelRoot<'a> {
+    header: Header,
+    path: &'a Path,
+}
+
+impl ParallelRoot<'_> {
+    fn root(self, workers: usize) -> io::Result<[u8; 32]> {
+        use sha2::{Digest as _, Sha256};
+
+        let mut header = self.header;
+        let size = header.parameters.data.size.bytes().get() as usize;
+        let hash_size = header.parameters.hash.bytes().get() as usize;
+        let count = usize::try_from(header.parameters.data.count.get())
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        let groups = count.div_ceil(hash_size / 32);
+        let mut hashes = vec![0; groups * hash_size];
+        let per_worker = groups.div_ceil(workers) * hash_size;
+        std::thread::scope(|scope| -> io::Result<()> {
+            let mut joins = Vec::new();
+            for (index, output) in hashes.chunks_mut(per_worker).enumerate() {
+                let first = index * per_worker / 32;
+                let blocks = (count - first).min(output.len() / 32);
+                let salt = header.parameters.salt;
+                joins.push(std::thread::Builder::new().spawn_scoped(
+                    scope,
+                    move || -> io::Result<()> {
+                        let mut input = io::BufReader::with_capacity(
+                            256 * 1024,
+                            std::fs::File::open(self.path)?,
+                        );
+                        input.seek(SeekFrom::Start((first as u64) * (size as u64)))?;
+                        let mut block = vec![0; size];
+                        for digest in output.chunks_mut(32).take(blocks) {
+                            input.read_exact(&mut block)?;
+                            let mut hash = Sha256::new();
+                            hash.update(salt.as_ref());
+                            hash.update(&block);
+                            digest.copy_from_slice(&hash.finalize());
+                        }
+                        if first + blocks == count && input.read(&mut [0])? != 0 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "data exceeds declared data_blocks",
+                            ));
+                        }
+                        Ok(())
+                    },
+                )?);
+            }
+            for join in joins {
+                join.join()
+                    .map_err(|_| io::Error::other("verity worker panicked"))??;
+            }
+            Ok(())
+        })?;
+        header.parameters.data.size = header.parameters.hash;
+        header.parameters.data.count = (groups as u64).try_into().unwrap();
+        header.root(hashes.as_slice())
     }
 }
 
@@ -193,6 +278,77 @@ impl Seek for RootSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_file_roots_match_streaming_at_tree_boundaries() {
+        for (data_size, hash_size, count) in [
+            (512, 512, 2),
+            (4096, 512, 15),
+            (512, 512, 16),
+            (4096, 512, 17),
+            (512, 4096, 127),
+            (4096, 4096, 128),
+            (512, 4096, 129),
+            (4096, 4096, 4097),
+        ] {
+            let mut params = params();
+            params.data_block_size = data_size;
+            params.hash_block_size = hash_size;
+            params.salt = (0..47).collect();
+            let header = params.header_for_blocks(count).unwrap();
+            let data: Vec<_> = (0..data_size as usize * count as usize)
+                .map(|index| (index.wrapping_mul(31) ^ (index >> 12)) as u8)
+                .collect();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), &data).unwrap();
+            let expected = header.root(data.as_slice()).unwrap();
+            for workers in [1, 2, 4, 8] {
+                assert_eq!(
+                    ParallelRoot {
+                        header,
+                        path: file.path()
+                    }
+                    .root(workers)
+                    .unwrap(),
+                    expected
+                );
+            }
+            assert_eq!(header.root_file(file.path()).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn parallel_file_roots_reject_wrong_extents_and_detect_changed_blocks() {
+        let header = params().header_for_blocks(129).unwrap();
+        let data = vec![0x5a; 129 * 4096];
+        let expected = header.root(data.as_slice()).unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        for size in [0, data.len() - 4096, data.len() - 1, data.len() + 1] {
+            std::fs::write(file.path(), vec![0x5a; size]).unwrap();
+            assert!(
+                ParallelRoot {
+                    header,
+                    path: file.path()
+                }
+                .root(8)
+                .is_err()
+            );
+        }
+        for index in [0, 4096 * 16, 4096 * 128, data.len() - 1] {
+            let mut changed = data.clone();
+            changed[index] ^= 1;
+            std::fs::write(file.path(), changed).unwrap();
+            assert_ne!(
+                ParallelRoot {
+                    header,
+                    path: file.path()
+                }
+                .root(8)
+                .unwrap(),
+                expected
+            );
+        }
+    }
 
     fn params() -> VerityParams {
         VerityParams {

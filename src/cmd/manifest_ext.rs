@@ -162,12 +162,9 @@ impl ManifestExt for Manifest {
         if size != header.parameters.data_size()? {
             bail!("prepared scute extent mismatch: {digest}");
         }
-        let root = tokio::task::spawn_blocking(move || {
-            let input = std::io::BufReader::new(std::fs::File::open(path)?);
-            header.root(input)
-        })
-        .await
-        .context("verity task panicked")??;
+        let root = tokio::task::spawn_blocking(move || header.root_file(&path))
+            .await
+            .context("verity task panicked")??;
         Ok(Some(root))
     }
 
