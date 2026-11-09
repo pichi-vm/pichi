@@ -138,6 +138,7 @@ pub(super) trait ImageStore: BlobStore {
         let bytes = serde_json::to_vec(&index)?;
         let digest = Digest::Sha256(Sha256::digest(&bytes).into());
         self.put_blob(&digest, &bytes).await?;
+        self.metadata(&digest).await?;
         Ok(digest)
     }
 

@@ -661,7 +661,7 @@ async fn native_boot_components_survive_save_and_load_exactly() {
 }
 
 #[tokio::test]
-async fn publication_rechecks_cached_bootconfig_bytes() {
+async fn publication_rechecks_cached_index_and_bootconfig_bytes() {
     let source = TempDir::new().unwrap();
     let g = graphroot(&source);
     let (_, pmi, bootconfig) = fixtures(&source);
@@ -671,6 +671,8 @@ async fn publication_rechecks_cached_bootconfig_bytes() {
             "pmi",
             "--arch",
             TEST_ARCH,
+            "--annotation",
+            "org.opencontainers.image.created=fixed",
             pmi.to_str().unwrap(),
             "--bootconfig",
             bootconfig.to_str().unwrap(),
@@ -679,6 +681,41 @@ async fn publication_rechecks_cached_bootconfig_bytes() {
         ])
         .assert()
         .success();
+    let db = FilesystemTagDb::open(&g).unwrap();
+    let index = db
+        .resolve_tag("docker.io/library/boot:1")
+        .await
+        .unwrap()
+        .unwrap();
+    let path = FilesystemBlobStore::new(&g).blob_path(&index);
+    let original = std::fs::read(&path).unwrap();
+    let mut changed = original.clone();
+    changed.push(b' ');
+    std::fs::write(&path, changed).unwrap();
+    let failed = pichi(&source)
+        .args([
+            "import",
+            "pmi",
+            "--arch",
+            TEST_ARCH,
+            "--annotation",
+            "org.opencontainers.image.created=fixed",
+            pmi.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
+            "-t",
+            "boot:bad-index",
+        ])
+        .assert()
+        .failure();
+    assert!(String::from_utf8_lossy(&failed.get_output().stderr).contains("digest mismatch"));
+    assert!(
+        db.resolve_tag("docker.io/library/boot:bad-index")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    std::fs::write(path, original).unwrap();
     let manifest = resolve_manifest(&g, "docker.io/library/boot:1").await;
     let layer = manifest
         .layers
@@ -696,6 +733,8 @@ async fn publication_rechecks_cached_bootconfig_bytes() {
             "pmi",
             "--arch",
             TEST_ARCH,
+            "--annotation",
+            "org.opencontainers.image.created=fixed",
             pmi.to_str().unwrap(),
             "--bootconfig",
             bootconfig.to_str().unwrap(),
