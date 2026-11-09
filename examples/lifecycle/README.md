@@ -35,3 +35,22 @@ initialization and shutdown dependencies. The service waits for
 `dracut-shutdown.service` so immediate poweroff cannot race preparation of the
 shutdown restoration hook. Console type and dimensions are explicit to avoid
 terminal queries; kernel and systemd warnings and errors remain visible.
+
+## Disposable storage on Linux
+
+To run this example with volatile storage in `/dev/shm` instead of normal
+writable storage, use this explicit invocation. The contents are lost
+on reboot; this is suitable only for the disposable example. The command
+replaces any configured `run.storage_file` for this run.
+
+```sh
+storage_dir=$(mktemp -d /dev/shm/pichi-lifecycle-XXXXXXXX) &&
+  printf 'Storage retained at %s\n' "$storage_dir" &&
+  pichi run lifecycle:example --storage 64 --storage-file "$storage_dir/storage.raw"
+```
+
+The directory remains after the command returns, including after an error or
+interruption. A zero exit status alone does not confirm workload cleanup.
+Remove the directory manually only after confirming the workload has stopped
+and released its storage. Each invocation allocates another private directory;
+retained files consume shared-memory capacity until removed or the host reboots.
