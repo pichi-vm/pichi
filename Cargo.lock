@@ -2484,6 +2484,7 @@ dependencies = [
  "pichi-storage",
  "portable-pty",
  "process-wrap",
+ "rustix",
  "ruzstd",
  "serde",
  "serde-keyvalue",
