@@ -46,7 +46,7 @@ replaces any configured `run.storage_file` for this run.
 ```sh
 storage_dir=$(mktemp -d /dev/shm/pichi-lifecycle-XXXXXXXX) &&
   printf 'Storage retained at %s\n' "$storage_dir" &&
-  pichi run lifecycle:example --storage 64 --storage-file "$storage_dir/storage.raw"
+  pichi run lifecycle:example --storage 32 --storage-file "$storage_dir/storage.raw"
 ```
 
 The directory remains after the command returns, including after an error or
