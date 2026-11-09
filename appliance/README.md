@@ -17,7 +17,8 @@ intentional breaking changes. Pull requests never publish.
 ## Cached-input builds
 
 The optional [offline recipe](offline/pichi.yaml) uses a dedicated build
-service without network or clock bootstrap. It retains the repository,
+service and a target containing only its boot prerequisites, without
+network or clock bootstrap. It retains the repository,
 cache and output mounts, Pichi LSM, and the normal build protocol. Internet
 sockets are denied, including for steps that request network access. Use it
 when every build input is already available in the host cache and no step

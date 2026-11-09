@@ -8,10 +8,12 @@ stages:
     extend: ghcr.io/pichi-vm/pichi-build:latest
     steps:
       - copy: { path: appliance/offline/pichi-build-offline.service, into: /etc/systemd/system/pichi-build-offline.service }
+      - copy: { path: appliance/offline/pichi-build.target, into: /etc/systemd/system/pichi-build.target }
+      - copy: { path: appliance/offline/early-service.conf, into: /etc/systemd/system/pichi-lsm.service.d/offline.conf }
+      - copy: { path: appliance/offline/early-service.conf, into: /etc/systemd/system/dracut-shutdown.service.d/offline.conf }
       - exec:
           command: |
             systemctl --root=/ disable conglobate-build.service
-            systemctl --root=/ enable pichi-build-offline.service
             rm -f /etc/systemd/system/bootstrap-time.service
             systemctl --root=/ mask bootstrap-time.service systemd-networkd.service systemd-networkd-wait-online.service systemd-resolved.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-resolved-monitor.socket systemd-resolved-varlink.socket
 
@@ -19,6 +21,8 @@ image:
   root: appliance
   boot:
     inherit: appliance
+    extend:
+      kernel.systemd.unit: pichi-build.target
 
 requirements:
   slot: pci

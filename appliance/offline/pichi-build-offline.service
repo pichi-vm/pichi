@@ -5,6 +5,11 @@
 Description=Conglobate cached-input build appliance
 Requires=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount pichi-lsm.service
 After=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount pichi-lsm.service
+DefaultDependencies=no
+Requires=kmod-static-nodes.service systemd-journald.socket local-fs.target systemd-remount-fs.service systemd-modules-load.service systemd-udev-trigger.service systemd-sysusers.service systemd-tmpfiles-setup-dev-early.service systemd-tmpfiles-setup-dev.service systemd-tmpfiles-setup.service dracut-shutdown.service
+After=kmod-static-nodes.service systemd-journald.socket local-fs.target systemd-remount-fs.service systemd-modules-load.service systemd-udev-trigger.service systemd-sysusers.service systemd-tmpfiles-setup-dev-early.service systemd-tmpfiles-setup-dev.service systemd-tmpfiles-setup.service dracut-shutdown.service
+Conflicts=shutdown.target
+Before=shutdown.target
 SuccessAction=poweroff-force
 FailureAction=poweroff
 
@@ -19,6 +24,3 @@ PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 SystemCallArchitectures=native
 SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register
-
-[Install]
-WantedBy=multi-user.target

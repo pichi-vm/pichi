@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Offline Pichi build
+DefaultDependencies=no
+Requires=pichi-build-offline.service
+After=pichi-build-offline.service
+Conflicts=shutdown.target
+Before=shutdown.target
