@@ -23,7 +23,7 @@ Both share the same launch path: resolve a pichi image, prepare a dillo
 device set, and boot. Build adds only the wires the guest needs to produce
 an artifact — virtiofs (shared host folders) mounts and a named-console
 CBOR (compact binary format) exchange — then waits
-for a finished OCI layout (the standard folder format for container images) in the output mount only after explicit build success and VM exit 0.
+for a finalized, cache-backed OCI layout (the standard folder format for container images) in the output mount only after explicit build success and VM exit 0.
 
 Building is launching. The host does not check out Conglobate sources, does
 not parse Conglobate plans, and does not run Conglobate as `/init`.
@@ -144,7 +144,31 @@ CBOR push (bytes written before the guest opened the port).
 - **The annotated OCI layout is the Conglobate output.** It is not
   defined by, or reassembled through, `pichi-artifact` as the build
   product contract. Host import may still use ecosystem artifact types
-  after the guest has published a complete OCI directory.
+  after the guest has published its OCI metadata and new blobs.
+
+### Cache-backed appliance output
+
+Build appliances may omit inherited layer blobs already supplied through the
+read-only `cache` mount. The output still contains `oci-layout`, `index.json`,
+all referenced manifests/configs, newly produced layers, and generated
+boot configuration. Inherited layers retain their exact descriptors in the
+manifest; there is no separate packing list or host-authored manifest.
+
+After explicit build success and VM exit 0, build import resolves an absent
+layer blob from the local input cache by its canonical SHA-256 digest. It
+copies and verifies the exact stream into private staging, checking size,
+digest, EOF, cumulative capacity and blob-count limits. It then performs the
+same decoding, verity reconstruction, root-chain and boot checks as complete
+output. A present but invalid output blob fails; it never falls back to cache.
+Missing/corrupt cache data prevents import and tag publication. Metadata must
+come from the output, not the cache. Cache paths and verification sidecars are
+not trusted substitutes for canonical bytes.
+
+Standalone `pichi load` continues to require a complete OCI layout. A matching
+host is required for the cache-backed appliance; older hosts reject its missing
+blobs. The start/finish wire protocol and thin-launcher responsibilities are
+unchanged. This is descriptor-based cache resolution during import, not host
+reassembly of an image or plan execution.
 
 Build identity lives on the **image manifest**, rather than only on an
 index, index descriptor, or configuration blob. Conglobate's annotation

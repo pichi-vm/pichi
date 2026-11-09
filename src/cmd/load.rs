@@ -49,17 +49,36 @@ impl OciLayout {
         Self::read_with_capacity(dir, destination, capacity).await
     }
 
+    /// Build output may omit layer blobs already supplied through its input cache.
+    /// Metadata is always guest-authored; missing bytes are privately verified here.
+    pub(super) async fn read_build(dir: &Path, destination: &FilesystemBlobStore) -> Result<Self> {
+        let capacity = fs4::available_space(destination.scratch_dir().await?)?;
+        Self::read_with_cache(dir, destination, capacity, true).await
+    }
+
     async fn read_with_capacity(
         dir: &Path,
         destination: &FilesystemBlobStore,
         capacity: u64,
     ) -> Result<Self> {
+        Self::read_with_cache(dir, destination, capacity, false).await
+    }
+
+    async fn read_with_cache(
+        dir: &Path,
+        destination: &FilesystemBlobStore,
+        capacity: u64,
+        cache_backed: bool,
+    ) -> Result<Self> {
         let staging = tempfile::tempdir_in(destination.scratch_dir().await?)?;
+        let cache = cache_backed.then(|| destination.clone());
         let dir = dir.to_owned();
-        let layout = tokio::task::spawn_blocking(move || Self::snapshot(&dir, staging, capacity))
-            .await
-            .context("OCI snapshot task panicked")?
-            .context("reading OCI image layout")?;
+        let layout = tokio::task::spawn_blocking(move || {
+            Self::snapshot(&dir, staging, capacity, cache.as_ref())
+        })
+        .await
+        .context("OCI snapshot task panicked")?
+        .context("reading OCI image layout")?;
         // Every scute re-decodes its canonical source and rebuilds verity.
         // Private hints reuse matching bytes and repair differences from that source.
         let mut expanded_size = 0u64;
@@ -92,7 +111,12 @@ impl OciLayout {
         Ok(layout)
     }
 
-    fn snapshot(dir: &Path, staging: tempfile::TempDir, capacity: u64) -> Result<Self> {
+    fn snapshot(
+        dir: &Path,
+        staging: tempfile::TempDir,
+        capacity: u64,
+        input_cache: Option<&FilesystemBlobStore>,
+    ) -> Result<Self> {
         ensure!(
             std::fs::symlink_metadata(dir)?.file_type().is_dir(),
             "OCI output must be a directory, not a symlink"
@@ -140,6 +164,7 @@ impl OciLayout {
                 == layout.roots.len(),
             "duplicate OCI manifest"
         );
+        let mut materialized_bytes: u64 = files.values().sum();
         let mut pending = index.manifests;
         while let Some(entry) = pending.pop() {
             ensure!(
@@ -227,7 +252,49 @@ impl OciLayout {
             let mut layers = HashSet::new();
             for layer in &manifest.layers {
                 ensure!(layers.insert(layer.digest_str()), "duplicate OCI layer");
-                layout.copy_blob(&root, layer.digest_str(), layer.size(), &mut expected)?;
+                let path = Self::blob_name(layer.digest_str())?;
+                if !files.contains_key(&path)
+                    && !matches!(layer, conglobate::artifact::Layer::BootConfig(_))
+                    && let Some(cache) = input_cache
+                {
+                    let digest: Digest = layer.digest_str().parse()?;
+                    if !layout.blobs.contains_key(&digest) {
+                        materialized_bytes = materialized_bytes
+                            .checked_add(layer.size())
+                            .context("cache-backed OCI size overflow")?;
+                        ensure!(
+                            materialized_bytes <= capacity,
+                            "cache-backed OCI layout exceeds scratch capacity"
+                        );
+                    }
+                    let source = cache.blob_path(&digest);
+                    let directory = Dir::open_ambient_dir(
+                        source.parent().context("cache blob has no parent")?,
+                        cap_std::ambient_authority(),
+                    )?;
+                    let name = Path::new(source.file_name().context("cache blob has no name")?);
+                    ensure!(
+                        directory.symlink_metadata(name)?.is_file(),
+                        "referenced cache blob must be a regular file"
+                    );
+                    layout
+                        .copy_blob_from(
+                            &directory,
+                            name,
+                            layer.digest_str(),
+                            layer.size(),
+                            &mut expected,
+                        )
+                        .with_context(|| {
+                            format!(
+                                "resolve omitted OCI layer {} from input cache",
+                                layer.digest_str()
+                            )
+                        })?;
+                } else {
+                    // A present but invalid output blob never falls back to cache.
+                    layout.copy_blob(&root, layer.digest_str(), layer.size(), &mut expected)?;
+                }
                 if matches!(
                     layer,
                     conglobate::artifact::Layer::Scute(_)
@@ -364,6 +431,18 @@ impl OciLayout {
         size: u64,
         expected: &mut HashSet<PathBuf>,
     ) -> Result<Digest> {
+        let source = Self::blob_name(value)?;
+        self.copy_blob_from(root, &source, value, size, expected)
+    }
+
+    fn copy_blob_from(
+        &mut self,
+        root: &Dir,
+        source: &Path,
+        value: &str,
+        size: u64,
+        expected: &mut HashSet<PathBuf>,
+    ) -> Result<Digest> {
         ensure!(size <= self.capacity, "OCI blob exceeds scratch capacity");
         let path = Self::blob_name(value)?;
         let digest: Digest = value.parse()?;
@@ -372,9 +451,10 @@ impl OciLayout {
             ensure!(*previous == size, "conflicting OCI descriptor sizes");
             return Ok(digest);
         }
+        ensure!(self.blobs.len() < FILE_CAP, "OCI blob count exceeds limit");
         let output = File::create(self.store.blob_path(&digest))?;
         ensure!(
-            Self::copy_content(root, &path, size, output)? == digest,
+            Self::copy_content(root, source, size, output)? == digest,
             "OCI blob digest mismatch: {digest}"
         );
         self.blobs.insert(digest.clone(), size);
@@ -664,6 +744,207 @@ pub(super) mod tests {
                 std::fs::write(path.with_extension("verity"), tree).unwrap();
             }
         }
+    }
+
+    #[tokio::test]
+    async fn build_resolves_omitted_layers_into_private_verified_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FilesystemBlobStore::new(dir.path().join("cache"));
+        let mut fixture = LayoutFixture::new();
+        fixture.add_scute(true);
+        let pmi = ruzstd::encoding::compress_to_vec(
+            b"inherited PMI".as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let pmi_digest = Digest::Sha256(Sha256::digest(&pmi).into());
+        fixture.manifest["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1_ZSTD,
+                "digest": pmi_digest.to_string(), "size": pmi.len(),
+            }));
+        fixture.blobs.push(pmi);
+        let output = dir.path().join("output");
+        fixture.write(&output);
+        let cached = fixture.manifest["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|layer| {
+                let digest: Digest = layer["digest"].as_str().unwrap().parse().unwrap();
+                let source = output.join(OciLayout::blob_name(&digest.to_string()).unwrap());
+                let target = store.blob_path(&digest);
+                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                std::fs::rename(source, &target).unwrap();
+                (digest, target)
+            })
+            .collect::<Vec<_>>();
+        assert!(OciLayout::read(&output, &store).await.is_err());
+        let layout = OciLayout::read_build(&output, &store).await.unwrap();
+        for (_, path) in &cached {
+            std::fs::remove_file(path).unwrap();
+        }
+        layout.commit(&store).await.unwrap();
+        for ((_, path), bytes) in cached.iter().zip(&fixture.blobs) {
+            assert_eq!(std::fs::read(path).unwrap(), *bytes);
+        }
+        assert_eq!(
+            std::fs::read(store.blob_path(&pmi_digest).prepared_dir().join("pmi")).unwrap(),
+            b"inherited PMI"
+        );
+    }
+
+    #[tokio::test]
+    async fn omitted_cache_bytes_must_match_digest_size_and_eof() {
+        for damage in [
+            "missing",
+            "same-size",
+            "short",
+            "trailing",
+            "descriptor-size",
+            "directory",
+            #[cfg(unix)]
+            "symlink",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FilesystemBlobStore::new(dir.path().join("cache"));
+            let mut fixture = LayoutFixture::new();
+            if damage == "descriptor-size" {
+                let size = fixture.manifest["layers"][0]["size"].as_u64().unwrap();
+                fixture.manifest["layers"][0]["size"] = (size + 1).into();
+            }
+            let output = dir.path().join("output");
+            let manifest = fixture.write(&output);
+            let digest: Digest = fixture.manifest["layers"][0]["digest"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            std::fs::remove_file(output.join(OciLayout::blob_name(&digest.to_string()).unwrap()))
+                .unwrap();
+            let target = store.blob_path(&digest);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            let mut bytes = fixture.blobs[0].clone();
+            match damage {
+                "same-size" => bytes[0] ^= 1,
+                "short" => {
+                    bytes.pop();
+                }
+                "trailing" => bytes.push(0),
+                _ => {}
+            }
+            match damage {
+                "missing" => {}
+                "directory" => std::fs::create_dir(target).unwrap(),
+                #[cfg(unix)]
+                "symlink" => {
+                    let external = dir.path().join("external-blob");
+                    std::fs::write(&external, bytes).unwrap();
+                    std::os::unix::fs::symlink(external, target).unwrap();
+                }
+                _ => std::fs::write(target, bytes).unwrap(),
+            }
+            assert!(
+                OciLayout::read_build(&output, &store).await.is_err(),
+                "{damage}"
+            );
+            assert!(!store.blob_path(&manifest).exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn build_requires_boot_configuration_in_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FilesystemBlobStore::new(dir.path().join("cache"));
+        let bytes = ruzstd::encoding::compress_to_vec(
+            b"kernel.quiet = 1\n".as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let config = super::super::boot_config::BootConfigFile::try_from(bytes.clone()).unwrap();
+        let descriptor = config.descriptor().unwrap();
+        let digest: Digest = descriptor.digest.parse().unwrap();
+        let mut fixture = LayoutFixture::new();
+        let pmi = b"inherited PMI".to_vec();
+        fixture.manifest["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1,
+                "digest": Digest::Sha256(Sha256::digest(&pmi).into()).to_string(),
+                "size": pmi.len(),
+            }));
+        fixture.blobs.push(pmi);
+        fixture.manifest["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(Layer::BootConfig(descriptor)).unwrap());
+        fixture.blobs.push(bytes);
+        let output = dir.path().join("output");
+        fixture.write(&output);
+        config.store(&store).await.unwrap();
+        OciLayout::read_build(&output, &store).await.unwrap();
+        std::fs::remove_file(output.join(OciLayout::blob_name(&digest.to_string()).unwrap()))
+            .unwrap();
+        assert!(OciLayout::read_build(&output, &store).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn build_never_replaces_bad_output_with_good_cached_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FilesystemBlobStore::new(dir.path().join("cache"));
+        let fixture = LayoutFixture::new();
+        let output = dir.path().join("output");
+        fixture.write(&output);
+        let digest: Digest = fixture.manifest["layers"][0]["digest"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let target = store.blob_path(&digest);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, &fixture.blobs[0]).unwrap();
+        let mut bad = fixture.blobs[0].clone();
+        bad[0] ^= 1;
+        std::fs::write(
+            output.join(OciLayout::blob_name(&digest.to_string()).unwrap()),
+            bad,
+        )
+        .unwrap();
+        assert!(OciLayout::read_build(&output, &store).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn build_requires_guest_metadata_and_counts_omitted_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FilesystemBlobStore::new(dir.path().join("cache"));
+        let mut fixture = LayoutFixture::new();
+        fixture.add_scute(false);
+        let output = dir.path().join("output");
+        let manifest = fixture.write(&output);
+        let mut omitted_size = 0;
+        for layer in fixture.manifest["layers"].as_array().unwrap() {
+            let digest: Digest = layer["digest"].as_str().unwrap().parse().unwrap();
+            let target = store.blob_path(&digest);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::rename(
+                output.join(OciLayout::blob_name(&digest.to_string()).unwrap()),
+                target,
+            )
+            .unwrap();
+            omitted_size += layer["size"].as_u64().unwrap();
+        }
+        let Err(error) = OciLayout::read_with_cache(&output, &store, omitted_size, true).await
+        else {
+            panic!("omitted blobs bypassed capacity");
+        };
+        assert!(format!("{error:#}").contains("cache-backed OCI layout exceeds"));
+        std::fs::rename(
+            output.join(OciLayout::blob_name(&manifest.to_string()).unwrap()),
+            store.blob_path(&manifest),
+        )
+        .unwrap();
+        assert!(OciLayout::read_build(&output, &store).await.is_err());
     }
 
     #[tokio::test]
