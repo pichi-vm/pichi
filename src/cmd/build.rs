@@ -195,7 +195,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         )
         .await?;
         // Explicit build success and successful VM exit precede OCI import.
-        let imported = crate::cmd::load::OciLayout::read(&output_dir, &blob_store).await?;
+        let imported = crate::cmd::load::OciLayout::read_build(&output_dir, &blob_store).await?;
         imported
             .import_build(&blob_store, &db, tag)
             .await
