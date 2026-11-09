@@ -60,14 +60,19 @@ impl OciLayout {
             .await
             .context("OCI snapshot task panicked")?
             .context("reading OCI image layout")?;
-        // The snapshot contains only OCI blobs. No pre-existing sidecars can
-        // short-circuit rebuilding: every scute is rebuilt from cow + salt.
+        // Every scute re-decodes its canonical source and rebuilds verity.
+        // Private hints reuse matching bytes and repair differences from that source.
         let mut expanded_size = 0u64;
         for (_, manifest) in &layout.manifests {
             let mut roots = ScuteRoots::default();
             for layer in &manifest.layers {
-                if let Some(root) =
-                    PreparedLayer::prepare_cached(manifest, layer, &layout.store).await?
+                if let Some(root) = PreparedLayer::prepare_cached_reusing(
+                    manifest,
+                    layer,
+                    &layout.store,
+                    Some(destination),
+                )
+                .await?
                 {
                     let files = ScuteFiles::new(manifest, layer, &layout.store)?;
                     let size = std::fs::metadata(files.data)?.len();

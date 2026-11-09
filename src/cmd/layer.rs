@@ -3,7 +3,7 @@
 
 //! Streaming layer preparation shared by pull and load.
 
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use crate::cmd::verity::VerityFormat as _;
@@ -126,20 +126,45 @@ impl PreparedLayer {
         prepared.commit(store, &digest).await
     }
 
-    /// Import must rebuild even when a cache sidecar already exists.
+    /// Reconstruct canonical bytes and verity without trusting cache sidecars.
     pub(super) async fn prepare_cached(
         manifest: &Manifest,
         layer: &Layer,
         store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>> {
+        Self::prepare_cached_reusing(manifest, layer, store, None).await
+    }
+
+    /// Reuse matching bytes in a private clone, repairing differences while the
+    /// canonical source is decoded and verified once.
+    pub(super) async fn prepare_cached_reusing(
+        manifest: &Manifest,
+        layer: &Layer,
+        store: &dyn BlobStore,
+        reuse: Option<&dyn BlobStore>,
+    ) -> Result<Option<[u8; 32]>> {
         let digest: Digest = layer.digest_str().parse()?;
         let path = store.blob_path(&digest);
         let scratch = store.scratch_dir().await?;
+        let seed = if matches!(layer, Layer::Scute(_) | Layer::ScuteZstd(_)) {
+            reuse
+                .map(|store| ScuteFiles::new(manifest, layer, store).map(|files| files.data))
+                .transpose()?
+        } else {
+            None
+        };
         let manifest = manifest.clone();
         let layer = layer.clone();
         let prepared = tokio::task::spawn_blocking(move || {
             let input = BufReader::new(std::fs::File::open(path)?);
-            Self::read_into(input, io::sink(), &manifest, &layer, &scratch)
+            Self::read_into(
+                input,
+                io::sink(),
+                &manifest,
+                &layer,
+                &scratch,
+                seed.as_deref(),
+            )
         })
         .await
         .context("layer formatting task panicked")??;
@@ -154,6 +179,7 @@ impl PreparedLayer {
             manifest,
             layer,
             scratch,
+            None,
         )?;
         source.as_file().sync_all()?;
         prepared.source = Some(source);
@@ -166,6 +192,7 @@ impl PreparedLayer {
         manifest: &Manifest,
         layer: &Layer,
         scratch: &Path,
+        data_seed: Option<&Path>,
     ) -> Result<Self> {
         let mut wire = WireReader {
             input,
@@ -183,8 +210,13 @@ impl PreparedLayer {
                 let (deflated, root) = if header.parameters.data_size()? == scute.size {
                     (None, header.format_padded(&mut wire, output.as_file_mut())?)
                 } else {
-                    let (data, root) =
-                        Self::prepare_data(&mut wire, &header, output.as_file_mut(), scratch)?;
+                    let (data, root) = Self::prepare_data(
+                        &mut wire,
+                        &header,
+                        output.as_file_mut(),
+                        scratch,
+                        data_seed,
+                    )?;
                     (Some(data), root)
                 };
                 Some(PreparedScute {
@@ -199,7 +231,7 @@ impl PreparedLayer {
                 let decoder = Self::decoder(&mut wire)?;
                 let header = manifest.verity_header(scute, None)?;
                 let (data, root) =
-                    Self::prepare_data(decoder, &header, output.as_file_mut(), scratch)?;
+                    Self::prepare_data(decoder, &header, output.as_file_mut(), scratch, data_seed)?;
                 Some(PreparedScute {
                     header,
                     root,
@@ -263,8 +295,9 @@ impl PreparedLayer {
         header: &devmap_verity::Header,
         hash: &mut std::fs::File,
         scratch: &Path,
+        seed: Option<&Path>,
     ) -> Result<(NamedTempFile, [u8; 32])> {
-        let data = NamedTempFile::new_in(scratch)?;
+        let mut data = NamedTempFile::new_in(scratch)?;
         // Storage capacity and the header's expansion bound are independent.
         // Concurrent allocations and tree writes can still fail with I/O errors.
         let capacity = fs4::available_space(scratch)?;
@@ -272,15 +305,19 @@ impl PreparedLayer {
         if padded_size > capacity {
             bail!("prepared data extent exceeds available scratch capacity");
         }
+        let output = BufWriter::new(PreparedDataWriter::new(data.as_file_mut(), seed)?);
         let mut decoded = DecodedReader {
             input,
-            output: BufWriter::new(data.as_file()),
+            output,
             count: 0,
             capacity,
         };
         let root = header.format_padded(&mut decoded, hash)?;
         decoded.output.flush()?;
+        let count = decoded.count;
         drop(decoded);
+        // Recreate canonical zero padding, even if the clone had a stale tail.
+        data.as_file().set_len(count)?;
         data.as_file().set_len(padded_size)?;
         Ok((data, root))
     }
@@ -364,6 +401,71 @@ impl<R: Read> Read for LayerDecoder<R> {
             ));
         }
         Ok(count)
+    }
+}
+
+/// Skip matching private-clone writes; repair every other byte from the source.
+struct PreparedDataWriter<'a> {
+    file: &'a mut std::fs::File,
+    comparison: Option<Vec<u8>>,
+}
+
+impl<'a> PreparedDataWriter<'a> {
+    fn new(file: &'a mut std::fs::File, seed: Option<&Path>) -> io::Result<Self> {
+        let cloned = seed.is_some_and(|seed| {
+            std::fs::symlink_metadata(seed).is_ok_and(|metadata| metadata.is_file())
+                && std::fs::File::open(seed)
+                    .is_ok_and(|source| Self::clone_data(&source, file).is_ok())
+        });
+        if !cloned {
+            file.set_len(0)?;
+        }
+        file.rewind()?;
+        Ok(Self {
+            file,
+            comparison: cloned.then(Vec::new),
+        })
+    }
+
+    fn clone_data(source: &std::fs::File, target: &std::fs::File) -> io::Result<()> {
+        #[cfg(all(
+            target_os = "linux",
+            not(any(target_arch = "sparc", target_arch = "sparc64"))
+        ))]
+        {
+            rustix::fs::ioctl_ficlone(target, source).map_err(Into::into)
+        }
+        #[cfg(not(all(
+            target_os = "linux",
+            not(any(target_arch = "sparc", target_arch = "sparc64"))
+        )))]
+        {
+            let _ = (source, target);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "data reflinks unavailable",
+            ))
+        }
+    }
+}
+
+impl Write for PreparedDataWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(buffer) = &mut self.comparison {
+            let position = self.file.stream_position()?;
+            buffer.resize(bytes.len(), 0);
+            if self.file.read_exact(buffer).is_ok() && buffer.as_slice() == bytes {
+                return Ok(bytes.len());
+            }
+            // A short or failed comparison must not move the canonical write.
+            self.file.seek(io::SeekFrom::Start(position))?;
+        }
+        self.file.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
     }
 }
 
@@ -720,6 +822,156 @@ mod tests {
             assert_eq!(
                 std::fs::read(prepared.source.as_ref().unwrap()).unwrap(),
                 fixture.wire
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn data_hints_are_private_and_repair_stale_bytes_and_padding() {
+        use pichi_storage::FilesystemBlobStore;
+        for compressed in [false, true] {
+            let fixture = Fixture::with_size(compressed, 40, 160_001);
+            let dir = tempfile::tempdir().unwrap();
+            let store = FilesystemBlobStore::new(dir.path().join("canonical"));
+            let hints = FilesystemBlobStore::new(dir.path().join("hints"));
+            let layer = &fixture.manifest.layers[0];
+            let digest = layer.digest_str().parse().unwrap();
+            store.put_blob(&digest, &fixture.wire).await.unwrap();
+            let hint = ScuteFiles::new(&fixture.manifest, layer, &hints)
+                .unwrap()
+                .data;
+            std::fs::create_dir_all(hint.parent().unwrap()).unwrap();
+            let mut expected = fixture.data.clone();
+            expected.resize(40 * 4096, 0);
+            for case in [
+                "valid",
+                "missing",
+                "payload",
+                "padding",
+                "short",
+                "long",
+                "directory",
+                #[cfg(unix)]
+                "symlink",
+            ] {
+                let _ = std::fs::remove_file(&hint);
+                let _ = std::fs::remove_dir(&hint);
+                let mut bytes = expected.clone();
+                match case {
+                    "payload" => bytes[65537] ^= 1,
+                    "padding" => *bytes.last_mut().unwrap() = 1,
+                    "short" => bytes.truncate(65_535),
+                    "long" => bytes.extend_from_slice(&[1; 4096]),
+                    _ => {}
+                }
+                #[cfg(unix)]
+                if case == "symlink" {
+                    let external = dir.path().join("external-data");
+                    std::fs::write(&external, &expected).unwrap();
+                    std::os::unix::fs::symlink(external, &hint).unwrap();
+                }
+                if case == "directory" {
+                    std::fs::create_dir(&hint).unwrap();
+                } else if case != "missing" && case != "symlink" {
+                    std::fs::write(&hint, bytes).unwrap();
+                }
+                let probe = NamedTempFile::new_in(dir.path()).unwrap();
+                let can_clone = std::fs::File::open(&hint).is_ok_and(|source| {
+                    PreparedDataWriter::clone_data(&source, probe.as_file()).is_ok()
+                });
+                if can_clone && case != "symlink" {
+                    let scratch = store.scratch_dir().await.unwrap();
+                    let prepared = PreparedLayer::read_into(
+                        fixture.wire.as_slice(),
+                        io::sink(),
+                        &fixture.manifest,
+                        layer,
+                        &scratch,
+                        Some(&hint),
+                    )
+                    .unwrap();
+                    assert_eq!(prepared.scute.as_ref().unwrap().root, fixture.root);
+                    let data = prepared.scute.as_ref().unwrap().deflated.as_ref().unwrap();
+                    assert_eq!(std::fs::read(data.path()).unwrap(), expected, "{case}");
+                }
+                let root = PreparedLayer::prepare_cached_reusing(
+                    &fixture.manifest,
+                    layer,
+                    &store,
+                    Some(&hints),
+                )
+                .await
+                .unwrap();
+                assert_eq!(root, Some(fixture.root), "{case}");
+                let files = ScuteFiles::new(&fixture.manifest, layer, &store).unwrap();
+                assert_eq!(std::fs::read(&files.data).unwrap(), expected, "{case}");
+                if case == "valid" {
+                    std::fs::write(&hint, b"changed after verification").unwrap();
+                    assert_eq!(std::fs::read(&files.data).unwrap(), expected);
+                }
+            }
+            assert_eq!(
+                std::fs::read_dir(store.scratch_dir().await.unwrap())
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn matching_data_hint_does_not_bypass_canonical_verification() {
+        use pichi_storage::FilesystemBlobStore;
+        for damage in ["digest", "frame"] {
+            let mut fixture = Fixture::new(true, 2);
+            let wrong = if damage == "frame" {
+                fixture.wire = b"invalid compressed input".to_vec();
+                Digest::Sha256(Sha256::digest(&fixture.wire).into())
+            } else {
+                Digest::Sha256(Sha256::digest(b"wrong source identity").into())
+            };
+            let Layer::ScuteZstd(descriptor) = &mut fixture.manifest.layers[0] else {
+                unreachable!()
+            };
+            descriptor.digest = wrong.to_string();
+            descriptor.size = fixture.wire.len() as u64;
+            let dir = tempfile::tempdir().unwrap();
+            let store = FilesystemBlobStore::new(dir.path().join("canonical"));
+            let hints = FilesystemBlobStore::new(dir.path().join("hints"));
+            store.put_blob(&wrong, &fixture.wire).await.unwrap();
+            let layer = &fixture.manifest.layers[0];
+            let hint = ScuteFiles::new(&fixture.manifest, layer, &hints)
+                .unwrap()
+                .data;
+            std::fs::create_dir_all(hint.parent().unwrap()).unwrap();
+            let mut expected = fixture.data.clone();
+            expected.resize(8192, 0);
+            std::fs::write(&hint, expected).unwrap();
+            let error = PreparedLayer::prepare_cached_reusing(
+                &fixture.manifest,
+                layer,
+                &store,
+                Some(&hints),
+            )
+            .await
+            .unwrap_err();
+            let message = if damage == "frame" {
+                "standard zstd frame"
+            } else {
+                "digest"
+            };
+            assert!(format!("{error:#}").contains(message), "{error:#}");
+            assert!(
+                !ScuteFiles::new(&fixture.manifest, layer, &store)
+                    .unwrap()
+                    .data
+                    .exists()
+            );
+            assert_eq!(
+                std::fs::read_dir(store.scratch_dir().await.unwrap())
+                    .unwrap()
+                    .count(),
+                0
             );
         }
     }
