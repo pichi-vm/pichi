@@ -181,8 +181,6 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         .verify(&manifest)
         .with_context(|| format!("verifying carapace root for {final_digest}"))?;
 
-    super::boot_config::BootConfigFile::validate_image(&manifest, blob_store).await?;
-
     // Publish the root only after every layer has been prepared. The index
     // lock covers shared-cache writes and this final tag update, so collection
     // cannot delete an in-progress image before it becomes reachable.
@@ -388,6 +386,10 @@ mod tests {
             if accepted {
                 assert_eq!(store.get_blob(&pmi_digest).await.unwrap(), firmware);
                 assert_eq!(store.get_blob(&config_digest).await.unwrap(), compressed);
+                let path = super::super::boot_config::BootConfigFile::path(
+                    &store.blob_path(&config_digest),
+                );
+                assert_eq!(std::fs::read(path).unwrap(), text.as_bytes());
             }
         }
     }

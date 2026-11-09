@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use conglobate::artifact::{Layer, Manifest};
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobSidecarExt as _, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
 fn graphroot(tmp: &TempDir) -> PathBuf {
@@ -584,6 +584,22 @@ async fn native_boot_components_survive_save_and_load_exactly() {
         ])
         .assert()
         .success();
+    // Native text must be ready when import returns, before any launch or
+    // export can prepare it as a side effect.
+    let before = resolve_manifest(&source_root, "docker.io/library/boot:1").await;
+    let config = before
+        .layers
+        .iter()
+        .find(|layer| matches!(layer, Layer::BootConfig(_)))
+        .unwrap();
+    let native = FilesystemBlobStore::new(&source_root)
+        .blob_path(&config.digest_str().parse().unwrap())
+        .prepared_dir()
+        .join("bootconfig");
+    assert_eq!(
+        std::fs::read(native).unwrap(),
+        std::fs::read(&bootconfig).unwrap()
+    );
     let layout = source.path().join("saved");
     pichi(&source)
         .args(["save", "boot:1", "-o", layout.to_str().unwrap()])
@@ -595,7 +611,6 @@ async fn native_boot_components_survive_save_and_load_exactly() {
         .args(["load", layout.to_str().unwrap(), "--tag", "boot:copy"])
         .assert()
         .success();
-    let before = resolve_manifest(&source_root, "docker.io/library/boot:1").await;
     let after = resolve_manifest(&destination_root, "docker.io/library/boot:copy").await;
     assert_eq!(before, after);
     for layer in &after.layers {
@@ -637,6 +652,29 @@ async fn publication_rechecks_cached_bootconfig_bytes() {
         vec![b'x'; layer.size() as usize],
     )
     .unwrap();
+    let failed = pichi(&source)
+        .args([
+            "import",
+            "pmi",
+            "--arch",
+            TEST_ARCH,
+            pmi.to_str().unwrap(),
+            "--bootconfig",
+            bootconfig.to_str().unwrap(),
+            "-t",
+            "boot:bad",
+        ])
+        .assert()
+        .failure();
+    assert!(String::from_utf8_lossy(&failed.get_output().stderr).contains("digest mismatch"));
+    assert!(
+        FilesystemTagDb::open(&g)
+            .unwrap()
+            .resolve_tag("docker.io/library/boot:bad")
+            .await
+            .unwrap()
+            .is_none()
+    );
     let output = source.path().join("invalid-export");
     let failed = pichi(&source)
         .args(["save", "boot:1", "-o", output.to_str().unwrap()])

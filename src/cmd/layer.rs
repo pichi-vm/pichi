@@ -60,6 +60,7 @@ pub(super) struct PreparedLayer {
     source: Option<NamedTempFile>,
     scute: Option<PreparedScute>,
     pmi: Option<NamedTempFile>,
+    bootconfig: Option<NamedTempFile>,
 }
 
 struct PreparedScute {
@@ -181,6 +182,7 @@ impl PreparedLayer {
             expected: layer.size(),
         };
         let mut pmi = None;
+        let mut bootconfig = None;
         let scute = match layer {
             Layer::Scute(scute) => {
                 let mut output = NamedTempFile::new_in(scratch)?;
@@ -216,10 +218,10 @@ impl PreparedLayer {
                 let mut bytes = Vec::new();
                 wire.read_to_end(&mut bytes)?;
                 let config = super::boot_config::BootConfigFile::try_from(bytes)?;
-                anyhow::ensure!(
-                    config.descriptor().is_some(),
-                    "empty bootconfig must be omitted"
-                );
+                anyhow::ensure!(!config.text.is_empty(), "empty bootconfig must be omitted");
+                let mut output = NamedTempFile::new_in(scratch)?;
+                output.write_all(config.text.as_bytes())?;
+                bootconfig = Some(output);
                 None
             }
             Layer::PmiZstd(_) => {
@@ -251,10 +253,14 @@ impl PreparedLayer {
         if let Some(pmi) = &pmi {
             pmi.as_file().sync_all()?;
         }
+        if let Some(config) = &bootconfig {
+            config.as_file().sync_all()?;
+        }
         Ok(Self {
             source: None,
             scute,
             pmi,
+            bootconfig,
         })
     }
 
@@ -301,6 +307,14 @@ impl PreparedLayer {
         if let Some(pmi) = &self.pmi {
             tokio::fs::create_dir_all(path.prepared_dir()).await?;
             tokio::fs::rename(pmi.path(), Self::pmi_path(&path)).await?;
+        }
+        if let Some(config) = &self.bootconfig {
+            tokio::fs::create_dir_all(path.prepared_dir()).await?;
+            tokio::fs::rename(
+                config.path(),
+                super::boot_config::BootConfigFile::path(&path),
+            )
+            .await?;
         }
         if let Some(source) = &self.source {
             store.put_blob_from_path(source.path(), digest).await?;

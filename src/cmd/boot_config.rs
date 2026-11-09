@@ -15,7 +15,7 @@ use tokio::io::AsyncReadExt as _;
 #[derive(Debug)]
 pub(super) struct BootConfigFile {
     bytes: Vec<u8>,
-    text: String,
+    pub(super) text: String,
 }
 
 impl TryFrom<Vec<u8>> for BootConfigFile {
@@ -55,6 +55,15 @@ impl BootConfigFile {
 
     pub(super) async fn store(&self, store: &(impl BlobStore + ?Sized)) -> Result<()> {
         if let Some(descriptor) = self.descriptor() {
+            let path = Self::path(&store.blob_path(&descriptor.digest.parse()?));
+            tokio::fs::create_dir_all(path.parent().context("bootconfig path has no parent")?)
+                .await?;
+            pichi_storage::write_sidecar_atomic(
+                &store.scratch_dir().await?,
+                &path,
+                self.text.as_bytes(),
+            )
+            .await?;
             store
                 .put_blob(&descriptor.digest.parse()?, &self.bytes)
                 .await?;
@@ -84,6 +93,10 @@ impl BootConfigFile {
         let config = Self::try_from(bytes)?;
         ensure!(!config.text.is_empty(), "empty bootconfig must be omitted");
         Ok(Some(config))
+    }
+
+    pub(super) fn path(source: &Path) -> PathBuf {
+        source.prepared_dir().join("bootconfig")
     }
 
     /// Regenerate native text from verified wire bytes at every launch.
