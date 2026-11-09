@@ -171,7 +171,12 @@ impl PreparedLayer {
         prepared.commit(store, &digest).await
     }
 
-    fn read<R: Read>(input: R, manifest: &Manifest, layer: &Layer, scratch: &Path) -> Result<Self> {
+    fn read<R: Read + Send>(
+        input: R,
+        manifest: &Manifest,
+        layer: &Layer,
+        scratch: &Path,
+    ) -> Result<Self> {
         let source = NamedTempFile::new_in(scratch)?;
         let mut prepared = Self::read_into(
             input,
@@ -186,7 +191,7 @@ impl PreparedLayer {
         Ok(prepared)
     }
 
-    fn read_into<R: Read, W: Write>(
+    fn read_into<R: Read + Send, W: Write + Send>(
         input: R,
         output: W,
         manifest: &Manifest,
@@ -230,8 +235,9 @@ impl PreparedLayer {
                 let mut output = NamedTempFile::new_in(scratch)?;
                 let decoder = Self::decoder(&mut wire)?;
                 let header = manifest.verity_header(scute, None)?;
-                let (data, root) =
-                    Self::prepare_data(decoder, &header, output.as_file_mut(), scratch, data_seed)?;
+                let (data, root) = DecodePipeline::run(decoder, |input| {
+                    Self::prepare_data(input, &header, output.as_file_mut(), scratch, data_seed)
+                })?;
                 Some(PreparedScute {
                     header,
                     root,
@@ -469,6 +475,90 @@ impl Write for PreparedDataWriter<'_> {
     }
 }
 
+/// Bounded decompression read-ahead, joined before canonical verification finishes.
+struct DecodePipeline {
+    receiver: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    current: io::Cursor<Vec<u8>>,
+    eof: bool,
+}
+
+impl DecodePipeline {
+    fn run<R: Read + Send, T>(
+        mut input: R,
+        consume: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        std::thread::scope(|scope| {
+            // At most two queued chunks, one being produced and one consumed.
+            let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+            let worker = std::thread::Builder::new()
+                .name("pichi-decode".into())
+                .spawn_scoped(scope, move || {
+                    loop {
+                        let mut bytes = vec![0; 128 * 1024];
+                        let count = loop {
+                            match input.read(&mut bytes) {
+                                Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                                    continue;
+                                }
+                                result => break result,
+                            }
+                        };
+                        match count {
+                            Ok(count) => {
+                                bytes.truncate(count);
+                                if sender.send(Ok(bytes)).is_err() || count == 0 {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                let _ = sender.send(Err(error));
+                                break;
+                            }
+                        }
+                    }
+                })?;
+            let mut reader = Self {
+                receiver,
+                current: io::Cursor::new(Vec::new()),
+                eof: false,
+            };
+            let result = consume(&mut reader);
+            let eof = reader.eof;
+            // A failed consumer must release the bounded sender before joining.
+            drop(reader);
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("decode worker panicked"))?;
+            let value = result?;
+            anyhow::ensure!(eof, "decoded stream was not consumed through EOF");
+            Ok(value)
+        })
+    }
+}
+
+impl Read for DecodePipeline {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() || self.eof {
+            return Ok(0);
+        }
+        loop {
+            let count = self.current.read(output)?;
+            if count != 0 {
+                return Ok(count);
+            }
+            let bytes = self
+                .receiver
+                .recv()
+                .map_err(|_| io::Error::other("decode worker disconnected before EOF"))??;
+            if bytes.is_empty() {
+                self.eof = true;
+                return Ok(0);
+            }
+            self.current = io::Cursor::new(bytes);
+        }
+    }
+}
+
 /// Wire-byte side effects, before decompression or verity padding.
 struct WireReader<R, W> {
     input: R,
@@ -546,6 +636,73 @@ impl<R: Read, W: Write> Read for DecodedReader<R, W> {
 mod tests {
     use super::*;
     use crate::cmd::verity::VerityParams;
+
+    #[test]
+    fn decode_pipeline_preserves_bytes_and_zero_length_reads() {
+        let bytes = vec![0x39; 600_003];
+        DecodePipeline::run(bytes.as_slice(), |reader| {
+            assert_eq!(reader.read(&mut [])?, 0);
+            let mut actual = Vec::new();
+            reader.read_to_end(&mut actual)?;
+            assert_eq!(actual, bytes);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn decode_pipeline_propagates_late_errors_and_retries_interruptions() {
+        struct InterruptedOnce(bool);
+        impl Read for InterruptedOnce {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                if self.0 {
+                    b"".as_slice().read(output)
+                } else {
+                    self.0 = true;
+                    Err(io::ErrorKind::Interrupted.into())
+                }
+            }
+        }
+        let error = DecodePipeline::run(LateFailure(b"decoded data"), |reader| {
+            io::copy(reader, &mut io::sink())?;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("late network failure"));
+
+        DecodePipeline::run(InterruptedOnce(false), |reader| {
+            assert_eq!(io::copy(reader, &mut io::sink())?, 0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn decode_pipeline_joins_after_consumer_failure() {
+        let error = DecodePipeline::run(io::repeat(0), |_reader| {
+            Err::<(), _>(anyhow::anyhow!("consumer rejected data"))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("consumer rejected data"));
+    }
+
+    #[test]
+    fn decode_pipeline_rejects_unconsumed_input_and_worker_panic() {
+        struct Panics;
+        impl Read for Panics {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("injected decoder failure");
+            }
+        }
+        assert!(DecodePipeline::run(b"data".as_slice(), |_| Ok(())).is_err());
+        assert!(
+            DecodePipeline::run(Panics, |reader| {
+                io::copy(reader, &mut io::sink())?;
+                Ok(())
+            })
+            .is_err()
+        );
+    }
 
     struct Fixture {
         data: Vec<u8>,
