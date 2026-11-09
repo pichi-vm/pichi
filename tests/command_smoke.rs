@@ -262,8 +262,9 @@ impl Smoke {
                 "smoke:output",
             ],
         );
+        let image = self.inspect("smoke:output");
         assert_ne!(
-            self.inspect("smoke:output")["digest"],
+            image["digest"],
             self.inspect("qualification.local/builder:smoke")["digest"]
         );
         let boot = self.run(
@@ -275,13 +276,16 @@ impl Smoke {
             "guest did not verify built content:\n{boot}"
         );
         assert!(!boot.contains("Kernel panic"), "{boot}");
-        let id = fs::read_to_string(self.directory.join("run.stderr.log"))
-            .unwrap()
+        let workloads = self.run("ps", &["ps"]);
+        let id = workloads
             .lines()
-            .find_map(|line| uuid::Uuid::parse_str(line).ok())
-            .expect("foreground run prints its workload ID")
+            .filter(|line| line.contains(image["digest"].as_str().unwrap()))
+            .find_map(|line| uuid::Uuid::parse_str(line.split_whitespace().next()?).ok())
+            .expect("ps lists the foreground workload")
             .to_string();
-        assert!(self.run("ps", &["ps"]).contains(&id));
+        assert!(!boot.contains(&id), "{boot}");
+        let stderr = fs::read_to_string(self.directory.join("run.stderr.log")).unwrap();
+        assert!(!stderr.contains(&id), "{stderr}");
         assert!(self.run("logs", &["logs", &id]).contains("PICHI_SMOKE_OK"));
         assert_eq!(self.run("wait", &["wait", &id]).trim(), "0");
         assert_eq!(self.run("stop", &["stop", &id]).trim(), id);
