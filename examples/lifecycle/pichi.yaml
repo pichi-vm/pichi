@@ -16,6 +16,7 @@ image:
       kernel.systemd.show_status: "error"
       kernel.systemd.log_level: "warning"
       kernel.systemd.getty_auto: "no"
+      kernel.udev.children_max: "1"
       kernel.systemd.unit: lifecycle.service
       kernel.systemd.tty.term.hvc0: "dumb"
       kernel.systemd.tty.term.console: "dumb"
