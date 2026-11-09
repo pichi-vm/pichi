@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Pichi lifecycle demo
+Requires=dracut-shutdown.service
+After=dracut-shutdown.service
+SuccessAction=poweroff
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/printf "Hello from Pichi.\nWorkload complete. Shutting down.\n"
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/hvc0

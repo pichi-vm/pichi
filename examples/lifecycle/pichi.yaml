@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+version: 1
+stages:
+  workload:
+    extend: ghcr.io/pichi-vm/fedora:43
+    steps:
+      - copy: { path: files, into: /etc/systemd/system }
+image:
+  root: workload
+  boot:
+    inherit: workload
+    extend:
+      kernel.loglevel: "5"
+      kernel.systemd.show_status: "error"
+      kernel.systemd.log_level: "warning"
+      kernel.systemd.getty_auto: "no"
+      kernel.systemd.unit: lifecycle.service
+      kernel.systemd.tty.term.hvc0: "dumb"
+      kernel.systemd.tty.term.console: "dumb"
+      kernel.systemd.tty.rows.console: "24"
+      kernel.systemd.tty.columns.console: "80"
+requirements:
+  cpus: { recommended: 4 }
+  memory: { required: 512, recommended: 1024 }
+  storage: { recommended: 64 }
