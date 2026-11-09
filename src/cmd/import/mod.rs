@@ -32,7 +32,7 @@ use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use super::{boot_config::BootConfigFile, cache::ImageStore as _};
 use crate::cli::{ImportPmiArgs, ImportRawArgs};
-use crate::cmd::manifest_ext::ManifestExt as _;
+use crate::cmd::manifest_ext::{ManifestExt as _, ScuteRoots};
 use crate::cmd::platform::PlatformExt as _;
 use crate::config::Config as PichiConfig;
 
@@ -127,6 +127,15 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     let manifest_bytes = serde_json::to_vec(&manifest).context("serialising bootable manifest")?;
     let manifest_digest =
         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
+
+    let mut roots = ScuteRoots::default();
+    for layer in manifest.scute_layers() {
+        let root = super::layer::PreparedLayer::prepare_cached(&manifest, layer, &blob_store)
+            .await?
+            .context("scute has no root")?;
+        roots.add(layer, root)?;
+    }
+    roots.verify(&manifest)?;
 
     // Commit blobs (PMI → bootconfig → launch config → manifest), then tag. Scute blobs (if
     // any) are already present — content-addressed no-op if re-put.

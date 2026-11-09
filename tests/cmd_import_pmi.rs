@@ -131,6 +131,44 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
         app.annotations.get("dev.pichi.carapace.verity.hash"),
         Some(root)
     );
+
+    // A new composition must authenticate inherited bytes even when its
+    // source image and prepared verity are already cached.
+    let scute = base.scute_layers()[0];
+    let store = FilesystemBlobStore::new(&g);
+    std::fs::write(
+        store.blob_path(&scute.digest_str().parse().unwrap()),
+        vec![b'x'; scute.size() as usize],
+    )
+    .unwrap();
+    let failed = pichi(&tmp)
+        .args([
+            "import",
+            "pmi",
+            "--arch",
+            TEST_ARCH,
+            pmi.to_str().unwrap(),
+            "--carapace",
+            "app:base",
+            "-t",
+            "app:bad",
+        ])
+        .assert()
+        .failure();
+    assert!(String::from_utf8_lossy(&failed.get_output().stderr).contains("digest mismatch"));
+    assert!(
+        FilesystemTagDb::open(&g)
+            .unwrap()
+            .resolve_tag("docker.io/library/app:bad")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        resolve_manifest(&g, "docker.io/library/app:base").await,
+        base
+    );
+    assert_eq!(resolve_manifest(&g, "docker.io/library/app:1").await, app);
 }
 
 #[tokio::test]
