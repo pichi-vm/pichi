@@ -8,15 +8,13 @@
 //! rule these run/build-specific queries live here as an extension trait rather
 //! than as free functions scattered across the command modules.
 
-use crate::cmd::layer::{PreparedLayer, ScuteFiles};
 use crate::cmd::platform::PlatformExt as _;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
-use crate::cmd::verity::{VerityFormat as _, VerityParams};
-use conglobate::artifact::{BootConfigDescriptor, Digest, Layer, Manifest, ScuteDescriptor};
+use crate::cmd::verity::VerityParams;
+use conglobate::artifact::{BootConfigDescriptor, Layer, Manifest, ScuteDescriptor};
 use devmap_verity::{HashType, Header};
-use pichi_storage::BlobStore;
 
 /// Chain-wide verity annotation keys.
 const ANN_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
@@ -26,7 +24,6 @@ const ANN_HASH_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.hash-block-size";
 const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
 /// pichi-side queries and validations on a cached [`Manifest`].
-#[allow(async_fn_in_trait)] // used only via static dispatch on Manifest values
 pub trait ManifestExt {
     /// Decode and validate a manifest at a Pichi input boundary.
     fn decode_json(reader: impl std::io::Read) -> Result<Self>
@@ -42,15 +39,6 @@ pub trait ManifestExt {
     fn check_architecture(&self) -> Result<()>;
     /// Header for a scute using the manifest's reconstruction parameters.
     fn verity_header(&self, scute: &ScuteDescriptor, size: Option<u64>) -> Result<Header>;
-    /// Recompute a cached layer's root with bounded memory; metadata layers have no root.
-    async fn cached_scute_root(
-        &self,
-        layer: &Layer,
-        blob_store: &dyn BlobStore,
-    ) -> Result<Option<[u8; 32]>>;
-    /// Reconstructed tip after verifying scutes in manifest order.
-    /// The reconstructed chain must match the authenticated manifest commitment.
-    async fn carapace_top_root(&self, blob_store: &dyn BlobStore) -> Result<[u8; 32]>;
 }
 
 impl ManifestExt for Manifest {
@@ -134,51 +122,6 @@ impl ManifestExt for Manifest {
                 value => bail!("unsupported verity hash type {value}"),
             };
         Ok(header)
-    }
-
-    async fn cached_scute_root(
-        &self,
-        layer: &Layer,
-        blob_store: &dyn BlobStore,
-    ) -> Result<Option<[u8; 32]>> {
-        let (scute, compressed) = match layer {
-            Layer::Scute(d) => (d, false),
-            Layer::ScuteZstd(d) => (d, true),
-            _ => return Ok(None),
-        };
-        let digest: Digest = scute.digest.parse()?;
-        let files = ScuteFiles::new(self, layer, blob_store)?;
-        if !tokio::fs::try_exists(&files.data).await?
-            || !tokio::fs::try_exists(&files.verity).await?
-        {
-            return PreparedLayer::prepare_cached(self, layer, blob_store).await;
-        }
-        let path = files.data;
-        let size = tokio::fs::metadata(&path)
-            .await
-            .with_context(|| format!("reading cached scute {}", path.display()))?
-            .len();
-        let header = self.verity_header(scute, (!compressed).then_some(scute.size))?;
-        if size != header.parameters.data_size()? {
-            bail!("prepared scute extent mismatch: {digest}");
-        }
-        let root = tokio::task::spawn_blocking(move || {
-            let input = std::io::BufReader::new(std::fs::File::open(path)?);
-            header.root(input)
-        })
-        .await
-        .context("verity task panicked")??;
-        Ok(Some(root))
-    }
-
-    async fn carapace_top_root(&self, blob_store: &dyn BlobStore) -> Result<[u8; 32]> {
-        let mut roots = ScuteRoots::default();
-        for layer in &self.layers {
-            if let Some(root) = self.cached_scute_root(layer, blob_store).await? {
-                roots.add(layer, root)?;
-            }
-        }
-        roots.verify(self)?.context("artifact has no carapace")
     }
 }
 

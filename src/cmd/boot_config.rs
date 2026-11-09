@@ -99,24 +99,28 @@ impl BootConfigFile {
         source.prepared_dir().join("bootconfig")
     }
 
-    /// Regenerate native text from verified wire bytes at every launch.
-    pub(super) async fn prepare_image(
+    /// Select native text prepared at ingestion without reading its contents.
+    pub(super) async fn prepared_image(
         manifest: &Manifest,
         store: &(impl BlobStore + ?Sized),
     ) -> Result<Option<PathBuf>> {
-        let Some(config) = Self::from_image(manifest, store).await? else {
+        let Some(descriptor) = manifest.layers.iter().find_map(|layer| match layer {
+            Layer::BootConfig(descriptor) => Some(descriptor),
+            _ => None,
+        }) else {
             return Ok(None);
         };
-        let descriptor = config.descriptor().context("empty bootconfig")?;
-        let directory = store.blob_path(&descriptor.digest.parse()?).prepared_dir();
-        tokio::fs::create_dir_all(&directory).await?;
-        let path = directory.join("bootconfig");
-        pichi_storage::write_sidecar_atomic(
-            &store.scratch_dir().await?,
-            &path,
-            config.text.as_bytes(),
-        )
-        .await?;
+        let path = Self::path(&store.blob_path(&descriptor.digest.parse()?));
+        ensure!(
+            tokio::fs::metadata(&path)
+                .await
+                .with_context(|| format!(
+                    "prepared bootconfig missing: {}; pull --pull=always or load the image again",
+                    path.display()
+                ))?
+                .is_file(),
+            "prepared bootconfig is not a file"
+        );
         Ok(Some(path))
     }
 
@@ -185,7 +189,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn launch_prepares_exact_native_bytes_and_repairs_stale_sidecars() {
+    async fn ingestion_prepares_native_text_and_launch_trusts_it() {
         let root = tempfile::tempdir().unwrap();
         let store = pichi_storage::FilesystemBlobStore::new(root.path());
         let text = format!("key = \"{}\";\n", "x".repeat(64 * 1024));
@@ -210,15 +214,24 @@ mod tests {
             ],
             annotations: std::collections::BTreeMap::default(),
         };
-        let path = BootConfigFile::prepare_image(&manifest, &store)
+        let path = BootConfigFile::prepared_image(&manifest, &store)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(tokio::fs::read(&path).await.unwrap(), text.as_bytes());
-        tokio::fs::write(&path, b"stale").await.unwrap();
-        BootConfigFile::prepare_image(&manifest, &store)
+        tokio::fs::write(&path, b"cached text").await.unwrap();
+        let source = store.blob_path(&config.descriptor().unwrap().digest.parse().unwrap());
+        tokio::fs::write(&source, b"not compressed").await.unwrap();
+        BootConfigFile::prepared_image(&manifest, &store)
             .await
             .unwrap();
-        assert_eq!(tokio::fs::read(&path).await.unwrap(), text.as_bytes());
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"cached text");
+        tokio::fs::remove_file(&path).await.unwrap();
+        assert!(
+            BootConfigFile::prepared_image(&manifest, &store)
+                .await
+                .is_err()
+        );
+        assert!(!path.exists());
     }
 }

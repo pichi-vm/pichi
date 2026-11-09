@@ -808,10 +808,7 @@ pub(super) mod tests {
                 .await
                 .unwrap();
             let manifest: Manifest = serde_json::from_value(fixture.manifest).unwrap();
-            assert_eq!(
-                manifest.carapace_top_root(&store).await.unwrap(),
-                fixture.tip
-            );
+            assert_eq!(manifest.carapace_root().unwrap().unwrap(), fixture.tip);
             for (layer, expected) in manifest.layers.iter().zip(fixture.trees) {
                 let files = ScuteFiles::new(&manifest, layer, &store).unwrap();
                 assert_eq!(std::fs::read(files.verity).unwrap(), expected);
@@ -872,10 +869,6 @@ pub(super) mod tests {
             let bytes = store.get_blob(&digest).await.unwrap();
             assert_eq!(bytes, serde_json::to_vec(&fixture.manifest).unwrap());
             let manifest = Manifest::decode_json(&bytes[..]).unwrap();
-            assert_eq!(
-                manifest.carapace_top_root(&store).await.unwrap(),
-                fixture.tip
-            );
             assert_eq!(manifest.carapace_root().unwrap(), Some(fixture.tip));
             for (blob, tree) in fixture.blobs.iter().zip(&fixture.trees) {
                 let digest = Digest::Sha256(Sha256::digest(blob).into());

@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 use std::io::Cursor;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, Write};
 use std::num::NonZero;
 
 use devmap_core::{BlockSize, Geometry};
@@ -78,7 +78,6 @@ impl VerityParams {
 /// Validate the declared data-block count and zero-pad only a short final block.
 pub(crate) trait VerityFormat {
     fn format_padded<R: Read, W: Write + Seek>(self, data: R, hash: W) -> io::Result<[u8; 32]>;
-    fn root<R: Read>(self, data: R) -> io::Result<[u8; 32]>;
 }
 
 impl VerityFormat for Header {
@@ -107,10 +106,6 @@ impl VerityFormat for Header {
                 "carapace root must be 32 bytes",
             )
         })
-    }
-
-    fn root<R: Read>(self, data: R) -> io::Result<[u8; 32]> {
-        self.format_padded(data, RootSink::default())
     }
 }
 
@@ -162,34 +157,6 @@ impl<R: Read> Read for PaddedReader<R> {
     }
 }
 
-/// Discard formatted bytes while preserving the seek contract for root-only reads.
-#[derive(Default)]
-struct RootSink(u64);
-
-impl Write for RootSink {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0 += bytes.len() as u64;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Seek for RootSink {
-    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
-        self.0 = match from {
-            SeekFrom::Start(position) => position,
-            SeekFrom::Current(offset) => self
-                .0
-                .checked_add_signed(offset)
-                .ok_or(io::ErrorKind::InvalidInput)?,
-            SeekFrom::End(_) => return Err(io::ErrorKind::Unsupported.into()),
-        };
-        Ok(self.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,10 +180,18 @@ mod tests {
         assert_eq!(output.blob, p.compute(&padded).unwrap().blob);
         assert_eq!(
             output.root_hash,
-            p.header(4097).unwrap().root(data.as_slice()).unwrap()
+            p.header(4097)
+                .unwrap()
+                .format_padded(data.as_slice(), Cursor::new(Vec::new()))
+                .unwrap()
         );
         for size in [4096, 8193] {
-            assert!(p.header(size).unwrap().root(data.as_slice()).is_err());
+            assert!(
+                p.header(size)
+                    .unwrap()
+                    .format_padded(data.as_slice(), Cursor::new(Vec::new()))
+                    .is_err()
+            );
         }
         assert!(p.compute(&[]).is_err());
     }
@@ -227,7 +202,10 @@ mod tests {
         for blocks in [1, 2] {
             for length in [0, 1, 4095, 4096, 4097, 8191, 8192, 8193] {
                 let data = vec![0x5a; length];
-                let result = p.header_for_blocks(blocks).unwrap().root(data.as_slice());
+                let result = p
+                    .header_for_blocks(blocks)
+                    .unwrap()
+                    .format_padded(data.as_slice(), Cursor::new(Vec::new()));
                 let fits = match blocks {
                     1 => (1..=4096).contains(&length),
                     2 => (4097..=8192).contains(&length),
@@ -240,7 +218,7 @@ mod tests {
         assert!(
             p.header_for_blocks(u64::MAX)
                 .unwrap()
-                .root(&b"x"[..])
+                .format_padded(&b"x"[..], Cursor::new(Vec::new()))
                 .is_err()
         );
     }

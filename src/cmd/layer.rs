@@ -21,6 +21,7 @@ use crate::cmd::manifest_ext::ManifestExt as _;
 pub(super) struct ScuteFiles {
     pub data: PathBuf,
     pub verity: PathBuf,
+    pub data_size: u64,
 }
 
 impl ScuteFiles {
@@ -52,6 +53,7 @@ impl ScuteFiles {
         Ok(Self {
             data,
             verity: source.verity_path(&key),
+            data_size: header.parameters.data_size()?,
         })
     }
 }
@@ -71,22 +73,25 @@ struct PreparedScute {
 }
 
 impl PreparedLayer {
-    /// Rebuild transport-derived PMI bytes from the verified source at launch.
-    /// The PMI content is opaque here; Dillo owns its interpretation.
-    pub(super) async fn prepare_pmi(
-        manifest: &Manifest,
-        layer: &Layer,
-        store: &dyn BlobStore,
-    ) -> Result<PathBuf> {
-        let path = store.blob_path(&layer.digest_str().parse()?);
-        match layer {
-            Layer::Pmi(_) => Ok(path),
-            Layer::PmiZstd(_) => {
-                Self::prepare_cached(manifest, layer, store).await?;
-                Ok(Self::pmi_path(&path))
-            }
+    /// Select an already prepared PMI. Launch never repairs or decodes cache files.
+    pub(super) async fn pmi_file(layer: &Layer, store: &dyn BlobStore) -> Result<PathBuf> {
+        let source = store.blob_path(&layer.digest_str().parse()?);
+        let path = match layer {
+            Layer::Pmi(_) => source,
+            Layer::PmiZstd(_) => Self::pmi_path(&source),
             _ => bail!("layer is not PMI"),
-        }
+        };
+        anyhow::ensure!(
+            tokio::fs::metadata(&path)
+                .await
+                .with_context(|| format!(
+                    "prepared PMI missing: {}; pull --pull=always or load the image again",
+                    path.display()
+                ))?
+                .is_file(),
+            "prepared PMI is not a file"
+        );
+        Ok(path)
     }
 
     fn pmi_path(source: &Path) -> PathBuf {
@@ -510,9 +515,10 @@ mod tests {
                         std::fs::remove_file(path).unwrap();
                     }
                 }
-                let path = PreparedLayer::prepare_pmi(&fixture.manifest, layer, &store)
+                PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
                     .await
                     .unwrap();
+                let path = PreparedLayer::pmi_file(layer, &store).await.unwrap();
                 assert_eq!(path == source, !compressed);
                 assert_eq!(std::fs::read(path).unwrap(), fixture.data);
                 assert_eq!(std::fs::read(&source).unwrap(), fixture.wire);
@@ -521,7 +527,7 @@ mod tests {
                 // A valid-looking decoded sidecar must never mask a damaged source.
                 std::fs::write(&source, b"damaged wire bytes").unwrap();
                 assert!(
-                    PreparedLayer::prepare_pmi(&fixture.manifest, layer, &store)
+                    PreparedLayer::prepare_cached(&fixture.manifest, layer, &store)
                         .await
                         .is_err()
                 );

@@ -77,10 +77,9 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
             let (pmi, build_scutes) = build_manifest
                 .partition_layers()
                 .with_context(|| format!("build image {build_image_ref} is not bootable"))?;
-            let pmi_path =
-                super::layer::PreparedLayer::prepare_pmi(&build_manifest, pmi, &blob_store).await?;
+            let pmi_path = super::layer::PreparedLayer::pmi_file(pmi, &blob_store).await?;
             let bootconfig_path =
-                super::boot_config::BootConfigFile::prepare_image(&build_manifest, &blob_store)
+                super::boot_config::BootConfigFile::prepared_image(&build_manifest, &blob_store)
                     .await?;
 
             let mut gpt_specs = Vec::new();
@@ -380,7 +379,7 @@ pub(crate) async fn resolve_manifest(
         .with_context(|| format!("invalid reference: {reference}"))?;
     let digest = blob_store.resolve(&target, db).await?;
     let (_, manifest) = blob_store
-        .manifest(&digest)
+        .cached_manifest(&digest)
         .await
         .with_context(|| format!("reading image {reference}; try pichi pull {reference}"))?;
     Ok((digest, manifest))
