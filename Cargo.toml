@@ -53,6 +53,7 @@ tokio-util = { workspace = true, features = ["io", "io-util", "codec"] }
 toml.workspace = true
 uuid.workspace = true
 ruzstd = "0.9.1"
+zstd = { version = "=0.13.3", default-features = false }
 crossterm = { version = "0.29", default-features = false, features = ["windows"] }
 
 # Optional guest Corium binaries for `vm-tests` only. Production builds launch

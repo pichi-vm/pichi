@@ -98,20 +98,8 @@ impl PreparedLayer {
         source.prepared_dir().join("pmi")
     }
 
-    fn decoder<R: Read>(
-        input: R,
-    ) -> Result<ruzstd::decoding::StreamingDecoder<R, ruzstd::decoding::FrameDecoder>> {
-        match ruzstd::decoding::StreamingDecoder::new(input) {
-            Ok(decoder) => Ok(decoder),
-            Err(ruzstd::decoding::errors::FrameDecoderError::WindowSizeTooBig {
-                requested,
-                max,
-            }) => bail!(
-                "zstd window size too large: requested {requested} bytes (limit {max} bytes / {} MiB)",
-                max / (1024 * 1024)
-            ),
-            Err(err) => Err(err.into()),
-        }
+    fn decoder<R: Read>(input: R) -> Result<LayerDecoder<R>> {
+        LayerDecoder::new(input)
     }
 
     pub(super) async fn fetch<R: Registry>(
@@ -325,6 +313,57 @@ impl PreparedLayer {
             store.put_blob_from_path(source.path(), digest).await?;
         }
         Ok(self.scute.map(|scute| scute.root))
+    }
+}
+
+/// Decode one bounded frame without silently consuming trailing wire bytes.
+struct LayerDecoder<R: Read> {
+    inner: zstd::stream::read::Decoder<'static, BufReader<io::Chain<io::Cursor<[u8; 4]>, R>>>,
+}
+
+impl<R: Read> LayerDecoder<R> {
+    fn new(mut input: R) -> Result<Self> {
+        // Match ruzstd's single standard-frame contract. The native decoder
+        // also accepts skippable frames, which are not layer payloads.
+        let mut magic = [0; 4];
+        input.read_exact(&mut magic)?;
+        anyhow::ensure!(
+            magic == [0x28, 0xb5, 0x2f, 0xfd],
+            "expected a standard zstd frame"
+        );
+        // Replay below WireReader so canonical bytes are hashed exactly once.
+        let input = io::Cursor::new(magic).chain(input);
+        let mut inner = zstd::stream::read::Decoder::new(input)?.single_frame();
+        // Preserve the existing 128 MiB maximum decoder window.
+        inner.window_log_max(27)?;
+        Ok(Self { inner })
+    }
+}
+
+impl<R: Read> Read for LayerDecoder<R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        let count = self.inner.read(output).map_err(|error| {
+            if error.to_string().contains("too much memory") {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zstd window size too large (limit 128 MiB)",
+                )
+            } else {
+                error
+            }
+        })?;
+        // The native decoder buffers input. Bytes read past this frame must
+        // be rejected here; WireReader::finish checks the unbuffered remainder.
+        if count == 0 && !self.inner.get_ref().buffer().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trailing bytes after compressed layer",
+            ));
+        }
+        Ok(count)
     }
 }
 
@@ -572,6 +611,68 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn skippable_frames_are_not_compressed_layer_payloads() {
+        let scratch = tempfile::tempdir().unwrap();
+        for magic in 0x184D_2A50_u32..=0x184D_2A5F {
+            for payload in [Vec::new(), vec![7; 31]] {
+                for mut fixture in [Fixture::pmi(true), Fixture::new(true, 2)] {
+                    fixture.wire = magic.to_le_bytes().to_vec();
+                    fixture
+                        .wire
+                        .extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                    fixture.wire.extend_from_slice(&payload);
+                    let (size, digest) = match &mut fixture.manifest.layers[0] {
+                        Layer::PmiZstd(descriptor) => {
+                            (&mut descriptor.size, &mut descriptor.digest)
+                        }
+                        Layer::ScuteZstd(descriptor) => {
+                            (&mut descriptor.size, &mut descriptor.digest)
+                        }
+                        _ => unreachable!(),
+                    };
+                    *size = fixture.wire.len() as u64;
+                    *digest = Digest::Sha256(Sha256::digest(&fixture.wire).into()).to_string();
+                    assert!(fixture.prepare(scratch.path()).is_err(), "magic {magic:#x}");
+                    assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compressed_layers_accept_fragmented_wire_input() {
+        struct Fragments<'a>(&'a [u8]);
+        impl Read for Fragments<'_> {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                let length = output.len().min(3);
+                self.0.read(&mut output[..length])
+            }
+        }
+        for fixture in [Fixture::pmi(true), Fixture::new(true, 2)] {
+            let scratch = tempfile::tempdir().unwrap();
+            let prepared = PreparedLayer::read(
+                Fragments(&fixture.wire),
+                &fixture.manifest,
+                &fixture.manifest.layers[0],
+                scratch.path(),
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(prepared.source.as_ref().unwrap().path()).unwrap(),
+                fixture.wire
+            );
+            if let Some(pmi) = &prepared.pmi {
+                assert_eq!(std::fs::read(pmi.path()).unwrap(), fixture.data);
+            }
+            if let Some(scute) = &prepared.scute {
+                assert_eq!(scute.root, fixture.root);
+            }
+            drop(prepared);
+            assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+        }
     }
 
     #[test]
