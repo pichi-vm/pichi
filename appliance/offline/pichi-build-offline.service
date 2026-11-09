@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Conglobate cached-input build appliance
+Requires=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount pichi-lsm.service
+After=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount pichi-lsm.service
+SuccessAction=poweroff-force
+FailureAction=poweroff
+
+[Service]
+Type=oneshot
+RuntimeDirectory=conglobate
+RuntimeDirectoryMode=0700
+ExecStartPre=/usr/bin/grep -Eq '^Seccomp:[[:space:]]+2' /proc/self/status
+ExecStart=/usr/bin/conglobate appliance
+StandardOutput=journal+console
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register
+
+[Install]
+WantedBy=multi-user.target

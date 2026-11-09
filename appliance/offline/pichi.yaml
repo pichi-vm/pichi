@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+version: 1
+
+stages:
+  appliance:
+    extend: ghcr.io/pichi-vm/pichi-build:latest
+    steps:
+      - copy: { path: appliance/offline/pichi-build-offline.service, into: /etc/systemd/system/pichi-build-offline.service }
+      - exec:
+          command: |
+            systemctl --root=/ disable conglobate-build.service
+            systemctl --root=/ enable pichi-build-offline.service
+            rm -f /etc/systemd/system/bootstrap-time.service
+            systemctl --root=/ mask bootstrap-time.service systemd-networkd.service systemd-networkd-wait-online.service systemd-resolved.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-resolved-monitor.socket systemd-resolved-varlink.socket
+
+image:
+  root: appliance
+  boot:
+    inherit: appliance
+
+requirements:
+  slot: pci
+  cpus: { recommended: 2 }
+  memory: { required: 2048, recommended: 4096 }
