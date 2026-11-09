@@ -128,28 +128,27 @@ async fn pull_skips_existing_blobs() {
         .assert()
         .success();
     let blobs = g.join("blobs").join("sha256");
-    let mtimes_before: Vec<_> = std::fs::read_dir(&blobs)
-        .unwrap()
-        .filter_map(|e| {
-            e.ok()
-                .and_then(|e| e.metadata().ok())
-                .and_then(|m| m.modified().ok())
-        })
-        .collect();
+    let canonical_mtimes = || {
+        std::fs::read_dir(&blobs)
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_type().unwrap().is_file())
+            .map(|entry| {
+                (
+                    entry.file_name(),
+                    entry.metadata().unwrap().modified().unwrap(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let mtimes_before = canonical_mtimes();
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
         .args(["pull", "--pull=always", &format!("{base}/dedup:1")])
         .assert()
         .success();
-    let mtimes_after: Vec<_> = std::fs::read_dir(&blobs)
-        .unwrap()
-        .filter_map(|e| {
-            e.ok()
-                .and_then(|e| e.metadata().ok())
-                .and_then(|m| m.modified().ok())
-        })
-        .collect();
+    let mtimes_after = canonical_mtimes();
     assert_eq!(
         mtimes_before, mtimes_after,
         "REGISTRY-01: blob files must not be re-written when already present by digest"

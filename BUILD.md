@@ -292,8 +292,9 @@ receives compressed COW bytes.
 
 Pichi constructs verity from the prepared data and full manifest salt using
 SHA-256, format 1/hash type 1, 4,096-byte data/hash blocks, and a zero UUID.
-Pull, run and build recompute data roots when reusing prepared files; they do
-not rewrite existing hash trees. Load snapshots the supplied OCI blobs and
+Pull verifies and prepares cached layers during ingestion. Run and build
+recompute data roots when reusing prepared files; they do not rewrite existing
+hash trees. Load snapshots the supplied OCI blobs and
 rebuilds every tree before importing it.
 
 Scutes must appear in base-to-tip manifest order: the base has a zero parent
