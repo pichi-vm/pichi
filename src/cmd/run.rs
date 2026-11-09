@@ -152,7 +152,22 @@ async fn build_dillo_args(
     requirements: &Requirements,
 ) -> Result<Vec<String>> {
     let (pmi, scutes) = manifest.partition_layers()?;
-    let pmi_path = super::layer::PreparedLayer::prepare_pmi(manifest, pmi, blob_store).await?;
+    // These independent inputs must both be verified before launch. Wait for
+    // both to finish before returning either error.
+    let (pmi_path, gpt) = tokio::join!(
+        super::layer::PreparedLayer::prepare_pmi(manifest, pmi, blob_store),
+        async {
+            if scutes.is_empty() {
+                Ok(None)
+            } else {
+                build_gpt_spec(manifest, &scutes, blob_store)
+                    .await
+                    .map(Some)
+            }
+        }
+    );
+    let pmi_path = pmi_path?;
+    let gpt = gpt?;
 
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(&pmi_path)];
     argv.extend([
@@ -175,13 +190,9 @@ async fn build_dillo_args(
         argv.push("--memory".to_string());
         argv.push(m.to_string());
     }
-    if !scutes.is_empty() {
+    if let Some(gpt) = gpt {
         argv.push("--gpt".to_string());
-        argv.push(format!(
-            "{},bus={}",
-            build_gpt_spec(manifest, &scutes, blob_store).await?,
-            requirements.slot.as_argument()
-        ));
+        argv.push(format!("{},bus={}", gpt, requirements.slot.as_argument()));
     }
     for interface in requirements.interfaces.values() {
         argv.push("--net".to_string());
