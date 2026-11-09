@@ -52,8 +52,6 @@ elif not sys.argv[1:]:
         environment["CARGO_TARGET_DIR"] = str(target)
         subprocess.run(["cargo", "+" + toolchain, "build", "--locked", "--features", "qualification", "--bins"], cwd=root, env=environment, check=True)
         binary = target / "debug" / ("madrillo.exe" if os.name == "nt" else "madrillo")
-        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
-            output.write(f"MADRILLO_BIN={binary}\n")
         with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as output:
             output.write(f"{binary.parent}\n")
     except BaseException:
