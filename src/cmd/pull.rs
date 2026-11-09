@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use conglobate::artifact::Manifest;
 use conglobate::artifact::{Digest, Reference};
 
-use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
+use crate::cmd::manifest_ext::ScuteRoots;
 
 use super::cache::{ImageMetadata, ImageStore as _};
 use super::layer::PreparedLayer;
@@ -152,8 +152,8 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         }
     }
 
-    // Download missing layers concurrently. Cached scutes need a bounded-memory
-    // root recomputation; freshly downloaded scutes return their formatter root.
+    // Authenticate and prepare every layer at ingestion, including cache hits.
+    // Fresh downloads return their formatter root directly.
     // Consume results in manifest order even when downloads finish out of order.
     let target_ref = &target;
     let manifest_ref = &manifest;
@@ -161,7 +161,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         .map(|layer| async move {
             let digest: Digest = layer.digest_str().parse()?;
             let root = if blob_store.blob_exists(&digest).await {
-                manifest_ref.cached_scute_root(layer, blob_store).await?
+                PreparedLayer::prepare_cached(manifest_ref, layer, blob_store).await?
             } else {
                 PreparedLayer::fetch(registry, target_ref, manifest_ref, layer, blob_store)
                     .await
@@ -217,6 +217,7 @@ pub(crate) async fn pull_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::manifest_ext::ManifestExt as _;
     use crate::cmd::platform::PlatformExt as _;
     use bytes::Bytes;
     use conglobate::artifact::Layer;
@@ -240,6 +241,71 @@ mod tests {
 
     fn open_db(graphroot: &Path) -> FilesystemTagDb {
         FilesystemTagDb::open(graphroot).unwrap()
+    }
+
+    #[tokio::test]
+    async fn pull_prepares_cached_compressed_pmi_before_publication() {
+        for cached in [false, true] {
+            for corrupt in [false, true] {
+                let (_tmp, graph) = graphroot();
+                let store = FilesystemBlobStore::new(&graph);
+                let db = open_db(&graph);
+                let target: Reference = "ghcr.io/example/pmi:1".parse().unwrap();
+                let registry = MockRegistry::new();
+                let data = b"opaque prepared PMI";
+                let wire = ruzstd::encoding::compress_to_vec(
+                    data.as_slice(),
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                );
+                let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
+                let manifest = Manifest {
+                    schema_version: 2,
+                    media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
+                    artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+                    config: ConfigDescriptor::canonical(),
+                    layers: vec![Layer::PmiZstd(PmiDescriptor {
+                        digest: digest.to_string(),
+                        size: wire.len() as u64,
+                    })],
+                    annotations: BTreeMap::new(),
+                };
+                registry.insert_manifest(
+                    "ghcr.io",
+                    "example/pmi",
+                    "1",
+                    Bytes::from(serde_json::to_vec(&manifest).unwrap()),
+                );
+                let bytes = if corrupt { vec![0; wire.len()] } else { wire };
+                if cached {
+                    store.put_blob(&digest, &bytes).await.unwrap();
+                } else {
+                    registry.insert_blob(
+                        "ghcr.io",
+                        "example/pmi",
+                        digest.clone(),
+                        Bytes::from(bytes),
+                    );
+                }
+                let result = pull_inner_with_registry(
+                    target.clone(),
+                    PullPolicy::Always,
+                    true,
+                    &registry,
+                    &store,
+                    &db,
+                )
+                .await;
+                assert_eq!(result.is_ok(), !corrupt, "{result:?}");
+                assert_eq!(
+                    db.resolve_tag(&target.to_string()).await.unwrap().is_some(),
+                    !corrupt
+                );
+                if !corrupt {
+                    let path = store.blob_path(&digest).prepared_dir().join("pmi");
+                    assert_eq!(std::fs::read(path).unwrap(), data);
+                }
+            }
+        }
     }
 
     #[tokio::test]
