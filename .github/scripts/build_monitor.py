@@ -9,10 +9,9 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import tomllib
 
-temporary = Path(os.environ["RUNNER_TEMP"]).resolve()
+root = Path(os.environ["RUNNER_TEMP"]).resolve() / "pichi-monitor"
 
 
 def remove_checkout(root):
@@ -26,22 +25,13 @@ def remove_checkout(root):
 
 
 if sys.argv[1:] == ["--cleanup"]:
-    source = os.environ.get("PICHI_MONITOR_SOURCE")
-    if source:
-        root = Path(source)
-        assert root.parent.resolve() == temporary and root.name.startswith("pichi-monitor-")
-        remove_checkout(root)
+    remove_checkout(root)
 elif not sys.argv[1:]:
     with open("Cargo.lock", "rb") as source:
         packages = tomllib.load(source)["package"]
     monitor = next(package for package in packages if package["name"] == "madrillo")
     revision = monitor["source"].rsplit("#", 1)[1]
-    root = Path(tempfile.mkdtemp(prefix="pichi-monitor-", dir=temporary))
     try:
-        # Publish before building so the always-run cleanup step also handles
-        # cancellation during clone or compilation.
-        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
-            output.write(f"PICHI_MONITOR_SOURCE={root}\n")
         subprocess.run(["git", "clone", "--no-checkout", "https://github.com/pichi-vm/madrillo", str(root)], check=True)
         subprocess.run(["git", "checkout", "--detach", revision], cwd=root, check=True)
         with (root / "rust-toolchain.toml").open("rb") as source:
