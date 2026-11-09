@@ -16,8 +16,9 @@ use conglobate::artifact::{
     ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
     ScuteAnnotations, ScuteDescriptor,
 };
+use devmap_verity::Format as _;
 use pichi::cmd::manifest_ext::ManifestExt as _;
-use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobSidecarExt as _, BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
 #[path = "common/process.rs"]
@@ -68,7 +69,7 @@ async fn populate_bootable_with_requirements(
 ) -> (PathBuf, PathBuf) {
     let blob_store = FilesystemBlobStore::new(graphroot);
 
-    // Real cow bytes so the verity-root derivation in `pichi run` succeeds.
+    // Prepare the cached scute before launch, as ingestion does.
     let cow_bytes = vec![0u8; 4096];
     let cow_digest = sha256_digest(&cow_bytes);
     blob_store.put_blob(&cow_digest, &cow_bytes).await.unwrap();
@@ -107,11 +108,15 @@ async fn populate_bootable_with_requirements(
         blob_store.put_blob(&digest, &bytes).await.unwrap();
         manifest.config = ConfigDescriptor::for_config(digest.to_string(), bytes.len() as u64);
     }
-    let root = manifest
-        .cached_scute_root(&manifest.layers[0], &blob_store)
-        .await
-        .unwrap()
-        .unwrap();
+    let Layer::Scute(scute) = &manifest.layers[0] else {
+        unreachable!()
+    };
+    let header = manifest.verity_header(scute, Some(scute.size)).unwrap();
+    let source = blob_store.blob_path(&cow_digest);
+    std::fs::create_dir_all(source.prepared_dir()).unwrap();
+    let verity =
+        std::fs::File::create(source.verity_path(&sha256_digest(&header.encode()))).unwrap();
+    let root = header.format(cow_bytes.as_slice(), verity).unwrap();
     manifest.annotations.insert(
         "dev.pichi.carapace.verity.hash".into(),
         format!("sha256:{}", hex::encode(root)),
@@ -332,8 +337,6 @@ async fn run_execs_dillo_with_manifest_derived_devices() {
 
 #[tokio::test]
 async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
-    use pichi_storage::BlobSidecarExt as _;
-
     for compressed in [false, true] {
         for length in [4097, 8192] {
             let source = TempDir::new().unwrap();
@@ -370,10 +373,13 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             } else {
                 Layer::Scute(descriptor)
             };
-            let root = manifest
-                .cached_scute_root(&manifest.layers[0], &store)
-                .await
-                .unwrap()
+            let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &manifest.layers[0] else {
+                unreachable!()
+            };
+            let header = manifest.verity_header(scute, None).unwrap();
+            data.resize(8192, 0);
+            let root = header
+                .format(data.as_slice(), std::io::Cursor::new(Vec::new()))
                 .unwrap();
             manifest.annotations.insert(
                 "dev.pichi.carapace.verity.hash".into(),
@@ -416,7 +422,6 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             } else {
                 blob.clone()
             };
-            data.resize(8192, 0);
             assert_eq!(std::fs::read(&blob).unwrap(), wire);
             assert_eq!(std::fs::read(&data_path).unwrap(), data);
             let verity = std::fs::read(verity_path.clone()).unwrap();

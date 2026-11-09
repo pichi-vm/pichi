@@ -1237,7 +1237,7 @@ mod tests {
                     valid
                 );
                 if valid {
-                    assert_eq!(manifest.carapace_top_root(&store).await.unwrap(), parent);
+                    assert_eq!(manifest.carapace_root().unwrap().unwrap(), parent);
                 }
             }
         }

@@ -33,7 +33,7 @@ use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 use crate::cli::{PullArgs, PullPolicy, RunArgs};
 use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
 use crate::cmd::layer::ScuteFiles;
-use crate::cmd::manifest_ext::{ManifestExt, ScuteRoots};
+use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
 use crate::cmd::requirements::SlotArgument as _;
 use crate::cmd::workload::{Running, record::Records};
@@ -152,7 +152,7 @@ async fn build_dillo_args(
     requirements: &Requirements,
 ) -> Result<Vec<String>> {
     let (pmi, scutes) = manifest.partition_layers()?;
-    let pmi_path = super::layer::PreparedLayer::prepare_pmi(manifest, pmi, blob_store).await?;
+    let pmi_path = super::layer::PreparedLayer::pmi_file(pmi, blob_store).await?;
 
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(&pmi_path)];
     argv.extend([
@@ -162,7 +162,7 @@ async fn build_dillo_args(
     // Boot configuration accompanies the immutable PMI. Its native text is
     // supplied to Dillo without changing firmware or the embedded command line.
     if let Some(path) =
-        super::boot_config::BootConfigFile::prepare_image(manifest, blob_store).await?
+        super::boot_config::BootConfigFile::prepared_image(manifest, blob_store).await?
     {
         argv.push("--bootconfig".to_string());
         argv.push(path_arg(&path));
@@ -204,18 +204,43 @@ pub(crate) async fn build_gpt_spec(
     blob_store: &FilesystemBlobStore,
 ) -> Result<String> {
     let mut parts: Vec<String> = Vec::with_capacity(scutes.len() * 2);
-    let mut roots = ScuteRoots::default();
-    for layer in scutes {
+    for (index, layer) in scutes.iter().enumerate() {
         let files = ScuteFiles::new(manifest, layer, blob_store)?;
+        let data = tokio::fs::metadata(&files.data).await.with_context(|| {
+            format!(
+                "prepared scute missing: {}; pull --pull=always or load the image again",
+                files.data.display()
+            )
+        })?;
+        anyhow::ensure!(
+            data.is_file() && data.len() == files.data_size,
+            "prepared scute extent mismatch"
+        );
+        anyhow::ensure!(
+            tokio::fs::metadata(&files.verity)
+                .await
+                .with_context(|| format!(
+                    "prepared verity missing: {}; pull --pull=always or load the image again",
+                    files.verity.display()
+                ))?
+                .is_file(),
+            "prepared verity is not a file"
+        );
         let v_path = files.verity;
         let cow_path = files.data;
-
-        // Per-scute dm-verity root from the cached cow (PARTUUID / label prep).
-        let root: [u8; 32] = manifest
-            .cached_scute_root(layer, blob_store)
-            .await?
-            .context("scute has no verity root")?;
-        roots.add(layer, root)?;
+        // Ingestion verified the chain. Each child's salt commits its parent;
+        // the manifest commits the tip. Launch only consumes those identities.
+        let root: [u8; 32] = if let Some(next) = scutes.get(index + 1) {
+            let (Layer::Scute(next) | Layer::ScuteZstd(next)) = next else {
+                anyhow::bail!("non-scute in GPT layers");
+            };
+            let salt = hex::decode(&next.annotations.salt)?;
+            salt.get(..32)
+                .context("scute salt is shorter than its parent root")?
+                .try_into()?
+        } else {
+            manifest.carapace_root()?.context("missing carapace root")?
+        };
 
         // D-run-01: cow PARTUUID = root[0..16], verity PARTUUID = root[16..32].
         //
@@ -252,7 +277,6 @@ pub(crate) async fn build_gpt_spec(
             label_hex
         ));
     }
-    roots.verify(manifest)?;
     Ok(format!("partitions=[{}]", parts.join(",")))
 }
 
@@ -295,7 +319,7 @@ mod tests {
         ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
         ScuteAnnotations, ScuteDescriptor,
     };
-    use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore};
+    use pichi_storage::{BlobStore, FilesystemBlobStore};
     use tempfile::TempDir;
 
     fn chain_annotations() -> BTreeMap<String, String> {
@@ -393,7 +417,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compressed_pmi_is_decoded_before_passing_it_to_dillo() {
+    async fn launch_uses_prepared_pmi_without_decoding_or_repair() {
         use pichi_storage::BlobStore as _;
         let tmp = TempDir::new().unwrap();
         let store = FilesystemBlobStore::new(tmp.path());
@@ -419,6 +443,9 @@ mod tests {
                 Layer::Pmi(descriptor)
             }]);
             assert_eq!(m.partition_layers().unwrap().0, &m.layers[0]);
+            crate::cmd::layer::PreparedLayer::prepare_cached(&m, &m.layers[0], &store)
+                .await
+                .unwrap();
             let argv = build_dillo_args(&m, &store, None, None, &Requirements::default())
                 .await
                 .unwrap();
@@ -426,6 +453,22 @@ mod tests {
             assert_eq!(std::fs::read(&argv[1]).unwrap(), original);
             assert_eq!(argv[1] == path_arg(&store.blob_path(&digest)), !compressed);
             assert_eq!(std::fs::read(store.blob_path(&digest)).unwrap(), wire);
+            if compressed {
+                std::fs::write(store.blob_path(&digest), b"invalid compressed source").unwrap();
+                std::fs::write(&argv[1], b"trusted cached PMI").unwrap();
+                let again = build_dillo_args(&m, &store, None, None, &Requirements::default())
+                    .await
+                    .unwrap();
+                assert_eq!(again, argv);
+                assert_eq!(std::fs::read(&argv[1]).unwrap(), b"trusted cached PMI");
+                std::fs::remove_file(&argv[1]).unwrap();
+                assert!(
+                    build_dillo_args(&m, &store, None, None, &Requirements::default())
+                        .await
+                        .is_err()
+                );
+                assert!(!std::path::Path::new(&argv[1]).exists());
+            }
         }
     }
 
@@ -434,6 +477,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
+        let path = blob_store.blob_path(&m.layers[0].digest_str().parse().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, vec![0; 8192]).unwrap();
 
         let argv = build_dillo_args(
             &m,
@@ -458,6 +504,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
+        let path = blob_store.blob_path(&m.layers[0].digest_str().parse().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, vec![0; 8192]).unwrap();
 
         let argv = build_dillo_args(&m, &blob_store, None, None, &Requirements::default())
             .await
@@ -502,6 +551,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
+        let path = blob_store.blob_path(&m.layers[0].digest_str().parse().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, vec![0; 8192]).unwrap();
         let argv = build_dillo_args(&m, &blob_store, None, None, &Requirements::default())
             .await
             .unwrap();
@@ -609,8 +661,7 @@ mod tests {
             },
         };
         let mut m = manifest_with(vec![pmi_layer(), Layer::Scute(scute.clone())]);
-        let root = m
-            .cached_scute_root(&m.layers[1], &blob_store)
+        let root = crate::cmd::layer::PreparedLayer::prepare_cached(&m, &m.layers[1], &blob_store)
             .await
             .unwrap()
             .unwrap();
@@ -648,7 +699,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn launch_uses_prepared_data_for_both_registry_encodings() {
+    async fn launch_trusts_prepared_scutes_and_never_repairs_them() {
         for compressed in [false, true] {
             for length in [4097, 8192] {
                 let tmp = TempDir::new().unwrap();
@@ -663,6 +714,7 @@ mod tests {
                     data.clone()
                 };
                 let digest = sha256_digest(&wire);
+                store.put_blob(&digest, &wire).await.unwrap();
                 let scute = ScuteDescriptor {
                     digest: digest.to_string(),
                     size: wire.len() as u64,
@@ -677,22 +729,11 @@ mod tests {
                     Layer::Scute(scute)
                 };
                 let mut manifest = manifest_with(vec![pmi_layer(), layer]);
-                assert!(
-                    build_dillo_args(&manifest, &store, None, None, &Requirements::default())
-                        .await
-                        .is_err()
-                );
-                store.put_blob(&digest, &wire).await.unwrap();
-                let source = store.blob_path(&digest);
-                let files = ScuteFiles::new(&manifest, &manifest.layers[1], &store).unwrap();
-                let expected_data = if compressed || length != 8192 {
-                    source.deflated_path(8192)
-                } else {
-                    source.clone()
-                };
+                let pmi_path = store.blob_path(&manifest.layers[0].digest_str().parse().unwrap());
+                std::fs::write(&pmi_path, vec![0; 8192]).unwrap();
                 let mut padded = data;
                 padded.resize(8192, 0);
-                let expected_root = crate::cmd::verity::VerityParams {
+                let root = crate::cmd::verity::VerityParams {
                     data_block_size: 4096,
                     hash_block_size: 4096,
                     salt: vec![0; 32],
@@ -703,51 +744,59 @@ mod tests {
                 .root_hash;
                 manifest.annotations.insert(
                     "dev.pichi.carapace.verity.hash".into(),
-                    format!("sha256:{}", hex::encode(expected_root)),
+                    format!("sha256:{}", hex::encode(root)),
                 );
-                // Initial preparation and either missing sidecar use the same
-                // bounded preparation path before Dillo receives any files.
-                for missing in [
-                    None,
-                    Some(files.verity.clone()),
-                    (expected_data != source).then(|| expected_data.clone()),
-                ] {
-                    if let Some(path) = missing {
-                        std::fs::remove_file(path).unwrap();
-                    }
-                    let argv =
-                        build_dillo_args(&manifest, &store, None, None, &Requirements::default())
-                            .await
-                            .unwrap();
-                    let spec = &argv[argv.iter().position(|arg| arg == "--gpt").unwrap() + 1];
-                    let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(spec).unwrap();
-                    let build_spec = build_gpt_spec(&manifest, &manifest.scute_layers(), &store)
+                crate::cmd::layer::PreparedLayer::prepare_cached(
+                    &manifest,
+                    &manifest.layers[1],
+                    &store,
+                )
+                .await
+                .unwrap();
+                let files = ScuteFiles::new(&manifest, &manifest.layers[1], &store).unwrap();
+                let argv =
+                    build_dillo_args(&manifest, &store, None, None, &Requirements::default())
                         .await
                         .unwrap();
-                    assert_eq!(spec, &format!("{build_spec},bus=mmio"));
-                    assert_eq!(gpt.partitions.len(), 2);
-                    assert_eq!(gpt.partitions[0].path, expected_data);
-                    assert_eq!(gpt.partitions[1].path, files.verity.clone());
-                    assert_eq!(
-                        gpt.partitions[0].partuuid.to_bytes_le(),
-                        expected_root[..16]
-                    );
-                    assert_eq!(
-                        gpt.partitions[1].partuuid.to_bytes_le(),
-                        expected_root[16..]
-                    );
-                    assert_eq!(std::fs::read(&source).unwrap(), wire);
-                    assert_eq!(std::fs::read(&expected_data).unwrap(), padded);
-                    assert!(std::fs::metadata(files.verity.clone()).unwrap().len() > 0);
+                let spec = &argv[argv.iter().position(|arg| arg == "--gpt").unwrap() + 1];
+                let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(spec).unwrap();
+                assert_eq!(gpt.partitions[0].path, files.data);
+                assert_eq!(gpt.partitions[1].path, files.verity);
+                assert_eq!(gpt.partitions[0].partuuid.to_bytes_le(), root[..16]);
+                assert_eq!(gpt.partitions[1].partuuid.to_bytes_le(), root[16..]);
+                let tree = std::fs::read(&files.verity).unwrap();
+                if compressed {
+                    std::fs::write(store.blob_path(&digest), b"not a frame").unwrap();
                 }
-                // A valid extent with changed content must also fail before launch.
-                for invalid in [4096, 4097, 8191, 8192, 8193] {
-                    std::fs::write(&expected_data, vec![0; invalid]).unwrap();
+                std::fs::write(&files.data, vec![0; 8192]).unwrap();
+                std::fs::write(&files.verity, vec![0; tree.len()]).unwrap();
+                assert_eq!(
+                    build_dillo_args(&manifest, &store, None, None, &Requirements::default())
+                        .await
+                        .unwrap(),
+                    argv
+                );
+                assert_eq!(std::fs::read(&files.data).unwrap(), vec![0; 8192]);
+                assert_eq!(std::fs::read(&files.verity).unwrap(), vec![0; tree.len()]);
+                for path in [&files.data, &files.verity] {
+                    let bytes = std::fs::read(path).unwrap();
+                    std::fs::remove_file(path).unwrap();
                     assert!(
                         build_dillo_args(&manifest, &store, None, None, &Requirements::default())
                             .await
                             .is_err()
                     );
+                    assert!(!path.exists());
+                    std::fs::write(path, bytes).unwrap();
+                }
+                for size in [4096, 4097, 8191, 8193] {
+                    std::fs::write(&files.data, vec![0; size]).unwrap();
+                    assert!(
+                        build_dillo_args(&manifest, &store, None, None, &Requirements::default())
+                            .await
+                            .is_err()
+                    );
+                    assert_eq!(std::fs::metadata(&files.data).unwrap().len(), size as u64);
                 }
             }
         }

@@ -276,35 +276,43 @@ the full extent covered by its verity tree. The encoded OCI blob retains its
 original bytes and digest. Raw inputs with a partial final block also receive
 this padded data file; aligned raw inputs use their original cached blob.
 
-Pull and load retain the registry blob with its original OCI digest and prepare
-an uncompressed, block-aligned data file and its verity tree. For aligned raw
-scutes, the original blob is already the prepared data file. Compressed scutes
-and raw scutes with a partial final block have a separate prepared data file.
+Pull, import and load verify input bytes and prepare launch inputs before
+publishing image references. Pull and load retain each encoded blob with its
+original OCI digest and prepare uncompressed PMI, native bootconfig text, and
+block-aligned scute data with its verity tree. For aligned raw scutes, the
+original blob is already the prepared data file. Compressed scutes and raw
+scutes with a partial final block have a separate prepared data file.
 The registry index and manifest retain their original bytes and descriptors.
 
 Run and build use the same file selection and pass prepared data and verity
 files to Dillo's GPT backend. A build attaches only the appliance root. Source
 images are available through the read-only cache, prepared by import, pull or
-load and verified by Conglobate before execution. For the image being launched,
-Pichi recreates missing preparation from the retained blob through the same
-bounded path. Incorrect prepared extents fail before Dillo starts. Dillo never
+load and verified by Conglobate before execution. Run and build launch trust
+the cache: they consume prepared files without decoding, hashing or rebuilding
+them. Missing preparation fails before Dillo starts; repair requires an explicit
+`pull --pull=always` or `load`, not hidden launch-time work. Dillo never
 receives compressed COW bytes.
 
 Pichi constructs verity from the prepared data and full manifest salt using
 SHA-256, format 1/hash type 1, 4,096-byte data/hash blocks, and a zero UUID.
-Pull verifies and prepares cached layers during ingestion. Run and build
-recompute data roots when reusing prepared files; they do not rewrite existing
-hash trees. Load snapshots the supplied OCI blobs and
-rebuilds every tree before importing it.
+When ingesting an image, pull verifies and prepares cached layers as well as
+newly downloaded layers. Policies that reuse a cached image trust its cached
+metadata and do not repair it.
+Load snapshots the supplied OCI blobs and rebuilds every tree before importing
+it. Run and build derive partition root identities from the next scute's parent
+prefix and the manifest's committed tip, without reading the data to recompute
+roots.
 
 Scutes must appear in base-to-tip manifest order: the base has a zero parent
 prefix, and each later prefix must match the preceding reconstructed root.
 PMI and native bootconfig descriptors do not participate in scute order. The
-reconstructed tip must equal the manifest's `dev.pichi.carapace.verity.hash`. Missing,
-malformed, zero or incorrect commitments fail before pull/load publish a tag
-or run/build launch Dillo. This single commitment covers the salt-linked
-ancestry; there are no per-scute root annotations. The guest verifies data
-blocks lazily against its trusted root. The v1 format identifiers are unchanged.
+reconstructed tip must equal the manifest's `dev.pichi.carapace.verity.hash`.
+Missing, malformed, zero or incorrect commitments fail before ingestion publishes
+an image reference. Launch consumes these cached commitments without authenticating
+cached contents, including image metadata. This single commitment covers the
+salt-linked ancestry;
+there are no per-scute root annotations. The guest still verifies data blocks
+lazily against its trusted root. The v1 format identifiers are unchanged.
 
 `pichi import raw` records the computed chain root in the manifest annotation
 `dev.pichi.carapace.verity.hash`. Each import generates a fresh 32-byte salt
@@ -320,8 +328,9 @@ exist without PMI. Its compressed bytes are authenticated by the OCI descriptor.
 Decompression yields native Linux text, preserving imported comments and spelling.
 Empty configuration is omitted. Pichi does not interpret YAML overlays.
 
-Run and build prepare that text for Dillo's `--bootconfig`, without padding
-or a trailer. Dillo checks its reservation and applies native framing at launch.
+Ingestion stores that native text without padding or a trailer. Run and build
+pass its prepared path to Dillo's `--bootconfig`. Dillo checks its reservation
+and applies native framing at launch.
 PMI bytes, embedded
 platform DTB and minimal command line remain immutable. Corium reads
 `corium.root` from bootconfig, assembles the whole opaque Carapace chain and

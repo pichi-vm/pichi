@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Authenticated image metadata, platform selection and cache reachability.
+//! Trusted cache lookup, authenticated ingestion/export, and cache reachability.
 
 use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context, Result, anyhow, ensure};
@@ -31,12 +31,17 @@ impl TryFrom<(Digest, Vec<u8>)> for ImageMetadata {
     type Error = anyhow::Error;
 
     fn try_from((digest, bytes): (Digest, Vec<u8>)) -> Result<Self> {
+        Self::decode(digest, bytes)?.verify()
+    }
+}
+
+impl ImageMetadata {
+    /// Parse bounded cached metadata; the caller chooses the trust boundary.
+    fn decode(digest: Digest, bytes: Vec<u8>) -> Result<Self> {
         ensure!(
             bytes.len() as u64 <= METADATA_CAP,
             "image metadata exceeds size limit"
         );
-        let actual = Digest::Sha256(Sha256::digest(&bytes).into());
-        ensure!(actual == digest, "image metadata digest mismatch: {digest}");
         let value: Value = serde_json::from_slice(&bytes)?;
         ensure!(
             value["schemaVersion"] == 2,
@@ -55,9 +60,17 @@ impl TryFrom<(Digest, Vec<u8>)> for ImageMetadata {
             value,
         })
     }
-}
 
-impl ImageMetadata {
+    fn verify(self) -> Result<Self> {
+        let actual = Digest::Sha256(Sha256::digest(&self.bytes).into());
+        ensure!(
+            actual == self.digest,
+            "image metadata digest mismatch: {}",
+            self.digest
+        );
+        Ok(self)
+    }
+
     pub(super) fn is_index(&self) -> bool {
         self.value["mediaType"] == OCI_IMAGE_INDEX_MEDIA_TYPE
     }
@@ -143,13 +156,40 @@ pub(super) trait ImageStore: BlobStore {
     }
 
     async fn metadata(&self, digest: &Digest) -> Result<ImageMetadata> {
+        self.cached_metadata(digest).await?.verify()
+    }
+
+    /// Read trusted cache bytes without authenticating their content again.
+    async fn cached_metadata(&self, digest: &Digest) -> Result<ImageMetadata> {
         let mut bytes = Vec::new();
         self.open_blob(digest)
             .await?
             .take(METADATA_CAP + 1)
             .read_to_end(&mut bytes)
             .await?;
-        (digest.clone(), bytes).try_into()
+        ImageMetadata::decode(digest.clone(), bytes)
+    }
+
+    /// Resolve a launch manifest from the trusted cache, retaining format checks.
+    async fn cached_manifest(&self, digest: &Digest) -> Result<(ImageMetadata, Manifest)> {
+        let root = self.cached_metadata(digest).await?;
+        let metadata = if root.is_index() {
+            let entry = root.selected_entry()?;
+            let selected = self
+                .cached_metadata(
+                    &entry["digest"]
+                        .as_str()
+                        .context("index entry has no digest")?
+                        .parse()?,
+                )
+                .await?;
+            selected.check_descriptor(entry)?;
+            selected
+        } else {
+            root
+        };
+        let manifest = metadata.manifest()?;
+        Ok((metadata, manifest))
     }
 
     async fn resolve(&self, reference: &Reference, tags: &dyn TagDb) -> Result<Digest> {
@@ -173,7 +213,7 @@ pub(super) trait ImageStore: BlobStore {
         let Some(digest) = digest else {
             return Ok(false);
         };
-        match self.manifest(&digest).await {
+        match self.cached_manifest(&digest).await {
             Ok(_) => Ok(true),
             Err(error)
                 if error
@@ -326,3 +366,60 @@ pub(super) trait ImageStore: BlobStore {
 }
 
 impl<T: BlobStore + ?Sized> ImageStore for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
+
+    #[tokio::test]
+    async fn launch_trusts_cached_metadata_while_authenticated_readers_reject_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FilesystemBlobStore::new(dir.path());
+        let tags = FilesystemTagDb::open(dir.path()).unwrap();
+        let mut manifest = serde_json::json!({
+            "schemaVersion":2,"mediaType":MANIFEST_TYPE,
+            "artifactType":conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            "config":conglobate::artifact::ConfigDescriptor::canonical(),
+            "layers":[],"annotations":{"test":"before"}
+        });
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let digest = Digest::Sha256(Sha256::digest(&bytes).into());
+        store.put_blob(&digest, &bytes).await.unwrap();
+        let index = store.local_index(&digest, None).await.unwrap();
+        let original_index = store.get_blob(&index).await.unwrap();
+        let mut changed_index: Value = serde_json::from_slice(&original_index).unwrap();
+        changed_index["annotations"] = serde_json::json!({"test":"cache"});
+        std::fs::write(
+            store.blob_path(&index),
+            serde_json::to_vec(&changed_index).unwrap(),
+        )
+        .unwrap();
+        manifest["annotations"]["test"] = "cached".into();
+        std::fs::write(
+            store.blob_path(&digest),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let reference = "docker.io/library/ready:1";
+        tags.set_tag(reference, &index).await.unwrap();
+        assert!(
+            crate::cmd::build::image_cached(reference, &tags, &store)
+                .await
+                .unwrap()
+        );
+        let (_, selected) = crate::cmd::build::resolve_manifest(reference, &tags, &store)
+            .await
+            .unwrap();
+        assert_eq!(selected.annotations["test"], "cached");
+        assert!(store.manifest(&index).await.is_err());
+        std::fs::write(store.blob_path(&index), original_index).unwrap();
+        assert!(store.manifest(&index).await.is_err());
+        assert!(
+            store
+                .cached(&reference.parse().unwrap(), &tags)
+                .await
+                .unwrap()
+        );
+    }
+}
