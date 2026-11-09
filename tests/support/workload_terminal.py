@@ -103,8 +103,9 @@ class Terminal:
 records = Path(os.environ["XDG_DATA_HOME"]) / "pichi/storage.workloads"
 try:
     with Terminal(["run", "-i", "fixture:1"]) as terminal:
-        terminal.receive(b"console-ready")
-        terminal.receive(b"size=300x77")
+        startup = terminal.receive(b"console-ready")
+        startup += terminal.receive(b"size=300x77")
+        assert b"console resize:" not in startup, startup
         terminal.resize(120, 41)
         terminal.receive(b"size=120x41")
         record, = records.iterdir()

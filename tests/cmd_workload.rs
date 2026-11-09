@@ -475,10 +475,12 @@ async fn caller_group_loss_preserves_workload_and_reconnection() {
 async fn terminal_restoration_and_hangup_preserve_workload() {
     let fixture = WorkloadFixture::new(
         r"
-import os, select, signal, socket, struct, sys
+import os, select, signal, socket, struct, sys, time
 signal.alarm(45)
 endpoint = sys.argv[sys.argv.index('--console-resize') + 1]
 listener = socket.socket(socket.AF_UNIX)
+# The CLI may attach before the child creates its resize listener.
+time.sleep(0.5)
 listener.bind(endpoint)
 os.chmod(endpoint, 0o600)
 listener.listen(2)

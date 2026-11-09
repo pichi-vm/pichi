@@ -37,9 +37,16 @@ impl Resize<'_> {
                     last = Some(size);
                     failed = false;
                 }
+                Err(error)
+                    if last.is_none()
+                        && error
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+                {
+                    // Dillo creates its listener after the monitor starts it.
+                    log::debug!("console resize endpoint is not ready; retrying");
+                }
                 Err(error) => {
-                    // Dillo may still be preparing the VM when Madrillo reports
-                    // process start. Retry the latest size without a backlog.
                     if !failed {
                         log::warn!("console resize: {error:#}; retrying");
                     }
