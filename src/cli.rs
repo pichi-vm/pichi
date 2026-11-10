@@ -303,7 +303,7 @@ pub struct BuildArgs {
     #[arg(short = 'b', long = "build-image")]
     pub build_image: Option<String>,
     /// Git ref / commit the guest resolves in the `repo` virtiofs mount.
-    #[arg(long = "ref", required = true)]
+    #[arg(long = "ref", default_value = "HEAD")]
     pub git_ref: String,
     /// Plan path relative to `--context`; absolute paths are rejected.
     #[arg(short = 'p', long = "plan", value_name = "PATH", default_value = DEFAULT_PLAN, value_parser = parse_plan_path)]

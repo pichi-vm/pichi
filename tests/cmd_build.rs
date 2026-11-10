@@ -58,8 +58,8 @@ fn build_help_documents_plan_context_and_defaults() {
         .find(|line| line.starts_with("Usage:"))
         .unwrap();
     assert!(
-        usage.contains("--ref <GIT_REF>") && !usage.contains("[--ref"),
-        "usage must require --ref:\n{stdout}"
+        !usage.contains("--ref <GIT_REF>") && stdout.contains("[default: HEAD]"),
+        "usage must allow the default Git ref:\n{stdout}"
     );
     assert!(
         stdout.contains("-b, --build-image") && stdout.contains("Build appliance image"),
@@ -101,21 +101,18 @@ fn build_context_defaults_to_current_directory() {
 }
 
 #[test]
-fn build_requires_ref_during_argument_parsing() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let assert = Command::cargo_bin("pichi")
-        .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
-        .args(["build", tmp.path().to_str().unwrap()])
-        .assert()
-        .code(2);
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
-    assert!(
-        stderr.contains("required arguments were not provided")
-            && stderr.contains("--ref <GIT_REF>")
-            && !stderr.contains("BUILD.md"),
-        "missing --ref should produce a clap error:\n{stderr}"
-    );
+fn build_ref_defaults_to_head_and_accepts_an_override() {
+    for (extra, expected) in [(vec![], "HEAD"), (vec!["--ref", "main"], "main")] {
+        let mut argv = vec!["build", "."];
+        argv.extend(extra);
+        let matches = BuildArgs::augment_args(clap::Command::new("build"))
+            .try_get_matches_from(argv)
+            .unwrap();
+        assert_eq!(
+            BuildArgs::from_arg_matches(&matches).unwrap().git_ref,
+            expected
+        );
+    }
 }
 
 #[test]

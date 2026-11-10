@@ -548,7 +548,8 @@ the image. The output mount's OCI layout is the product.
 
 ## 6. CLI surface (build)
 
-`pichi build <dir> --ref <ref> -t <tag>` is the operator entry point.
+`pichi build <dir> -t <tag>` is the operator entry point. The Git ref defaults
+to `HEAD`; use `--ref <ref>` to select another committed revision.
 The semantic contract is §2.
 
 | Input | Default | Override |
