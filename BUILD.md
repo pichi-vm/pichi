@@ -199,9 +199,11 @@ files beside it. Build identity is carried by the manifest annotations.
 ### 2.6 Pichi builds the appliance
 
 This repository builds the [appliance](appliance/) from a locked Fedora image
-and signed Conglobate and LSM packages. Conglobate owns the guest command and
-build service; LSM owns the policy, loader and loader service.
-Pichi owns image composition, transport mounts and appliance-specific configuration.
+and signed Conglobate and LSM packages. Conglobate owns the builder and console
+protocol; LSM owns the policy, loader and loader service. Pichi owns image composition, the build service, transport
+mounts and appliance-specific configuration. The service passes the fixed
+repository, cache, output and ID mappings to `conglobate run`.
+Networking, clock bootstrap, resolver binding and shutdown remain image policy.
 
 Fedora and Ubuntu build their own base images in their own repositories using
 `pichi build`. The command launches the build appliance the same way
@@ -217,9 +219,8 @@ Do **not** document or reintroduce:
 - host packages OCI from scutes / manifests / virtiofs leftovers after the
   guest exits.
 
-Guest work, measurement, plan execution, and annotated OCI emission live
-in Conglobate (and its appliance wrapper). Pichi's job is the thin launch
-and import.
+Build execution, console protocol and annotated OCI emission live in Conglobate.
+Pichi owns launch, import and the appliance service around the builder.
 
 ---
 
@@ -517,8 +518,8 @@ alongside successful VM exit before the host imports any output.
 | --------- | ---- |
 | **pichi** (`pichi build`) | Thin launcher: dirs, build-port CBOR, dillo launch, import OCI on success |
 | **dillo** | VMM + virtiofs + named console wiring |
-| **Pichi build appliance** | Image composition, transport mounts, appliance configuration and package-unit enablement |
-| **Conglobate binary / lib** | Plans, locks, build execution, OCI layout, image-manifest build annotations, guest command and build service (see its DESIGN.md) |
+| **Pichi build appliance** | Image composition, build service, transport mounts, appliance configuration and service enablement |
+| **Conglobate binary / lib** | Plans, locks, build execution, OCI layout, image-manifest build annotations, console protocol (see its DESIGN.md) |
 | **LSM package** | Labeling policy, loader and loader service |
 | **Fedora / Ubuntu images** | Each repository builds its own base image with the Pichi command |
 

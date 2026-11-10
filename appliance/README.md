@@ -1,8 +1,14 @@
 # Pichi build appliance
 
 [The recipe](image/pichi.yaml) installs signed Conglobate and Pichi LSM packages
-from COPR. The packages supply their services; the recipe supplies the virtiofs
-mounts, network configuration, policy-service ordering and service enablement.
+from COPR. The recipe supplies the build service, virtiofs mounts, network
+configuration, clock bootstrap and service enablement. `conglobate run` handles the console
+protocol with the repository, cache, output and ID mappings
+provided by the service. Networking and clock setup remain unconditional.
+
+The recipe requires a published Conglobate package with the `run` command.
+Publish this replacement appliance before removing Conglobate's legacy appliance
+entry point and package units.
 
 [The platform workflow](../.github/workflows/platforms.yml) conditionally builds
 the image on each native runner and uses that local candidate for build/boot
