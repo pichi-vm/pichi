@@ -5,7 +5,8 @@
 Description=Establish build appliance time with NTP then NTS
 Wants=network-online.target
 Requires=systemd-resolved.service
-After=network-online.target systemd-resolved.service
+After=network-online.target systemd-resolved.service systemd-modules-load.service
+ConditionPathExistsGlob=/sys/class/net/*/device
 FailureAction=poweroff
 
 [Service]
