@@ -99,7 +99,13 @@ metadata for later launches.
 same launch path, plus virtiofs wires and a bidirectional build-port CBOR
 exchange on named console `dev.pichi.build` (guest requests build-input; host
 replies). The host is a thin launcher; the [Pichi build appliance](appliance/)
-runs the packaged Conglobate builder and writes an OCI layout to the output mount.
+runs the packaged Conglobate builder and writes an OCI layout to the output mount. The host
+reads the committed plan using gix and Conglobate's existing decoder. It omits
+the network adapter when no declared step requests `network: true`, skipping
+appliance network readiness and clock synchronization. Unused online stages
+and plan paths crossing symlinks, submodules or parent components retain
+networking. The same resolved commit is sent to the guest, so dirty
+working-tree edits do not affect this decision.
 
 Plan and lock paths are relative to `--context` (default `.`). The defaults
 are `pichi.yaml` and `pichi.lock`. `-p`/`--plan` and `-l`/`--lock` override

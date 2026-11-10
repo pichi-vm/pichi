@@ -11,6 +11,9 @@
 #[path = "support/executable_path.rs"]
 mod executable_path;
 
+#[path = "support/build_repo.rs"]
+mod build_repo;
+
 use assert_cmd::Command;
 use conglobate::artifact::{
     ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
@@ -111,12 +114,13 @@ impl WorkloadFixture {
     }
 
     fn build_command(&self, request: &impl serde::Serialize) -> Command {
+        let commit = build_repo::prepare(self.root.path());
         let mut encoded = Vec::new();
         ciborium::into_writer(request, &mut encoded).unwrap();
         let mut response = Vec::new();
         ciborium::into_writer(
             &pichi_launch::Response::Ok(pichi_launch::Input {
-                r#ref: "HEAD".into(),
+                r#ref: commit,
                 plan: "pichi.yaml".into(),
                 lock: "pichi.lock".into(),
                 context: ".".into(),

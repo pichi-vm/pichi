@@ -49,7 +49,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     // Thin-launcher build-input (BUILD.md §2.4): `ref` is required; plan
     // and lock default to `pichi.yaml` / `pichi.lock` (`-p`/`--plan`,
     // `-l`/`--lock` override). CBOR carries the resolved relative paths.
-    let git_ref = args.git_ref.clone();
     let plan = args.plan.clone();
     let lock = args.lock.clone();
     let context = if args.context.is_empty() {
@@ -58,6 +57,12 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         args.context.clone()
     };
 
+    let repo_dir = std::fs::canonicalize(&args.dir)
+        .with_context(|| format!("canonicalizing repo dir {}", args.dir.display()))?;
+    let (git_ref, network) = args
+        .committed_network(&repo_dir)
+        .context("reading committed build plan")?;
+
     let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
@@ -65,7 +70,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     ensure_build_image(&build_image_ref, config, &db, &blob_store).await?;
 
     // Reserve appliance identity and the build cache lease under the same
-    // lock as image removal. Only the guest interprets source plans and locks.
+    // lock as image removal. The guest still executes the plan and resolves locks.
     let (record, output_dir, pmi_path, bootconfig_path, gpt_specs, cpus, memory, reqs) = layout
         .with_index_lock(|| async {
             // The build image launches like `pichi run` (BUILD.md §2.6): --pmi,
@@ -125,8 +130,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     // Thin-launcher mounts (BUILD.md §2.2–§2.3): empty RW output, RO cache,
     // RO repo (git object store / work tree the guest resolves `--ref` against).
-    let repo_dir = std::fs::canonicalize(&args.dir)
-        .with_context(|| format!("canonicalizing repo dir {}", args.dir.display()))?;
     let cache_dir = std::fs::canonicalize(&layout.graphroot)
         .with_context(|| format!("canonicalizing cache {}", layout.graphroot.display()))?;
 
@@ -155,6 +158,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         memory,
         cpus,
         &reqs,
+        network,
     );
     let storage = WritableStorage::prepare(
         Some(&reqs.storage),
@@ -229,6 +233,7 @@ pub(crate) fn build_dillo_args(
     memory_mib: Option<u32>,
     cpus: Option<u32>,
     requirements: &Requirements,
+    network: bool,
 ) -> Vec<String> {
     let bus = requirements.slot.as_argument();
     let mut argv: Vec<String> = vec!["--pmi".to_string(), path_arg(pmi_path)];
@@ -270,9 +275,9 @@ pub(crate) fn build_dillo_args(
         argv.push(format!("{spec},bus={bus}"));
     }
     // User-mode NIC for stages that opt in with `network: true`.
-    if requirements.interfaces.is_empty() {
+    if network && requirements.interfaces.is_empty() {
         argv.extend(["--net".into(), format!("{USER_NET_SPEC},bus={bus}")]);
-    } else {
+    } else if network {
         for interface in requirements.interfaces.values() {
             argv.extend([
                 "--net".into(),
@@ -478,6 +483,7 @@ mod tests {
             Some(4096),
             Some(8),
             &Requirements::default(),
+            true,
         );
 
         // --pmi <path>
@@ -493,7 +499,7 @@ mod tests {
         // exactly one --gpt for the single source carapace
         assert_eq!(argv.iter().filter(|a| *a == "--gpt").count(), 1);
 
-        // build always wires exactly one user-mode NIC, and its value parses
+        // An online build wires one default user-mode NIC, and its value parses
         // back as a user-mode dillo NetSpec (guards format drift).
         let net_values: Vec<&String> = argv
             .iter()
@@ -574,6 +580,7 @@ mod tests {
             None,
             None,
             &requirements,
+            true,
         );
         assert!(!argv.iter().any(|arg| arg == "--bus"));
         let mut networks = Vec::new();
@@ -601,6 +608,35 @@ mod tests {
     }
 
     #[test]
+    fn offline_build_omits_default_and_declared_interfaces() {
+        let path = Path::new("/fixture");
+        for requirements in [
+            Requirements::default(),
+            serde_json::from_value(serde_json::json!({
+                "slot": "pci", "interfaces": {"public": {}}
+            }))
+            .unwrap(),
+        ] {
+            let argv = build_dillo_args(
+                path,
+                None,
+                &[],
+                path,
+                path,
+                path,
+                None,
+                None,
+                None,
+                &requirements,
+                false,
+            );
+            assert!(!argv.iter().any(|arg| arg == "--net"));
+            assert_eq!(argv.iter().filter(|arg| *arg == "--fs").count(), 3);
+            assert!(argv.iter().any(|arg| arg == "--console"));
+        }
+    }
+
+    #[test]
     fn filesystem_paths_preserve_native_separators_and_punctuation() {
         for path in [
             r"C:\Users\O'Brien\project [1], current",
@@ -619,6 +655,7 @@ mod tests {
                 None,
                 None,
                 &Requirements::default(),
+                true,
             );
             for pair in argv.windows(2).filter(|pair| pair[0] == "--fs") {
                 assert_eq!(parse_fs(&pair[1]).source, path);
@@ -639,6 +676,7 @@ mod tests {
             None,
             None,
             &Requirements::default(),
+            true,
         );
         assert!(!argv.iter().any(|a| a == "--memory"));
         assert!(!argv.iter().any(|a| a == "--cpus"));
@@ -660,6 +698,7 @@ mod tests {
             None,
             None,
             &Requirements::default(),
+            true,
         );
         let i = argv
             .iter()
@@ -766,6 +805,7 @@ mod tests {
             None,
             None,
             &Requirements::default(),
+            true,
         );
         let fs_values: Vec<&String> = argv
             .iter()
