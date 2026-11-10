@@ -16,7 +16,7 @@ use crate::cli::InfoArgs;
 use crate::config::Config;
 
 /// Dispatch entry point for `pichi system <verb>`.
-pub async fn run(args: InfoArgs, config: &Config) -> Result<()> {
+pub fn run(args: InfoArgs, config: &Config) -> Result<()> {
     let layout = CacheLayout::resolve()?;
 
     // Apply config overrides for graphroot / runroot (visibility only —
@@ -65,7 +65,11 @@ fn collect_config_file_entries() -> Vec<ConfigFileEntry> {
 
     // Report exactly the paths the loader consults (per-OS), so `system
     // info` never disagrees with `Config::load`.
-    if let Some(p) = crate::config::system_config_path() {
+    #[cfg(unix)]
+    let system = Some(crate::config::system_config_path());
+    #[cfg(windows)]
+    let system = crate::config::system_config_path();
+    if let Some(p) = system {
         files.push(entry(p));
     }
     if let Some(p) = crate::config::user_config_path() {

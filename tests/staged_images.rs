@@ -347,14 +347,14 @@ image:
 
     let unchanged = builds.build(
         "unchanged-root",
-        r#"
+        r"
 version: 1
 image:
   root: qualification.local/bootable:1
   boot:
     inherit: qualification.local/bootable:1
     extend: {corium.root: deliberately-unchanged}
-"#,
+",
         &[],
     );
     assert_eq!(unchanged.layers("scute"), base.layers("scute"));
@@ -430,7 +430,7 @@ image: target
     let before = common::tag_digest(&builds.cache, recursive);
     let failed = builds.capture(
         "failed-bootstrap",
-        r#"
+        r"
 version: 1
 stages:
   root:
@@ -438,7 +438,7 @@ stages:
     format: {size: 64MiB}
     steps: [exec: {command: 'exit 23'}]
 image: root
-"#,
+",
         &[],
     );
     fs::write(failed.join("pichi.lock"), "unused working-tree lock").unwrap();

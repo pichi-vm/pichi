@@ -409,7 +409,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 .args(["--tag", tag])
                 .assert()
                 .success();
-            let prepared = FilesystemBlobStore::new(&graphroot(&destination));
+            let prepared = FilesystemBlobStore::new(graphroot(&destination));
             assert_eq!(prepared.get_blob(&manifest_digest).await.unwrap(), bytes);
             let blob = prepared.blob_path(&digest);
             let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &manifest.layers[0] else {

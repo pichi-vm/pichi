@@ -165,7 +165,7 @@ async fn caller_loss_preserves_workload() -> Result<()> {
                 bail!("expected one owned console window, got {}", windows.len());
             };
             window.ShowWindowAsync(winsafe::co::SW::SHOW)?;
-            let script = r#"
+            let script = r"
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -173,7 +173,7 @@ $handle = [IntPtr]::new([long]$env:PICHI_CONSOLE_WINDOW)
 $window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
 $pattern = $window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
 $pattern.Close()
-"#;
+";
             let closed = Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", script])
                 .env("PICHI_CONSOLE_WINDOW", (window.ptr() as usize).to_string())

@@ -144,7 +144,7 @@ pub(super) trait ImageStore: BlobStore {
                     architecture: Platform::host_architecture().into(),
                     variant: None,
                 })),
-                annotations: Default::default(),
+                annotations: std::collections::BTreeMap::default(),
             }],
             ..Index::default()
         };

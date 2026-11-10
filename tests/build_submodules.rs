@@ -14,7 +14,7 @@ use common::submodules::SubmoduleFixture;
 
 #[tokio::test]
 async fn pichi_build_checks_committed_submodule_stores() {
-    let fixture = SubmoduleFixture::new().await;
+    let fixture = SubmoduleFixture::new();
     let source = fixture.source("source", "RECORDED_SUBMODULE_PAYLOAD");
     let recorded = source.git(&["rev-parse", "HEAD"]);
     let staged = fixture.repo.add_module(&source, "staged", "deps/staged");

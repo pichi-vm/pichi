@@ -122,6 +122,9 @@ impl Config {
 
     /// Load with the production 3-tier precedence chain.
     pub fn load() -> Result<Self> {
+        #[cfg(unix)]
+        let system = Some(system_config_path());
+        #[cfg(windows)]
         let system = system_config_path();
         let user = user_config_path();
         Self::load_from_paths(system.as_deref(), user.as_deref())
@@ -132,15 +135,15 @@ impl Config {
     /// `system` and `user`: silently skipped if NotFound.
     pub fn load_from_paths(system: Option<&Path>, user: Option<&Path>) -> Result<Self> {
         let mut cfg = Self::default();
-        if let Some(p) = system {
-            if let Some(file_cfg) = Self::read_optional(p)? {
-                cfg.merge(file_cfg);
-            }
+        if let Some(p) = system
+            && let Some(file_cfg) = Self::read_optional(p)?
+        {
+            cfg.merge(file_cfg);
         }
-        if let Some(p) = user {
-            if let Some(file_cfg) = Self::read_optional(p)? {
-                cfg.merge(file_cfg);
-            }
+        if let Some(p) = user
+            && let Some(file_cfg) = Self::read_optional(p)?
+        {
+            cfg.merge(file_cfg);
         }
         Ok(cfg)
     }
@@ -193,8 +196,8 @@ impl Config {
 /// `%PROGRAMDATA%\pichi\config.toml` on Windows. `pub(crate)` so
 /// `system info` reports the same path the loader consults.
 #[cfg(unix)]
-pub(crate) fn system_config_path() -> Option<PathBuf> {
-    Some(PathBuf::from("/etc/pichi/config.toml"))
+pub(crate) fn system_config_path() -> PathBuf {
+    PathBuf::from("/etc/pichi/config.toml")
 }
 
 #[cfg(windows)]

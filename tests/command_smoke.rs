@@ -64,7 +64,9 @@ impl Smoke {
         let mut child = command.spawn().unwrap();
         let status = child.wait_timeout(Duration::from_secs(300)).unwrap();
         if status.is_none() {
-            if !self.cache.join("pichi/storage.workloads").exists() {
+            if self.cache.join("pichi/storage.workloads").exists() {
+                child.kill_vm(&self.cache).unwrap();
+            } else {
                 // Commands can time out before creating a monitor record.
                 #[cfg(unix)]
                 nix::sys::signal::killpg(
@@ -81,8 +83,6 @@ impl Smoke {
                         .success()
                 );
                 child.wait().unwrap();
-            } else {
-                child.kill_vm(&self.cache).unwrap();
             }
             panic!("{label} timed out; see {}", path.display());
         }

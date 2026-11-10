@@ -56,10 +56,10 @@ impl ManifestExt for Manifest {
     }
 
     fn partition_layers(&self) -> Result<(&Layer, Vec<&Layer>)> {
-        let pmi = self.layers.iter().find_map(|layer| match layer {
-            Layer::Pmi(_) | Layer::PmiZstd(_) => Some(layer),
-            _ => None,
-        });
+        let pmi = self
+            .layers
+            .iter()
+            .find(|layer| matches!(layer, Layer::Pmi(_) | Layer::PmiZstd(_)));
         let pmi = pmi.ok_or_else(|| {
             anyhow!("artifact is not bootable (no PMI layer); usable as a `from:` source only")
         })?;
@@ -90,12 +90,8 @@ impl ManifestExt for Manifest {
     }
 
     fn verity_header(&self, scute: &ScuteDescriptor, size: Option<u64>) -> Result<Header> {
-        let annotation = |key: &str, default| {
-            self.annotations
-                .get(key)
-                .map(String::as_str)
-                .unwrap_or(default)
-        };
+        let annotation =
+            |key: &str, default| self.annotations.get(key).map_or(default, String::as_str);
         if annotation("dev.pichi.carapace.verity.version", "1").parse::<u32>()? != 1 {
             bail!("unsupported verity header version");
         }

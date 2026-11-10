@@ -139,7 +139,7 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
                     .get_blob(&config_digest)
                     .await
                     .with_context(|| format!("read config blob {config_digest} from cache"))?
-                    .to_vec(),
+                    .clone(),
             )
         };
         let size = bytes.len() as u64;
