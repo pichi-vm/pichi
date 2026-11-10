@@ -22,6 +22,8 @@ stages:
       - copy: { path: appliance/image/run-pichi-output.mount, into: /usr/lib/systemd/system/run-pichi-output.mount }
       - copy: { path: appliance/image/conglobate-build.service, into: /usr/lib/systemd/system/conglobate-build.service }
       - copy: { path: appliance/image/bootstrap-time.service, into: /etc/systemd/system/bootstrap-time.service }
+      - copy: { path: appliance/image/virtio-net.conf, into: /usr/lib/modules-load.d/virtio-net.conf }
+      - copy: { path: appliance/image/wait-online.conf, into: /etc/systemd/system/systemd-networkd-wait-online.service.d/condition.conf }
       - copy: { path: appliance/image/10-build.network, into: /usr/lib/systemd/network/10-build.network }
       - exec:
           command: >-
