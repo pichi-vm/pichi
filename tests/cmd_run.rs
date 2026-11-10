@@ -186,6 +186,7 @@ async fn build_channel_preserves_guest_first_exchange() {
         .join(format!("dillo{}", std::env::consts::EXE_SUFFIX));
     std::fs::copy(&fixture, &child).unwrap();
     populate_bootable(&graphroot(&root), "contract:1").await;
+    std::fs::create_dir(root.path().join(".git")).unwrap();
     let marker = root.path().join("port-exchange.json");
     let mut request = Vec::new();
     ciborium::into_writer(
