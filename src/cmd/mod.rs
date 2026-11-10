@@ -10,6 +10,7 @@
 mod boot_config;
 pub mod build;
 mod build_output;
+mod build_plan;
 mod build_port;
 mod cache;
 pub mod images;

@@ -6,6 +6,9 @@
 
 #![allow(clippy::unwrap_used)]
 
+#[path = "support/build_repo.rs"]
+mod build_repo;
+
 use assert_cmd::Command;
 use clap::{Args, FromArgMatches};
 use pichi::cli::BuildArgs;
@@ -118,6 +121,7 @@ fn build_requires_ref_during_argument_parsing() {
 #[test]
 fn build_missing_appliance_attempts_pull() {
     let tmp = tempfile::TempDir::new().unwrap();
+    build_repo::prepare(tmp.path());
     let assert = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())

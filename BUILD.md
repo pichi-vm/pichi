@@ -25,10 +25,11 @@ an artifact — virtiofs (shared host folders) mounts and a named-console
 CBOR (compact binary format) exchange — then waits
 for a finalized, cache-backed OCI layout (the standard folder format for container images) in the output mount only after explicit build success and VM exit 0.
 
-Building is launching. The host does not check out Conglobate sources, does
-not parse Conglobate plans, and does not run Conglobate as `/init`.
+Building is launching. The host inspects the selected committed plan through
+Conglobate's library only to decide whether to attach a network adapter. It
+does not check out Conglobate sources or run Conglobate as `/init`.
 
-These restrictions apply to `pichi build`. The separate `pichi update [DIR]`
+This boundary applies to `pichi build`. The separate `pichi update [DIR]`
 command reads the working-tree plan through shared `conglobate::plan` types
 and maintains its lock on the host. It uses `--plan` and `--lock` relative to
 DIR, defaults to refreshing images with `--pull=always`, and supports the
@@ -58,6 +59,16 @@ Same launch path as `pichi run`. Build adds:
 
 Host steps, in order:
 
+Resolve the requested Git ref once and inspect the committed plan using gix
+and Conglobate's existing YAML decoder. Verify object identities while reading
+ordinary tree paths, then scan every declared stage for `network: true`.
+Pass that same immutable commit in the console input. Working-tree changes do
+not affect this decision. Paths crossing symlinks, submodules or parent
+components conservatively retain networking; the guest owns their resolution.
+This preflight is a network hint, not full path or dependency validation.
+The guest still validates and executes the plan and resolves locks.
+
+
 1. Prepare an **empty** host output directory (RW).
 2. Prepare a **read-only** cache of pichi images / carapaces the build needs.
 3. Prepare the build-input payload (see §4) — do not push it yet.
@@ -71,8 +82,15 @@ Host steps, in order:
 Explicitly **not** on the host:
 
 - no host checkout of Conglobate;
-- no host plan parse;
+- no separate host plan interpreter or build execution;
 - no Conglobate-as-`/init`.
+
+The host omits its user-mode adapter when inspection finds no declared step
+requesting network access. Unused online stages retain networking. The appliance has one
+build service: without an adapter it skips network readiness and clock
+synchronization; with an adapter it retains those prerequisites. Per-command
+network isolation is still enforced by Conglobate. Use a compatible appliance
+when overriding `--build-image`.
 
 ### 2.3 Virtiofs tags (by convention)
 
@@ -139,8 +157,8 @@ CBOR push (bytes written before the guest opened the port).
 
 ### 2.5 Types and outputs
 
-- Pichi depends on the **Conglobate library for types only** (portable
-  plan, lock, and artifact contracts).
+- Pichi uses the **Conglobate library** for portable plan, lock and artifact
+  contracts and the existing YAML decoder. Pichi reads committed objects through gix.
 - **The annotated OCI layout is the Conglobate output.** It is not
   defined by, or reassembled through, `pichi-artifact` as the build
   product contract. Host import may still use ecosystem artifact types
@@ -377,8 +395,8 @@ all image resolution stays local. Inputs may contain roots, boot components
 or both. Import, pull and load prepare source scutes before publishing cache
 references; build exposes that cache read-only without attaching source images
 as VM disks. Component-only inputs need no root. Neither the working-tree lock
-nor input layer lists control output import. Plan and lock parsing stay on the
-guest (§2.2). Lock shape:
+nor input layer lists control output import. The guest resolves locks and
+executes the plan; host inspection only selects adapter presence (§2.2). Lock shape:
 
 ```yaml
 version: 1
@@ -601,7 +619,7 @@ remain optional and are allocated only on the specified bus.
 
 ## 9. Non-goals (for this contract)
 
-- Host-side plan intelligence or Conglobate checkout
+- A separate host plan interpreter or Conglobate checkout
 - Host vGPT loops over source carapaces as the build product API
 - Mid-build registry pulls inside `pichi build` (cache is prepared first)
 - Reintroducing Conglobate-as-`/init` or `$DIR`→erofs host packaging

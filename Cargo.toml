@@ -25,6 +25,7 @@ carapace.workspace = true
 devmap-core.workspace = true
 devmap-verity.workspace = true
 conglobate = { workspace = true, features = ["yaml"] }
+gix = { version = "0.84", default-features = false, features = ["sha1", "sha256"] }
 pichi-launch.workspace = true
 dillo-config.workspace = true
 madrillo = { git = "https://github.com/pichi-vm/madrillo", branch = "main", default-features = false }
@@ -57,7 +58,7 @@ zstd = { version = "=0.13.3", default-features = false }
 crossterm = { version = "0.29", default-features = false, features = ["windows"] }
 
 # Optional guest Corium binaries for `vm-tests` only. Production builds launch
-# Pichi's default build appliance; the host consumes Conglobate's types-only library.
+# Pichi's default build appliance; the host decodes committed plans using Conglobate's existing types.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 corium = { git = "https://github.com/pichi-vm/corium", branch = "main", artifact = "bin", lib = false, target = "x86_64-unknown-linux-musl", optional = true }
 
@@ -157,7 +158,7 @@ dillo-config = { git = "https://github.com/pichi-vm/dillo", branch = "main" }
 pichi-launch = { path = "deps/pichi-launch" }
 pichi-storage = { path = "deps/pichi-storage" }
 pichi-registry = { path = "deps/pichi-registry" }
-# conglobate lib (types only; see BUILD.md) — consumed by the pichi CLI.
+# Conglobate plan/artifact contracts and committed plan inspection (see BUILD.md).
 # Resolve the library independently of the packaged build appliance.
 conglobate = { git = "https://github.com/pichi-vm/conglobate", branch = "main", default-features = false }
 # Error handling
