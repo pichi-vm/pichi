@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Conglobate build appliance (build-port CBOR on dev.pichi.build)
+Requires=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount
+Requires=pichi-lsm.service bootstrap-time.service
+After=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount
+After=pichi-lsm.service bootstrap-time.service
+# Sync and unmount output before powering off, without waiting on getty.
+SuccessAction=poweroff-force
+FailureAction=poweroff
+
+[Service]
+Type=oneshot
+RuntimeDirectory=conglobate
+RuntimeDirectoryMode=0700
+BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf
+ExecStart=/usr/bin/conglobate run /run/pichi/repo --cache=/run/pichi/cache --output=/run/pichi/output --uid-map=100000:65536 --gid-map=100000:65536
+# Image cmdline is console=hvc0, so the console copy is the build console.
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target
