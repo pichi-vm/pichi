@@ -2507,6 +2507,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pichi-builder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ciborium",
+ "pichi-launch",
+ "rustix",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "pichi-launch"
 version = "0.1.0"
 dependencies = [

@@ -106,6 +106,7 @@ members = [
     "deps/pichi-storage",
     "deps/pichi-registry",
     "deps/pichi-launch",
+    "deps/pichi-builder",
 ]
 
 [workspace.package]

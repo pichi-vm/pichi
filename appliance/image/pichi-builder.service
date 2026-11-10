@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Pichi build appliance launcher
+Requires=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount pichi-lsm.service bootstrap-time.service
+After=run-pichi-repo.mount run-pichi-cache.mount run-pichi-output.mount pichi-lsm.service bootstrap-time.service
+SuccessAction=poweroff-force
+FailureAction=poweroff
+
+[Service]
+Type=oneshot
+RuntimeDirectory=conglobate
+RuntimeDirectoryMode=0700
+BindReadOnlyPaths=/run/systemd/resolve/resolv.conf:/etc/resolv.conf
+ExecStart=/usr/bin/pichi-builder
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

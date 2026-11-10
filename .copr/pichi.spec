@@ -15,12 +15,22 @@ BuildRequires:  git
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
 BuildRequires:  make
+BuildRequires:  systemd-rpm-macros
 Requires:       dillo-vm
 Requires:       madrillo
 Requires:       ca-certificates
 
 %description
 Front-end for Pichi VM images.
+
+%package -n pichi-builder
+Summary:        Pichi build appliance launcher
+Requires:       conglobate
+Requires:       systemd
+
+%description -n pichi-builder
+Build-appliance console protocol, fixed mounts and service orchestration.
+Invokes Conglobate through its ordinary build command.
 
 %prep
 %autosetup
@@ -29,17 +39,27 @@ Front-end for Pichi VM images.
 export CARGO_HOME="$PWD/.cargo-home"
 export RUSTC_BOOTSTRAP=1
 cargo build --locked --release --bin pichi
+cargo build --locked --release -p pichi-builder
 
 %install
 install -Dpm0755 target/release/pichi %{buildroot}%{_bindir}/pichi
+install -Dpm0755 target/release/pichi-builder %{buildroot}%{_bindir}/pichi-builder
+install -Dpm0644 appliance/image/pichi-builder.service %{buildroot}%{_unitdir}/pichi-builder.service
 
 # Preserve license and notice files from the fetched dependencies.
 find .cargo-home -type f \( -iname 'license*' -o -iname 'licence*' -o \
     -iname 'copying*' -o -iname 'notice*' -o -iname 'copyright*' \) \
-    -exec install -Dm0644 '{}' '%{buildroot}%{_licensedir}/%{name}/dependencies/{}' \;
+    -exec install -Dm0644 '{}' '%{buildroot}%{_licensedir}/%{name}/dependencies/{}' \; \
+    -exec install -Dm0644 '{}' '%{buildroot}%{_licensedir}/pichi-builder/dependencies/{}' \;
 
 %files
 %license %{_licensedir}/%{name}/dependencies/
 %license LICENSE
 %doc README.md
 %{_bindir}/pichi
+
+%files -n pichi-builder
+%license %{_licensedir}/pichi-builder/dependencies/
+%license LICENSE
+%{_bindir}/pichi-builder
+%{_unitdir}/pichi-builder.service

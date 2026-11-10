@@ -1,0 +1,19 @@
+[package]
+name = "pichi-builder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow.workspace = true
+ciborium.workspace = true
+pichi-launch.workspace = true
+rustix = { workspace = true, features = ["event"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
