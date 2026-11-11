@@ -178,11 +178,14 @@ fn make_stub_dillo(dir: &Path) -> PathBuf {
 }
 
 #[tokio::test]
-#[ignore = "requires MADRILLO_BIN and its native port-exchange fixture"]
+#[ignore = "requires madrillo and its native port-exchange fixture on PATH"]
 async fn build_channel_preserves_guest_first_exchange() {
-    let monitor = PathBuf::from(std::env::var_os("MADRILLO_BIN").unwrap());
-    let fixture =
-        monitor.with_file_name(format!("madrillo-fixture{}", std::env::consts::EXE_SUFFIX));
+    let fixture = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|directory| {
+            directory.join(format!("madrillo-fixture{}", std::env::consts::EXE_SUFFIX))
+        })
+        .find(|path| path.is_file())
+        .expect("madrillo-fixture on PATH");
     let root = TempDir::new().unwrap();
     let child = root
         .path()

@@ -271,9 +271,9 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "requires MADRILLO_BIN and a containing Job that forbids breakaway"]
+    #[ignore = "requires madrillo on PATH and a containing Job that forbids breakaway"]
     async fn denied_job_breakaway_keeps_workload_unknown() -> Result<()> {
-        let monitor = PathBuf::from(std::env::var_os("MADRILLO_BIN").context("set MADRILLO_BIN")?);
+        let monitor = Running::executable();
         let fixture = monitor.with_file_name("madrillo-fixture.exe");
         let root = tempfile::tempdir()?;
         let graphroot = root.path().join("cache");
@@ -346,9 +346,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires MADRILLO_BIN and its qualification fixture; run explicitly"]
+    #[ignore = "requires madrillo on PATH and its qualification fixture; run explicitly"]
     async fn monitor_crash_preserves_unknown_state_and_cleanup_inputs() -> Result<()> {
-        let monitor = PathBuf::from(std::env::var_os("MADRILLO_BIN").context("set MADRILLO_BIN")?);
+        let monitor = Running::executable();
         let fixture =
             monitor.with_file_name(format!("madrillo-fixture{}", std::env::consts::EXE_SUFFIX));
         let root = tempfile::tempdir()?;
@@ -432,9 +432,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires MADRILLO_BIN and its qualification fixture; run explicitly"]
+    #[ignore = "requires madrillo on PATH and its qualification fixture; run explicitly"]
     async fn native_monitor_launch_and_async_control() -> Result<()> {
-        let monitor = PathBuf::from(std::env::var_os("MADRILLO_BIN").context("set MADRILLO_BIN")?);
+        let monitor = Running::executable();
         let fixture = monitor.with_file_name(if cfg!(windows) {
             "madrillo-fixture.exe"
         } else {

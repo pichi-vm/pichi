@@ -240,5 +240,5 @@ jobs:
             ${{ runner.temp }}/pichi command smoke */pichi.lock
 
       - name: 🧹 Remove temporary monitor checkout
-        if: ${{ always() && env.PICHI_MONITOR_SOURCE != '' }}
+        if: ${{ always() }}
         run: python3 .github/scripts/build_monitor.py --cleanup
