@@ -9,6 +9,10 @@ publish.workspace = true
 name = "pichi"
 path = "src/main.rs"
 
+[[test]]
+name = "staged_images"
+path = "tests/staged_images/mod.rs"
+
 [lints]
 workspace = true
 
