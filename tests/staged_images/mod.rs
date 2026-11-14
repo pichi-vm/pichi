@@ -5,8 +5,8 @@
 //! Every supported host runs the same builds and boots on its native hypervisor.
 #![cfg(feature = "vm-tests")]
 
+#[path = "../common/mod.rs"]
 mod common;
-#[path = "staged_images/disk.rs"]
 mod disk;
 
 use common::stages::{Builds, Image};
@@ -81,11 +81,7 @@ fn staged_images_create_extend_and_compose() {
     builds.cli(&["tag", "qualification.local/tools:1", "localhost/tools"]);
     let host = builds.directory.join("host.txt");
     fs::write(&host, "host context\n").unwrap();
-    let base = builds.build(
-        "base",
-        include_str!("staged_images/base.yaml"),
-        &[("host.txt", &host)],
-    );
+    let base = builds.build("base", include_str!("base.yaml"), &[("host.txt", &host)]);
     assert_eq!(base.layers("scute").len(), 1);
     assert!(!builds.directory.join("base/pichi.lock").exists());
     assert_eq!(
@@ -117,11 +113,7 @@ fn staged_images_create_extend_and_compose() {
 
     let corium = builds.guest_binary("corium", Path::new(common::CORIUM_BIN));
     let firmware = [("corium", corium.as_path())];
-    let bootable = builds.build(
-        "bootable",
-        include_str!("staged_images/firmware.yaml"),
-        &firmware,
-    );
+    let bootable = builds.build("bootable", include_str!("firmware.yaml"), &firmware);
     assert!(
         bootable.manifest["annotations"]
             .get("dev.pichi.build.bootstrapped")
@@ -177,7 +169,7 @@ fn staged_images_create_extend_and_compose() {
 
     let extended = builds.build(
         "extended",
-        include_str!("staged_images/extend.yaml"),
+        include_str!("extend.yaml"),
         &[("host.txt", &host)],
     );
     assert_eq!(extended.bytes("pmi"), bootable.bytes("pmi"));
