@@ -34,12 +34,13 @@ is still a valid image — a base others derive from.
 | `pichi inspect` | Inspect a cached image and its platform manifest |
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
-| `pichi run` | Boot an artifact under madrillo; `-d` prints a durable workload ID, `-i` forwards stdin, `-t` enables terminal mode |
+| `pichi run` | Create and boot a retained instance; `-d` prints its ID, `-i` forwards stdin, `-t` enables terminal mode |
+| `pichi start` | Restart a stopped instance with its saved disk and configuration |
 | `pichi attach` | Attach to live console output; `-i` also forwards input |
 | `pichi logs` | Print retained stdout/stderr for one or more workload IDs |
 | `pichi wait` | Wait for one or more workload IDs and print their native exit statuses in argument order |
 | `pichi stop` | Stop one or more workloads; force cleanup after `--time` seconds per workload (default 10) |
-| `pichi ps` | List running and unknown workloads; `-a` includes exited workloads and `-q` prints only full IDs |
+| `pichi ps` | List running and unknown workloads; `-a` includes created and exited workloads and `-q` prints only full IDs |
 | `pichi update` | Update a working-tree plan’s image lock |
 | `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |
 | `pichi system` | System-level inspection and maintenance |
@@ -62,22 +63,36 @@ storage backing filesystem. Linux guest memory uses the available, unreserved
 2-MiB hugepage pool; other hosts use available physical memory, rounded to 2 MiB.
 
 When no storage size is specified, Pichi recommends 1024 MiB, raised to any
-image-required minimum. Explicit sizes and existing retained disk sizes take
-precedence; the default recommendation does not impose a minimum.
+image-required minimum. Explicit sizes take precedence; the default
+recommendation does not impose a minimum.
 
-Pichi attaches one unformatted writable block device alongside the read-only
-image. The distribution decides how to format and mount it. Disposable storage
-is removed after the VM exits. To retain it across runs, provide a raw file:
+Each `run` creates one private, sparse qcow2 disk alongside the read-only image.
+The distribution decides how to format and mount it. The disk survives guest
+exit and is reused by `start`:
 
 ```sh
-pichi run example:1 --cpus 4 --memory 4g --storage 8g \
-  --storage-file /path/to/instance.raw
+pichi run -d example:1 --cpus 4 --memory 4g --storage 8g
+pichi start INSTANCE_ID
+pichi attach INSTANCE_ID
 ```
 
-Madrillo retains the storage reservation across detach and caller exit. Disposable
-backing lives in the private workload record. A completion callback removes it
-only after confirmed workload cleanup; `wait` and `stop` retry that cleanup.
-Missing or incomplete results preserve the backing for reconciliation.
+The image digest, platform manifest, CPU count, memory and disk capacity
+are fixed when `run` creates the instance. Later tag or configuration
+changes do not change its next boot. Image garbage collection retains the pinned
+image after exit. With no CPU or memory setting, Pichi records Dillo's defaults:
+one vCPU and 1024 MiB.
+
+Each boot has its own log, result and control endpoint. `logs`, `wait`, `stop`
+and `attach` select the current boot once; a subsequent restart cannot redirect
+an operation already observing it. `start` runs detached and refuses running or
+busy instances. Use `attach` to observe a live boot and `wait` for its final status.
+A failed or interrupted launch does not count as a successful start.
+
+The monitor and VMM both retain the boot's lifetime lock. A second boot cannot
+write the disk while either process still owns it. Before a new boot, Pichi checks
+the disk read-only and refuses errors detected during qcow2 admission or a
+capacity mismatch, without repairing the image. This does not scan all disk
+data for corruption. A missing result does not invent an exit status.
 
 `-m/--memory` and `--storage` accept `<number>[b|k|m|g]` (bytes, KiB, MiB,
 GiB; units are case-insensitive). Bare numbers are bytes, so replace an old
@@ -85,10 +100,9 @@ GiB; units are case-insensitive). Bare numbers are bytes, so replace an old
 be whole numbers of MiB. `run` and `build` use the same syntax; configuration
 keys `run.memory_mib` and `run.storage_mib` remain in MiB.
 
-`run.storage_file` can configure the retained file. Pichi
-locks retained storage against concurrent use, preserves existing contents,
-and refuses to shrink it. A supplied file's existing capacity is an operator
-allocation when no explicit size is set.
+`--storage-file` and `run.storage_file` are rejected with migration guidance.
+Existing external disk files are left untouched and are not imported. Builds
+continue using disposable storage, removed only after confirmed workload cleanup.
 
 The image's `requirements.slot` defaults to `mmio`; interface and storage
 slot declarations override it. Pichi supplies an explicit bus for every device.
@@ -168,8 +182,8 @@ including one that exits before the monitor accepts the attachment. Use `wait`
 for its retained exit status and `logs` for its recorded output.
 
 Install `madrillo` and `dillo` on PATH. Dillo must support console closure
-requesting shutdown. Foreground run prints its
-ID on stderr; detached run prints it on stdout. `run -it` uses raw input on a host
+requesting shutdown. Detached run prints its ID on stdout; `pichi ps -aq` lists
+retained IDs for later commands. `run -it` uses raw input on a host
 terminal; Ctrl-P Ctrl-Q detaches.
 `run -i` forwards stdin without raw mode or resize, while `run -t` sends terminal
 dimensions without forwarding stdin. `attach -i` uses raw mode on a host terminal.

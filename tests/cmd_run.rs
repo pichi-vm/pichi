@@ -331,12 +331,11 @@ async fn run_execs_dillo_with_manifest_derived_devices() {
         "gpt spec missing verity label: {gpt}"
     );
 
-    // No resource flags when neither CLI nor config set them.
-    assert!(!lines.contains(&"--cpus"), "unexpected --cpus: {lines:?}");
-    assert!(
-        !lines.contains(&"--memory"),
-        "unexpected --memory: {lines:?}"
-    );
+    // Without CLI, config or image values the instance records Dillo's
+    // defaults, so every boot passes the same concrete resources.
+    let value = |flag| lines[lines.iter().position(|a| *a == flag).unwrap() + 1];
+    assert_eq!(value("--cpus"), "1");
+    assert_eq!(value("--memory"), "1024");
 }
 
 #[tokio::test]
@@ -671,7 +670,7 @@ async fn image_config_defaults_and_manual_allocations_are_enforced() {
 }
 
 #[tokio::test]
-async fn detached_storage_stays_reserved_until_workload_exit() {
+async fn instance_disk_persists_and_admits_one_boot_at_a_time() {
     struct StopOnDrop {
         root: PathBuf,
         id: Option<String>,
@@ -686,82 +685,181 @@ async fn detached_storage_stays_reserved_until_workload_exit() {
             }
         }
     }
-    for retained in [false, true] {
-        let tmp = TempDir::new().unwrap();
-        populate_bootable(&graphroot(&tmp), "storage:detached").await;
-        let stub = make_stub_dillo(tmp.path());
-        let disk = tmp.path().join("retained.raw");
+    let tmp = TempDir::new().unwrap();
+    populate_bootable(&graphroot(&tmp), "storage:detached").await;
+    let stub = make_stub_dillo(tmp.path());
+    let pichi = || {
         let mut command = Command::cargo_bin("pichi").unwrap();
         command
             .env("XDG_DATA_HOME", tmp.path())
             .env("PATH", executable_path::prepend(stub.parent().unwrap()))
-            .env("PICHI_TEST_STORAGE", "1")
-            .args(["run", "-d", "--storage", "2m", "storage:detached"]);
-        if retained {
-            command
-                .arg("--storage-file")
-                .arg(&disk)
-                .env("PICHI_TEST_DILLO_WAIT_FOR_EOF", "1");
-        } else {
-            command.env("PICHI_TEST_DILLO_EXIT_GATE", tmp.path().join("exit-gate"));
-        }
-        let output = command.assert().success().get_output().stdout.clone();
-        let id = String::from_utf8(output).unwrap().trim().to_owned();
-        let mut cleanup = StopOnDrop {
-            root: tmp.path().to_owned(),
-            id: Some(id.clone()),
-        };
-        let report = tmp.path().join("storage-path.txt");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !report.exists() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "workload did not open storage"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let path = PathBuf::from(std::fs::read_to_string(report).unwrap());
-        assert!(path.exists(), "detach removed the backing");
-        Command::cargo_bin("pichi")
-            .unwrap()
-            .env("XDG_DATA_HOME", tmp.path())
-            .env("PATH", executable_path::prepend(stub.parent().unwrap()))
-            .args(["run", "-d", "--storage-file"])
-            .arg(&path)
-            .arg("storage:detached")
-            .assert()
-            .failure();
-        if retained {
-            Command::cargo_bin("pichi")
-                .unwrap()
-                .env("XDG_DATA_HOME", tmp.path())
-                .args(["stop", &id, "--time", "2"])
-                .assert()
-                .success();
-            assert_eq!(&std::fs::read(&path).unwrap()[..10], b"guest data");
-            // A completed workload releases the reservation for a new run.
-            Command::cargo_bin("pichi")
-                .unwrap()
-                .env("XDG_DATA_HOME", tmp.path())
-                .env("PATH", executable_path::prepend(stub.parent().unwrap()))
-                .args(["run", "--storage-file"])
-                .arg(&path)
-                .arg("storage:detached")
-                .assert()
-                .success();
-        } else {
-            std::fs::write(tmp.path().join("exit-gate"), b"exit").unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while path.exists() {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "exit callback did not remove storage"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
-        cleanup.id = None;
+            .env("PICHI_TEST_STORAGE", "1");
+        command
+    };
+    let output = pichi()
+        .env("PICHI_TEST_DILLO_WAIT_FOR_EOF", "1")
+        .args(["run", "-d", "--storage", "2m", "storage:detached"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = String::from_utf8(output).unwrap().trim().to_owned();
+    let mut cleanup = StopOnDrop {
+        root: tmp.path().to_owned(),
+        id: Some(id.clone()),
+    };
+    let report = tmp.path().join("storage-path.txt");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !report.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "workload did not open storage"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    let disk = PathBuf::from(std::fs::read_to_string(&report).unwrap());
+    let instance = tmp.path().join("pichi/storage.workloads").join(&id);
+    assert_eq!(disk, instance.join("storage.qcow2").canonicalize().unwrap());
+    // Starting a live instance fails without launching another boot.
+    pichi().args(["start", &id]).assert().code(125).stdout("");
+    assert_eq!(std::fs::read_dir(instance.join("runs")).unwrap().count(), 1);
+    assert!(disk.exists());
+    pichi()
+        .args(["stop", &id, "--time", "2"])
+        .assert()
+        .success()
+        .stdout(format!("{id}\n"));
+    cleanup.id = None;
+    // The next boot reopens the same disk with its recorded capacity.
+    std::fs::remove_file(&report).unwrap();
+    pichi().args(["start", &id]).assert().success();
+    pichi().args(["wait", &id]).assert().success().stdout("0\n");
+    assert_eq!(
+        std::fs::read_to_string(&report).unwrap(),
+        disk.to_str().unwrap()
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("storage-capacity.txt")).unwrap(),
+        (2 * 1024 * 1024).to_string()
+    );
+    assert_eq!(
+        std::fs::read_dir(instance.join("runs")).unwrap().count(),
+        2,
+        "each boot has its own run directory"
+    );
+    assert!(instance.exists());
+}
+
+#[tokio::test]
+async fn rejects_carapace_before_instance_publication() {
+    let tmp = TempDir::new().unwrap();
+    let root = graphroot(&tmp);
+    populate_bootable(&root, "carapace:1").await;
+    let store = FilesystemBlobStore::new(&root);
+    let db = FilesystemTagDb::open(&root).unwrap();
+    let key = "docker.io/library/carapace:1";
+    let original = db.resolve_tag(key).await.unwrap().unwrap();
+    let mut manifest: Manifest =
+        serde_json::from_slice(&store.get_blob(&original).await.unwrap()).unwrap();
+    manifest
+        .layers
+        .retain(|layer| matches!(layer, Layer::Scute(_)));
+    let bytes = serde_json::to_vec(&manifest).unwrap();
+    let digest = sha256_digest(&bytes);
+    store.put_blob(&digest, &bytes).await.unwrap();
+    db.set_tag(key, &digest).await.unwrap();
+    let output = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args(["run", "--storage", "2m", "carapace:1"])
+        .assert()
+        .code(125)
+        .get_output()
+        .clone();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not bootable"));
+    let records = tmp.path().join("pichi/storage.workloads");
+    assert!(
+        !records.exists() || std::fs::read_dir(records).unwrap().next().is_none(),
+        "unbootable images must not acquire a retained instance or disk"
+    );
+}
+
+#[tokio::test]
+async fn instance_keeps_its_image_and_resources_after_tag_and_config_changes() {
+    let tmp = TempDir::new().unwrap();
+    let root = graphroot(&tmp);
+    populate_bootable(&root, "frozen:1").await;
+    let stub = make_stub_dillo(tmp.path());
+    let config = tmp.path().join("config");
+    std::fs::create_dir_all(config.join("pichi")).unwrap();
+    let pichi = || {
+        let mut command = Command::cargo_bin("pichi").unwrap();
+        command
+            .env("XDG_DATA_HOME", tmp.path())
+            .env("XDG_CONFIG_HOME", &config)
+            .env("APPDATA", &config)
+            .env("PATH", executable_path::prepend(stub.parent().unwrap()))
+            .env("PICHI_TEST_STORAGE", "1");
+        command
+    };
+    let created = pichi()
+        .args([
+            "run",
+            "-d",
+            "frozen:1",
+            "--cpus",
+            "2",
+            "--memory",
+            "128m",
+            "--storage",
+            "2m",
+        ])
+        .assert()
+        .success();
+    let id = String::from_utf8(created.get_output().stdout.clone()).unwrap();
+    let id = id.trim();
+    pichi().args(["wait", id]).assert().success();
+    let identity = tmp
+        .path()
+        .join("pichi/storage.workloads")
+        .join(id)
+        .join("identity.json");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&identity).unwrap()).unwrap();
+    let digest = saved["root"].as_str().unwrap().parse().unwrap();
+    let blobs = FilesystemBlobStore::new(&root);
+    // A new image and operator defaults must not be consulted on restart.
+    populate_bootable_with_requirements(
+        &root,
+        "frozen:1",
+        Some(serde_json::json!({"cpus":{"recommended":3}})),
+    )
+    .await;
+    std::fs::write(
+        config.join("pichi/config.toml"),
+        "[run]\ncpus = 4\nmemory_mib = 256\nstorage_mib = 4\n",
+    )
+    .unwrap();
+    pichi().args(["rmi", "-f", "frozen:1"]).assert().success();
+    pichi().args(["system", "prune"]).assert().success();
+    assert!(blobs.blob_exists(&digest).await);
+    pichi().args(["start", id]).assert().success();
+    pichi().args(["wait", id]).assert().success().stdout("0\n");
+    let argv = std::fs::read_to_string(tmp.path().join("argv.txt")).unwrap();
+    let arguments: Vec<_> = argv.lines().collect();
+    let value = |flag| arguments[arguments.iter().position(|arg| *arg == flag).unwrap() + 1];
+    assert_eq!(value("--cpus"), "2");
+    assert_eq!(value("--memory"), "128");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("storage-capacity.txt")).unwrap(),
+        "2097152"
+    );
+    pichi().args(["system", "prune"]).assert().success();
+    assert!(
+        blobs.blob_exists(&digest).await,
+        "a stopped instance still needs its image"
+    );
 }
 
 #[tokio::test]
@@ -777,16 +875,13 @@ async fn vm_timeout_cleanup_stops_workloads_after_client_exit() {
         let tmp = TempDir::new().unwrap();
         populate_bootable(&graphroot(&tmp), "cleanup:1").await;
         let stub = make_stub_dillo(tmp.path());
-        let disk = tmp.path().join("retained.raw");
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"));
         command
             .env("XDG_DATA_HOME", tmp.path())
             .env("PATH", executable_path::prepend(stub.parent().unwrap()))
             .env("PICHI_TEST_STORAGE", "1")
             .env("PICHI_TEST_DILLO_WAIT_FOR_EOF", "1")
-            .args(["run", "--storage", "2m", "--storage-file"])
-            .arg(&disk)
-            .arg("cleanup:1")
+            .args(["run", "--storage", "2m", "cleanup:1"])
             .stdin(Stdio::null())
             .stdout(Stdio::null());
         if detached {
@@ -808,23 +903,34 @@ async fn vm_timeout_cleanup_stops_workloads_after_client_exit() {
         child.kill_vm(tmp.path()).unwrap();
         assert!(ready && detached_exit, "workload did not become ready");
         assert!(child.try_wait().unwrap().is_some());
-        // Madrillo's reservation survives client exit but must be gone now.
-        let file = std::fs::File::options()
+        // The boot's lifetime lock survives client exit but must be free now,
+        // while the instance keeps its disk.
+        let disk = PathBuf::from(std::fs::read_to_string(&report).unwrap());
+        let identity: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(disk.with_file_name("identity.json")).unwrap())
+                .unwrap();
+        let boot = identity["attempt"]["id"].as_str().unwrap();
+        let lock = std::fs::File::options()
             .read(true)
             .write(true)
-            .open(&disk)
+            .open(
+                disk.parent()
+                    .unwrap()
+                    .join("runs")
+                    .join(boot)
+                    .join("boot.lock"),
+            )
             .unwrap();
-        file.try_lock()
-            .expect("monitor retained the storage reservation");
-        // Windows locks also exclude reads through a second file handle.
-        drop(file);
-        assert_eq!(&std::fs::read(&disk).unwrap()[..10], b"guest data");
+        lock.try_lock()
+            .expect("a process of the boot retained the boot lock");
+        drop(lock);
+        assert!(disk.exists());
         child.kill_vm(tmp.path()).unwrap();
     }
 }
 
 #[tokio::test]
-async fn writable_storage_lives_through_the_child_and_is_cleaned_on_exit() {
+async fn instance_disk_capacity_and_bus_follow_the_image_and_outlive_the_boot() {
     for (requirements, expected_bus, expected_mib) in [
         (serde_json::json!({}), dillo_config::Bus::Mmio, 1024),
         (
@@ -862,7 +968,7 @@ async fn writable_storage_lives_through_the_child_and_is_cleaned_on_exit() {
                 (expected_mib * 1024 * 1024).to_string()
             );
             let path = std::fs::read_to_string(tmp.path().join("storage-path.txt")).unwrap();
-            assert!(!Path::new(&path).exists());
+            assert!(Path::new(&path).exists(), "the disk survives guest exit");
             let argv = std::fs::read_to_string(tmp.path().join("argv.txt")).unwrap();
             let args: Vec<_> = argv.lines().collect();
             let spec: dillo_config::BlkSpec = serde_keyvalue::from_key_values(
@@ -870,6 +976,7 @@ async fn writable_storage_lives_through_the_child_and_is_cleaned_on_exit() {
             )
             .unwrap();
             assert_eq!(spec.path, PathBuf::from(path));
+            assert_eq!(spec.format, dillo_config::BlockFormat::Qcow2);
             assert!(!spec.readonly);
             assert_eq!(spec.bus, Some(expected_bus));
             assert_eq!(spec.slot, None);
@@ -902,4 +1009,50 @@ async fn cpu_max_uses_host_availability_as_the_default() {
             .unwrap(),
         std::thread::available_parallelism().unwrap().get()
     );
+}
+
+#[tokio::test]
+async fn cleanup_validates_failed_instances_and_preserves_unknown_records() {
+    use process::ChildExt as _;
+    use std::process::Stdio;
+    let tmp = TempDir::new().unwrap();
+    populate_bootable(&graphroot(&tmp), "cleanup:created").await;
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .env("PATH", "")
+        .args(["run", "--storage", "2m", "cleanup:created"])
+        .assert()
+        .code(125);
+    let workloads = tmp.path().join("pichi/storage.workloads");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"))
+        .arg("--version")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.kill_vm(tmp.path()).unwrap();
+    assert_eq!(std::fs::read_dir(&workloads).unwrap().count(), 1);
+    let retained = std::fs::read_dir(&workloads)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(retained.join("storage.qcow2").is_file());
+    for identity in [
+        serde_json::json!({"version": 99, "attempt": null}),
+        serde_json::json!({"version": 2, "attempt": null}),
+        serde_json::json!({"version": 2}),
+    ] {
+        let record = workloads.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir(&record).unwrap();
+        std::fs::write(record.join("identity.json"), identity.to_string()).unwrap();
+        std::fs::write(record.join("storage.qcow2"), b"must survive failed cleanup").unwrap();
+        assert!(child.kill_vm(tmp.path()).is_err());
+        assert_eq!(
+            std::fs::read(record.join("storage.qcow2")).unwrap(),
+            b"must survive failed cleanup"
+        );
+        std::fs::remove_dir_all(record).unwrap();
+    }
 }

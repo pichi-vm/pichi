@@ -25,19 +25,24 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 
 use conglobate::artifact::{Layer, Manifest, Reference, Requirements};
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
-use crate::cli::{PullArgs, PullPolicy, RunArgs};
-use crate::cmd::build::{canonicalize_reference, image_cached, resolve_manifest};
+use crate::cli::{PullArgs, PullPolicy, RunArgs, StartArgs};
+use crate::cmd::build::{canonicalize_reference, image_cached};
+use crate::cmd::cache::ImageStore as _;
 use crate::cmd::layer::ScuteFiles;
 use crate::cmd::manifest_ext::ManifestExt;
 use crate::cmd::requirements;
 use crate::cmd::requirements::SlotArgument as _;
-use crate::cmd::workload::{Running, record::Records};
-use crate::cmd::writable_storage::WritableStorage;
+use crate::cmd::workload::instance::{Instance, Spec};
+use crate::cmd::workload::{
+    Running, Workload,
+    record::{Records, Run},
+};
+use crate::cmd::writable_storage::{InstanceDisk, WritableStorage};
 use crate::config::Config;
 
 /// GPT type GUID for scute COW partitions (carapace spec §"GPT Deployment
@@ -46,8 +51,37 @@ const SCUTE_COW_TYPEGUID: &str = "11dd804a-e1bf-4ab3-98c1-f9f48ceedbf1";
 /// GPT type GUID for scute verity partitions (carapace spec, registered value).
 const SCUTE_VERITY_TYPEGUID: &str = "40bb9571-2972-4547-b580-6a8cb13fd7d1";
 
-/// `pichi run <ref>` entry point.
+/// Dillo's defaults, frozen in an instance so later boots cannot drift.
+const DEFAULT_CPUS: u32 = 1;
+const DEFAULT_MEMORY_MIB: u32 = 1024;
+
+/// Create and start an instance, retaining its private disk after exit.
 pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
+    let instance = create_instance(&args, config).await?;
+    let id = instance.id();
+    let input = args.interactive;
+    let tty = args.tty;
+    let (run, mut running) = launch(instance, input && !args.detach, config)
+        .await
+        .with_context(|| format!("instance {id} remains available after launch failed"))?;
+    if args.detach {
+        println!("{id}");
+        return Ok(0);
+    }
+    let result = running.view(&run, input, tty).await;
+    run.tidy();
+    result
+}
+
+/// Start a stopped instance detached, using its saved configuration.
+pub async fn start(args: StartArgs, config: &Config) -> Result<u32> {
+    let instance = Workload::open(&args.id, config)?.instance()?;
+    launch(instance, false, config).await?;
+    println!("{}", args.id);
+    Ok(0)
+}
+
+async fn create_instance(args: &RunArgs, config: &Config) -> Result<Instance> {
     let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
@@ -61,70 +95,115 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
     if !image_cached(&canonical, &db, &blob_store).await? {
         auto_pull(&target_ref, config).await?;
     }
-    // Serialize resolution, device preparation and durable pin publication
-    // with image deletion; launch only after the metadata lock is released.
-    let (record, dillo_args, storage) = layout
+    // Serialize resolution, validation and publication of the image pin with
+    // image deletion.
+    layout
         .with_index_lock(|| async {
-            let (digest, manifest) = resolve_manifest(&canonical, &db, &blob_store).await?;
+            let root = blob_store.resolve(&target_ref, &db).await?;
+            let (metadata, manifest) = blob_store
+                .cached_manifest(&root)
+                .await
+                .with_context(|| format!("reading image {}", args.reference))?;
 
             // Architecture-mismatch fail-closed check (accept if absent).
             manifest.check_architecture()?;
+            manifest.partition_layers()?;
 
-            // Derive the dillo argv from the manifest + runtime resources, applying
-            // the artifact config's required floors (BUILD.md §7) when present.
+            // Apply the artifact config's required floors (BUILD.md §7) and
+            // freeze concrete resources for every later boot.
             let reqs = requirements::load_requirements(&manifest, &blob_store).await?;
-            let cpus = requirements::Sizing::Cpus.resolve(
-                args.cpus.or(config.run.cpus),
-                reqs.as_ref().and_then(Requirements::cpus_required),
-                reqs.as_ref().and_then(Requirements::cpus_recommended),
-            )?;
-            let memory = requirements::Sizing::Memory.resolve(
-                args.memory.or(config.run.memory_mib),
-                reqs.as_ref().and_then(Requirements::memory_required_mib),
-                reqs.as_ref().and_then(Requirements::memory_recommended_mib),
-            )?;
+            let cpus = requirements::Sizing::Cpus
+                .resolve(
+                    args.cpus.or(config.run.cpus),
+                    reqs.as_ref().and_then(Requirements::cpus_required),
+                    reqs.as_ref().and_then(Requirements::cpus_recommended),
+                )?
+                .unwrap_or(DEFAULT_CPUS);
+            let memory_mib = requirements::Sizing::Memory
+                .resolve(
+                    args.memory.or(config.run.memory_mib),
+                    reqs.as_ref().and_then(Requirements::memory_required_mib),
+                    reqs.as_ref().and_then(Requirements::memory_recommended_mib),
+                )?
+                .unwrap_or(DEFAULT_MEMORY_MIB);
             let requirements = reqs.unwrap_or_default();
-            let mut dillo_args =
-                build_dillo_args(&manifest, &blob_store, cpus, memory, &requirements).await?;
-            let record = Records::open(&layout.graphroot)?.reserve(vec![digest])?;
-            let storage = WritableStorage::prepare(
-                Some(&requirements.storage),
+            let records = Records::open(&layout.graphroot)?;
+            let storage_bytes = WritableStorage::capacity(
+                &requirements.storage,
                 args.storage.or(config.run.storage_mib),
-                args.storage_file
-                    .as_deref()
-                    .or(config.run.storage_file.as_deref()),
-                &record.storage_directory(),
+                records.path(),
             )?;
-            if let Some(backing) = &storage {
-                dillo_args.extend([
-                    "--blk".into(),
-                    backing.argument(requirements.storage.slot.unwrap_or(requirements.slot)),
-                ]);
-            }
-            Ok((record, dillo_args, storage))
+            Instance::create(
+                &records,
+                Spec {
+                    root,
+                    manifest: metadata.digest,
+                    cpus,
+                    memory_mib,
+                    storage_bytes,
+                },
+            )
         })
-        .await?;
-    let arguments: Vec<OsString> = dillo_args.into_iter().map(OsString::from).collect();
-    let (held, inherited) = storage
-        .map(WritableStorage::into_boot)
-        .transpose()?
-        .into_iter()
-        .unzip();
-    let mut running = Running::start(
-        &record.run,
-        &arguments,
-        inherited,
-        held,
-        args.interactive && !args.detach,
+        .await
+}
+
+/// Boot a stopped instance using its frozen configuration and private disk.
+async fn launch(instance: Instance, input: bool, config: &Config) -> Result<(Run, Running)> {
+    let id = instance.id();
+    let gate = instance.gate()?;
+    let mut instance = instance.reread()?;
+    ensure!(!instance.live()?, "instance is running or busy");
+    let layout = config.resolve_layout()?;
+    let blob_store = FilesystemBlobStore::new(&layout.graphroot);
+    // Never re-resolve a tag: boot exactly the pinned platform manifest.
+    let (metadata, manifest) = blob_store
+        .cached_manifest(instance.root())
+        .await
+        .with_context(|| {
+            format!(
+                "instance {id} needs image {} (manifest {}), which is missing from the cache",
+                instance.root(),
+                instance.manifest()
+            )
+        })?;
+    ensure!(
+        metadata.digest == *instance.manifest(),
+        "image {} no longer selects manifest {} for this host",
+        instance.root(),
+        instance.manifest()
+    );
+    let requirements = requirements::load_requirements(&manifest, &blob_store)
+        .await?
+        .unwrap_or_default();
+    let mut arguments = build_dillo_args(
+        &manifest,
+        &blob_store,
+        Some(instance.cpus()),
+        Some(instance.memory_mib()),
+        &requirements,
     )
     .await?;
-    if args.detach {
-        println!("{}", record.id());
-        return Ok(0);
+    instance.check_disk(&gate)?;
+    arguments.extend([
+        "--blk".into(),
+        InstanceDisk::argument(
+            &instance.disk(),
+            requirements.storage.slot.unwrap_or(requirements.slot),
+        )?,
+    ]);
+    let arguments: Vec<OsString> = arguments.into_iter().map(OsString::from).collect();
+    let (run, attempt, lease) = instance.prepare_attempt(&gate)?;
+    let (held, inherited) = lease.clone_boot()?;
+    // Publish only after Prepared, then authorize this exact boot under the gate.
+    let mut running =
+        Running::prepare(&run, &arguments, vec![inherited], vec![held], input).await?;
+    instance.select_attempt(&gate, attempt)?;
+    if let Err(error) = running.authorize().await {
+        return Err(running.startup_error(&run, error).await);
     }
-    let result = running.view(&record.run, args.interactive, args.tty).await;
-    record.release_runtime_files()?;
-    result
+    instance.confirm_started(&gate)?;
+    drop(gate);
+    Ok((run, running))
 }
 
 /// Fetch an artifact that isn't cached, mirroring `docker`/`podman run`'s
@@ -363,6 +442,113 @@ mod tests {
             layers,
             annotations: chain_annotations(),
         }
+    }
+
+    #[tokio::test]
+    async fn start_refuses_preparing_and_live_boots() -> Result<()> {
+        if crate::cmd::workload::instance::isolated(
+            "cmd::run::tests::start_refuses_preparing_and_live_boots",
+        )? {
+            return Ok(());
+        }
+        use crate::config::StorageConfig;
+        use madrillo::{CleanupResult, Completion, CompletionCause, LeaderResult, OomEvidence};
+
+        let root = TempDir::new()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let config = Config {
+            storage: StorageConfig {
+                graphroot: Some(graphroot.clone()),
+                runroot: Some(root.path().join("run")),
+            },
+            ..Config::default()
+        };
+        let records = Records::open(&graphroot)?;
+        let mut instance = Instance::create(
+            &records,
+            Spec {
+                root: Digest::Sha256([1; 32]),
+                manifest: Digest::Sha256([2; 32]),
+                cpus: 1,
+                memory_mib: 128,
+                storage_bytes: 2 * 1024 * 1024,
+            },
+        )?;
+        let gate = instance.gate()?;
+        let (run, attempt, lease) = instance.prepare_attempt(&gate)?;
+        drop(run);
+        instance.select_attempt(&gate, attempt)?;
+        drop(gate);
+        let result = launch(
+            Workload::open(&instance.id().to_string(), &config)?.instance()?,
+            false,
+            &config,
+        )
+        .await;
+        assert!(result.is_err(), "a prepared boot was reported as started");
+        let gate = instance.gate()?;
+        instance.confirm_started(&gate)?;
+        drop(gate);
+        let state = instance
+            .disk()
+            .parent()
+            .unwrap()
+            .join("runs")
+            .join(instance.attempt().unwrap().to_string())
+            .join("monitor");
+        std::fs::create_dir(&state)?;
+        let completed = Completion {
+            version: madrillo::PROTOCOL_VERSION,
+            leader: LeaderResult::Exit { code: 37 },
+            cause: CompletionCause::LeaderExit,
+            exited_at_unix_ms: 0,
+            cleanup: CleanupResult::Complete,
+            oom: OomEvidence::NoneObserved,
+            log_errors: Vec::new(),
+            monitor_errors: Vec::new(),
+            monitor_warnings: Vec::new(),
+            output_truncated: false,
+        };
+        std::fs::write(state.join("result.json"), serde_json::to_vec(&completed)?)?;
+        let result = launch(
+            Workload::open(&instance.id().to_string(), &config)?.instance()?,
+            false,
+            &config,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a completed busy boot was reported as restarted"
+        );
+        drop(lease);
+        // While another launcher owns the operation gate, do not queue a
+        // second launch or report the previous completion as a new start.
+        let gate = instance.gate()?;
+        let (_, _, lease) = instance.prepare_attempt(&gate)?;
+        assert!(!instance.live()?);
+        let error = launch(
+            Workload::open(&instance.id().to_string(), &config)?.instance()?,
+            false,
+            &config,
+        )
+        .await
+        .err()
+        .context("busy start unexpectedly succeeded")?;
+        assert!(format!("{error:#}").contains("busy"), "{error:#}");
+        drop((gate, lease));
+        // Once idle, a new launch resolves the saved image rather than reusing
+        // the old result. This fixture deliberately has no cached image.
+        let error = launch(
+            Workload::open(&instance.id().to_string(), &config)?.instance()?,
+            false,
+            &config,
+        )
+        .await
+        .err()
+        .context("old completion reported as a new start")?;
+        assert!(format!("{error:#}").contains("needs image"), "{error:#}");
+        Ok(())
     }
 
     #[tokio::test]

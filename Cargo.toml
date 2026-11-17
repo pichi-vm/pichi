@@ -39,6 +39,7 @@ env_logger.workspace = true
 futures-util = { workspace = true, features = ["sink"] }
 getrandom = "0.4"
 fs4.workspace = true
+imago = { git = "https://github.com/pichi-vm/imago", branch = "upstream/reclamation", default-features = false, features = ["sync"] }
 hex.workspace = true
 humansize.workspace = true
 log.workspace = true

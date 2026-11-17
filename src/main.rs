@@ -68,6 +68,9 @@ enum Command {
     Update(cli::UpdateArgs),
     /// Boot a cached artifact under madrillo supervision.
     Run(cli::RunArgs),
+
+    /// Start a retained instance with its saved disk and configuration.
+    Start(cli::StartArgs),
     /// Attach to a workload's live console.
     Attach(cli::AttachArgs),
 
@@ -82,7 +85,7 @@ enum Command {
 
     /// List running and unknown workloads.
     Ps {
-        /// Include exited workloads.
+        /// Include created and exited workloads.
         #[arg(long, short = 'a')]
         all: bool,
         /// Print only full workload IDs, one per line.
@@ -150,6 +153,7 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
         },
         Command::Update(args) => cmd::update::run(args, &config).await,
         Command::Run(args) => return Ok(NativeExit(cmd::run::run(args, &config).await?)),
+        Command::Start(args) => return Ok(NativeExit(cmd::run::start(args, &config).await?)),
         Command::Attach(args) => {
             return Ok(NativeExit(
                 cmd::workload::Workload::open(&args.id, &config)?
@@ -158,20 +162,14 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
             ));
         }
         Command::Wait(args) => {
-            let ids = args
+            let workloads = args
                 .ids
                 .iter()
-                .map(|id| cmd::workload::Workload::open(id, &config).map(|workload| workload.id()))
+                .map(|id| cmd::workload::Selection::open(id, &config))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let mut failed = false;
-            for (selector, id) in args.ids.iter().zip(ids) {
-                let result = async {
-                    cmd::workload::Workload::open(&id.to_string(), &config)?
-                        .wait()
-                        .await?
-                        .code()
-                }
-                .await;
+            for (selector, workload) in args.ids.iter().zip(workloads) {
+                let result = async { workload.reopen()?.wait().await?.code() }.await;
                 match result {
                     Ok(code) => println!("{code}"),
                     Err(error) => {
@@ -186,19 +184,14 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
             Ok(())
         }
         Command::Logs(args) => {
-            let ids = args
+            let workloads = args
                 .ids
                 .iter()
-                .map(|id| cmd::workload::Workload::open(id, &config).map(|workload| workload.id()))
+                .map(|id| cmd::workload::Selection::open(id, &config))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let mut failed = false;
-            for (selector, id) in args.ids.iter().zip(ids) {
-                let result = async {
-                    cmd::workload::Workload::open(&id.to_string(), &config)?
-                        .logs(args.ids.len() > 1)
-                        .await
-                }
-                .await;
+            for (selector, workload) in args.ids.iter().zip(workloads) {
+                let result = async { workload.reopen()?.logs(args.ids.len() > 1).await }.await;
                 if let Err(error) = result {
                     eprintln!("Error: {selector}: {error:#}");
                     failed = true;
@@ -210,19 +203,21 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
             Ok(())
         }
         Command::Stop(args) => {
-            let ids = args
+            let workloads = args
                 .ids
                 .iter()
-                .map(|id| cmd::workload::Workload::open(id, &config).map(|workload| workload.id()))
+                .map(|id| cmd::workload::Selection::open(id, &config))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let grace = std::time::Duration::from_secs(u64::from(args.time));
             let mut failed = false;
-            for (selector, id) in args.ids.iter().zip(ids) {
+            for (selector, workload) in args.ids.iter().zip(workloads) {
                 let result = async {
-                    cmd::workload::Workload::open(&id.to_string(), &config)?
+                    workload
+                        .reopen()?
                         .stop(grace)
                         .await?
-                        .code()
+                        .map(|outcome| outcome.code())
+                        .transpose()
                 }
                 .await;
                 match result {

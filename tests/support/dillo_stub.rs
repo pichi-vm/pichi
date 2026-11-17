@@ -32,7 +32,7 @@ fn main() {
         std::process::exit(status.code().unwrap_or(1));
     }
     if std::env::var_os("PICHI_TEST_STORAGE").is_some() {
-        use std::io::Write as _;
+        use std::io::Read as _;
         let arguments: Vec<_> = std::env::args().collect();
         let spec = &arguments[arguments.iter().position(|arg| arg == "--blk").unwrap() + 1];
         let path = std::path::PathBuf::from(
@@ -43,16 +43,18 @@ fn main() {
                 .unwrap()
                 .trim_matches('"'),
         );
-        let mut file = std::fs::File::options()
-            .read(true)
-            .write(true)
-            .open(&path)
+        // Report the qcow2 header's virtual size; the guest writes nothing.
+        let mut header = [0; 32];
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_exact(&mut header)
             .unwrap();
-        let length = file.metadata().unwrap().len();
-        file.write_all(b"guest data").unwrap();
+        assert_eq!(&header[..4], b"QFI\xfb");
+        let mut size = [0; 8];
+        size.copy_from_slice(&header[24..]);
         std::fs::write(
             executable.parent().unwrap().join("storage-capacity.txt"),
-            length.to_string(),
+            u64::from_be_bytes(size).to_string(),
         )
         .unwrap();
         std::fs::write(

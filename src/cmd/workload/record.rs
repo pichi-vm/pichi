@@ -3,6 +3,7 @@
 
 //! Retained caller identity. Missing monitor results remain unknown and pinned.
 
+use super::instance::Instance;
 use anyhow::{Context, Result, bail};
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
@@ -24,23 +25,37 @@ struct Identity {
     endpoint: PathBuf,
 }
 
-#[derive(Debug)]
-pub(crate) struct Records {
-    path: PathBuf,
-    directory: Dir,
+#[derive(Deserialize)]
+struct Version {
+    version: u16,
 }
 
+#[derive(Debug)]
+pub(crate) struct Records {
+    pub(super) path: PathBuf,
+    pub(super) directory: Dir,
+}
+
+/// A transient workload record: `build`, and `run` before durable instances.
 #[derive(Debug)]
 pub(crate) struct Record {
     identity: Identity,
     pub(crate) run: Run,
 }
 
+/// One retained entry of the workload directory.
+#[derive(Debug)]
+pub(crate) enum Entry {
+    Legacy(Record),
+
+    Instance(Instance),
+}
+
 /// One boot's monitor state, diagnostics and control endpoint.
 #[derive(Debug)]
 pub(crate) struct Run {
     path: PathBuf,
-    directory: Dir,
+    pub(super) directory: Dir,
     endpoint: PathBuf,
 }
 
@@ -52,11 +67,13 @@ impl Records {
         let Some(records) = Self::existing(graphroot)? else {
             return Ok(false);
         };
-        for record in records.list()? {
+        for entry in records.list()? {
+            let Entry::Legacy(record) = entry else {
+                continue;
+            };
             match record.run.directory.open_dir_nofollow("output") {
                 Ok(_) => {
-                    if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
-                    {
+                    if !record.complete()? {
                         return Ok(true);
                     }
                 }
@@ -75,6 +92,22 @@ impl Records {
         )?;
         #[cfg(windows)]
         Self::private_directory(&parent)?;
+        match parent.create_dir_with(
+            path.file_name().context("workload state name")?,
+            &Self::private_builder(),
+        ) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        Self::from_parent(path, &parent)?.context("missing workload directory")
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(super) fn private_builder() -> cap_std::fs::DirBuilder {
         let options = cap_std::fs::DirBuilder::new();
         #[cfg(unix)]
         let options = {
@@ -83,15 +116,10 @@ impl Records {
             options.mode(0o700);
             options
         };
-        match parent.create_dir_with(path.file_name().context("workload state name")?, &options) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into()),
-        }
-        Self::from_parent(path, &parent)?.context("missing workload directory")
+        options
     }
 
-    pub(super) fn existing(graphroot: &Path) -> Result<Option<Self>> {
+    pub(crate) fn existing(graphroot: &Path) -> Result<Option<Self>> {
         let path = match Self::location(graphroot) {
             Ok(path) => path,
             Err(error)
@@ -202,14 +230,7 @@ impl Records {
     /// Caller holds the image-index lock through resolution and this write.
     pub(crate) fn reserve(&self, images: Vec<Digest>) -> Result<Record> {
         let id = Uuid::new_v4();
-        #[cfg(unix)]
-        // Respect the caller's native temporary directory, including sandbox
-        // restrictions. A compact UUID leaves room for macOS socket paths and
-        // the resize suffix. Both peers authenticate the invoking UID.
-        let endpoint = std::path::absolute(std::env::temp_dir())?.join(id.simple().to_string());
-        #[cfg(windows)]
-        let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-{id}"));
-        self.create(images, endpoint, id)
+        self.create(images, Run::endpoint_for(id)?, id)
     }
 
     /// Caller holds the image-index lock until the identity is durably written.
@@ -283,30 +304,31 @@ impl Records {
         })
     }
 
-    pub(super) fn get(&self, id: Uuid) -> Result<Record> {
+    pub(super) fn get(&self, id: Uuid) -> Result<Entry> {
         let name = id.to_string();
         let directory = self.directory.open_dir_nofollow(&name)?;
-        let identity: Identity = Run::read(&directory, "identity.json", 1024 * 1024)?
+        let path = self.path.join(name);
+        let bytes = Run::read_bytes(&directory, "identity.json", 1024 * 1024)?
             .context("missing workload identity")?;
-        if identity.version != 1
-            || identity.id != id
-            || identity.images.is_empty()
-            || identity.images.len() > 1024
-        {
+        if serde_json::from_slice::<Version>(&bytes)?.version != 1 {
+            return Instance::read(&bytes, id, path, directory).map(Entry::Instance);
+        }
+        let identity: Identity = serde_json::from_slice(&bytes)?;
+        if identity.id != id || identity.images.is_empty() || identity.images.len() > 1024 {
             bail!("invalid workload identity");
         }
-        Ok(Record {
+        Ok(Entry::Legacy(Record {
             run: Run {
-                path: self.path.join(name),
+                path,
                 directory,
                 endpoint: identity.endpoint.clone(),
             },
             identity,
-        })
+        }))
     }
 
     /// Resolve a full UUID or a unique prefix before any workload operation.
-    pub(super) fn resolve(&self, selector: &str) -> Result<Record> {
+    pub(super) fn resolve(&self, selector: &str) -> Result<Entry> {
         if let Ok(id) = selector.parse::<Uuid>() {
             return self.get(id);
         }
@@ -321,8 +343,8 @@ impl Records {
         }
     }
 
-    pub(super) fn list(&self) -> Result<Vec<Record>> {
-        let mut records = Vec::new();
+    pub(super) fn list(&self) -> Result<Vec<Entry>> {
+        let mut entries = Vec::new();
         for entry in self.directory.entries()? {
             let entry = entry?;
             let name = entry.file_name();
@@ -334,21 +356,72 @@ impl Records {
             if !entry.file_type()?.is_dir() {
                 bail!("workload identity must be a directory");
             }
-            records.push(self.get(id)?);
+            entries.push(self.get(id)?);
         }
-        records.sort_by_key(Record::id);
-        Ok(records)
+        entries.sort_by_key(Entry::id);
+        Ok(entries)
     }
 
     pub(super) fn pins(&self) -> Result<Vec<Digest>> {
         let mut pins = Vec::new();
-        for record in self.list()? {
-            if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
-            {
-                pins.extend(record.identity.images);
+        for entry in self.list()? {
+            match entry {
+                // An instance needs its image until it is removed.
+                Entry::Instance(instance) => pins.push(instance.root().clone()),
+                Entry::Legacy(record) => {
+                    if !record.complete()? {
+                        pins.extend(record.identity.images);
+                    }
+                }
             }
         }
         Ok(pins)
+    }
+
+    /// Only files from an unpublished instance are eligible for cleanup.
+    pub(super) fn reap(&self, name: &str) -> Result<()> {
+        let directory = self.directory.open_dir_nofollow(name)?;
+        // Check everything first: a refused leftover stays whole.
+        let mut owned = Vec::new();
+        for entry in directory.entries()? {
+            let entry = entry?;
+            let file = entry.file_name();
+            let kind = entry.file_type()?;
+            let known = match file.to_str() {
+                Some("identity.json" | "operation.lock" | "storage.qcow2") => kind.is_file(),
+                _ => false,
+            };
+            if !known {
+                bail!("unexpected {} in {name}", file.to_string_lossy());
+            }
+            owned.push(file);
+        }
+        for file in owned {
+            directory.remove_file(&file)?;
+        }
+        // Windows cannot remove a directory while a handle to it is open, and
+        // a file another process still has open is only pending deletion.
+        drop(directory);
+        self.directory.remove_dir(name)?;
+        Ok(())
+    }
+
+    /// Open the workload directory containing `path` for a callback.
+    pub(super) fn at(path: &Path) -> Result<Self> {
+        let parent = Dir::open_ambient_dir(
+            path.parent().context("workload root parent")?,
+            cap_std::ambient_authority(),
+        )?;
+        Self::from_parent(path.to_owned(), &parent)?.context("missing workload directory")
+    }
+}
+
+impl Entry {
+    pub(super) fn id(&self) -> Uuid {
+        match self {
+            Self::Legacy(record) => record.id(),
+            Self::Instance(instance) => instance.id(),
+        }
     }
 }
 
@@ -359,48 +432,25 @@ impl Record {
             .and_then(|name| name.to_str())
             .context("workload directory must name an ID")?
             .parse()?;
-        let records = path.parent().context("workload directory parent")?;
-        let parent = Dir::open_ambient_dir(
-            records.parent().context("workload root parent")?,
-            cap_std::ambient_authority(),
-        )?;
-        Records::from_parent(records.to_owned(), &parent)?
-            .context("missing workload directory")?
-            .get(id)
+        match Records::at(path.parent().context("workload directory parent")?)?.get(id)? {
+            Entry::Legacy(record) => Ok(record),
+            Entry::Instance(_) => bail!("expected a transient workload record"),
+        }
     }
 
     pub(crate) fn storage_directory(&self) -> PathBuf {
         self.run.path.join("storage")
     }
 
+    fn complete(&self) -> Result<bool> {
+        Ok(
+            matches!(self.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete),
+        )
+    }
+
     pub(crate) fn release_runtime_files(&self) -> Result<()> {
-        if matches!(self.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
-        {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::{FileTypeExt, MetadataExt};
-                // A forced Dillo exit cannot run its socket-name destructor.
-                // Remove only its owned socket, after confirmed scope cleanup.
-                let endpoint = self.run.resize_endpoint();
-                match std::fs::symlink_metadata(&endpoint) {
-                    Ok(metadata)
-                        if metadata.file_type().is_socket()
-                            && metadata.uid() == nix::unistd::geteuid().as_raw() =>
-                    {
-                        match std::fs::remove_file(endpoint) {
-                            Ok(()) => {}
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(error) => return Err(error.into()),
-                        }
-                    }
-                    Ok(_) => log::warn!(
-                        "leaving unexpected file at console resize endpoint {}",
-                        endpoint.display()
-                    ),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
+        if self.complete()? {
+            self.run.release_endpoint()?;
             match self.run.directory.remove_dir_all("storage") {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -416,14 +466,14 @@ impl Record {
     pub(super) fn images(&self) -> &[Digest] {
         &self.identity.images
     }
+
     pub(crate) fn create_build_output(&self) -> Result<PathBuf> {
         self.run.directory.create_dir("output")?;
         Ok(self.run.path.join("output"))
     }
 
     pub(crate) fn release_build_output(&self) -> Result<()> {
-        if matches!(self.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
-        {
+        if self.complete()? {
             match self.run.directory.remove_dir_all("output") {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -435,10 +485,53 @@ impl Record {
 }
 
 impl Run {
+    /// Reopen only the boot previously selected by an observer.
+    pub(super) fn reopen(path: &Path, endpoint: PathBuf) -> Result<Self> {
+        let parent = path.parent().context("boot parent")?;
+        if parent.file_name() != Some("runs".as_ref()) {
+            return Ok(Record::at(path)?.run);
+        }
+        let instance = parent.parent().context("instance directory")?;
+        let id = instance
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("instance ID")?
+            .parse()?;
+        let attempt = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("boot ID")?
+            .parse()?;
+        let records = Records::at(instance.parent().context("workload directory")?)?;
+        match records.get(id)? {
+            Entry::Instance(instance) => instance.run_of(attempt, endpoint),
+            Entry::Legacy(_) => bail!("expected an instance record"),
+        }
+    }
+
+    pub(super) fn new(path: PathBuf, directory: Dir, endpoint: PathBuf) -> Self {
+        Self {
+            path,
+            directory,
+            endpoint,
+        }
+    }
+
+    /// A fresh control address. Unix respects the caller's native temporary
+    /// directory, including sandbox restrictions; a compact UUID leaves room
+    /// for macOS socket paths and the resize suffix. Both peers authenticate
+    /// the invoking user.
+    pub(super) fn endpoint_for(id: Uuid) -> Result<PathBuf> {
+        #[cfg(unix)]
+        let endpoint = std::path::absolute(std::env::temp_dir())?.join(id.simple().to_string());
+        #[cfg(windows)]
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-{id}"));
+        Ok(endpoint)
+    }
+
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
-
     pub(super) fn endpoint(&self) -> &Path {
         &self.endpoint
     }
@@ -447,8 +540,39 @@ impl Run {
         endpoint.push(".resize");
         endpoint.into()
     }
+
     pub(super) fn state(&self) -> PathBuf {
         self.path.join("monitor")
+    }
+
+    /// A forced Dillo exit cannot run its socket-name destructor. Callers
+    /// remove only its owned socket, after confirmed scope cleanup.
+    pub(super) fn release_endpoint(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{FileTypeExt, MetadataExt};
+            let endpoint = self.resize_endpoint();
+            match std::fs::symlink_metadata(&endpoint) {
+                Ok(metadata)
+                    if metadata.file_type().is_socket()
+                        && metadata.uid() == nix::unistd::geteuid().as_raw() =>
+                {
+                    match std::fs::remove_file(endpoint) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                // Never remove what this boot did not create.
+                Ok(_) => log::warn!(
+                    "leaving unexpected file at console resize endpoint {}",
+                    endpoint.display()
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn console_log(&self) -> Result<std::fs::File> {
@@ -473,27 +597,37 @@ impl Run {
         Ok(text)
     }
 
-    pub(super) fn completion(&self) -> Result<Option<Completion>> {
+    /// Remove the boot's stale resize socket once its result confirms
+    /// complete cleanup. Housekeeping only; failures warn.
+    pub(crate) fn tidy(&self) {
+        match self.completion() {
+            Ok(Some(result)) if result.cleanup == CleanupResult::Complete => {
+                if let Err(error) = self.release_endpoint() {
+                    log::warn!("removing stale resize socket: {error:#}");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => log::warn!("reading {} result: {error:#}", self.path.display()),
+        }
+    }
+
+    pub(crate) fn completion(&self) -> Result<Option<Completion>> {
         let monitor = match self.directory.open_dir_nofollow("monitor") {
             Ok(directory) => directory,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let Some(result): Option<Completion> = Self::read(&monitor, "result.json", 1024 * 1024)?
-        else {
+        let Some(bytes) = Self::read_bytes(&monitor, "result.json", 1024 * 1024)? else {
             return Ok(None);
         };
+        let result: Completion = serde_json::from_slice(&bytes)?;
         if result.version != PROTOCOL_VERSION {
             bail!("unsupported retained monitor result version");
         }
         Ok(Some(result))
     }
 
-    fn read<T: serde::de::DeserializeOwned>(
-        directory: &Dir,
-        name: &str,
-        limit: u64,
-    ) -> Result<Option<T>> {
+    pub(super) fn read_bytes(directory: &Dir, name: &str, limit: u64) -> Result<Option<Vec<u8>>> {
         let Some(file) = Self::open_file(directory, name)? else {
             return Ok(None);
         };
@@ -502,7 +636,7 @@ impl Run {
         if u64::try_from(bytes.len())? > limit {
             bail!("workload record exceeds size limit");
         }
-        Ok(Some(serde_json::from_slice(&bytes)?))
+        Ok(Some(bytes))
     }
 
     fn open_file(directory: &Dir, name: &str) -> Result<Option<cap_std::fs::File>> {
@@ -563,11 +697,15 @@ mod tests {
                     .create_tokio()?;
                 let record = records.create(vec![Digest::Sha256([0; 32])], endpoint, id)?;
                 let path = record.run.path().to_owned();
-                let observer = Workload(record);
+                let observer = Workload::new(Entry::Legacy(record))?;
                 let observing = tokio::spawn(async move {
                     match operation {
                         "wait" => observer.wait().await?.code(),
-                        "stop" => observer.stop(Duration::ZERO).await?.code(),
+                        "stop" => observer
+                            .stop(Duration::ZERO)
+                            .await?
+                            .context("stop result")?
+                            .code(),
                         _ => observer.attach(false).await,
                     }
                 });
@@ -694,7 +832,7 @@ mod tests {
                 .create(vec![Digest::Sha256([2; 32])], endpoint, id)
                 .is_err()
         );
-        assert_eq!(records.get(id)?.images(), images);
+        assert_eq!(Record::at(record.run.path())?.images(), images);
         let empty = Uuid::new_v4();
         records.directory.create_dir(empty.to_string())?;
         assert!(

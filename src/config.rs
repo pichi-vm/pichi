@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use pichi_registry::{AuthEnv, AuthHint, HttpRegistry, RegistryEntry};
 use pichi_storage::CacheLayout;
 use serde::{Deserialize, Serialize};
@@ -35,8 +35,8 @@ pub struct Config {
     pub run: RunConfig,
 }
 
-/// Resource defaults for `pichi run`. CLI flags override these; when both
-/// are unset, `pichi run` omits the flag and dillo applies its own default.
+/// Resource defaults frozen when `run` creates an instance.
+/// CLI flags override these; image requirements supply the remaining defaults.
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct RunConfig {
     /// Default vCPU count.
@@ -45,8 +45,6 @@ pub struct RunConfig {
     pub memory_mib: Option<u32>,
     /// Default writable storage capacity in MiB.
     pub storage_mib: Option<u64>,
-    /// Optional retained raw storage file.
-    pub storage_file: Option<PathBuf>,
 }
 
 /// Storage paths override block.
@@ -168,9 +166,6 @@ impl Config {
         if other.run.storage_mib.is_some() {
             self.run.storage_mib = other.run.storage_mib;
         }
-        if other.run.storage_file.is_some() {
-            self.run.storage_file = other.run.storage_file;
-        }
     }
 }
 
@@ -179,7 +174,23 @@ impl Config {
     fn read_optional(path: &Path) -> Result<Option<Config>> {
         match std::fs::read_to_string(path) {
             Ok(contents) => {
-                let parsed: Config = toml::from_str(&contents)
+                let table: toml::Table = toml::from_str(&contents)
+                    .with_context(|| format!("invalid TOML in {}", path.display()))?;
+                // Ignoring the removed key would silently drop a user's disk.
+                if table
+                    .get("run")
+                    .and_then(|run| run.get("storage_file"))
+                    .is_some()
+                {
+                    bail!(
+                        "{}: run.storage_file is no longer supported: every instance owns a \
+                         persistent disk (pichi run, pichi start); existing files are left \
+                         untouched and are not imported",
+                        path.display()
+                    );
+                }
+                let parsed: Config = table
+                    .try_into()
                     .with_context(|| format!("invalid TOML in {}", path.display()))?;
                 Ok(Some(parsed))
             }
@@ -304,15 +315,32 @@ mod tests {
     #[test]
     fn run_storage_defaults_follow_config_precedence() {
         let dir = tempfile::TempDir::new().unwrap();
-        let sys = write(
-            dir.path(),
-            "sys.toml",
-            "[run]\nstorage_mib = 1024\nstorage_file = 'system.raw'\n",
-        );
+        let sys = write(dir.path(), "sys.toml", "[run]\nstorage_mib = 1024\n");
         let usr = write(dir.path(), "usr.toml", "[run]\nstorage_mib = 2048\n");
         let cfg = Config::load_from_paths(Some(&sys), Some(&usr)).unwrap();
         assert_eq!(cfg.run.storage_mib, Some(2048));
-        assert_eq!(cfg.run.storage_file, Some(PathBuf::from("system.raw")));
+    }
+
+    #[test]
+    fn retired_external_storage_is_rejected_without_touching_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = dir.path().join("external.raw");
+        std::fs::write(&disk, b"existing guest data").unwrap();
+        let config = write(
+            dir.path(),
+            "old.toml",
+            &format!("[run]\nstorage_file = {disk:?}\n"),
+        );
+        let error = format!(
+            "{:#}",
+            Config::load_from_paths(Some(&config), None).unwrap_err()
+        );
+        assert!(
+            error.contains("run.storage_file is no longer supported"),
+            "{error}"
+        );
+        assert!(error.contains("pichi run, pichi start"), "{error}");
+        assert_eq!(std::fs::read(&disk).unwrap(), b"existing guest data");
     }
 
     #[test]

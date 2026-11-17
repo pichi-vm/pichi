@@ -8,4 +8,6 @@ Type=oneshot
 StandardOutput=tty
 StandardError=tty
 TTYPath=/dev/hvc0
-ExecStart=/bin/sh -ec 'test "$(cat /pichi-smoke-message)" = PICHI_SMOKE_CONTENT; echo PICHI_SMOKE_OK; systemctl --no-block poweroff'
+# Count boots on the persistent state filesystem that Corium mounts from
+# the instance disk.
+ExecStart=/bin/sh -ec 'test "$(cat /pichi-smoke-message)" = PICHI_SMOKE_CONTENT; echo PICHI_SMOKE_OK; grep -q " /srv " /proc/mounts; n=$$(($$(cat /srv/pichi-smoke-boots 2>/dev/null || echo 0) + 1)); echo $$n > /srv/pichi-smoke-boots; sync; echo PICHI_SMOKE_BOOT=$$n; systemctl --no-block poweroff'

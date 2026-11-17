@@ -7,6 +7,7 @@
 
 mod client;
 mod console;
+pub(crate) mod instance;
 mod logs;
 pub(crate) mod record;
 mod resize;
@@ -19,8 +20,9 @@ mod windows;
 
 use anyhow::{Context, Result, bail};
 use client::Client;
+use instance::{Instance, State};
 use madrillo::{ClientMessage, Completion, LeaderResult, ServerMessage};
-use record::{Record, Run};
+use record::{Entry, Record, Run};
 use std::{
     ffi::OsString,
     fs::File,
@@ -262,11 +264,19 @@ mod tests {
         #[cfg(windows)]
         let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-missing-{id}"));
         let image = format!("sha256:{}", "0".repeat(64)).parse()?;
-        let workload = Workload(records.create(vec![image], endpoint, id)?);
+        let workload = Workload::new(Entry::Legacy(records.create(vec![image], endpoint, id)?))?;
         let error = workload.stop(Duration::ZERO).await.unwrap_err();
         assert!(error.to_string().contains("workload state is unknown"));
-        assert!(records.get(id)?.run.completion()?.is_none());
-        assert_eq!(records.pins()?, records.get(id)?.images());
+        assert!(
+            Workload::new(records.get(id)?)?
+                .run()?
+                .completion()?
+                .is_none()
+        );
+        let Entry::Legacy(record) = records.get(id)? else {
+            bail!("expected legacy record");
+        };
+        assert_eq!(records.pins()?, record.images());
         Ok(())
     }
 
@@ -290,8 +300,9 @@ mod tests {
                 .name(endpoint.as_path().to_fs_name::<GenericFilePath>()?)
                 .create_tokio()?;
             let image = format!("sha256:{}", "0".repeat(64)).parse()?;
-            let workload = Workload(records.create(vec![image], endpoint, id)?);
-            let state = workload.0.run.state();
+            let workload =
+                Workload::new(Entry::Legacy(records.create(vec![image], endpoint, id)?))?;
+            let state = workload.run()?.state();
             std::fs::create_dir(&state)?;
             let completion = Completion {
                 version: madrillo::PROTOCOL_VERSION,
@@ -504,15 +515,15 @@ mod tests {
         assert!(!status.success());
         for _ in 0..2 {
             for error in [
-                Workload(records.get(record.id())?)
+                Workload::new(records.get(record.id())?)?
                     .wait()
                     .await
                     .unwrap_err(),
-                Workload(records.get(record.id())?)
+                Workload::new(records.get(record.id())?)?
                     .stop(Duration::ZERO)
                     .await
                     .unwrap_err(),
-                Workload(records.get(record.id())?)
+                Workload::new(records.get(record.id())?)?
                     .attach(false)
                     .await
                     .unwrap_err(),
@@ -551,7 +562,10 @@ mod tests {
         let record = records.create(vec![image], endpoint.clone(), uuid::Uuid::new_v4())?;
         let state = record.run.state();
         assert_eq!(records.pins()?, record.images());
-        assert_eq!(records.get(record.id())?.run.endpoint(), endpoint);
+        assert_eq!(
+            Workload::new(records.get(record.id())?)?.run()?.endpoint(),
+            endpoint
+        );
         let mut running = ReapMonitor(
             Launch {
                 monitor: &monitor,
@@ -659,8 +673,11 @@ mod tests {
             .await??;
         }
         // Administrative shutdown must work while an attachment still forwards input.
-        let workload = Workload(records.get(record.id())?);
-        let stopped = workload.stop(Duration::from_secs(5)).await?;
+        let workload = Workload::new(records.get(record.id())?)?;
+        let stopped = workload
+            .stop(Duration::from_secs(5))
+            .await?
+            .context("stop result")?;
         assert_eq!(stopped.0.leader, LeaderResult::Exit { code: 0 });
         assert_eq!(stopped.0.cause, madrillo::CompletionCause::LeaderExit);
         let reply = tokio::time::timeout(Duration::from_secs(5), attached.next()).await??;
@@ -680,9 +697,10 @@ mod tests {
         assert_eq!(completion.leader, LeaderResult::Exit { code: 0 });
         // After the monitor has exited, repeated stop reads the durable result.
         assert_eq!(
-            Workload(records.get(record.id())?)
+            Workload::new(records.get(record.id())?)?
                 .stop(Duration::ZERO)
                 .await?
+                .context("stop result")?
                 .0,
             completion
         );
@@ -761,21 +779,22 @@ mod tests {
         }
         drop(attached);
         drop(running);
-        // A VMM can survive its monitor. Its disk must remain excluded until
-        // the surviving VMM exits, even though no monitor result can be written.
-        let record = records.reserve(record.images().to_vec())?;
-        let disk = root.path().join("orphaned-vmm.raw");
-        let storage = crate::cmd::writable_storage::WritableStorage::prepare(
-            None,
-            Some(2),
-            Some(&disk),
-            root.path(),
-        )?
-        .context("missing writable storage")?;
-        let (held, inherited) = storage.into_boot()?;
+        // A crashed monitor must not unlock a disk still owned by its VMM.
+        // gated-echo ignores console EOF until we release its file gate.
+        let mut instance = Instance::create(
+            &records,
+            instance::Spec {
+                root: record.images()[0].clone(),
+                manifest: record.images()[0].clone(),
+                cpus: 1,
+                memory_mib: 128,
+                storage_bytes: 2 * 1024 * 1024,
+            },
+        )?;
+        let operation = instance.gate()?;
         let gate = root.path().join("release-orphaned-vmm");
-        // This independent pipe proves child exit even if the lock under test
-        // fails, so cleanup cannot remove its release gate prematurely.
+        // Observe child exit independently of the lease being tested, so a
+        // missing lease cannot make failure cleanup remove the gate too soon.
         let (mut exited, alive) = std::io::pipe()?;
         #[cfg(unix)]
         let alive = File::from(std::os::fd::OwnedFd::from(alive));
@@ -786,13 +805,15 @@ mod tests {
             let _ = send.send(std::io::copy(&mut exited, &mut std::io::sink()));
         });
         let ownership: Result<()> = async {
+            let (run, attempt, lease) = instance.prepare_attempt(&operation)?;
+            let (held, inherited) = lease.clone_boot()?;
             let mut running = ReapMonitor(
                 Launch {
                     monitor: &monitor,
                     program: &fixture,
                     arguments: &["gated-echo".into(), gate.clone().into()],
-                    state: &record.run.state(),
-                    endpoint: record.run.endpoint(),
+                    state: &run.state(),
+                    endpoint: run.endpoint(),
                     input: false,
                     inherited: vec![inherited, alive],
                     held: vec![held],
@@ -801,7 +822,12 @@ mod tests {
                 .spawn()
                 .await?,
             );
-            running.started().await?;
+            running.prepared().await?;
+            instance.select_attempt(&operation, attempt)?;
+            running.authorize().await?;
+            instance.confirm_started(&operation)?;
+            drop(lease);
+            anyhow::ensure!(instance.live()?, "boot did not inherit the instance lease");
             #[cfg(unix)]
             let monitor = running.monitor.inner_mut();
             #[cfg(windows)]
@@ -815,51 +841,53 @@ mod tests {
                 );
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
+            anyhow::ensure!(instance.live()?, "monitor death released the VMM lease");
             anyhow::ensure!(
-                crate::cmd::writable_storage::WritableStorage::prepare(
-                    None,
-                    None,
-                    Some(&disk),
-                    root.path(),
-                )
-                .is_err(),
-                "monitor death released the surviving VMM's disk lock"
+                instance.prepare_attempt(&operation).is_err(),
+                "a second boot acquired the disk"
             );
             anyhow::ensure!(
-                record.run.completion()?.is_none(),
-                "crash invented completion"
+                run.completion()?.is_none(),
+                "crashed monitor invented a result"
             );
             Ok(())
         }
         .await;
+        // Release the fixture on error paths as well, before propagating any
+        // failed assertion. No recovered PID is signalled to clean it up.
         std::fs::write(&gate, b"exit")?;
         receive.recv_timeout(Duration::from_secs(5))??;
         reader
             .join()
             .map_err(|_| anyhow::anyhow!("VMM exit reader panicked"))?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while instance.live()? {
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "VMM did not release its instance lease"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         ownership?;
-        let storage = crate::cmd::writable_storage::WritableStorage::prepare(
-            None,
-            None,
-            Some(&disk),
-            root.path(),
-        )?
-        .context("disk was not reusable after the VMM exited")?;
-        drop(storage);
-        println!("native disk exclusion survives monitor loss and ends with its VMM");
+        assert!(matches!(instance.state()?, State::Unknown));
+        instance.check_disk(&operation)?;
+        assert!(records.pins()?.contains(instance.root()));
+        println!(
+            "native instance lease: monitor crash, final-owner release and disk retention passed"
+        );
         // Exercise forced stop through the same native transport on every host.
         for grace in [Duration::from_millis(50), Duration::ZERO] {
-            let workload = Workload(records.create(
+            let workload = Workload::new(Entry::Legacy(records.create(
                 record.images().to_vec(),
                 endpoint.clone(),
                 uuid::Uuid::new_v4(),
-            )?);
+            )?))?;
             let mut running = ReapMonitor(
                 Launch {
                     monitor: &monitor,
                     program: &fixture,
                     arguments: &["sleep".into()],
-                    state: &workload.0.run.state(),
+                    state: &workload.run()?.state(),
                     endpoint: &endpoint,
                     input: true,
                     inherited: Vec::new(),
@@ -871,8 +899,8 @@ mod tests {
             );
             running.started().await?;
             let started = std::time::Instant::now();
-            let id = workload.0.id();
-            let result = workload.stop(grace).await?.0;
+            let id = workload.id();
+            let result = workload.stop(grace).await?.context("stop result")?.0;
             assert!(started.elapsed() >= grace);
             assert_eq!(result.cause, madrillo::CompletionCause::Forced);
             #[cfg(unix)]
@@ -882,7 +910,10 @@ mod tests {
             ));
             #[cfg(windows)]
             assert!(matches!(result.leader, LeaderResult::Exit { code } if code != 0));
-            assert_eq!(records.get(id)?.run.completion()?, Some(result));
+            assert_eq!(
+                Workload::new(records.get(id)?)?.run()?.completion()?,
+                Some(result)
+            );
             #[cfg(unix)]
             let status = running.monitor.inner_mut().wait()?;
             #[cfg(windows)]
@@ -956,69 +987,98 @@ mod tests {
             );
         }
 
-        // A prepared monitor must wait for authorization. Observers can
-        // attach before then and receive Started before completion.
-        let gated = tempfile::tempdir()?;
-        #[cfg(unix)]
-        let endpoint = gated.path().join("control");
-        #[cfg(windows)]
-        let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-gated-{}", uuid::Uuid::new_v4()));
-        let marker = gated.path().join("guest-started");
-        let mut running = ReapMonitor(
-            Launch {
-                monitor: &monitor,
-                program: &fixture,
-                arguments: &["touch".into(), marker.clone().into()],
-                state: &gated.path().join("monitor"),
-                endpoint: &endpoint,
-                input: false,
-                inherited: Vec::new(),
-                held: Vec::new(),
-                cleanup: None,
-            }
-            .spawn()
-            .await?,
-        );
-        assert!(matches!(
-            running.client.next().await?,
-            ServerMessage::Prepared { monitor_pid } if monitor_pid == running.monitor.id()
-        ));
-        let mut observers = Vec::new();
-        for _ in 0..2 {
-            let mut client = Client::connect(&endpoint).await?;
-            client
-                .send(ClientMessage::Attach {
+        for authorize in [false, true] {
+            // A prepared monitor must wait for authorization. Observers can
+            // attach before then and receive Started before completion.
+            let gated = tempfile::tempdir()?;
+            #[cfg(unix)]
+            let endpoint = gated.path().join("control");
+            #[cfg(windows)]
+            let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-gated-{}", uuid::Uuid::new_v4()));
+            let marker = gated.path().join("guest-started");
+            let mut running = ReapMonitor(
+                Launch {
+                    monitor: &monitor,
+                    program: &fixture,
+                    arguments: &["touch".into(), marker.clone().into()],
+                    state: &gated.path().join("monitor"),
+                    endpoint: &endpoint,
                     input: false,
-                    streams: Vec::new(),
-                })
-                .await?;
+                    inherited: Vec::new(),
+                    held: Vec::new(),
+                    cleanup: None,
+                }
+                .spawn()
+                .await?,
+            );
             assert!(matches!(
-                client.next().await?,
-                ServerMessage::Attached { input: false }
+                running.client.next().await?,
+                ServerMessage::Prepared { monitor_pid } if monitor_pid == running.monitor.id()
             ));
-            observers.push(client);
+            let mut observers = Vec::new();
+            for _ in 0..2 {
+                let mut client = Client::connect(&endpoint).await?;
+                client
+                    .send(ClientMessage::Attach {
+                        input: false,
+                        streams: Vec::new(),
+                    })
+                    .await?;
+                assert!(matches!(
+                    client.next().await?,
+                    ServerMessage::Attached { input: false }
+                ));
+                observers.push(client);
+            }
+            let mut attached = observers.pop().context("attachment")?;
+            let mut waiting = observers.pop().context("waiter")?;
+            waiting.send(ClientMessage::Wait).await?;
+            assert!(!marker.exists(), "guest ran before authorization");
+            if !authorize {
+                // Losing the initial caller must cancel preparation even when
+                // observers remain connected. No observer may authorize this boot.
+                drop(std::mem::replace(&mut running.client, attached));
+                let result =
+                    tokio::time::timeout(Duration::from_secs(5), waiting.wait(false)).await??;
+                assert_eq!(result.cause, madrillo::CompletionCause::LaunchCancelled);
+                assert!(matches!(result.leader, LeaderResult::Unknown));
+                #[cfg(unix)]
+                let process = running.monitor.inner_mut();
+                #[cfg(windows)]
+                let process = &mut running.monitor;
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    if let Some(status) = process.try_wait()? {
+                        assert!(status.success());
+                        break;
+                    }
+                    anyhow::ensure!(
+                        std::time::Instant::now() < deadline,
+                        "cancelled monitor exit deadline"
+                    );
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                assert!(!marker.exists(), "cancelled preparation executed the guest");
+                continue;
+            }
+            running.client.send(ClientMessage::Start).await?;
+            let resize = endpoint.with_extension("resize");
+            let console = console::Console::open(false, false)?;
+            let (waited, viewed) = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(waiting.wait(false), console.view(&mut attached, &resize))
+            })
+            .await?;
+            assert_eq!(waited?.leader, LeaderResult::Exit { code: 0 });
+            assert_eq!(viewed?, 0);
+            assert_eq!(std::fs::read(marker)?, b"invoked");
         }
-        let mut attached = observers.pop().context("attachment")?;
-        let mut waiting = observers.pop().context("waiter")?;
-        waiting.send(ClientMessage::Wait).await?;
-        assert!(!marker.exists(), "guest ran before authorization");
-        running.client.send(ClientMessage::Start).await?;
-        let resize = endpoint.with_extension("resize");
-        let console = console::Console::open(false, false)?;
-        let (waited, viewed) = tokio::time::timeout(Duration::from_secs(5), async {
-            tokio::join!(waiting.wait(false), console.view(&mut attached, &resize))
-        })
-        .await?;
-        assert_eq!(waited?.leader, LeaderResult::Exit { code: 0 });
-        assert_eq!(viewed?, 0);
-        assert_eq!(std::fs::read(marker)?, b"invoked");
         Ok(())
     }
 }
 
 impl Running {
     /// Both run and build pass the same opaque dillo arguments/resources here.
-    pub(crate) async fn start(
+    pub(crate) async fn prepare(
         run: &Run,
         arguments: &[OsString],
         inherited: Vec<File>,
@@ -1046,13 +1106,27 @@ impl Running {
                 run.path().display()
             )
         })?;
-        if let Err(error) = running.started().await {
+        if let Err(error) = running.prepared().await {
             return Err(running.startup_error(run, error).await);
         }
         Ok(running)
     }
 
-    async fn startup_error(&mut self, run: &Run, error: anyhow::Error) -> anyhow::Error {
+    pub(crate) async fn start(
+        run: &Run,
+        arguments: &[OsString],
+        inherited: Vec<File>,
+        held: Vec<File>,
+        input: bool,
+    ) -> Result<Self> {
+        let mut running = Self::prepare(run, arguments, inherited, held, input).await?;
+        if let Err(error) = running.authorize().await {
+            return Err(running.startup_error(run, error).await);
+        }
+        Ok(running)
+    }
+
+    pub(crate) async fn startup_error(&mut self, run: &Run, error: anyhow::Error) -> anyhow::Error {
         // EOF can precede the monitor's final diagnostic flush. Await only our
         // own process, with a bound; a launch timeout must not kill a workload
         // whose startup state is still unknown.
@@ -1116,12 +1190,21 @@ impl Running {
         }
     }
 
-    pub(crate) async fn started(&mut self) -> Result<u32> {
+    async fn prepared(&mut self) -> Result<()> {
         tokio::time::timeout(Duration::from_secs(10), async {
             match self.client.next().await? {
-                ServerMessage::Prepared { monitor_pid } if monitor_pid == self.monitor.id() => {}
+                ServerMessage::Prepared { monitor_pid } if monitor_pid == self.monitor.id() => {
+                    Ok(())
+                }
                 response => bail!("unexpected monitor preparation: {response:?}"),
             }
+        })
+        .await
+        .context("monitor preparation deadline")?
+    }
+
+    pub(crate) async fn authorize(&mut self) -> Result<u32> {
+        tokio::time::timeout(Duration::from_secs(10), async {
             self.client.send(ClientMessage::Start).await?;
             match self.client.next().await? {
                 ServerMessage::Started { leader_pid } => Ok(leader_pid),
@@ -1130,6 +1213,12 @@ impl Running {
         })
         .await
         .context("monitor launch deadline")?
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn started(&mut self) -> Result<u32> {
+        self.prepared().await?;
+        self.authorize().await
     }
 
     fn executable() -> PathBuf {
@@ -1216,52 +1305,143 @@ impl Outcome {
     }
 }
 
+/// A selected boot without open handles, retained across batch dispatch.
+#[derive(Debug)]
+pub struct Selection {
+    root: PathBuf,
+    id: uuid::Uuid,
+    attempt: Option<(uuid::Uuid, PathBuf)>,
+}
+
+impl Selection {
+    pub fn open(id: &str, config: &crate::config::Config) -> Result<Self> {
+        let layout = config.resolve_layout()?;
+        let records =
+            record::Records::existing(&layout.graphroot)?.context("no retained workloads")?;
+        let workload = Workload::new(records.resolve(id)?)?;
+        let attempt = match &workload.entry {
+            Entry::Instance(instance) => instance
+                .attempt()
+                .zip(workload.run.as_ref().map(|run| run.endpoint().to_owned())),
+            Entry::Legacy(_) => None,
+        };
+        Ok(Self {
+            root: records.path().to_owned(),
+            id: workload.id(),
+            attempt,
+        })
+    }
+
+    pub fn reopen(self) -> Result<Workload> {
+        let entry = record::Records::at(&self.root)?.get(self.id)?;
+        let run = match &entry {
+            Entry::Instance(instance) => self
+                .attempt
+                .map(|(id, endpoint)| instance.run_of(id, endpoint))
+                .transpose()?,
+            Entry::Legacy(_) => None,
+        };
+        Ok(Workload { entry, run })
+    }
+}
+
 /// Access a retained workload without consulting or signalling a recorded PID.
 #[derive(Debug)]
-pub struct Workload(Record);
+pub struct Workload {
+    entry: Entry,
+    run: Option<Run>,
+}
 
 impl Workload {
     /// Idempotent exit callback. Unknown/incomplete cleanup retains runtime files.
     pub fn cleanup(path: &Path) -> Result<()> {
-        Record::at(path)?.release_runtime_files()
+        if path.parent().and_then(Path::file_name) == Some("runs".as_ref()) {
+            Instance::release(path)
+        } else {
+            Record::at(path)?.release_runtime_files()
+        }
     }
     pub fn open(id: &str, config: &crate::config::Config) -> Result<Self> {
         let layout = config.resolve_layout()?;
         let records =
             record::Records::existing(&layout.graphroot)?.context("no retained workloads")?;
-        Ok(Self(records.resolve(id)?))
+        Self::new(records.resolve(id)?)
+    }
+
+    fn new(entry: Entry) -> Result<Self> {
+        let run = match &entry {
+            Entry::Instance(instance) => instance.run()?,
+            Entry::Legacy(_) => None,
+        };
+        Ok(Self { entry, run })
+    }
+
+    pub(crate) fn instance(self) -> Result<Instance> {
+        match self.entry {
+            Entry::Instance(instance) => Ok(instance),
+            Entry::Legacy(record) => bail!(
+                "{} is a legacy workload without an instance-owned disk",
+                record.id()
+            ),
+        }
     }
 
     pub fn id(&self) -> uuid::Uuid {
-        self.0.id()
+        self.entry.id()
+    }
+
+    fn started(&self) -> Option<&Run> {
+        match &self.entry {
+            Entry::Legacy(record) => Some(&record.run),
+            Entry::Instance(_) => self.run.as_ref(),
+        }
+    }
+
+    fn run(&self) -> Result<&Run> {
+        self.started()
+            .with_context(|| format!("instance {} has not been started", self.entry.id()))
+    }
+
+    fn release(&self) -> Result<()> {
+        match &self.entry {
+            Entry::Legacy(record) => record.release_runtime_files(),
+            Entry::Instance(_) => {
+                if let Some(run) = &self.run {
+                    run.tidy();
+                }
+                Ok(())
+            }
+        }
     }
 
     pub async fn logs(self, labeled: bool) -> Result<()> {
-        let snapshot = logs::Snapshot::try_from(self.0.run.console_log()?)?;
+        let snapshot = match self.started() {
+            Some(run) => Some(logs::Snapshot::try_from(run.console_log()?)?),
+            None => None,
+        };
         let prefix = if labeled {
-            format!("{} ", &self.0.id().simple().to_string()[..12])
+            format!("{} ", &self.id().simple().to_string()[..12])
         } else {
             String::new()
         };
         drop(self);
-        tokio::task::spawn_blocking(move || {
-            snapshot.write_to(
+        tokio::task::spawn_blocking(move || match snapshot {
+            Some(snapshot) => snapshot.write_to(
                 &mut logs::Prefixed::new(std::io::stdout().lock(), prefix.as_bytes()),
                 &mut logs::Prefixed::new(std::io::stderr().lock(), prefix.as_bytes()),
-            )
+            ),
+            None => Ok(()),
         })
         .await?
     }
 
     pub async fn wait(self) -> Result<Outcome> {
-        self.0.release_runtime_files()?;
-        if let Some(result) = self.0.run.completion()? {
+        let run = self.run()?;
+        self.release()?;
+        if let Some(result) = run.completion()? {
             return Ok(Outcome(result));
         }
-        let (path, endpoint) = (
-            self.0.run.path().to_owned(),
-            self.0.run.endpoint().to_owned(),
-        );
+        let (path, endpoint) = (run.path().to_owned(), run.endpoint().to_owned());
         drop(self);
         let result = async {
             let mut client = Client::connect(&endpoint).await?;
@@ -1269,33 +1449,35 @@ impl Workload {
             client.wait(false).await
         }
         .await;
-        Self::retained_or_error(&path, result).map(Outcome)
+        Self::retained_or_error(&path, &endpoint, result).map(Outcome)
     }
 
-    pub async fn stop(self, grace: Duration) -> Result<Outcome> {
-        self.0.release_runtime_files()?;
-        if let Some(result) = self.0.run.completion()? {
-            return Ok(Outcome(result));
+    /// A never-started instance has nothing to stop and no exit status.
+    pub async fn stop(self, grace: Duration) -> Result<Option<Outcome>> {
+        let Some(run) = self.started() else {
+            return Ok(None);
+        };
+        self.release()?;
+        if let Some(result) = run.completion()? {
+            return Ok(Some(Outcome(result)));
         }
-        let (path, endpoint) = (
-            self.0.run.path().to_owned(),
-            self.0.run.endpoint().to_owned(),
-        );
+        let (path, endpoint) = (run.path().to_owned(), run.endpoint().to_owned());
         drop(self);
         let result = async { Client::connect(&endpoint).await?.stop(grace).await }.await;
-        Self::retained_or_error(&path, result).map(Outcome)
+        Self::retained_or_error(&path, &endpoint, result).map(|result| Some(Outcome(result)))
     }
 
     pub async fn attach(self, interactive: bool) -> Result<u32> {
-        self.0.release_runtime_files()?;
+        self.release()?;
+        let run = self.run()?;
         anyhow::ensure!(
-            self.0.run.completion()?.is_none(),
+            run.completion()?.is_none(),
             "can only attach to running workloads"
         );
         let (path, endpoint, resize) = (
-            self.0.run.path().to_owned(),
-            self.0.run.endpoint().to_owned(),
-            self.0.run.resize_endpoint(),
+            run.path().to_owned(),
+            run.endpoint().to_owned(),
+            run.resize_endpoint(),
         );
         drop(self);
         let mut attached = false;
@@ -1324,7 +1506,7 @@ impl Workload {
         .await;
         match result {
             Ok(code) => Ok(code),
-            Err(error) => match Record::at(&path)?.run.completion()? {
+            Err(error) => match Run::reopen(&path, endpoint)?.completion()? {
                 Some(result) if attached => Outcome(result).code(),
                 Some(_) => bail!("can only attach to running workloads"),
                 None => Err(error).context("workload state is unknown; image pins remain retained"),
@@ -1332,9 +1514,13 @@ impl Workload {
         }
     }
 
-    fn retained_or_error(path: &Path, result: Result<Completion>) -> Result<Completion> {
-        let record = match Record::at(path) {
-            Ok(record) => record,
+    fn retained_or_error(
+        path: &Path,
+        endpoint: &Path,
+        result: Result<Completion>,
+    ) -> Result<Completion> {
+        let run = match Run::reopen(path, endpoint.to_owned()) {
+            Ok(run) => run,
             Err(error)
                 if result.is_ok()
                     && error
@@ -1345,10 +1531,10 @@ impl Workload {
             }
             Err(error) => return Err(error),
         };
-        record.release_runtime_files()?;
+        Self::cleanup(path)?;
         match result {
             Ok(result) => Ok(result),
-            Err(error) => match record.run.completion()? {
+            Err(error) => match run.completion()? {
                 Some(result) => Ok(result),
                 None => Err(error).context("workload state is unknown; image pins remain retained"),
             },
@@ -1363,16 +1549,38 @@ impl Workload {
         if !quiet {
             println!("ID                                   STATE    IMAGES");
         }
-        for record in records.list()? {
-            let exited = record.run.completion()?.is_some();
-            if exited && !all {
+        for entry in records.list()? {
+            let instance_state = match &entry {
+                Entry::Instance(instance) => Some(instance.state()?),
+                Entry::Legacy(_) => None,
+            };
+            let inactive = match &entry {
+                Entry::Instance(_) => {
+                    matches!(instance_state, Some(State::Created | State::Exited))
+                }
+                Entry::Legacy(record) => record.run.completion()?.is_some(),
+            };
+            if inactive && !all {
                 continue;
             }
             if quiet {
-                println!("{}", record.id());
+                println!("{}", entry.id());
                 continue;
             }
-            let status = if exited {
+            if let Entry::Instance(instance) = &entry {
+                let status = match instance_state.context("missing instance state")? {
+                    State::Created => "created",
+                    State::Running => "running",
+                    State::Exited => "exited",
+                    State::Unknown => "unknown",
+                };
+                println!("{} {:8} {}", instance.id(), status, instance.root());
+                continue;
+            }
+            let Entry::Legacy(record) = entry else {
+                continue;
+            };
+            let status = if record.run.completion()?.is_some() {
                 "exited"
             } else {
                 let live = tokio::time::timeout(Duration::from_secs(5), async {

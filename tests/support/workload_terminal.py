@@ -3,6 +3,7 @@
 
 """Native Unix terminal frontend acceptance; launched by cmd_workload.rs."""
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -113,6 +114,8 @@ try:
         terminal.receive(b"size=120x41")
         record, = records.iterdir()
         identity = record.name
+        attempt = json.loads((record / "identity.json").read_text())["attempt"]["id"]
+        run = record / "runs" / attempt
         flags = termios.tcgetattr(terminal.slave)[3]
         assert not flags & (termios.ICANON | termios.ECHO | termios.ISIG), "not raw mode"
         payload = b"\x03\x04\x00\xff"
@@ -122,7 +125,7 @@ try:
         terminal.receive(b"\x10x")
         terminal.send(b"\x11")
         terminal.restored(0)
-    assert not (record / "monitor/result.json").exists(), "detach stopped the workload"
+    assert not (run / "monitor/result.json").exists(), "detach stopped the workload"
 
     with Terminal(["attach", "-i", identity], size=(81, 25)) as terminal:
         terminal.receive(b"size=81x25")
@@ -130,31 +133,43 @@ try:
         terminal.receive(b"after-detach")
         os.killpg(terminal.process.pid, signal.SIGTERM)
         terminal.restored(143)
-    assert not (record / "monitor/result.json").exists(), "caller signal stopped the workload"
+    assert not (run / "monitor/result.json").exists(), "caller signal stopped the workload"
 
     with Terminal(["attach", "-i", identity]) as terminal:
         terminal.send(b"before-quit\x03\n")
         terminal.receive(b"before-quit\x03")
         os.killpg(terminal.process.pid, signal.SIGQUIT)
         terminal.restored(131)
-    assert not (record / "monitor/result.json").exists(), "SIGQUIT stopped the workload"
+    assert not (run / "monitor/result.json").exists(), "SIGQUIT stopped the workload"
 
-    with Terminal(["attach", "-i", identity], check_restoration=False) as terminal:
+    # Legacy records can still attach to a live monitor.
+    # Keep the real instance identity intact.
+    metadata = json.loads((record / "identity.json").read_text())
+    legacy = records / metadata["attempt"]["id"]
+    legacy.mkdir(mode=0o700)
+    (legacy / "identity.json").write_text(json.dumps({
+        "version": 1, "id": legacy.name, "images": [metadata["root"]],
+        "endpoint": metadata["attempt"]["endpoint"],
+    }))
+
+    with Terminal(["attach", "-i", legacy.name], check_restoration=False) as terminal:
         # A binary control byte cannot be satisfied by the host's cooked echo.
         terminal.send(b"terminal-loss\x03\n")
         terminal.receive(b"terminal-loss\x03")
         assert terminal.process.poll() is None
         terminal.disconnect()
         terminal.process.wait(timeout=5)
-    assert not (record / "monitor/result.json").exists(), "terminal loss stopped the workload"
+    assert not (run / "monitor/result.json").exists(), "terminal loss stopped the workload"
 
-    with Terminal(["attach", "-i", identity]) as terminal:
+    with Terminal(["attach", "-i", legacy.name]) as terminal:
         terminal.send(b"reattached\x03\n")
         terminal.receive(b"reattached\x03")
         stopped = subprocess.run([sys.argv[1], "stop", identity],
                                  capture_output=True, timeout=10)
         assert stopped.returncode == 0, stopped.stderr
         terminal.restored(0)
+    (legacy / "identity.json").unlink()
+    legacy.rmdir()
     # A workload launched detached acquires its first size on later attachment.
     started = subprocess.run([sys.argv[1], "run", "-d", "fixture:1"],
                              capture_output=True, timeout=5)

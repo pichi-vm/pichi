@@ -160,18 +160,12 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         &reqs,
         network,
     );
-    let storage = WritableStorage::prepare(
-        Some(&reqs.storage),
-        args.storage,
-        None,
-        &record.storage_directory(),
-    )?;
-    if let Some(backing) = &storage {
-        argv.extend([
-            "--blk".into(),
-            backing.argument(reqs.storage.slot.unwrap_or(reqs.slot)),
-        ]);
-    }
+    let storage =
+        WritableStorage::prepare(&reqs.storage, args.storage, &record.storage_directory())?;
+    argv.extend([
+        "--blk".into(),
+        storage.argument(reqs.storage.slot.unwrap_or(reqs.slot)),
+    ]);
 
     let tag = args
         .tag
@@ -192,7 +186,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
             pipes,
             response,
             log.as_ref(),
-            storage.map(WritableStorage::into_boot).transpose()?,
+            Some(storage.into_boot()?),
         )
         .await?;
         // Explicit build success and successful VM exit precede OCI import.

@@ -53,3 +53,35 @@ fn configuration_errors_exit_125_but_help_and_version_succeed() {
             .success();
     }
 }
+
+#[test]
+fn retired_storage_option_exits_before_creating_or_modifying_storage() {
+    let root = tempfile::tempdir().unwrap();
+    let disk = root.path().join("external.raw");
+    std::fs::write(&disk, b"existing guest data").unwrap();
+    let failed = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env("LOCALAPPDATA", root.path())
+        .env("APPDATA", root.path())
+        .args(["run", "--storage-file"])
+        .arg(&disk)
+        .arg("missing:latest")
+        .assert()
+        .code(125);
+    let diagnostic = String::from_utf8_lossy(&failed.get_output().stderr);
+    assert!(
+        diagnostic.contains("--storage-file is no longer supported"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("pichi run and pichi start"),
+        "{diagnostic}"
+    );
+    assert_eq!(std::fs::read(&disk).unwrap(), b"existing guest data");
+    assert!(
+        !root.path().join("pichi").exists(),
+        "rejected option created storage"
+    );
+}

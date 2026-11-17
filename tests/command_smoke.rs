@@ -303,6 +303,14 @@ impl Smoke {
             error.contains("can only attach to running workloads"),
             "{error}"
         );
+        assert!(boot.contains("PICHI_SMOKE_BOOT=1"), "{boot}");
+        assert_eq!(self.run("start", &["start", &id]).trim(), id);
+        assert_eq!(self.run("wait-restart", &["wait", &id]).trim(), "0");
+        assert!(
+            self.run("logs", &["logs", &id])
+                .contains("PICHI_SMOKE_BOOT=2")
+        );
+        assert_eq!(self.run("wait", &["wait", &id]).trim(), "0");
     }
 }
 
