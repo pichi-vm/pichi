@@ -32,14 +32,28 @@ impl RawTerminal {
         } else {
             None
         };
-        if raw {
-            crossterm::terminal::enable_raw_mode()?;
-        }
-        Ok(Self {
+        let terminal = Self {
             raw,
             #[cfg(windows)]
             original,
-        })
+        };
+        #[cfg(not(windows))]
+        if raw {
+            crossterm::terminal::enable_raw_mode()?;
+        }
+        #[cfg(windows)]
+        if let Some((console, mode)) = &terminal.original {
+            use windows_sys::Win32::System::Console::{
+                ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
+                ENABLE_VIRTUAL_TERMINAL_INPUT,
+            };
+            const COOKED_INPUT: u32 =
+                ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT;
+            // Mutate the same inherited handle the guard restores. Crossterm's
+            // Windows raw-mode helper instead opens a separate CONIN$ handle.
+            console.set_mode((mode & !COOKED_INPUT) | ENABLE_VIRTUAL_TERMINAL_INPUT)?;
+        }
+        Ok(terminal)
     }
 }
 

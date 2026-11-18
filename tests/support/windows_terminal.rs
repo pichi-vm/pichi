@@ -231,6 +231,8 @@ impl Terminal {
         self.expect("<<<CTRL-Z>>>");
         self.writer.write_all("é🦔!".as_bytes()).unwrap();
         self.expect("<<<INPUT:c3a9f09fa69421>>>");
+        self.writer.write_all(b"\x1b[A\x1b[15~!").unwrap();
+        self.expect("<<<INPUT:1b5b411b5b31357e21>>>");
         self.writer.write_all(b"input-\x03\x04!").unwrap();
         self.expect("<<<INPUT:696e7075742d030421>>>");
     }
