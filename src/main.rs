@@ -68,6 +68,10 @@ enum Command {
     Update(cli::UpdateArgs),
     /// Boot a cached artifact under madrillo supervision.
     Run(cli::RunArgs),
+
+    /// Remove one completed workload and its owned files.
+    Rm(cli::RmArgs),
+
     /// Attach to a workload's live console.
     Attach(cli::AttachArgs),
 
@@ -150,6 +154,11 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
         },
         Command::Update(args) => cmd::update::run(args, &config).await,
         Command::Run(args) => return Ok(NativeExit(cmd::run::run(args, &config).await?)),
+        Command::Rm(args) => {
+            return Ok(NativeExit(
+                cmd::workload::Workload::remove(&args.id, &config).await?,
+            ));
+        }
         Command::Attach(args) => {
             return Ok(NativeExit(
                 cmd::workload::Workload::open(&args.id, &config)?

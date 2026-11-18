@@ -306,6 +306,13 @@ impl Smoke {
             error.contains("can only attach to running workloads"),
             "{error}"
         );
+        assert_eq!(self.run("rm", &["rm", &id]).trim(), id);
+        assert!(
+            !self
+                .run("ps-after-rm", &["ps", "--all", "--quiet"])
+                .lines()
+                .any(|line| line == id)
+        );
     }
 }
 

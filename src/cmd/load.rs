@@ -51,7 +51,10 @@ impl OciLayout {
 
     /// Build output may omit layer blobs already supplied through its input cache.
     /// Metadata is always guest-authored; missing bytes are privately verified here.
-    pub(super) async fn read_build(dir: &Path, destination: &FilesystemBlobStore) -> Result<Self> {
+    pub(super) async fn read_build(
+        dir: impl AsRef<Path> + Send + 'static,
+        destination: &FilesystemBlobStore,
+    ) -> Result<Self> {
         let capacity = fs4::available_space(destination.scratch_dir().await?)?;
         Self::read_with_cache(dir, destination, capacity, true).await
     }
@@ -61,20 +64,21 @@ impl OciLayout {
         destination: &FilesystemBlobStore,
         capacity: u64,
     ) -> Result<Self> {
-        Self::read_with_cache(dir, destination, capacity, false).await
+        Self::read_with_cache(dir.to_owned(), destination, capacity, false).await
     }
 
     async fn read_with_cache(
-        dir: &Path,
+        dir: impl AsRef<Path> + Send + 'static,
         destination: &FilesystemBlobStore,
         capacity: u64,
         cache_backed: bool,
     ) -> Result<Self> {
         let staging = tempfile::tempdir_in(destination.scratch_dir().await?)?;
         let cache = cache_backed.then(|| destination.clone());
-        let dir = dir.to_owned();
+        // A build caller transfers shared host ownership into this worker.
+        // Dropping the awaiting future must not release it during the snapshot.
         let layout = tokio::task::spawn_blocking(move || {
-            Self::snapshot(&dir, staging, capacity, cache.as_ref())
+            Self::snapshot(dir.as_ref(), staging, capacity, cache.as_ref())
         })
         .await
         .context("OCI snapshot task panicked")?
@@ -781,7 +785,7 @@ pub(super) mod tests {
             })
             .collect::<Vec<_>>();
         assert!(OciLayout::read(&output, &store).await.is_err());
-        let layout = OciLayout::read_build(&output, &store).await.unwrap();
+        let layout = OciLayout::read_build(output.clone(), &store).await.unwrap();
         for (_, path) in &cached {
             std::fs::remove_file(path).unwrap();
         }
@@ -846,7 +850,7 @@ pub(super) mod tests {
                 _ => std::fs::write(target, bytes).unwrap(),
             }
             assert!(
-                OciLayout::read_build(&output, &store).await.is_err(),
+                OciLayout::read_build(output.clone(), &store).await.is_err(),
                 "{damage}"
             );
             assert!(!store.blob_path(&manifest).exists());
@@ -883,10 +887,10 @@ pub(super) mod tests {
         let output = dir.path().join("output");
         fixture.write(&output);
         config.store(&store).await.unwrap();
-        OciLayout::read_build(&output, &store).await.unwrap();
+        OciLayout::read_build(output.clone(), &store).await.unwrap();
         std::fs::remove_file(output.join(OciLayout::blob_name(&digest.to_string()).unwrap()))
             .unwrap();
-        assert!(OciLayout::read_build(&output, &store).await.is_err());
+        assert!(OciLayout::read_build(output.clone(), &store).await.is_err());
     }
 
     #[tokio::test]
@@ -911,7 +915,7 @@ pub(super) mod tests {
             bad,
         )
         .unwrap();
-        assert!(OciLayout::read_build(&output, &store).await.is_err());
+        assert!(OciLayout::read_build(output.clone(), &store).await.is_err());
     }
 
     #[tokio::test]
@@ -934,7 +938,8 @@ pub(super) mod tests {
             .unwrap();
             omitted_size += layer["size"].as_u64().unwrap();
         }
-        let Err(error) = OciLayout::read_with_cache(&output, &store, omitted_size, true).await
+        let Err(error) =
+            OciLayout::read_with_cache(output.clone(), &store, omitted_size, true).await
         else {
             panic!("omitted blobs bypassed capacity");
         };
@@ -944,7 +949,7 @@ pub(super) mod tests {
             store.blob_path(&manifest),
         )
         .unwrap();
-        assert!(OciLayout::read_build(&output, &store).await.is_err());
+        assert!(OciLayout::read_build(output.clone(), &store).await.is_err());
     }
 
     #[tokio::test]

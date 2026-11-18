@@ -26,3 +26,23 @@ impl SparseFile for Path {
         file
     }
 }
+
+/// Run last-owner assertions without unrelated child-process creation.
+pub(crate) fn isolated(test: &str) -> bool {
+    const CHILD: &str = "PICHI_TEST_ISOLATED_CASE";
+    if std::env::var(CHILD).as_deref() == Ok(test) {
+        return false;
+    }
+    // Fork briefly inherits even close-on-exec lock handles.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env(CHILD, test)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+        "isolated {test} failed or did not run: {output:?}"
+    );
+    true
+}

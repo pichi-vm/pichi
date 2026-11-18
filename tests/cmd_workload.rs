@@ -34,6 +34,14 @@ impl WorkloadFixture {
         let graphroot = root.path().join("pichi/storage");
         let tags = FilesystemTagDb::open(&graphroot).unwrap();
         let blobs = FilesystemBlobStore::new(&graphroot);
+        std::fs::write(
+            root.path().join("pichi/config.toml"),
+            format!(
+                "[storage]\ngraphroot = {}\n",
+                serde_json::to_string(&graphroot).unwrap()
+            ),
+        )
+        .unwrap();
         let pmi = b"PMI\0";
         let digest = Digest::Sha256(Sha256::digest(pmi).into());
         blobs.put_blob(&digest, pmi).await.unwrap();
@@ -156,10 +164,13 @@ impl WorkloadFixture {
 
     fn native_command(&self) -> std::process::Command {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"));
-        command.env("XDG_DATA_HOME", self.root.path()).env(
-            "PATH",
-            executable_path::prepend(self.program.parent().unwrap()),
-        );
+        command
+            .env("XDG_DATA_HOME", self.root.path())
+            .env("XDG_CONFIG_HOME", self.root.path())
+            .env(
+                "PATH",
+                executable_path::prepend(self.program.parent().unwrap()),
+            );
         command
     }
 }
@@ -285,7 +296,16 @@ os._exit(0)
                 .unwrap()
                 .is_none()
         );
-        assert!(fixture.record().join("output").is_dir());
+        let record = fixture.record();
+        let id = record.file_name().unwrap().to_str().unwrap();
+        assert!(record.join("output").is_dir());
+        fixture
+            .command()
+            .args(["rm", id])
+            .assert()
+            .success()
+            .stdout(format!("{id}\n"));
+        assert!(!record.exists());
     }
 }
 
@@ -908,4 +928,47 @@ async fn blocked_console_input_observes_stop_and_caller_signals() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[tokio::test]
+async fn rm_refuses_live_and_unknown_workloads_then_removes_completed_state() {
+    let fixture =
+        WorkloadFixture::new("import signal\nsignal.alarm(30)\nwhile True: signal.pause()").await;
+    fixture.command().args(["rm", "missing"]).assert().code(1);
+    let started = fixture
+        .command()
+        .args(["run", "-d", "fixture:1"])
+        .assert()
+        .success();
+    let id = String::from_utf8(started.get_output().stdout.clone()).unwrap();
+    let id = id.trim();
+    let path = fixture.record();
+    let identity = std::fs::read(path.join("identity.json")).unwrap();
+    fixture.command().args(["rm", id]).assert().code(2);
+    assert_eq!(std::fs::read(path.join("identity.json")).unwrap(), identity);
+    fixture
+        .command()
+        .args(["stop", "--time", "0", id])
+        .assert()
+        .success();
+    let result = path.join("monitor/result.json");
+    let completion = std::fs::read(&result).unwrap();
+    std::fs::remove_file(&result).unwrap();
+    fixture.command().args(["rm", id]).assert().code(2);
+    assert_eq!(std::fs::read(path.join("identity.json")).unwrap(), identity);
+    std::fs::write(&result, completion).unwrap();
+    fixture
+        .command()
+        .args(["rm", &id[..8]])
+        .assert()
+        .success()
+        .stdout(format!("{}\n", &id[..8]));
+    assert!(!path.exists());
+    fixture.command().args(["rm", id]).assert().code(1);
+    fixture
+        .command()
+        .args(["ps", "-a", "-q"])
+        .assert()
+        .success()
+        .stdout("");
 }

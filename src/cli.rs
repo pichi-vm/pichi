@@ -383,6 +383,13 @@ pub struct RunArgs {
     pub storage_file: Option<std::path::PathBuf>,
 }
 
+/// Remove one completed workload and its owned files.
+#[derive(Debug, ClapArgs)]
+pub struct RmArgs {
+    /// Full workload UUID or an unambiguous prefix.
+    pub id: String,
+}
+
 /// Attach to an existing workload's live console.
 #[derive(Debug, ClapArgs)]
 pub struct AttachArgs {

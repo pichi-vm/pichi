@@ -3,7 +3,7 @@
 
 //! Retained caller identity. Missing monitor results remain unknown and pinned.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
 use conglobate::artifact::Digest;
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use uuid::Uuid;
 
@@ -36,6 +37,19 @@ pub(crate) struct Record {
     pub(crate) run: Run,
 }
 
+/// Host ownership of output spans import and any uncancelled snapshot worker.
+#[derive(Clone)]
+pub(crate) struct BuildOutput {
+    path: PathBuf,
+    _owner: Arc<std::fs::File>,
+}
+
+impl AsRef<Path> for BuildOutput {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
 /// One boot's monitor state, diagnostics and control endpoint.
 #[derive(Debug)]
 pub(crate) struct Run {
@@ -43,6 +57,18 @@ pub(crate) struct Run {
     directory: Dir,
     endpoint: PathBuf,
 }
+
+/// A selector has no retained record, rather than unreadable retained state.
+#[derive(Debug)]
+pub(super) struct NoSuchWorkload(String);
+
+impl std::fmt::Display for NoSuchWorkload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no workload matches {:?}", self.0)
+    }
+}
+
+impl std::error::Error for NoSuchWorkload {}
 
 impl Records {
     /// Build guests select their own inputs from the read-only image cache.
@@ -250,6 +276,11 @@ impl Records {
         self.directory.create_dir_with(&staging, &options)?;
         let published: Result<()> = (|| {
             let directory = self.directory.open_dir_nofollow(&staging)?;
+            for name in ["publication.lock", "cleanup.lock"] {
+                directory
+                    .open_with(name, OpenOptions::new().write(true).create_new(true))?
+                    .sync_all()?;
+            }
             let mut file = directory.open_with(
                 "identity.json",
                 OpenOptions::new().write(true).create_new(true),
@@ -285,9 +316,34 @@ impl Records {
 
     pub(super) fn get(&self, id: Uuid) -> Result<Record> {
         let name = id.to_string();
-        let directory = self.directory.open_dir_nofollow(&name)?;
-        let identity: Identity = Run::read(&directory, "identity.json", 1024 * 1024)?
-            .context("missing workload identity")?;
+        let directory = match self.directory.open_dir_nofollow(&name) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A dangling link or missing file inside an existing record is
+                // corruption, not a nonexistent target.
+                match self.directory.symlink_metadata(&name) {
+                    Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => {
+                        return Err(error).context(NoSuchWorkload(name));
+                    }
+                    _ => return Err(error.into()),
+                }
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let identity: Identity = match Run::read(&directory, "identity.json", 1024 * 1024)? {
+            Some(identity) => identity,
+            None => {
+                // Removal may retire and empty an already-open directory on
+                // Unix. A missing identity is corruption only while published.
+                match self.directory.symlink_metadata(&name) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Err(NoSuchWorkload(name).into());
+                    }
+                    Err(error) => return Err(error.into()),
+                    Ok(_) => bail!("missing workload identity"),
+                }
+            }
+        };
         if identity.version != 1
             || identity.id != id
             || identity.images.is_empty()
@@ -317,7 +373,7 @@ impl Records {
         match (matches.next(), matches.next()) {
             (Some(record), None) => Ok(record),
             (Some(_), Some(_)) => bail!("workload prefix {selector:?} matches more than one ID"),
-            (None, _) => bail!("no workload matches ID prefix {selector:?}"),
+            (None, _) => Err(NoSuchWorkload(selector.to_owned()).into()),
         }
     }
 
@@ -327,14 +383,19 @@ impl Records {
             let entry = entry?;
             let name = entry.file_name();
             let name = name.to_str().context("invalid workload directory name")?;
-            if name.starts_with(".creating-") {
+            if name.starts_with(".creating-") || name.starts_with(".retired-") {
                 continue;
             }
             let id = name.parse::<Uuid>()?;
-            if !entry.file_type()?.is_dir() {
-                bail!("workload identity must be a directory");
+            ensure!(
+                name == id.to_string(),
+                "noncanonical workload directory name {name:?}"
+            );
+            match self.get(id) {
+                Ok(record) => records.push(record),
+                Err(error) if error.is::<NoSuchWorkload>() => {}
+                Err(error) => return Err(error),
             }
-            records.push(self.get(id)?);
         }
         records.sort_by_key(Record::id);
         Ok(records)
@@ -349,6 +410,97 @@ impl Records {
             }
         }
         Ok(pins)
+    }
+
+    pub(super) fn has_retired(&self, id: Uuid) -> Result<bool> {
+        match self.directory.symlink_metadata(format!(".retired-{id}")) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Retry metadata deletion even when the identity was already removed.
+    /// The caller holds the image-index lock, excluding another remover.
+    pub(super) fn remove_retired(&self, id: Uuid) -> Result<()> {
+        if !self.has_retired(id)? {
+            return Ok(());
+        }
+        let name = format!(".retired-{id}");
+        let result = (|| -> Result<()> {
+            let directory = self.directory.open_dir_nofollow(&name)?;
+            for entry in directory.entries()? {
+                let entry = entry?;
+                let kind = entry.file_type()?;
+                let known = match entry.file_name().to_str() {
+                    Some(
+                        "identity.json" | "monitor.err" | "build.lock" | "cleanup.lock"
+                        | "publication.lock",
+                    ) => kind.is_file(),
+                    Some("monitor") => {
+                        Self::check_monitor(&directory)?;
+                        true
+                    }
+                    _ => false,
+                };
+                ensure!(known, "unexpected file in retired workload {id}");
+            }
+            drop(directory);
+            #[cfg(unix)]
+            self.directory.open(".")?.sync_all()?;
+            self.directory.remove_dir_all(&name)?;
+            Ok(())
+        })();
+        result.with_context(|| {
+            format!("removing retired workload metadata; retry with pichi rm {id}")
+        })
+    }
+
+    fn check_monitor(directory: &Dir) -> Result<()> {
+        let monitor = directory.open_dir_nofollow("monitor")?;
+        for entry in monitor.entries()? {
+            let entry = entry?;
+            // Madrillo also retains an OOM sentinel when the kernel reports it.
+            ensure!(
+                matches!(
+                    entry.file_name().to_str(),
+                    Some("console.log" | "result.json" | "oom")
+                ) && entry.file_type()?.is_file(),
+                "unexpected file in workload monitor: {:?}",
+                entry.file_name()
+            );
+        }
+        Ok(())
+    }
+
+    /// Retire a workload after its payload is gone. Caller holds the index lock
+    /// and has dropped all handles inside the record (required on Windows).
+    fn retire(&self, id: Uuid) -> Result<()> {
+        let name = id.to_string();
+        let retired = format!(".retired-{id}");
+        let rename = || self.directory.rename(&name, &self.directory, &retired);
+        #[cfg(windows)]
+        let renamed = {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match rename() {
+                    // Completed workloads can still have observers or the exit
+                    // callback briefly holding directory handles. cap-std must
+                    // deny delete sharing; wait only at this final rename.
+                    Err(error)
+                        if matches!(error.raw_os_error(), Some(5 | 32))
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    result => break result,
+                }
+            }
+        };
+        #[cfg(not(windows))]
+        let renamed = rename();
+        renamed.with_context(|| format!("retiring workload {id}"))?;
+        self.remove_retired(id)
     }
 }
 
@@ -374,56 +526,85 @@ impl Record {
     }
 
     pub(crate) fn release_runtime_files(&self) -> Result<()> {
-        if matches!(self.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
-        {
-            // Concurrent Windows removals can observe a delete-pending file as
-            // access denied. Keep the cleanup lock outside the removed tree.
-            let lock = self.run.directory.open_with(
-                "cleanup.lock",
-                OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .follow(FollowSymlinks::No),
-            )?;
-            if !lock.metadata()?.is_file() {
-                bail!("workload cleanup lock must be a regular file");
-            }
-            let lock = lock.into_std();
-            lock.lock().context("locking workload cleanup")?;
-            #[cfg(unix)]
+        let result = (|| -> Result<()> {
+            if matches!(self.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
             {
-                use std::os::unix::fs::{FileTypeExt, MetadataExt};
-                // A forced Dillo exit cannot run its socket-name destructor.
-                // Remove only its owned socket, after confirmed scope cleanup.
-                let endpoint = self.run.resize_endpoint();
-                match std::fs::symlink_metadata(&endpoint) {
-                    Ok(metadata)
-                        if metadata.file_type().is_socket()
-                            && metadata.uid() == nix::unistd::geteuid().as_raw() =>
-                    {
-                        match std::fs::remove_file(endpoint) {
-                            Ok(()) => {}
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(error) => return Err(error.into()),
-                        }
+                // New records publish their cleanup lock before launch. Never
+                // recreate it through a stale handle after metadata retirement.
+                let legacy = match self.run.directory.symlink_metadata("publication.lock") {
+                    Ok(metadata) => {
+                        ensure!(
+                            metadata.is_file(),
+                            "publication lock must be a regular file"
+                        );
+                        false
                     }
-                    Ok(_) => log::warn!(
-                        "leaving unexpected file at console resize endpoint {}",
-                        endpoint.display()
-                    ),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                    Err(error) => return Err(error.into()),
+                };
+                if legacy {
+                    // Old records still need lazy initialization, but cannot
+                    // be retired by rm. A deleted marker in a retired new
+                    // record must not be mistaken for this older format.
+                    Self::at(self.run.path())?;
+                }
+                // Concurrent Windows removals can observe a delete-pending file as
+                // access denied. Keep the cleanup lock outside the removed tree.
+                let lock = self.run.directory.open_with(
+                    "cleanup.lock",
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(legacy)
+                        .truncate(false)
+                        .follow(FollowSymlinks::No),
+                )?;
+                if !lock.metadata()?.is_file() {
+                    bail!("workload cleanup lock must be a regular file");
+                }
+                let lock = lock.into_std();
+                lock.lock().context("locking workload cleanup")?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+                    // A forced Dillo exit cannot run its socket-name destructor.
+                    // Remove only its owned socket, after confirmed scope cleanup.
+                    let endpoint = self.run.resize_endpoint();
+                    match std::fs::symlink_metadata(&endpoint) {
+                        Ok(metadata)
+                            if metadata.file_type().is_socket()
+                                && metadata.uid() == nix::unistd::geteuid().as_raw() =>
+                        {
+                            match std::fs::remove_file(endpoint) {
+                                Ok(()) => {}
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(error) => return Err(error.into()),
+                            }
+                        }
+                        Ok(_) => log::warn!(
+                            "leaving unexpected file at console resize endpoint {}",
+                            endpoint.display()
+                        ),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                match self.run.directory.remove_dir_all("storage") {
+                    Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
                 }
             }
-            match self.run.directory.remove_dir_all("storage") {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+            Ok(())
+        })();
+        if result.is_err()
+            && matches!(Self::at(self.run.path()), Err(error) if error.is::<NoSuchWorkload>())
+        {
+            // A remover can unlink a directory still held by a Unix observer.
+            // Only confirmed disappearance makes its cleanup a no-op.
+            return Ok(());
         }
-        Ok(())
+        result
     }
 
     pub(crate) fn id(&self) -> Uuid {
@@ -432,9 +613,84 @@ impl Record {
     pub(super) fn images(&self) -> &[Digest] {
         &self.identity.images
     }
-    pub(crate) fn create_build_output(&self) -> Result<PathBuf> {
+    pub(crate) fn create_build_output(&self) -> Result<BuildOutput> {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        let owner = self
+            .run
+            .directory
+            .open_with("build.lock", &options)?
+            .into_std();
+        owner.lock()?;
         self.run.directory.create_dir("output")?;
-        Ok(self.run.path.join("output"))
+        Ok(BuildOutput {
+            path: self.run.path.join("output"),
+            _owner: Arc::new(owner),
+        })
+    }
+
+    /// Caller holds the image-index lock through host exclusion and retirement.
+    pub(super) fn remove(self, records: &Records) -> Result<()> {
+        ensure!(
+            matches!(self.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete),
+            "workload is running or its cleanup is unknown"
+        );
+        let publication = self.run.publication_guard().context("monitor publication is still owned, or this older record has no ownership evidence; preserve it until its monitor has stopped")?;
+        let owner = Run::open_file(&self.run.directory, "build.lock")
+            .context("opening build ownership lock")?
+            .map(cap_std::fs::File::into_std);
+        if let Some(owner) = &owner {
+            owner
+                .try_lock()
+                .context("build output is still owned by the host importer")?;
+        }
+        // Preflight before releasing anything, including the old-build case:
+        // a result proves guest cleanup, never the old host importer's exit.
+        for entry in self
+            .run
+            .directory
+            .entries()
+            .context("listing workload files")?
+        {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let known = match entry.file_name().to_str() {
+                Some(
+                    "identity.json" | "monitor.err" | "build.lock" | "cleanup.lock"
+                    | "publication.lock",
+                ) => kind.is_file(),
+                Some("monitor") => {
+                    Records::check_monitor(&self.run.directory)?;
+                    true
+                }
+                Some("storage") => kind.is_dir(),
+                Some("output") => {
+                    ensure!(
+                        owner.is_some(),
+                        "older build has no host ownership lock; preserve its output until its build command has stopped"
+                    );
+                    kind.is_dir()
+                }
+                _ => false,
+            };
+            ensure!(known, "unexpected file in workload {}", self.id());
+        }
+        self.release_runtime_files()
+            .context("removing workload runtime files")?;
+        self.release_build_output()
+            .context("removing build output")?;
+        for name in ["storage", "output"] {
+            match self.run.directory.symlink_metadata(name) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => bail!("workload {name} remains after cleanup"),
+            }
+        }
+        let id = self.id();
+        // No new host can acquire this record; creation and removal share the
+        // index lock. Drop handles before renaming on Windows.
+        drop((publication, owner, self));
+        records.retire(id)
     }
 
     pub(crate) fn release_build_output(&self) -> Result<()> {
@@ -451,6 +707,30 @@ impl Record {
 }
 
 impl Run {
+    /// Legacy monitors already hold caller-supplied handles until publication.
+    pub(crate) fn publication_guard(&self) -> Result<std::fs::File> {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).follow(FollowSymlinks::No);
+        #[cfg(windows)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            // Sharing restrictions survive transfer to the monitor; Windows
+            // byte-range locks belong to the original locking process.
+            options.share_mode(0);
+        }
+        let file = self
+            .directory
+            .open_with("publication.lock", &options)?
+            .into_std();
+        ensure!(
+            file.metadata()?.is_file(),
+            "publication lock must be a file"
+        );
+        #[cfg(unix)]
+        file.try_lock()?;
+        Ok(file)
+    }
+
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
@@ -554,6 +834,277 @@ mod tests {
     use madrillo::{CompletionCause, LeaderResult, OomEvidence};
     use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
     use sha2::{Digest as _, Sha256};
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_cleanup_never_recreates_retired_metadata() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let records = Records::open(&graphroot)?;
+        for remove_publication in [false, true] {
+            let record = records.reserve(vec![Digest::Sha256([1; 32])])?;
+            std::fs::create_dir(record.run.state())?;
+            let result = Completion {
+                version: madrillo::PROTOCOL_VERSION,
+                leader: LeaderResult::Exit { code: 0 },
+                cause: CompletionCause::LeaderExit,
+                exited_at_unix_ms: 0,
+                cleanup: CleanupResult::Complete,
+                oom: OomEvidence::NoneObserved,
+                log_errors: Vec::new(),
+                monitor_errors: Vec::new(),
+                monitor_warnings: Vec::new(),
+                output_truncated: false,
+            };
+            std::fs::write(
+                record.run.state().join("result.json"),
+                serde_json::to_vec(&result)?,
+            )?;
+            record.release_runtime_files()?;
+            let retired = format!(".retired-{}", record.id());
+            records
+                .directory
+                .rename(record.id().to_string(), &records.directory, &retired)?;
+            let path = records.path.join(&retired);
+            std::fs::remove_file(path.join("cleanup.lock"))?;
+            if remove_publication {
+                std::fs::remove_file(path.join("publication.lock"))?;
+            }
+            // Simulate final deletion having removed the lock while this
+            // callback still owns an opened directory and a complete result.
+            record.release_runtime_files()?;
+            assert!(
+                !path.join("cleanup.lock").exists(),
+                "stale cleanup recreated retired metadata"
+            );
+            drop(record);
+            records.remove_retired(Uuid::parse_str(retired.trim_start_matches(".retired-"))?)?;
+            assert!(!path.exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn removal_requires_released_publication_ownership() -> Result<()> {
+        if crate::test_support::isolated(
+            "cmd::workload::record::tests::removal_requires_released_publication_ownership",
+        ) {
+            return Ok(());
+        }
+        let root = tempfile::tempdir()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let records = Records::open(&graphroot)?;
+        let id = Uuid::new_v4();
+        let record = records.create(
+            vec![Digest::Sha256([1; 32])],
+            root.path().join("control"),
+            id,
+        )?;
+        let path = record.run.path().to_owned();
+        std::fs::create_dir(record.run.state())?;
+        let result = Completion {
+            version: madrillo::PROTOCOL_VERSION,
+            leader: LeaderResult::Exit { code: 37 },
+            cause: CompletionCause::LeaderExit,
+            exited_at_unix_ms: 0,
+            cleanup: CleanupResult::Complete,
+            oom: OomEvidence::NoneObserved,
+            log_errors: Vec::new(),
+            monitor_errors: Vec::new(),
+            monitor_warnings: Vec::new(),
+            output_truncated: false,
+        };
+        std::fs::write(
+            path.join("monitor/result.json"),
+            serde_json::to_vec(&result)?,
+        )?;
+        std::fs::remove_file(path.join("cleanup.lock"))?;
+        assert!(record.release_runtime_files().is_err());
+        std::fs::write(path.join("cleanup.lock"), b"")?;
+        let publication = record.run.publication_guard()?;
+        drop(record);
+        assert!(records.get(id)?.remove(&records).is_err());
+        assert_eq!(records.get(id)?.run.completion()?.unwrap(), result);
+        drop(publication);
+        // Older records have no evidence that a monitor's publication is done.
+        std::fs::remove_file(path.join("publication.lock"))?;
+        std::fs::remove_file(path.join("cleanup.lock"))?;
+        records.get(id)?.release_runtime_files()?;
+        assert!(path.join("cleanup.lock").is_file());
+        assert!(records.get(id)?.remove(&records).is_err());
+        assert!(path.join("identity.json").exists());
+        // Restore the marker only in this fixture: its publisher is known gone.
+        std::fs::write(path.join("publication.lock"), b"")?;
+        records.get(id)?.remove(&records)?;
+        assert!(!path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn noncanonical_stored_ids_cannot_silently_release_pins() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let records = Records::open(&graphroot)?;
+        let id = Uuid::new_v4();
+        let record = records.create(
+            vec![Digest::Sha256([1; 32])],
+            root.path().join("control"),
+            id,
+        )?;
+        std::fs::create_dir(record.run.path().join("output"))?;
+        drop(record);
+        records
+            .directory
+            .rename(id.to_string(), &records.directory, id.simple().to_string())?;
+        assert!(records.list().is_err());
+        assert!(records.pins().is_err());
+        assert!(Records::build_cache_in_use(&graphroot).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_errors_are_ignored_only_after_confirmed_retirement() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let records = Records::open(&graphroot)?;
+        let id = Uuid::new_v4();
+        let record = records.create(
+            vec![Digest::Sha256([1; 32])],
+            root.path().join("control"),
+            id,
+        )?;
+        std::fs::create_dir(record.run.state())?;
+        std::fs::write(record.run.state().join("result.json"), b"partial removal")?;
+        assert!(record.release_runtime_files().is_err());
+        records
+            .directory
+            .rename(id.to_string(), &records.directory, format!(".retired-{id}"))?;
+        record.release_runtime_files()?;
+        // A published but corrupt replacement must not be treated as absence.
+        records.directory.create_dir(id.to_string())?;
+        assert!(record.release_runtime_files().is_err());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retirement_waits_for_an_observer_and_preserves_a_blocked_record() -> Result<()> {
+        use std::time::Duration;
+        let root = tempfile::tempdir()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let records = Records::open(&graphroot)?;
+        for release in [true, false] {
+            let id = Uuid::new_v4();
+            let record = records.create(
+                vec![Digest::Sha256([0; 32])],
+                PathBuf::from(format!(r"\\.\pipe\pichi-{id}")),
+                id,
+            )?;
+            let path = record.run.path().to_owned();
+            let identity = std::fs::read(path.join("identity.json"))?;
+            // Establish the real Windows refusal while this observer owns the
+            // directory. No monitor timing or synthetic error is involved.
+            let error = records
+                .directory
+                .rename(id.to_string(), &records.directory, format!(".retired-{id}"))
+                .expect_err("an open directory must block Windows retirement");
+            assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+            if !release {
+                assert!(records.retire(id).is_err());
+                assert_eq!(std::fs::read(path.join("identity.json"))?, identity);
+                continue;
+            }
+            std::thread::scope(|scope| -> Result<()> {
+                let (finished, result) = std::sync::mpsc::channel();
+                scope.spawn({
+                    let records = &records;
+                    move || finished.send(records.retire(id))
+                });
+                assert!(matches!(
+                    result.recv_timeout(Duration::from_millis(100)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ));
+                assert_eq!(std::fs::read(path.join("identity.json"))?, identity);
+                drop(record);
+                result.recv_timeout(Duration::from_secs(6))??;
+                Ok(())
+            })?;
+            assert!(!path.exists());
+            assert!(!records.path.join(format!(".retired-{id}")).exists());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn removal_retries_retired_metadata_without_an_identity() -> Result<()> {
+        use crate::cmd::workload::Workload;
+
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache)?;
+        let config = Config {
+            storage: StorageConfig {
+                graphroot: Some(cache.clone()),
+                runroot: Some(root.path().join("run")),
+            },
+            ..Config::default()
+        };
+        let records = Records::open(&cache)?;
+        let id = Uuid::new_v4();
+        let retired = records.path.join(format!(".retired-{id}"));
+        std::fs::create_dir(&retired)?;
+        // An interrupted deletion may have removed identity.json already.
+        std::fs::create_dir(retired.join("monitor"))?;
+        std::fs::write(retired.join("monitor/result.json"), b"remaining metadata")?;
+        std::fs::write(retired.join("monitor/oom"), b"")?;
+        assert!(records.list()?.is_empty());
+        for name in [
+            "storage",
+            "output",
+            "foreign",
+            "monitor/foreign",
+            "monitor/console.log",
+        ] {
+            std::fs::create_dir(retired.join(name))?;
+            let payload = retired.join(name).join("data");
+            std::fs::write(&payload, b"preserve")?;
+            assert_eq!(Workload::remove(&id.to_string(), &config).await?, 2);
+            assert_eq!(std::fs::read(payload)?, b"preserve");
+            std::fs::remove_dir_all(retired.join(name))?;
+        }
+        #[cfg(unix)]
+        {
+            let outside = root.path().join("outside");
+            std::fs::write(&outside, b"external")?;
+            std::os::unix::fs::symlink(&outside, retired.join("monitor.err"))?;
+            assert_eq!(Workload::remove(&id.to_string(), &config).await?, 2);
+            assert_eq!(std::fs::read(outside)?, b"external");
+            std::fs::remove_file(retired.join("monitor.err"))?;
+        }
+        #[cfg(windows)]
+        {
+            // A real final deletion error must not become success. The
+            // retained directory is still retryable after its holder exits.
+            let held = records
+                .directory
+                .open_dir_nofollow(format!(".retired-{id}"))?;
+            let error = records.remove_retired(id).unwrap_err();
+            assert!(format!("{error:#}").contains(&format!("pichi rm {id}")));
+            assert_eq!(Workload::remove(&id.to_string(), &config).await?, 2);
+            assert!(retired.exists());
+            drop(held);
+        }
+        assert_eq!(Workload::remove(&id.to_string(), &config).await?, 0);
+        assert!(!retired.exists());
+        assert_eq!(Workload::remove(&id.to_string(), &config).await?, 1);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn observers_release_directories_and_keep_completion_fallback() -> Result<()> {
@@ -878,6 +1429,200 @@ mod tests {
             assert!(!record.storage_directory().exists());
             assert!(record.run.completion()?.is_some());
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_removal_requires_complete_cleanup_and_released_host_ownership() -> Result<()> {
+        if crate::test_support::isolated(
+            "cmd::workload::record::tests::legacy_removal_requires_complete_cleanup_and_released_host_ownership",
+        ) {
+            return Ok(());
+        }
+        use std::time::Duration;
+
+        // Pause the real blocking snapshot after it has taken ownership.
+        struct Snapshot {
+            output: BuildOutput,
+            entered: Arc<tokio::sync::Notify>,
+            release: std::sync::mpsc::Receiver<()>,
+        }
+        impl AsRef<Path> for Snapshot {
+            fn as_ref(&self) -> &Path {
+                self.entered.notify_one();
+                self.release.recv_timeout(Duration::from_secs(10)).unwrap();
+                self.output.as_ref()
+            }
+        }
+
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache)?;
+        let records = Records::open(&cache)?;
+        let record = records.create(
+            vec![Digest::Sha256([1; 32])],
+            root.path().join("control"),
+            Uuid::new_v4(),
+        )?;
+        let path = record.run.path().to_owned();
+        std::fs::create_dir(record.storage_directory())?;
+        std::fs::write(record.storage_directory().join("storage.raw"), b"disk")?;
+        std::fs::create_dir(record.run.state())?;
+        drop(record);
+        assert_eq!(
+            Record::at(&path)?.remove(&records).unwrap_err().to_string(),
+            "workload is running or its cleanup is unknown"
+        );
+        let mut result = Completion {
+            version: PROTOCOL_VERSION,
+            leader: LeaderResult::Exit { code: 1 },
+            cause: CompletionCause::LeaderExit,
+            exited_at_unix_ms: 0,
+            cleanup: CleanupResult::Unknown,
+            oom: OomEvidence::NoneObserved,
+            log_errors: Vec::new(),
+            monitor_errors: Vec::new(),
+            monitor_warnings: Vec::new(),
+            output_truncated: false,
+        };
+        std::fs::write(
+            path.join("monitor/result.json"),
+            serde_json::to_vec(&result)?,
+        )?;
+        assert_eq!(
+            Record::at(&path)?.remove(&records).unwrap_err().to_string(),
+            "workload is running or its cleanup is unknown"
+        );
+        assert_eq!(std::fs::read(path.join("storage/storage.raw"))?, b"disk");
+        // Only after proving the completion gate, introduce the independent
+        // host-import lock so it cannot mask a missing completion check.
+        result.cleanup = CleanupResult::Complete;
+        std::fs::write(
+            path.join("monitor/result.json"),
+            serde_json::to_vec(&result)?,
+        )?;
+        let output = Record::at(&path)?.create_build_output()?;
+        std::fs::write(output.as_ref().join("partial"), b"build output")?;
+        assert!(
+            Record::at(&path)?
+                .remove(&records)
+                .unwrap_err()
+                .to_string()
+                .contains("still owned by the host importer")
+        );
+        assert_eq!(std::fs::read(path.join("storage/storage.raw"))?, b"disk");
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let (release, receiver) = std::sync::mpsc::channel();
+        let snapshot = Snapshot {
+            output: output.clone(),
+            entered: entered.clone(),
+            release: receiver,
+        };
+        let store = FilesystemBlobStore::new(&cache);
+        let task =
+            tokio::spawn(
+                async move { crate::cmd::load::OciLayout::read_build(snapshot, &store).await },
+            );
+        tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        drop(output);
+        assert!(Record::at(&path)?.remove(&records).is_err());
+        assert_eq!(std::fs::read(path.join("output/partial"))?, b"build output");
+        release.send(())?;
+        // The aborted async task cannot be joined to its blocking worker.
+        // Observe the ownership lock becoming available instead.
+        let owner = std::fs::File::open(path.join("build.lock"))?;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while owner.try_lock().is_err() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+        owner.unlock()?;
+        drop(owner);
+        Record::at(&path)?.remove(&records)?;
+        assert!(!path.exists());
+        assert_eq!(records.directory.entries()?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_removal_preserves_old_build_output_and_unexpected_files() -> Result<()> {
+        if crate::test_support::isolated(
+            "cmd::workload::record::tests::legacy_removal_preserves_old_build_output_and_unexpected_files",
+        ) {
+            return Ok(());
+        }
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache)?;
+        let records = Records::open(&cache)?;
+        let record = records.create(
+            vec![Digest::Sha256([1; 32])],
+            root.path().join("control"),
+            Uuid::new_v4(),
+        )?;
+        let path = record.run.path().to_owned();
+        let result = Completion {
+            version: PROTOCOL_VERSION,
+            leader: LeaderResult::Exit { code: 0 },
+            cause: CompletionCause::LeaderExit,
+            exited_at_unix_ms: 0,
+            cleanup: CleanupResult::Complete,
+            oom: OomEvidence::NoneObserved,
+            log_errors: Vec::new(),
+            monitor_errors: Vec::new(),
+            monitor_warnings: Vec::new(),
+            output_truncated: false,
+        };
+        std::fs::create_dir(record.run.state())?;
+        std::fs::write(
+            record.run.state().join("result.json"),
+            serde_json::to_vec(&result)?,
+        )?;
+        drop(record);
+        std::fs::create_dir(path.join("output"))?;
+        std::fs::write(path.join("output/partial"), b"older build")?;
+        let error = Record::at(&path)?.remove(&records).unwrap_err();
+        assert!(error.to_string().contains("older build"));
+        assert_eq!(std::fs::read(path.join("output/partial"))?, b"older build");
+        // The documented migration preserves old output outside the record.
+        let preserved = root.path().join("preserved-output");
+        std::fs::rename(path.join("output"), &preserved)?;
+        for name in ["foreign", "monitor/foreign"] {
+            std::fs::write(path.join(name), b"not ours")?;
+            assert!(Record::at(&path)?.remove(&records).is_err());
+            assert_eq!(std::fs::read(path.join(name))?, b"not ours");
+            std::fs::remove_file(path.join(name))?;
+        }
+        std::fs::write(path.join("monitor/oom"), b"")?;
+        // A still-published record without its identity is corrupt, not an
+        // already-removed record that the exit callback may silently accept.
+        let identity = std::fs::read(path.join("identity.json"))?;
+        std::fs::remove_file(path.join("identity.json"))?;
+        let error = super::super::Workload::cleanup(&path).unwrap_err();
+        assert!(error.to_string().contains("missing workload identity"));
+        assert!(!error.is::<NoSuchWorkload>());
+        assert!(records.list().is_err());
+        std::fs::write(path.join("identity.json"), identity)?;
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&preserved, path.join("storage"))?;
+            assert!(Record::at(&path)?.remove(&records).is_err());
+            std::fs::remove_file(path.join("storage"))?;
+            std::os::unix::fs::symlink(
+                preserved.join("partial"),
+                path.join("monitor/console.log"),
+            )?;
+            assert!(Record::at(&path)?.remove(&records).is_err());
+            assert!(path.join("monitor/console.log").is_symlink());
+            std::fs::remove_file(path.join("monitor/console.log"))?;
+        }
+        Record::at(&path)?.remove(&records)?;
+        assert!(!path.exists());
+        super::super::Workload::cleanup(&path)?;
+        assert_eq!(std::fs::read(preserved.join("partial"))?, b"older build");
         Ok(())
     }
 

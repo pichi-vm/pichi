@@ -473,7 +473,10 @@ mod tests {
         let record = records.create(vec![image], endpoint, id)?;
         std::fs::create_dir(record.storage_directory())?;
         let storage = record.storage_directory().join("storage.raw");
-        let output = record.create_build_output()?.join("partial-output");
+        let output = record
+            .create_build_output()?
+            .as_ref()
+            .join("partial-output");
         std::fs::write(&storage, b"guest storage")?;
         std::fs::write(&output, b"incomplete build")?;
         let mut running = ReapMonitor(
@@ -579,13 +582,14 @@ mod tests {
                 endpoint: &endpoint,
                 input: true,
                 inherited: Vec::new(),
-                held: Vec::new(),
+                held: vec![record.run.publication_guard()?],
                 cleanup: None,
             }
             .spawn()
             .await?,
         );
         running.started().await?;
+        assert!(record.run.publication_guard().is_err());
         #[cfg(unix)]
         {
             use nix::unistd::{Pid, getsid};
@@ -691,6 +695,7 @@ mod tests {
         #[cfg(windows)]
         let status = running.monitor.wait()?;
         assert!(status.success());
+        drop(record.run.publication_guard()?);
         let completion = record
             .run
             .completion()?
@@ -1111,9 +1116,10 @@ impl Running {
         run: &Run,
         arguments: &[OsString],
         inherited: Vec<File>,
-        held: Vec<File>,
+        mut held: Vec<File>,
         input: bool,
     ) -> Result<Self> {
+        held.push(run.publication_guard()?);
         let mut arguments = arguments.to_vec();
         arguments.extend(["--console-resize".into(), run.resize_endpoint().into()]);
         let mut running = Launch {
@@ -1345,7 +1351,11 @@ pub struct Workload(Record);
 impl Workload {
     /// Idempotent exit callback. Unknown/incomplete cleanup retains runtime files.
     pub fn cleanup(path: &Path) -> Result<()> {
-        Record::at(path)?.release_runtime_files()
+        match Record::at(path) {
+            Ok(record) => record.release_runtime_files(),
+            Err(error) if error.is::<record::NoSuchWorkload>() => Ok(()),
+            Err(error) => Err(error),
+        }
     }
     pub fn open(id: &str, config: &crate::config::Config) -> Result<Self> {
         let layout = config.resolve_layout()?;
@@ -1465,12 +1475,7 @@ impl Workload {
     fn retained_or_error(path: &Path, result: Result<Completion>) -> Result<Completion> {
         let record = match Record::at(path) {
             Ok(record) => record,
-            Err(error)
-                if result.is_ok()
-                    && error
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-            {
+            Err(error) if result.is_ok() && error.is::<record::NoSuchWorkload>() => {
                 return result;
             }
             Err(error) => return Err(error),
@@ -1482,6 +1487,51 @@ impl Workload {
                 Some(result) => Ok(result),
                 None => Err(error).context("workload state is unknown; image pins remain retained"),
             },
+        }
+    }
+
+    /// Remove one completed transient workload.
+    pub async fn remove(selector: &str, config: &crate::config::Config) -> Result<u32> {
+        let layout = config.resolve_layout()?;
+        let Some(records) = record::Records::existing(&layout.graphroot)? else {
+            eprintln!("Error: no workload matches {selector:?}");
+            return Ok(1);
+        };
+        let id = match records.resolve(selector) {
+            Ok(entry) => entry.id(),
+            Err(error) if error.is::<record::NoSuchWorkload>() => {
+                if let Ok(id) = selector.parse::<uuid::Uuid>()
+                    && records.has_retired(id)?
+                {
+                    id
+                } else {
+                    eprintln!("Error: {error}");
+                    return Ok(1);
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        // Do not retain target directory handles while waiting on another remover.
+        let result = layout
+            .with_index_lock(|| async {
+                match records.get(id) {
+                    Ok(record) => record.remove(&records),
+                    Err(error) if error.is::<record::NoSuchWorkload>() => {
+                        records.remove_retired(id)
+                    }
+                    Err(error) => Err(error),
+                }
+            })
+            .await;
+        match result {
+            Ok(()) => {
+                println!("{selector}");
+                Ok(0)
+            }
+            Err(error) => {
+                eprintln!("Error: {selector}: {error:#}");
+                Ok(2)
+            }
         }
     }
 

@@ -56,6 +56,23 @@ Pichi's own usage, configuration and command errors exit with status 125.
 Help and version requests exit with status 0. Foreground `run` and `attach`
 preserve the VM's native exit status.
 
+`pichi rm ID` removes one completed workload's retained files. It refuses live
+workloads, unconfirmed cleanup, active host imports and unexpected top-level
+files. Inside `monitor`, only regular `console.log`, `result.json` and `oom`
+files are removed; unfamiliar entries are preserved, including on a retired
+record retry. Success echoes the supplied ID or prefix. An absent target exits 1,
+a refused or failed removal exits 2, and other errors exit 125.
+A publication lock passed to Madrillo protects completion publication even
+with older installed monitors. Records created before that ownership evidence
+are preserved: stop their monitor before manually removing their retained state.
+Build output stays protected until its host importer and any snapshot worker
+finish. Older build output without a host ownership lock is preserved: after
+stopping the old build command, move its `output` directory aside before
+retrying `rm`. Externally supplied storage files are left untouched.
+If final metadata deletion fails, `rm` exits 2 and prints the full UUID to use
+for a retry. Retired records are hidden from `ps` and prefix lookup; a retry by
+full UUID finishes deletion even if some metadata was already removed.
+
 ## Launch requirements
 
 The image config's recommended CPU, memory and storage sizes supply the run

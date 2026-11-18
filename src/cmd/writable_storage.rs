@@ -213,6 +213,11 @@ mod tests {
 
     #[test]
     fn retained_storage_preserves_contents_and_never_shrinks() {
+        if crate::test_support::isolated(
+            "cmd::writable_storage::tests::retained_storage_preserves_contents_and_never_shrinks",
+        ) {
+            return;
+        }
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("disk.raw");
         let mut file = File::create(&path).unwrap();

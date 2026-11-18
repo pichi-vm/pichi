@@ -153,7 +153,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         &gpt_specs,
         &repo_dir,
         &cache_dir,
-        &output_dir,
+        output_dir.as_ref(),
         Some(&console),
         memory,
         cpus,
@@ -196,7 +196,8 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         )
         .await?;
         // Explicit build success and successful VM exit precede OCI import.
-        let imported = crate::cmd::load::OciLayout::read_build(&output_dir, &blob_store).await?;
+        let imported =
+            crate::cmd::load::OciLayout::read_build(output_dir.clone(), &blob_store).await?;
         imported
             .import_build(&blob_store, &db, tag)
             .await
