@@ -131,7 +131,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
 /// default `--pull=missing`: `pichi run` pulls on a cache miss rather than
 /// erroring. Delegates to `cmd::pull` (which owns the registry, auth, and
 /// verity-preparation pipeline) so there is one download path.
-async fn auto_pull(reference: &Reference, config: &Config) -> Result<()> {
+pub(super) async fn auto_pull(reference: &Reference, config: &Config) -> Result<()> {
     eprintln!("Unable to find {reference} locally; pulling...");
     crate::cmd::pull::run(
         PullArgs {

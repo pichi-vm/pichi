@@ -35,11 +35,12 @@ is still a valid image — a base others derive from.
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
 | `pichi run` | Boot an artifact under madrillo; `-d` prints a durable workload ID, `-i` forwards stdin, `-t` enables terminal mode |
+| `pichi create` | Prepare an instance disk and frozen configuration without booting |
 | `pichi attach` | Attach to live console input/output; `--no-stdin` views output only |
 | `pichi logs` | Print retained stdout/stderr for one or more workload IDs |
 | `pichi wait` | Wait for one or more workload IDs and print their native exit statuses in argument order |
 | `pichi stop` | Stop one or more workloads; force cleanup after `--time` seconds per workload (default 10) |
-| `pichi ps` | List running and unknown workloads; `-a` includes exited workloads and `-q` prints only full IDs |
+| `pichi ps` | List running and unknown workloads; `-a` includes exited workloads and created instances and `-q` prints only full IDs |
 | `pichi update` | Update a working-tree plan’s image lock |
 | `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |
 | `pichi system` | System-level inspection and maintenance |
@@ -55,6 +56,18 @@ Run `pichi <command> --help` for details.
 Pichi's own usage, configuration and command errors exit with status 125.
 Help and version requests exit with status 0. Foreground `run` and `attach`
 preserve the VM's native exit status.
+
+`pichi create IMAGE` prepares a private qcow2 disk and freezes the resolved image,
+vCPU count, memory and storage capacity without launching a monitor or VM. It
+prints an instance UUID. `--cpus`, `--memory` and `--storage` override operator
+and image defaults using the same units and required floors as `run`.
+Frozen memory must be a positive multiple of 2 MiB, as required by Dillo;
+invalid explicit values are rejected rather than rounded.
+Created instances appear in `ps --all` with state `created` and retain their
+image pins and private disk. This command does not accept attachment flags or
+externally managed storage files. Starting and removing created instances are
+not yet exposed by this CLI. Existing `run` and `build` retain their current
+behavior.
 
 ## Launch requirements
 

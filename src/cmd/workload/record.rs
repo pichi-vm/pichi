@@ -3,6 +3,7 @@
 
 //! Retained caller identity. Missing monitor results remain unknown and pinned.
 
+use super::instance::Instance;
 use anyhow::{Context, Result, bail};
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
@@ -24,6 +25,11 @@ struct Identity {
     endpoint: PathBuf,
 }
 
+#[derive(Deserialize)]
+struct Version {
+    version: u16,
+}
+
 #[derive(Debug)]
 pub(crate) struct Records {
     path: PathBuf,
@@ -34,6 +40,30 @@ pub(crate) struct Records {
 pub(crate) struct Record {
     identity: Identity,
     pub(crate) run: Run,
+}
+
+/// Retained temporary workloads and durable, never-started instances.
+#[derive(Debug)]
+pub(super) enum Entry {
+    Legacy(Record),
+
+    Instance(Instance),
+}
+
+impl Entry {
+    pub(super) fn id(&self) -> Uuid {
+        match self {
+            Self::Legacy(record) => record.id(),
+            Self::Instance(instance) => instance.id(),
+        }
+    }
+
+    pub(super) fn legacy(self) -> Result<Record> {
+        match self {
+            Self::Legacy(record) => Ok(record),
+            Self::Instance(_) => bail!("instance has not been started"),
+        }
+    }
 }
 
 /// One boot's monitor state, diagnostics and control endpoint.
@@ -52,7 +82,10 @@ impl Records {
         let Some(records) = Self::existing(graphroot)? else {
             return Ok(false);
         };
-        for record in records.list()? {
+        for entry in records.list()? {
+            let Entry::Legacy(record) = entry else {
+                continue;
+            };
             match record.run.directory.open_dir_nofollow("output") {
                 Ok(_) => {
                     if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
@@ -75,6 +108,20 @@ impl Records {
         )?;
         #[cfg(windows)]
         Self::private_directory(&parent)?;
+        let options = Self::private_builder();
+        match parent.create_dir_with(path.file_name().context("workload state name")?, &options) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        Self::from_parent(path, &parent)?.context("missing workload directory")
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn private_builder() -> cap_std::fs::DirBuilder {
         let options = cap_std::fs::DirBuilder::new();
         #[cfg(unix)]
         let options = {
@@ -83,12 +130,7 @@ impl Records {
             options.mode(0o700);
             options
         };
-        match parent.create_dir_with(path.file_name().context("workload state name")?, &options) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into()),
-        }
-        Self::from_parent(path, &parent)?.context("missing workload directory")
+        options
     }
 
     pub(super) fn existing(graphroot: &Path) -> Result<Option<Self>> {
@@ -222,39 +264,50 @@ impl Records {
         if images.is_empty() || images.len() > 1024 {
             bail!("a workload must pin between 1 and 1024 images");
         }
-        let name = id.to_string();
-        // The image-index lock excludes other creators. Preserve an existing
-        // entry even if it is empty, which rename could otherwise replace.
-        match self.directory.symlink_metadata(&name) {
-            Ok(_) => return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        let options = cap_std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        let options = {
-            use cap_std::fs::DirBuilderExt;
-            let mut options = options;
-            options.mode(0o700);
-            options
-        };
         let identity = Identity {
             version: 1,
             id,
             images,
             endpoint,
         };
-        // Observers do not hold the image-index lock. Publish only a complete
-        // identity; an interrupted creation must never look like a workload.
+        self.publish(id, &identity, |_| Ok(()))?;
+        let name = id.to_string();
+        let directory = self.directory.open_dir_nofollow(&name)?;
+        Ok(Record {
+            run: Run {
+                path: self.path.join(name),
+                directory,
+                endpoint: identity.endpoint.clone(),
+            },
+            identity,
+        })
+    }
+
+    /// Caller holds the image-index lock through payload preparation and publication.
+    pub(super) fn publish(
+        &self,
+        id: Uuid,
+        identity: &impl Serialize,
+        prepare: impl FnOnce(&Dir) -> Result<()>,
+    ) -> Result<()> {
+        let name = id.to_string();
+        // Preserve existing entries, including empty directories.
+        match self.directory.symlink_metadata(&name) {
+            Ok(_) => return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         let staging = format!(".creating-{id}");
-        self.directory.create_dir_with(&staging, &options)?;
+        self.directory
+            .create_dir_with(&staging, &Self::private_builder())?;
         let published: Result<()> = (|| {
             let directory = self.directory.open_dir_nofollow(&staging)?;
+            prepare(&directory)?;
             let mut file = directory.open_with(
                 "identity.json",
                 OpenOptions::new().write(true).create_new(true),
             )?;
-            serde_json::to_writer(&mut file, &identity)?;
+            serde_json::to_writer(&mut file, identity)?;
             file.write_all(b"\n")?;
             file.sync_all()?;
             #[cfg(unix)]
@@ -270,24 +323,28 @@ impl Records {
             }
             return Err(error);
         }
+        // Publication succeeded; preserve the ID in any later error.
         #[cfg(unix)]
-        self.directory.open(".")?.sync_all()?;
-        let directory = self.directory.open_dir_nofollow(&name)?;
-        Ok(Record {
-            run: Run {
-                path: self.path.join(name),
-                directory,
-                endpoint: identity.endpoint.clone(),
-            },
-            identity,
-        })
+        self.directory
+            .open(".")
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("workload {id} was published but could not be synced"))?;
+        Ok(())
     }
 
     pub(super) fn get(&self, id: Uuid) -> Result<Record> {
+        self.get_entry(id)?.legacy()
+    }
+
+    pub(super) fn get_entry(&self, id: Uuid) -> Result<Entry> {
         let name = id.to_string();
         let directory = self.directory.open_dir_nofollow(&name)?;
-        let identity: Identity = Run::read(&directory, "identity.json", 1024 * 1024)?
+        let bytes = Run::read_bytes(&directory, "identity.json", 1024 * 1024)?
             .context("missing workload identity")?;
+        if serde_json::from_slice::<Version>(&bytes)?.version == 2 {
+            return Instance::read(&bytes, id).map(Entry::Instance);
+        }
+        let identity: Identity = serde_json::from_slice(&bytes)?;
         if identity.version != 1
             || identity.id != id
             || identity.images.is_empty()
@@ -295,20 +352,20 @@ impl Records {
         {
             bail!("invalid workload identity");
         }
-        Ok(Record {
+        Ok(Entry::Legacy(Record {
             run: Run {
                 path: self.path.join(name),
                 directory,
                 endpoint: identity.endpoint.clone(),
             },
             identity,
-        })
+        }))
     }
 
     /// Resolve a full UUID or a unique prefix before any workload operation.
-    pub(super) fn resolve(&self, selector: &str) -> Result<Record> {
+    pub(super) fn resolve(&self, selector: &str) -> Result<Entry> {
         if let Ok(id) = selector.parse::<Uuid>() {
-            return self.get(id);
+            return self.get_entry(id);
         }
         let prefix = selector.replace('-', "").to_ascii_lowercase();
         let mut matches = self.list()?.into_iter().filter(|record| {
@@ -321,7 +378,7 @@ impl Records {
         }
     }
 
-    pub(super) fn list(&self) -> Result<Vec<Record>> {
+    pub(super) fn list(&self) -> Result<Vec<Entry>> {
         let mut records = Vec::new();
         for entry in self.directory.entries()? {
             let entry = entry?;
@@ -334,18 +391,23 @@ impl Records {
             if !entry.file_type()?.is_dir() {
                 bail!("workload identity must be a directory");
             }
-            records.push(self.get(id)?);
+            records.push(self.get_entry(id)?);
         }
-        records.sort_by_key(Record::id);
+        records.sort_by_key(Entry::id);
         Ok(records)
     }
 
     pub(super) fn pins(&self) -> Result<Vec<Digest>> {
         let mut pins = Vec::new();
-        for record in self.list()? {
-            if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
-            {
-                pins.extend(record.identity.images);
+        for entry in self.list()? {
+            match entry {
+                Entry::Instance(instance) => pins.extend(instance.images()),
+                Entry::Legacy(record) => {
+                    if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
+                    {
+                        pins.extend(record.identity.images);
+                    }
+                }
             }
         }
         Ok(pins)
@@ -510,6 +572,12 @@ impl Run {
         name: &str,
         limit: u64,
     ) -> Result<Option<T>> {
+        Self::read_bytes(directory, name, limit)?
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+            .transpose()
+    }
+
+    fn read_bytes(directory: &Dir, name: &str, limit: u64) -> Result<Option<Vec<u8>>> {
         let Some(file) = Self::open_file(directory, name)? else {
             return Ok(None);
         };
@@ -518,7 +586,7 @@ impl Run {
         if u64::try_from(bytes.len())? > limit {
             bail!("workload record exceeds size limit");
         }
-        Ok(Some(serde_json::from_slice(&bytes)?))
+        Ok(Some(bytes))
     }
 
     fn open_file(directory: &Dir, name: &str) -> Result<Option<cap_std::fs::File>> {
@@ -660,6 +728,18 @@ mod tests {
         let cache = root.path().join("cache");
         std::fs::create_dir(&cache)?;
         let records = Records::open(&cache)?;
+        assert!(
+            records
+                .publish(Uuid::new_v4(), &(), |directory| {
+                    directory.open_with(
+                        "partial-disk",
+                        OpenOptions::new().write(true).create_new(true),
+                    )?;
+                    bail!("payload preparation failed")
+                })
+                .is_err()
+        );
+        assert_eq!(records.directory.entries()?.count(), 0);
         #[cfg(unix)]
         let endpoint = {
             use std::os::unix::ffi::OsStringExt;

@@ -29,6 +29,7 @@ gix = { version = "0.84", default-features = false, features = ["sha1", "sha256"
 pichi-launch.workspace = true
 dillo-config.workspace = true
 madrillo = { git = "https://github.com/pichi-vm/madrillo", branch = "main", default-features = false }
+imago = { git = "https://github.com/pichi-vm/imago", branch = "upstream/reclamation", default-features = false, features = ["sync"] }
 interprocess = { version = "=2.4.7", features = ["tokio"] }
 pichi-registry = { workspace = true, features = ["http-client"] }
 pichi-storage.workspace = true

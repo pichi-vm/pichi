@@ -7,6 +7,7 @@
 
 mod client;
 mod console;
+pub(crate) mod instance;
 mod logs;
 pub(crate) mod record;
 mod resize;
@@ -1353,7 +1354,7 @@ impl Workload {
         let layout = config.resolve_layout()?;
         let records =
             record::Records::existing(&layout.graphroot)?.context("no retained workloads")?;
-        Ok(Self(records.resolve(id)?))
+        Ok(Self(records.resolve(id)?.legacy()?))
     }
 
     pub fn id(&self) -> uuid::Uuid {
@@ -1495,7 +1496,30 @@ impl Workload {
         if !quiet {
             println!("ID                                   STATE    IMAGES");
         }
-        for record in records.list()? {
+        for entry in records.list()? {
+            let record = match entry {
+                record::Entry::Legacy(record) => record,
+                record::Entry::Instance(instance) => {
+                    if all {
+                        if quiet {
+                            println!("{}", instance.id());
+                        } else {
+                            println!(
+                                "{} {:8} {}",
+                                instance.id(),
+                                "created",
+                                instance
+                                    .images()
+                                    .iter()
+                                    .map(ToString::to_string)
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            );
+                        }
+                    }
+                    continue;
+                }
+            };
             let exited = record.run.completion()?.is_some();
             if exited && !all {
                 continue;

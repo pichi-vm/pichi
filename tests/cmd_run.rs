@@ -903,3 +903,181 @@ async fn cpu_max_uses_host_availability_as_the_default() {
         std::thread::available_parallelism().unwrap().get()
     );
 }
+
+#[tokio::test]
+async fn create_retains_a_private_disk_and_pinned_image() {
+    use imago::format::drivers::FormatDriverInstance as _;
+
+    let tmp = TempDir::new().unwrap();
+    let root = graphroot(&tmp);
+    let (pmi, scute) = populate_bootable(&root, "created:1").await;
+    let pichi = || create_command(&tmp);
+    let created = pichi()
+        .args([
+            "create",
+            "created:1",
+            "--cpus",
+            "2",
+            "--memory",
+            "128m",
+            "--storage",
+            "2m",
+        ])
+        .assert()
+        .success();
+    let id = String::from_utf8(created.get_output().stdout.clone()).unwrap();
+    let id = id.trim();
+    uuid::Uuid::parse_str(id).unwrap();
+    let instance = tmp.path().join("pichi/storage.workloads").join(id);
+    let identity = std::fs::read(instance.join("identity.json")).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&identity).unwrap();
+    assert_eq!(saved["cpus"], 2);
+    assert_eq!(saved["memory_mib"], 128);
+    assert_eq!(saved["storage_bytes"], 2 * 1024 * 1024);
+    for name in ["attempt", "interactive", "tty"] {
+        assert!(saved.get(name).is_none());
+    }
+    assert_eq!(std::fs::read_dir(&instance).unwrap().count(), 2);
+    let disk = instance.join("storage.qcow2");
+    let file = imago::file::File::from_open_file(
+        std::fs::File::open(&disk).unwrap(),
+        imago::StorageOpenOptions::new(),
+    )
+    .unwrap();
+    let image = imago::qcow2::Qcow2::<imago::file::File>::open_image(file, false).unwrap();
+    assert_eq!(image.size(), 2 * 1024 * 1024);
+    drop(image);
+    let listed = pichi().args(["ps", "--all"]).assert().success();
+    let listing = String::from_utf8_lossy(&listed.get_output().stdout);
+    assert!(listing.contains(id) && listing.contains("created"));
+    assert_eq!(saved["root"], saved["manifest"]);
+    assert_eq!(listing.matches(saved["root"].as_str().unwrap()).count(), 1);
+    pichi()
+        .args(["ps", "--quiet"])
+        .assert()
+        .success()
+        .stdout("");
+    pichi().args(["rmi", "created:1"]).assert().success();
+    pichi().args(["system", "prune"]).assert().success();
+    assert!(pmi.exists() && scute.exists());
+    assert_eq!(
+        std::fs::read(instance.join("identity.json")).unwrap(),
+        identity
+    );
+    assert!(disk.is_file());
+}
+
+#[tokio::test]
+async fn create_rejects_invalid_configuration_before_publishing() {
+    let tmp = TempDir::new().unwrap();
+    let root = graphroot(&tmp);
+    populate_bootable_with_requirements(
+        &root,
+        "sized:1",
+        Some(serde_json::json!({
+            "cpus":{"required":2}, "memory":{"required":128}, "storage":{"required":2}
+        })),
+    )
+    .await;
+    let pichi = || create_command(&tmp);
+    for args in [
+        vec!["--cpus", "1"],
+        vec!["--memory", "1m"],
+        vec!["--memory", "129m"],
+        vec!["--storage", "1m"],
+        vec!["-i"],
+        vec!["-t"],
+        vec!["-d"],
+        vec!["--storage-file", "external.raw"],
+    ] {
+        pichi()
+            .args(["create", "sized:1"])
+            .args(args)
+            .assert()
+            .code(125);
+    }
+    let config = TempDir::new().unwrap();
+    std::fs::create_dir(config.path().join("pichi")).unwrap();
+    std::fs::write(
+        config.path().join("pichi/config.toml"),
+        format!(
+            "[storage]\ngraphroot = {}\n[run]\nmemory_mib = 129\n",
+            serde_json::to_string(&root).unwrap()
+        ),
+    )
+    .unwrap();
+    let refused = pichi()
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("APPDATA", config.path())
+        .args(["create", "sized:1"])
+        .assert()
+        .code(125);
+    assert!(String::from_utf8_lossy(&refused.get_output().stderr).contains("multiple of 2 MiB"));
+    let blobs = FilesystemBlobStore::new(&root);
+    let tags = FilesystemTagDb::open(&root).unwrap();
+    let reference = "docker.io/library/sized:1";
+    let digest = tags.resolve_tag(reference).await.unwrap().unwrap();
+    let mut manifest: Manifest =
+        serde_json::from_slice(&std::fs::read(blobs.blob_path(&digest)).unwrap()).unwrap();
+    manifest
+        .layers
+        .retain(|layer| !matches!(layer, Layer::Pmi(_)));
+    let bytes = serde_json::to_vec(&manifest).unwrap();
+    let digest = sha256_digest(&bytes);
+    blobs.put_blob(&digest, &bytes).await.unwrap();
+    tags.set_tag(reference, &digest).await.unwrap();
+    let refused = pichi().args(["create", "sized:1"]).assert().code(125);
+    assert!(String::from_utf8_lossy(&refused.get_output().stderr).contains("not bootable"));
+    pichi()
+        .args(["ps", "--all", "--quiet"])
+        .assert()
+        .success()
+        .stdout("");
+}
+
+// APFS rejects the invalid-UTF-8 filename needed by this regression.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn create_rejects_a_non_utf8_canonical_storage_path() {
+    use std::os::unix::{ffi::OsStringExt as _, fs::symlink};
+    let tmp = TempDir::new().unwrap();
+    let real = tmp
+        .path()
+        .join(std::ffi::OsString::from_vec(b"cache-\xff".to_vec()));
+    std::fs::create_dir(&real).unwrap();
+    std::fs::create_dir(tmp.path().join("pichi")).unwrap();
+    let root = tmp.path().join("pichi/storage");
+    symlink(&real, &root).unwrap();
+    populate_bootable(&root, "created:1").await;
+    let refused = create_command(&tmp)
+        .args(["create", "created:1", "--storage", "2m"])
+        .assert()
+        .code(125);
+    assert!(
+        String::from_utf8_lossy(&refused.get_output().stderr)
+            .contains("instance storage path must be UTF-8")
+    );
+    let records = real.with_file_name(std::ffi::OsString::from_vec(
+        b"cache-\xff.workloads".to_vec(),
+    ));
+    assert_eq!(std::fs::read_dir(records).unwrap().count(), 0);
+}
+
+fn create_command(tmp: &TempDir) -> Command {
+    std::fs::write(
+        tmp.path().join("pichi/config.toml"),
+        format!(
+            "[storage]\ngraphroot = {}\n",
+            serde_json::to_string(&tmp.path().join("pichi/storage")).unwrap()
+        ),
+    )
+    .unwrap();
+    let mut command = Command::cargo_bin("pichi").unwrap();
+    command
+        .env("XDG_DATA_HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("APPDATA", tmp.path())
+        .env("PATH", tmp.path())
+        .env("MADRILLO_BIN", tmp.path().join("no-monitor"));
+    command
+}

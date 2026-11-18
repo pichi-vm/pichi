@@ -76,34 +76,9 @@ impl WritableStorage {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         let length = file.metadata()?.len();
-        let required = requirement
-            .and_then(|r| r.capacity.required())
-            .map(std::num::NonZeroU64::get);
-        let recommended = requirement
-            .and_then(|r| r.capacity.recommended())
-            .map(|r| r.map(std::num::NonZeroU64::get));
         let existing = (length != 0).then_some(length / MIB);
-        let chosen = explicit_mib.or(existing);
         let available = fs4::available_space(parent)?;
-        let mib = match (chosen, recommended) {
-            (Some(value), _) | (None, Some(Recommendation::Value(value))) => value,
-            (None, Some(Recommendation::Max)) => available / MIB,
-            (None, None) => required.context("supply --storage or an image storage capacity")?,
-        };
-        ensure!(
-            mib != 0 && required.is_none_or(|floor| mib >= floor),
-            "storage capacity ({mib} MiB) is below the image's required minimum ({} MiB)",
-            required.unwrap_or(1)
-        );
-        if chosen.is_some()
-            && let Some(Recommendation::Value(rec)) = recommended
-            && mib < rec
-        {
-            log::warn!("storage ({mib} MiB) is below the recommended {rec} MiB");
-        }
-        let bytes = mib
-            .checked_mul(MIB)
-            .context("storage capacity overflows bytes")?;
+        let bytes = Self::capacity(requirement, explicit_mib.or(existing), available)?;
         if explicit_mib.is_some() && bytes < length {
             bail!("refusing to shrink retained storage");
         }
@@ -133,6 +108,40 @@ impl WritableStorage {
         }))
     }
 
+    /// Resolve capacity without changing an existing disk.
+    pub(super) fn capacity(
+        requirement: Option<&Storage>,
+        chosen: Option<u64>,
+        available: u64,
+    ) -> Result<u64> {
+        let required = requirement
+            .and_then(|r| r.capacity.required())
+            .map(std::num::NonZeroU64::get);
+        let recommended = requirement
+            .and_then(|r| r.capacity.recommended())
+            .map(|r| r.map(std::num::NonZeroU64::get));
+        let mib = match (chosen, recommended) {
+            (Some(value), _) | (None, Some(Recommendation::Value(value))) => value,
+            (None, Some(Recommendation::Max)) => available / MIB,
+            (None, None) => required.context("supply --storage or an image storage capacity")?,
+        };
+        ensure!(
+            mib != 0 && required.is_none_or(|floor| mib >= floor),
+            "storage capacity ({mib} MiB) is below the image's required minimum ({} MiB)",
+            required.unwrap_or(1)
+        );
+        if chosen.is_some()
+            && let Some(Recommendation::Value(rec)) = recommended
+            && mib < rec
+        {
+            log::warn!("storage ({mib} MiB) is below the recommended {rec} MiB");
+        }
+        let bytes = mib
+            .checked_mul(MIB)
+            .context("storage capacity overflows bytes")?;
+        Ok(bytes)
+    }
+
     pub(super) fn argument(&self, slot: Slot) -> String {
         format!(
             "path={},bus={}",
@@ -149,6 +158,24 @@ impl WritableStorage {
             let _ = temporary.keep();
         }
         Ok((self.lock, inherited))
+    }
+}
+
+/// Creates a fresh private qcow2 disk using the already-locked Imago writer.
+pub(crate) struct InstanceDisk;
+
+impl InstanceDisk {
+    pub(crate) fn create(file: File, bytes: u64) -> Result<()> {
+        use imago::{FormatCreateBuilder as _, StorageOpenOptions, qcow2::Qcow2};
+        let storage = imago::file::File::from_open_file(
+            file.try_clone()?,
+            StorageOpenOptions::new().write(true),
+        )?;
+        Qcow2::<imago::file::File>::create_builder(storage)
+            .size(bytes)
+            .create()?;
+        file.sync_all()?;
+        Ok(())
     }
 }
 

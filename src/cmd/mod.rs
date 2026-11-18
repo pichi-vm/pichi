@@ -13,6 +13,7 @@ mod build_output;
 mod build_plan;
 mod build_port;
 mod cache;
+pub mod create;
 pub mod images;
 pub mod import;
 pub mod inspect;

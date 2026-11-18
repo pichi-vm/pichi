@@ -68,6 +68,10 @@ enum Command {
     Update(cli::UpdateArgs),
     /// Boot a cached artifact under madrillo supervision.
     Run(cli::RunArgs),
+
+    /// Create an instance without booting it.
+    Create(cli::CreateArgs),
+
     /// Attach to a workload's live console.
     Attach(cli::AttachArgs),
 
@@ -82,7 +86,7 @@ enum Command {
 
     /// List running and unknown workloads.
     Ps {
-        /// Include exited workloads.
+        /// Include exited workloads and created instances.
         #[arg(long, short = 'a')]
         all: bool,
         /// Print only full workload IDs, one per line.
@@ -150,6 +154,7 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
         },
         Command::Update(args) => cmd::update::run(args, &config).await,
         Command::Run(args) => return Ok(NativeExit(cmd::run::run(args, &config).await?)),
+        Command::Create(args) => cmd::create::run(args, &config).await,
         Command::Attach(args) => {
             return Ok(NativeExit(
                 cmd::workload::Workload::open(&args.id, &config)?

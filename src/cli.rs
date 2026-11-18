@@ -383,6 +383,24 @@ pub struct RunArgs {
     pub storage_file: Option<std::path::PathBuf>,
 }
 
+/// Create an instance without booting it.
+#[derive(Debug, ClapArgs)]
+pub struct CreateArgs {
+    /// Image reference for the instance (`image:tag` or `image@sha256:...`).
+    pub reference: String,
+    /// Number of vCPUs. Overrides operator and image defaults.
+    #[arg(long)]
+    pub cpus: Option<u32>,
+    /// Guest memory as `<number>[b|k|m|g]` (bare numbers are bytes),
+    /// a whole number of MiB. Overrides operator and image defaults.
+    #[arg(long, short = 'm', value_parser = parse_mebibytes::<u32>)]
+    pub memory: Option<u32>,
+    /// Writable storage capacity as `<number>[b|k|m|g]` (bare numbers are
+    /// bytes), a whole number of MiB. Overrides the image recommendation.
+    #[arg(long, value_parser = parse_mebibytes::<u64>)]
+    pub storage: Option<u64>,
+}
+
 /// Attach to an existing workload's live console.
 #[derive(Debug, ClapArgs)]
 pub struct AttachArgs {

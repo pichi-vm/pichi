@@ -3163,6 +3163,7 @@ dependencies = [
  "gpt",
  "hex",
  "humansize",
+ "imago",
  "interprocess",
  "log",
  "madrillo",
