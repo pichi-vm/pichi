@@ -56,6 +56,44 @@ impl Drop for RawTerminal {
     }
 }
 
+/// Restore the output buffer's exact mode when the attachment ends.
+#[cfg(windows)]
+struct TerminalOutput(crossterm_winapi::ConsoleMode, u32);
+
+#[cfg(windows)]
+impl TerminalOutput {
+    fn open() -> Result<Option<Self>> {
+        // SetConsoleMode requires processed output alongside VT processing.
+        const ENABLE_PROCESSED_OUTPUT: u32 = 0x0001;
+        const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+        let handle = crossterm_winapi::Handle::output_handle()?;
+        // GetConsoleMode also accepts input buffers, whose bits have different
+        // meanings. Apply output flags only to a readable screen buffer.
+        if crossterm_winapi::ScreenBuffer::new(handle.clone())
+            .info()
+            .is_err()
+        {
+            return Ok(None);
+        }
+        let console = crossterm_winapi::ConsoleMode::from(handle);
+        // A writable handle need not allow reading its console mode. Without
+        // a snapshot, leave the mode untouched and keep forwarding bytes.
+        let Ok(original) = console.mode() else {
+            return Ok(None);
+        };
+        console
+            .set_mode(original | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING)?;
+        Ok(Some(Self(console, original)))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TerminalOutput {
+    fn drop(&mut self) {
+        let _ = self.0.set_mode(self.1);
+    }
+}
+
 #[derive(Default)]
 struct DetachKeys {
     prefix: bool,
@@ -84,6 +122,8 @@ impl DetachKeys {
 
 pub(super) struct Console {
     terminal: RawTerminal,
+    #[cfg(windows)]
+    _output: Option<TerminalOutput>,
     sized: bool,
     input: mpsc::Receiver<io::Result<Vec<u8>>>,
     interactive: bool,
@@ -93,6 +133,8 @@ pub(super) struct Console {
 
 impl Console {
     pub(super) fn open(interactive: bool, tty: bool) -> Result<Self> {
+        #[cfg(windows)]
+        let output = if tty { TerminalOutput::open()? } else { None };
         let sized = tty && io::stdin().is_terminal();
         let terminal = RawTerminal::open(interactive && sized)?;
         let (sender, input) = mpsc::channel(8);
@@ -124,6 +166,8 @@ impl Console {
         }
         Ok(Self {
             terminal,
+            #[cfg(windows)]
+            _output: output,
             sized,
             input,
             interactive,

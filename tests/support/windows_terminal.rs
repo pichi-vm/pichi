@@ -101,6 +101,7 @@ struct Terminal {
     writer: Box<dyn Write + Send>,
     output: mpsc::Receiver<io::Result<Vec<u8>>>,
     received: Vec<u8>,
+    output_check: PathBuf,
 }
 
 impl Terminal {
@@ -110,6 +111,7 @@ impl Terminal {
         cols: u16,
         rows: u16,
         initially_raw: bool,
+        output_mode: &str,
     ) -> Self {
         // This fixture hosts the CLI only. Unlike the monitor's workload Job,
         // it must permit Pichi to launch its independent Madrillo process.
@@ -161,6 +163,9 @@ impl Terminal {
             "PICHI_TEST_INITIALLY_RAW",
             if initially_raw { "1" } else { "0" },
         );
+        let output_check = workload.root.path().join(uuid::Uuid::new_v4().to_string());
+        command.env("PICHI_TEST_OUTPUT_CHECK", &output_check);
+        command.env("PICHI_TEST_OUTPUT_MODE", output_mode);
         command.env("XDG_DATA_HOME", workload.root.path());
         command.env(
             "PATH",
@@ -177,6 +182,7 @@ impl Terminal {
             writer,
             output,
             received: Vec::new(),
+            output_check,
         }
     }
 
@@ -229,6 +235,11 @@ impl Terminal {
         self.expect("<<<INPUT:696e7075742d030421>>>");
     }
 
+    fn check_output(&mut self) {
+        std::fs::write(&self.output_check, b"").unwrap();
+        self.expect("<<<OUTPUT-CHECKED>>>");
+    }
+
     fn wait(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -264,16 +275,25 @@ impl Drop for Terminal {
 #[ignore = "requires real Madrillo and execution outside restrictive runner/Cargo Jobs"]
 async fn interactive_resize_input_and_reattach() {
     let workload = Workload::new().await;
-    let mut terminal = Terminal::start(&workload, &["run", "-it", "terminal:1"], 300, 77, true);
+    let mut terminal = Terminal::start(
+        &workload,
+        &["run", "-it", "terminal:1"],
+        300,
+        77,
+        true,
+        "console",
+    );
     terminal.expect("<<<RESIZE-READY>>>");
     terminal.expect("<<<SIZE:300x77>>>");
+    terminal.check_output();
     terminal.input();
     terminal.resize(120, 41);
     let id = workload.id();
     terminal.detach();
     drop(terminal);
-    let mut attached = Terminal::start(&workload, &["attach", "-i", &id], 81, 25, false);
+    let mut attached = Terminal::start(&workload, &["attach", "-i", &id], 81, 25, false, "console");
     attached.expect("<<<SIZE:81x25>>>");
+    attached.check_output();
     attached.input();
     attached.detach();
     drop(attached);
@@ -284,13 +304,47 @@ async fn interactive_resize_input_and_reattach() {
     let workload = Workload::new().await;
     let id = String::from_utf8(workload.run(&["run", "-d", "terminal:1"])).unwrap();
     let id = id.trim();
-    let mut attached = Terminal::start(&workload, &["attach", "-i", id], 132, 43, true);
+    let mut attached = Terminal::start(&workload, &["attach", "-i", id], 132, 43, true, "console");
     attached.expect("<<<SIZE:132x43>>>");
+    attached.check_output();
     attached.input();
     workload.run(&["stop", id]);
     attached.wait();
     attached.restored();
     workload.run(&["wait", id]);
+    drop(attached);
+    drop(workload);
+
+    // Output mode belongs to -t, independently of stdin forwarding. Plain
+    // output and redirected output must leave the host console mode alone.
+    for (arguments, output_mode, initially_raw) in [
+        (vec!["run", "-t", "terminal:1"], "console", false),
+        (vec!["run", "terminal:1"], "console", false),
+        (vec!["run", "-t", "terminal:1"], "redirected", false),
+        (vec!["run", "-t", "terminal:1"], "write-only", true),
+    ] {
+        let workload = Workload::new().await;
+        let mut terminal =
+            Terminal::start(&workload, &arguments, 80, 25, initially_raw, output_mode);
+        if output_mode == "redirected" {
+            terminal.expect("<<<SESSION-READY>>>");
+            let path = terminal.output_check.with_extension("stdout");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !std::fs::read(&path)
+                .is_ok_and(|bytes| bytes.windows(18).any(|part| part == b"<<<RESIZE-READY>>>"))
+            {
+                assert!(Instant::now() < deadline, "redirected guest output missing");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        } else {
+            terminal.expect("<<<RESIZE-READY>>>");
+        }
+        terminal.check_output();
+        let id = workload.id();
+        workload.run(&["stop", &id]);
+        terminal.restored();
+        workload.run(&["wait", &id]);
+    }
     println!(
         "native Windows CLI terminal: run, input, resize, detach, reattach, detached start and stop passed"
     );
@@ -307,15 +361,65 @@ fn session() {
     let console =
         crossterm_winapi::ConsoleMode::from(crossterm_winapi::Handle::input_handle().unwrap());
     let original = console.mode().unwrap();
+    let output =
+        crossterm_winapi::ConsoleMode::from(crossterm_winapi::Handle::output_handle().unwrap());
+    // Exercise both pre-enabled VT output and enabling both required flags.
+    let output_original = if std::env::var("PICHI_TEST_INITIALLY_RAW").unwrap() == "1" {
+        output.mode().unwrap() | 0x0005
+    } else {
+        output.mode().unwrap() & !0x0005
+    };
+    output.set_mode(output_original).unwrap();
+    let screen = crossterm_winapi::ScreenBuffer::current().unwrap();
+    crossterm_winapi::Console::output()
+        .unwrap()
+        .set_text_attribute(7)
+        .unwrap();
     let arguments: Vec<String> =
         serde_json::from_str(&std::env::var("PICHI_TEST_TERMINAL_ARGS").unwrap()).unwrap();
+    let output_check = PathBuf::from(std::env::var_os("PICHI_TEST_OUTPUT_CHECK").unwrap());
+    let output_mode = std::env::var("PICHI_TEST_OUTPUT_MODE").unwrap();
+    let redirect = output_mode == "redirected";
+    let tty = arguments[0] == "attach"
+        || arguments
+            .iter()
+            .any(|argument| argument == "-t" || argument == "-it");
     // Keep this process attached: separate setup/probe processes can leave
     // the console empty between launches and observe its reset default mode.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_pichi"))
-        .args(arguments)
-        .spawn()
-        .unwrap();
-    let status = child.wait_timeout(Duration::from_secs(30)).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pichi"));
+    command.args(arguments);
+    if redirect {
+        command.stdout(std::fs::File::create(output_check.with_extension("stdout")).unwrap());
+    } else if output_mode == "write-only" {
+        // This native console handle can write but GetConsoleMode requires
+        // GENERIC_READ. Pichi must preserve forwarding without mutating it.
+        command.stdout(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open("CONOUT$")
+                .unwrap(),
+        );
+    }
+    println!("<<<SESSION-READY>>>");
+    io::stdout().flush().unwrap();
+    let mut child = command.spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut observed = None;
+    let status = loop {
+        if observed.is_none() && output_check.exists() {
+            // Record while attached; assert after the owned caller exits so
+            // a failed mode check still follows normal workload cleanup.
+            observed = Some((output.mode().unwrap(), screen.info().unwrap().attributes()));
+            println!("<<<OUTPUT-CHECKED>>>");
+            io::stdout().flush().unwrap();
+        }
+        if let Some(status) = child.wait_timeout(Duration::from_millis(10)).unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+    };
     if status.is_none() {
         let _ = child.kill();
         let _ = child.wait();
@@ -325,6 +429,19 @@ fn session() {
         "Pichi session: {status:?}"
     );
     assert_eq!(console.mode().unwrap(), original);
+    let (mode, attributes) = observed.expect("output mode was not checked during attachment");
+    if tty && !redirect {
+        assert_eq!(mode, output_original | 0x0005);
+        // SGR must affect the screen, not merely pass escape bytes to a pipe.
+        assert_eq!(attributes & 0x0007, 4);
+    } else {
+        assert_eq!(mode, output_original);
+        if redirect {
+            let bytes = std::fs::read(output_check.with_extension("stdout")).unwrap();
+            assert!(bytes.windows(5).any(|part| part == b"\x1b[31m"));
+        }
+    }
+    assert_eq!(output.mode().unwrap(), output_original);
     println!("<<<TERMINAL-RESTORED>>>");
 }
 
@@ -337,7 +454,7 @@ fn workload() {
         .nonblocking(ListenerNonblockingMode::Accept)
         .create_sync()
         .unwrap();
-    println!("<<<RESIZE-READY>>>");
+    println!("\x1b[31m<<<RESIZE-READY>>>");
     io::stdout().flush().unwrap();
     let done = Arc::new(AtomicBool::new(false));
     let finish = done.clone();
@@ -349,7 +466,7 @@ fn workload() {
                     let mut bytes = [0; 4];
                     stream.read_exact(&mut bytes).unwrap();
                     let size = dillo_config::ConsoleSize::try_from(bytes).unwrap();
-                    println!("<<<SIZE:{}x{}>>>", size.cols, size.rows);
+                    println!("\x1b[31m<<<SIZE:{}x{}>>>", size.cols, size.rows);
                     io::stdout().flush().unwrap();
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
