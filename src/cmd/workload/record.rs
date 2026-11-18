@@ -222,6 +222,9 @@ impl Records {
         if images.is_empty() || images.len() > 1024 {
             bail!("a workload must pin between 1 and 1024 images");
         }
+        if let Err(error) = self.reap_abandoned() {
+            log::warn!("listing abandoned workload creations: {error:#}");
+        }
         let name = id.to_string();
         // The image-index lock excludes other creators. Preserve an existing
         // entry even if it is empty, which rename could otherwise replace.
@@ -281,6 +284,44 @@ impl Records {
             },
             identity,
         })
+    }
+
+    /// The caller holds the image-index lock, excluding live creators.
+    fn reap_abandoned(&self) -> Result<()> {
+        for entry in self.directory.entries()? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.strip_prefix(".creating-").is_some_and(|id| {
+                id.parse::<Uuid>()
+                    .is_ok_and(|parsed| parsed.to_string() == id)
+            }) {
+                continue;
+            }
+            let removed: Result<()> = (|| {
+                let directory = self.directory.open_dir_nofollow(name)?;
+                for child in directory.entries()? {
+                    let child = child?;
+                    if child.file_name() != "identity.json" || !child.file_type()?.is_file() {
+                        bail!("unexpected file in unpublished workload");
+                    }
+                }
+                // Only unlink the recognized artifact through this handle.
+                // A late unfamiliar child must make the final rmdir fail.
+                match directory.remove_file("identity.json") {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+                drop(directory);
+                self.directory.remove_dir(name)?;
+                Ok(())
+            })();
+            if let Err(error) = removed {
+                log::warn!("removing abandoned {name}: {error:#}");
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn get(&self, id: Uuid) -> Result<Record> {
@@ -725,6 +766,93 @@ mod tests {
                 .entries()?
                 .count(),
             0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn creation_reclaims_only_recognized_unpublished_files() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache)?;
+        let records = Records::open(&cache)?;
+        let retained = records.reserve(vec![Digest::Sha256([1; 32])])?;
+        let retained_path = retained.run.path().join("identity.json");
+        let identity = std::fs::read(&retained_path)?;
+        let mut abandoned = Vec::new();
+        for partial in [false, true] {
+            let path = records.path.join(format!(".creating-{}", Uuid::new_v4()));
+            std::fs::create_dir(&path)?;
+            if partial {
+                std::fs::write(path.join("identity.json"), b"interrupted write")?;
+            }
+            abandoned.push(path);
+        }
+        let foreign = records.path.join(format!(".creating-{}", Uuid::new_v4()));
+        std::fs::create_dir(&foreign)?;
+        std::fs::write(foreign.join("identity.json"), b"keep partial identity")?;
+        std::fs::write(foreign.join("foreign"), b"keep foreign file")?;
+        let unnamed = records.path.join(".creating-not-a-workload");
+        std::fs::create_dir(&unnamed)?;
+        std::fs::write(unnamed.join("identity.json"), b"keep unrelated directory")?;
+        let noncanonical = records
+            .path
+            .join(format!(".creating-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir(&noncanonical)?;
+        std::fs::write(noncanonical.join("identity.json"), b"not a producer name")?;
+        let next = records.reserve(vec![Digest::Sha256([2; 32])])?;
+        assert!(
+            next.run.path().is_dir(),
+            "a refused leftover blocked creation"
+        );
+        assert!(abandoned.iter().all(|path| !path.exists()));
+        assert_eq!(std::fs::read(retained_path)?, identity);
+        assert_eq!(
+            std::fs::read(foreign.join("identity.json"))?,
+            b"keep partial identity"
+        );
+        assert_eq!(
+            std::fs::read(foreign.join("foreign"))?,
+            b"keep foreign file"
+        );
+        assert_eq!(
+            std::fs::read(unnamed.join("identity.json"))?,
+            b"keep unrelated directory"
+        );
+        assert_eq!(
+            std::fs::read(noncanonical.join("identity.json"))?,
+            b"not a producer name"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creation_preserves_staging_symlinks_and_their_targets() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache)?;
+        let records = Records::open(&cache)?;
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&outside)?;
+        std::fs::write(outside.join("identity.json"), b"external data")?;
+        let alias = records.path.join(format!(".creating-{}", Uuid::new_v4()));
+        std::os::unix::fs::symlink(&outside, &alias)?;
+        let staging = records.path.join(format!(".creating-{}", Uuid::new_v4()));
+        std::fs::create_dir(&staging)?;
+        std::os::unix::fs::symlink(outside.join("identity.json"), staging.join("identity.json"))?;
+        records.reserve(vec![Digest::Sha256([1; 32])])?;
+        assert!(alias.symlink_metadata()?.file_type().is_symlink());
+        assert!(
+            staging
+                .join("identity.json")
+                .symlink_metadata()?
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read(outside.join("identity.json"))?,
+            b"external data"
         );
         Ok(())
     }

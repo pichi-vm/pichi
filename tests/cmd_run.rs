@@ -903,3 +903,69 @@ async fn cpu_max_uses_host_availability_as_the_default() {
         std::thread::available_parallelism().unwrap().get()
     );
 }
+
+#[tokio::test]
+async fn creation_cleanup_waits_for_the_current_image_index_owner() {
+    use std::{fs::File, process::Stdio, time::Duration};
+    use wait_timeout::ChildExt as _;
+
+    let root = TempDir::new().unwrap();
+    let graphroot = graphroot(&root);
+    populate_bootable(&graphroot, "cleanup:locked").await;
+    std::fs::write(
+        root.path().join("pichi/config.toml"),
+        format!(
+            "[storage]\ngraphroot = {}\n",
+            serde_json::to_string(&graphroot).unwrap()
+        ),
+    )
+    .unwrap();
+    let records = root.path().join("pichi/storage.workloads");
+    std::fs::create_dir(&records).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&records, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let lock = File::options()
+        .read(true)
+        .write(true)
+        .open(graphroot.join("index.json.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let staging = records.join(format!(".creating-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&staging).unwrap();
+    let identity = staging.join("identity.json");
+    std::fs::write(&identity, b"creation in progress").unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"))
+        .env("XDG_DATA_HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env("APPDATA", root.path())
+        .env("PATH", "")
+        .args(["run", "--storage", "2m", "cleanup:locked"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let blocked = child
+        .wait_timeout(Duration::from_millis(150))
+        .unwrap()
+        .is_none();
+    let preserved = std::fs::read(&identity);
+    lock.unlock().unwrap();
+    drop(lock);
+    let status = child.wait_timeout(Duration::from_secs(10)).unwrap();
+    // Empty PATH prevents a monitor/VM launch; only this client can remain.
+    if status.is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    assert!(blocked, "creation did not wait for index ownership");
+    assert_eq!(preserved.unwrap(), b"creation in progress");
+    assert_eq!(
+        status.unwrap().code(),
+        Some(125),
+        "missing monitor must fail launch"
+    );
+    assert!(!staging.exists(), "abandoned staging was not reclaimed");
+}
