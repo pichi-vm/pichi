@@ -221,7 +221,9 @@ Its named guest API pipes pass directly through to dillo: the guest requests
 input before the host responds. Explicit build success and successful guest exit
 are both required before OCI import.
 Output is removed only after import and confirmed complete workload cleanup.
-An active build retains the image cache because the guest selects its inputs.
+The image cache stays protected until that output is removed: host import can
+still need layers selected by the guest. Retained output from a failed import
+also keeps the cache protected.
 Native caller qualification uses ordinary processes on public Linux, macOS and
 Windows MSVC runners. It covers exact handle inheritance, independent caller
 lifetime, terminal input and resize, and the opaque build channel. The pinned

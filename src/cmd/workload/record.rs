@@ -46,20 +46,15 @@ pub(crate) struct Run {
 
 impl Records {
     /// Build guests select their own inputs from the read-only image cache.
-    /// Their retained output directory also marks that whole-cache lifetime;
-    /// only confirmed complete workload cleanup releases it for collection.
+    /// Their retained output directory marks that whole-cache lifetime through
+    /// host import. Guest cleanup alone does not release the host's inputs.
     pub(crate) fn build_cache_in_use(graphroot: &Path) -> Result<bool> {
         let Some(records) = Self::existing(graphroot)? else {
             return Ok(false);
         };
         for record in records.list()? {
             match record.run.directory.open_dir_nofollow("output") {
-                Ok(_) => {
-                    if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
-                    {
-                        return Ok(true);
-                    }
-                }
+                Ok(_) => return Ok(true),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
@@ -988,6 +983,29 @@ mod tests {
                 record.run.state().join("result.json"),
                 serde_json::to_vec(&result)?,
             )?;
+            if build {
+                // Guest exit precedes host import, which can still read layers
+                // omitted from output because the guest found them in cache.
+                tags.set_tag("docker.io/library/build-input:test", &images[1])
+                    .await?;
+                crate::cmd::rmi::run(
+                    RmiArgs {
+                        references: vec!["build-input:test".into()],
+                        force: false,
+                    },
+                    &config,
+                )
+                .await?;
+                assert!(tags.list_tags().await?.is_empty());
+                crate::cmd::prune::run(PruneArgs { dry_run: false }, &config).await?;
+                for digest in images.iter().chain(&layers) {
+                    assert!(
+                        blobs.blob_exists(digest).await,
+                        "GC removed {digest} before host import released output"
+                    );
+                }
+                record.release_build_output()?;
+            }
             crate::cmd::prune::run(PruneArgs { dry_run: false }, &config).await?;
             for digest in images.iter().chain(&layers) {
                 assert!(
