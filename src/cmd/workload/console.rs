@@ -95,6 +95,8 @@ impl Console {
     pub(super) fn open(interactive: bool, tty: bool) -> Result<Self> {
         let sized = tty && io::stdin().is_terminal();
         let raw = interactive && sized;
+        // Register cancellation before changing modes that need restoration.
+        let signals = Signals::open()?;
         let terminal = RawTerminal::open(raw)?;
         let (sender, input) = mpsc::channel(8);
         if interactive {
@@ -132,7 +134,7 @@ impl Console {
             input,
             interactive,
             keys: DetachKeys::default(),
-            signals: Signals::open()?,
+            signals,
         })
     }
 
@@ -230,6 +232,8 @@ impl Console {
 }
 
 struct Signals {
+    #[cfg(windows)]
+    interrupt_break: tokio::signal::windows::CtrlBreak,
     #[cfg(unix)]
     interrupt: tokio::signal::unix::Signal,
     #[cfg(unix)]
@@ -243,6 +247,8 @@ struct Signals {
 impl Signals {
     fn open() -> Result<Self> {
         Ok(Self {
+            #[cfg(windows)]
+            interrupt_break: tokio::signal::windows::ctrl_break()?,
             #[cfg(unix)]
             interrupt: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
             #[cfg(unix)]
@@ -266,7 +272,10 @@ impl Signals {
 
     #[cfg(windows)]
     async fn cancelled(&mut self) -> Result<u32> {
-        tokio::signal::ctrl_c().await?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result?,
+            _ = self.interrupt_break.recv() => {},
+        }
         Ok(130)
     }
 }

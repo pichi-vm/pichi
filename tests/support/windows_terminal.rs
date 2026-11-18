@@ -31,7 +31,16 @@ struct Workload {
 impl Workload {
     async fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        populate_bootable(&graphroot(&root), "terminal:1").await;
+        let graphroot = graphroot(&root);
+        populate_bootable(&graphroot, "terminal:1").await;
+        std::fs::write(
+            root.path().join("pichi/config.toml"),
+            format!(
+                "[storage]\ngraphroot = {}\n",
+                serde_json::to_string(&graphroot).unwrap()
+            ),
+        )
+        .unwrap();
         let stub = make_stub_dillo(root.path());
         Self { root, stub }
     }
@@ -40,6 +49,7 @@ impl Workload {
         let mut command = Command::new(env!("CARGO_BIN_EXE_pichi"));
         command
             .env("XDG_DATA_HOME", self.root.path())
+            .env("APPDATA", self.root.path())
             .env(
                 "PATH",
                 super::executable_path::prepend(self.stub.parent().unwrap()),
@@ -162,6 +172,7 @@ impl Terminal {
             if initially_raw { "1" } else { "0" },
         );
         command.env("XDG_DATA_HOME", workload.root.path());
+        command.env("APPDATA", workload.root.path());
         command.env(
             "PATH",
             super::executable_path::prepend(workload.stub.parent().unwrap()),
@@ -297,8 +308,35 @@ async fn interactive_resize_input_and_reattach() {
     attached.wait();
     attached.restored();
     workload.run(&["wait", id]);
+    drop(attached);
+    drop(workload);
+
+    for initially_raw in [false, true] {
+        let workload = Workload::new().await;
+        let mut terminal = Terminal::start(
+            &workload,
+            &["run", "-it", "terminal:1"],
+            100,
+            30,
+            initially_raw,
+        );
+        terminal.expect("<<<SIZE:100x30>>>");
+        terminal.input();
+        let id = workload.id();
+        // The living session targets only its CLI process group after the
+        // guest exchange proves the attachment is active.
+        std::fs::write(workload.root.path().join("ctrl-break"), b"interrupt").unwrap();
+        terminal.restored();
+        drop(terminal);
+        let mut attached = Terminal::start(&workload, &["attach", "-i", &id], 81, 25, false);
+        attached.expect("<<<SIZE:81x25>>>");
+        attached.input();
+        attached.detach();
+        workload.run(&["stop", &id]);
+        workload.run(&["wait", &id]);
+    }
     println!(
-        "native Windows CLI terminal: run, input, resize, detach, reattach, detached start and stop passed"
+        "native Windows CLI terminal: run, input, resize, detach, reattach, stop and Ctrl-Break passed"
     );
 }
 
@@ -306,6 +344,7 @@ async fn interactive_resize_input_and_reattach() {
 #[ignore = "internal console session: keeps the same console alive around Pichi"]
 fn session() {
     use std::io::IsTerminal as _;
+    use std::os::windows::process::CommandExt as _;
     assert!(io::stdin().is_terminal());
     if std::env::var("PICHI_TEST_INITIALLY_RAW").unwrap() == "1" {
         crossterm::terminal::enable_raw_mode().unwrap();
@@ -319,15 +358,36 @@ fn session() {
     // the console empty between launches and observe its reset default mode.
     let mut child = Command::new(env!("CARGO_BIN_EXE_pichi"))
         .args(arguments)
+        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP)
         .spawn()
         .unwrap();
-    let status = child.wait_timeout(Duration::from_secs(30)).unwrap();
+    let interrupt = PathBuf::from(std::env::var_os("XDG_DATA_HOME").unwrap()).join("ctrl-break");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut expected = 0;
+    let status = loop {
+        if interrupt.exists() {
+            std::fs::remove_file(&interrupt).unwrap();
+            // Python is already installed by native CI. The helper inherits
+            // this console, but the event targets only the child's group.
+            let sent = Command::new("python3")
+                .args(["-c", "import ctypes, sys; k = ctypes.WinDLL('kernel32', use_last_error=True); ok = k.GenerateConsoleCtrlEvent(1, int(sys.argv[1])); assert ok, ctypes.WinError(ctypes.get_last_error())"])
+                .arg(child.id().to_string())
+                .status()
+                .unwrap();
+            assert!(sent.success(), "sending owned Ctrl-Break event");
+            expected = 130;
+        }
+        let status = child.wait_timeout(Duration::from_millis(50)).unwrap();
+        if status.is_some() || Instant::now() >= deadline {
+            break status;
+        }
+    };
     if status.is_none() {
         let _ = child.kill();
         let _ = child.wait();
     }
     assert!(
-        status.is_some_and(|status| status.success()),
+        status.is_some_and(|status| status.code() == Some(expected)),
         "Pichi session: {status:?}"
     );
     assert_eq!(console.mode().unwrap(), original);

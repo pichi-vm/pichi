@@ -196,6 +196,8 @@ write waits. Input read-ahead is bounded. Once input is closed, attachments keep
 receiving output; terminal detach discards unsent input and leaves the VM running.
 On Unix, SIGQUIT ends the attachment with status 131 after restoring the host
 terminal; the supervised VM keeps running.
+On Windows, Ctrl-Break ends the attachment with status 130 after restoring the
+host terminal, including raw mode; the supervised VM keeps running.
 
 A host terminal with `run -t` or `attach` sends its initial dimensions and
 subsequent changes
