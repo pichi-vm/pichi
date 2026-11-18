@@ -909,3 +909,77 @@ async fn blocked_console_input_observes_stop_and_caller_signals() {
         );
     }
 }
+
+#[tokio::test]
+async fn workload_json_uses_current_state_and_all_filtering() {
+    let fixture = WorkloadFixture::new("import os, signal\nsignal.alarm(30)\nos.read(0, 1)").await;
+    std::fs::write(
+        fixture.root.path().join("pichi/config.toml"),
+        format!(
+            "[storage]\ngraphroot = {}\n",
+            serde_json::to_string(&fixture.root.path().join("pichi/storage")).unwrap()
+        ),
+    )
+    .unwrap();
+    let command = || {
+        let mut command = fixture.command();
+        command.env("XDG_CONFIG_HOME", fixture.root.path());
+        command
+    };
+    let output = command()
+        .args(["run", "-d", "fixture:1"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = String::from_utf8(output).unwrap();
+    let id = id.trim();
+    let listed = command()
+        .args(["ps", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rows: serde_json::Value = serde_json::from_slice(&listed).unwrap();
+    let image =
+        Digest::Sha256(Sha256::digest(serde_json::to_vec(&fixture.manifest).unwrap()).into());
+    assert_eq!(
+        rows,
+        serde_json::json!([{"ID": id, "Images": [image], "State": "running"}])
+    );
+    command().args(["stop", id]).assert().success();
+    command()
+        .args(["ps", "--format", "json"])
+        .assert()
+        .success()
+        .stdout("[]\n");
+    let listed = command()
+        .args(["ps", "-a", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rows: serde_json::Value = serde_json::from_slice(&listed).unwrap();
+    assert_eq!(rows[0]["State"], "exited");
+    assert_eq!(rows[0]["ID"], id);
+    let result = fixture.record().join("monitor/result.json");
+    std::fs::remove_file(&result).unwrap();
+    let listed = command()
+        .args(["ps", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rows: serde_json::Value = serde_json::from_slice(&listed).unwrap();
+    assert_eq!(rows[0]["State"], "unknown");
+    std::fs::write(result, b"corrupt result").unwrap();
+    command()
+        .args(["ps", "--format", "json"])
+        .assert()
+        .code(125)
+        .stdout("");
+}

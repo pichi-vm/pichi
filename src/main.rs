@@ -88,6 +88,9 @@ enum Command {
         /// Print only full workload IDs, one per line.
         #[arg(long, short = 'q')]
         quiet: bool,
+        /// Emit workload IDs, image digests and states as a JSON array.
+        #[arg(long, value_parser = ["json"], conflicts_with = "quiet")]
+        format: Option<String>,
     },
 
     #[command(hide = true)]
@@ -238,7 +241,9 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
             }
             Ok(())
         }
-        Command::Ps { all, quiet } => cmd::workload::Workload::list(&config, all, quiet).await,
+        Command::Ps { all, quiet, format } => {
+            cmd::workload::Workload::list(&config, all, quiet, format.is_some()).await
+        }
     }?;
     Ok(NativeExit(0))
 }

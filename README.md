@@ -39,7 +39,7 @@ is still a valid image — a base others derive from.
 | `pichi logs` | Print retained stdout/stderr for one or more workload IDs |
 | `pichi wait` | Wait for one or more workload IDs and print their native exit statuses in argument order |
 | `pichi stop` | Stop one or more workloads; force cleanup after `--time` seconds per workload (default 10) |
-| `pichi ps` | List running and unknown workloads; `-a` includes exited workloads and `-q` prints only full IDs |
+| `pichi ps` | List running and unknown workloads; `-a` includes exited workloads, `-q` prints full IDs, and `--format json` emits a JSON array |
 | `pichi update` | Update a working-tree plan’s image lock |
 | `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |
 | `pichi system` | System-level inspection and maintenance |
@@ -49,6 +49,11 @@ Results follow argument order. Missing or invalid images are reported on stderr;
 other images are still inspected and the command exits with status 125.
 `--format` renders once per image with the existing object context. Scripts
 reading a single result should use `[0]`, for example `jq '.[0].digest'`.
+
+`pichi ps --format json` emits an array with each workload's `ID`, `Images`
+(image digests), and `State` (`running`, `exited`, or `unknown`). It follows
+the same filtering as the default listing; add `--all` to include exited
+workloads. An empty listing is `[]`. JSON output cannot be combined with `-q`.
 
 Run `pichi <command> --help` for details.
 

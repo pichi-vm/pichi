@@ -22,6 +22,8 @@ fn usage_and_command_errors_exit_125() {
     let root = tempfile::tempdir().unwrap();
     for args in [
         vec!["run"],
+        vec!["ps", "-q", "--format", "json"],
+        vec!["ps", "--format", "unsupported"],
         vec!["--does-not-exist"],
         vec!["inspect", "missing:latest"],
     ] {
@@ -61,5 +63,70 @@ fn configuration_errors_exit_125_but_help_and_version_succeed() {
             .args(args)
             .assert()
             .success();
+    }
+}
+
+#[test]
+fn empty_workload_json_is_an_array() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("pichi")).unwrap();
+    std::fs::write(
+        root.path().join("pichi/config.toml"),
+        format!(
+            "[storage]\ngraphroot = {}\n",
+            serde_json::to_string(&root.path().join("cache")).unwrap()
+        ),
+    )
+    .unwrap();
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env("LOCALAPPDATA", root.path())
+        .env("APPDATA", root.path())
+        .args(["ps", "--format", "json"])
+        .assert()
+        .success()
+        .stdout("[]\n");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn workload_json_write_errors_exit_125() {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("pichi")).unwrap();
+    std::fs::write(
+        root.path().join("pichi/config.toml"),
+        format!(
+            "[storage]\ngraphroot = {}\n",
+            serde_json::to_string(&root.path().join("cache")).unwrap()
+        ),
+    )
+    .unwrap();
+    for existing in [false, true] {
+        if existing {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(root.path().join("cache.workloads"))
+                .unwrap();
+        }
+        let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
+            .env("XDG_DATA_HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path())
+            .args(["ps", "--format", "json"])
+            .stdout(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/full")
+                    .unwrap(),
+            )
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(125), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("No space left on device"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
     }
 }
