@@ -49,7 +49,7 @@ async fn caller() -> Result<()> {
     }
     // The parent configures ownership before authorizing launch.
     std::io::stdin().read_exact(&mut [0])?;
-    let monitor = PathBuf::from(std::env::var_os("MADRILLO_BIN").context("set MADRILLO_BIN")?);
+    let monitor = PathBuf::from("madrillo.exe");
     let fixture = monitor.with_file_name("madrillo-fixture.exe");
     let mut running = ReapMonitor(
         Launch {
@@ -75,7 +75,7 @@ async fn caller() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires MADRILLO_BIN and execution outside restrictive runner/Cargo Jobs"]
+#[ignore = "requires madrillo on PATH and execution outside restrictive runner/Cargo Jobs"]
 async fn caller_loss_preserves_workload() -> Result<()> {
     for console in [false, true] {
         let root = tempfile::tempdir()?;
