@@ -117,6 +117,7 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
 
     // The appliance carries scute + pmi + bootconfig.
     let app = resolve_manifest(&g, "docker.io/library/app:1").await;
+    assert_eq!(app.config, base.config);
     assert_eq!(app.layers.len(), 3, "scute + pmi + bootconfig");
     assert!(app.layers.iter().any(|l| matches!(l, Layer::Scute(_))));
     assert!(app.layers.iter().any(|l| matches!(l, Layer::Pmi(_))));
@@ -336,6 +337,22 @@ async fn import_pmi_without_carapace_keeps_only_boot_components() {
         .success();
 
     let m = resolve_manifest(&g, "docker.io/library/boot:1").await;
+    assert_eq!(m.config.media_type, "application/vnd.pichi.config.v1+json");
+    assert!(m.config.data.is_none());
+    let bytes = FilesystemBlobStore::new(&g)
+        .get_blob(&m.config.digest.parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(m.config.size, bytes.len() as u64);
+    assert_eq!(
+        m.config.digest,
+        conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into())
+            .to_string()
+    );
+    assert_eq!(
+        serde_json::from_slice::<conglobate::artifact::Config>(&bytes).unwrap(),
+        conglobate::artifact::Config::default()
+    );
     assert_eq!(m.layers.len(), 2, "pmi + bootconfig only");
     assert!(m.layers.iter().any(|l| matches!(l, Layer::Pmi(_))));
     assert!(m.layers.iter().any(|l| matches!(l, Layer::BootConfig(_))));
@@ -406,7 +423,7 @@ async fn import_raw_without_tag_prints_digest_usable_as_carapace() {
 }
 
 /// `--config` stores the launch contract as the manifest config blob
-/// (`vnd.pichi.config.v1+json`) instead of the OCI empty config.
+/// (`vnd.pichi.config.v1+json`) instead of the default launch requirements.
 #[tokio::test]
 async fn import_pmi_with_config_sets_config_blob() {
     let tmp = TempDir::new().unwrap();
