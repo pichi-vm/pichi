@@ -218,12 +218,11 @@ mod tests {
     use super::*;
     use crate::cmd::manifest_ext::ManifestExt as _;
     use crate::cmd::platform::PlatformExt as _;
+    use crate::cmd::test_support::ScuteFixture as _;
     use bytes::Bytes;
     use conglobate::artifact::Layer;
     use conglobate::artifact::Platform;
-    use conglobate::artifact::{
-        ConfigDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
-    };
+    use conglobate::artifact::{ConfigDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1};
     use pichi_registry::MockRegistry;
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -821,14 +820,9 @@ mod tests {
                 hex::encode(pull_side_verity_params().compute(data).unwrap().root_hash)
             ),
         );
-        let scute_desc = ScuteDescriptor {
-            digest: scute_digest.to_string(),
-            size: scute_size,
-            annotations: ScuteAnnotations {
-                data_blocks: (data.len() as u64).div_ceil(4096).try_into().unwrap(),
-                salt: hex::encode([0u8; 32]),
-            },
-        };
+        let mut scute_desc = data.descriptor(&[0; 32], is_zstd);
+        scute_desc.digest = scute_digest.to_string();
+        scute_desc.size = scute_size;
         let layer = if is_zstd {
             Layer::ScuteZstd(scute_desc)
         } else {

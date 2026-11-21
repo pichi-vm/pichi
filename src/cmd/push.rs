@@ -229,10 +229,9 @@ async fn blob_to_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_support::ScuteFixture as _;
     use bytes::Bytes;
-    use conglobate::artifact::{
-        ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, ScuteAnnotations, ScuteDescriptor,
-    };
+    use conglobate::artifact::{ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1};
     use pichi_registry::MockRegistry;
     use pichi_storage::TagDb as _;
     use std::collections::BTreeMap;
@@ -255,7 +254,7 @@ mod tests {
     /// Returns (canonical bytes, manifest digest). Uses serde_json::to_vec
     /// (NOT Manifest::to_bytes) so the Pitfall 3 negative-grep gate
     /// stays clean of false-positive call sites.
-    fn make_pichi_manifest(scute_digest: &Digest, data: &[u8]) -> (Bytes, Digest) {
+    fn make_pichi_manifest(data: &[u8]) -> (Bytes, Digest) {
         let mut annotations = BTreeMap::new();
         annotations.insert(
             "dev.pichi.carapace.verity.data-block-size".into(),
@@ -285,14 +284,7 @@ mod tests {
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: ConfigDescriptor::canonical(),
-            layers: vec![Layer::Scute(ScuteDescriptor {
-                digest: scute_digest.to_string(),
-                size: data.len() as u64,
-                annotations: ScuteAnnotations {
-                    data_blocks: (data.len() as u64).div_ceil(4096).try_into().unwrap(),
-                    salt: hex::encode([0u8; 32]),
-                },
-            })],
+            layers: vec![Layer::Scute(data.descriptor(&[0; 32], false))],
             annotations,
         };
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
@@ -311,7 +303,7 @@ mod tests {
             .put_blob(&layer_digest, layer_data)
             .await
             .unwrap();
-        let (manifest_bytes, manifest_digest) = make_pichi_manifest(&layer_digest, layer_data);
+        let (manifest_bytes, manifest_digest) = make_pichi_manifest(layer_data);
         blob_store
             .put_blob(&manifest_digest, manifest_bytes.as_ref())
             .await
@@ -541,7 +533,7 @@ mod tests {
             .put_blob(&layer_digest, layer_data)
             .await
             .unwrap();
-        let (clean_manifest, _clean_digest) = make_pichi_manifest(&layer_digest, layer_data);
+        let (clean_manifest, _clean_digest) = make_pichi_manifest(layer_data);
         let mut raw_with_ws: Vec<u8> = clean_manifest.to_vec();
         raw_with_ws.extend_from_slice(b"   \n"); // trailing whitespace
         let raw_bytes = Bytes::from(raw_with_ws);
