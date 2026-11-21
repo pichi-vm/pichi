@@ -14,6 +14,10 @@ mod executable_path;
 #[path = "support/build_repo.rs"]
 mod build_repo;
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use assert_cmd::Command;
 use conglobate::artifact::{
     ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
@@ -156,7 +160,7 @@ impl WorkloadFixture {
 
     fn native_command(&self) -> std::process::Command {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"));
-        command.env("XDG_DATA_HOME", self.root.path()).env(
+        command.storage(self.root.path()).env(
             "PATH",
             executable_path::prepend(self.program.parent().unwrap()),
         );
@@ -531,7 +535,7 @@ finally:
             env!("CARGO_MANIFEST_DIR"),
             "/tests/support/workload_terminal.py"
         ))
-        .env("XDG_DATA_HOME", fixture.root.path())
+        .storage(fixture.root.path())
         .env(
             "PATH",
             executable_path::prepend(fixture.program.parent().unwrap()),

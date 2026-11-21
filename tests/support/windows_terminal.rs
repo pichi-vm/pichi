@@ -5,7 +5,7 @@
 
 #![forbid(unsafe_code)]
 
-use super::{graphroot, make_stub_dillo, populate_bootable};
+use super::{graphroot, make_stub_dillo, populate_bootable, storage::Storage as _};
 use interprocess::local_socket::{
     GenericFilePath, ListenerNonblockingMode, ListenerOptions, prelude::*,
 };
@@ -39,7 +39,7 @@ impl Workload {
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_pichi"));
         command
-            .env("XDG_DATA_HOME", self.root.path())
+            .storage(self.root.path())
             .env(
                 "PATH",
                 super::executable_path::prepend(self.stub.parent().unwrap()),
@@ -161,15 +161,9 @@ impl Terminal {
             "PICHI_TEST_INITIALLY_RAW",
             if initially_raw { "1" } else { "0" },
         );
-        command.env("XDG_DATA_HOME", workload.root.path());
-        command.env(
-            "PATH",
-            super::executable_path::prepend(workload.stub.parent().unwrap()),
-        );
-        command.env(
-            "PICHI_TEST_TERMINAL_FIXTURE",
-            std::env::current_exe().unwrap(),
-        );
+        for (key, value) in workload.command().get_envs() {
+            command.env(key, value.unwrap());
+        }
         let child = pair.slave.spawn_command(command).unwrap();
         Self {
             child,
