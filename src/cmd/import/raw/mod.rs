@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use carapace::image::{Plan as _, Planned};
-use conglobate::artifact::{Config, ConfigDescriptor, Digest, Manifest, Reference};
+use conglobate::artifact::{
+    Config, ConfigDescriptor, Digest, Manifest, Reference, ScuteAnnotations, ScuteDescriptor,
+};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use sha2::{Digest as _, Sha256};
 use tempfile::NamedTempFile;
@@ -154,13 +156,18 @@ impl StagedImport {
         let config_bytes = serde_json::to_vec(&Config::default())?;
         let config_digest = Digest::Sha256(Sha256::digest(&config_bytes).into());
         let manifest = Manifest::base(
-            &cow_digest,
-            size,
-            &salt,
+            ScuteDescriptor {
+                digest: cow_digest.to_string(),
+                size,
+                annotations: ScuteAnnotations {
+                    data_blocks: size.div_ceil(4096).try_into().context("empty COW")?,
+                    salt: hex::encode(&salt),
+                },
+            },
+            ConfigDescriptor::for_config(config_digest.to_string(), config_bytes.len() as u64),
             &root,
             &args.created_rfc3339,
             &args.annotations,
-            ConfigDescriptor::for_config(config_digest.to_string(), config_bytes.len() as u64),
         )?;
         let manifest_bytes = serde_json::to_vec(&manifest)?;
         let manifest_digest =

@@ -9,8 +9,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context as _, Result};
 
 use conglobate::artifact::{
-    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
-    ScuteDescriptor,
+    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteDescriptor,
 };
 
 /// Build a `Manifest` for a base carapace import (one Scute, no PMI).
@@ -34,25 +33,21 @@ use conglobate::artifact::{
 /// validated manifest ready for `to_bytes()` + `BlobStore::put_blob`.
 pub(super) trait BaseManifest {
     fn base(
-        cow_digest: &Digest,
-        cow_size: u64,
-        full_salt: &[u8],
+        scute: ScuteDescriptor,
+        config: ConfigDescriptor,
         root: &[u8; 32],
         created_rfc3339: &str,
         extra: &BTreeMap<String, String>,
-        config: ConfigDescriptor,
     ) -> Result<Manifest>;
 }
 
 impl BaseManifest for Manifest {
     fn base(
-        cow_digest: &Digest,
-        cow_size: u64,
-        full_salt: &[u8],
+        scute: ScuteDescriptor,
+        config: ConfigDescriptor,
         root: &[u8; 32],
         created_rfc3339: &str,
         extra: &BTreeMap<String, String>,
-        config: ConfigDescriptor,
     ) -> Result<Manifest> {
         // Caller-supplied provenance annotations go in first; the structural
         // `verity.*` keys below then overwrite (they can't be spoofed via `extra`),
@@ -70,21 +65,12 @@ impl BaseManifest for Manifest {
             .entry("org.opencontainers.image.created".to_string())
             .or_insert_with(|| created_rfc3339.to_string());
 
-        let layers = vec![Layer::Scute(ScuteDescriptor {
-            digest: cow_digest.to_string(),
-            size: cow_size,
-            annotations: ScuteAnnotations {
-                data_blocks: cow_size.div_ceil(4096).try_into().context("empty COW")?,
-                salt: hex::encode(full_salt),
-            },
-        })];
-
         let manifest = Manifest {
             schema_version: 2,
             media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
             config,
-            layers,
+            layers: vec![Layer::Scute(scute)],
             annotations,
         };
 
@@ -99,6 +85,18 @@ impl BaseManifest for Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use conglobate::artifact::ScuteAnnotations;
+
+    fn scute(digest: &Digest, salt: &[u8]) -> ScuteDescriptor {
+        ScuteDescriptor {
+            digest: digest.to_string(),
+            size: 16384,
+            annotations: ScuteAnnotations {
+                data_blocks: 4u64.try_into().unwrap(),
+                salt: hex::encode(salt),
+            },
+        }
+    }
 
     /// IMPORT-05 + manifest_has_locked_verity_params (VALIDATION.md):
     /// chain annotations carry the Phase 42 D-06 locked values.
@@ -107,13 +105,11 @@ mod tests {
         let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
         let salt = vec![0u8; 32];
         let m = Manifest::base(
-            &cow_digest,
-            16384,
-            &salt,
+            scute(&cow_digest, &salt),
+            ConfigDescriptor::canonical(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
-            ConfigDescriptor::canonical(),
         )
         .unwrap();
         assert!(!m.annotations.contains_key("dev.pichi.carapace.verity.algo"));
@@ -143,13 +139,11 @@ mod tests {
         let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
         let salt = vec![0u8; 32]; // Existing layers may have no suffix.
         let m = Manifest::base(
-            &cow_digest,
-            16384,
-            &salt,
+            scute(&cow_digest, &salt),
+            ConfigDescriptor::canonical(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
-            ConfigDescriptor::canonical(),
         )
         .unwrap();
         let Layer::Scute(scute) = &m.layers[0] else {
@@ -170,13 +164,11 @@ mod tests {
         let mut salt = vec![0u8; 32];
         salt.extend_from_slice(&[0xAB; 32]);
         let m = Manifest::base(
-            &cow_digest,
-            16384,
-            &salt,
+            scute(&cow_digest, &salt),
+            ConfigDescriptor::canonical(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
-            ConfigDescriptor::canonical(),
         )
         .unwrap();
         let Layer::Scute(scute) = &m.layers[0] else {
@@ -194,13 +186,11 @@ mod tests {
         let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
         let salt = vec![0u8; 32];
         let m = Manifest::base(
-            &cow_digest,
-            16384,
-            &salt,
+            scute(&cow_digest, &salt),
+            ConfigDescriptor::canonical(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
-            ConfigDescriptor::canonical(),
         )
         .unwrap();
         // base() already calls validate() internally; double-check is
@@ -216,13 +206,11 @@ mod tests {
         let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
         let salt = vec![0u8; 32];
         let m = Manifest::base(
-            &cow_digest,
-            16384,
-            &salt,
+            scute(&cow_digest, &salt),
+            ConfigDescriptor::canonical(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
-            ConfigDescriptor::canonical(),
         )
         .unwrap();
         assert_eq!(m.layers.len(), 1, "expected exactly 1 layer (Scute)");
@@ -259,13 +247,14 @@ mod tests {
             extra.insert(format!("dev.pichi.carapace.verity.{key}"), "999".into());
         }
         let m = Manifest::base(
-            &Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into()),
-            16384,
-            &[0u8; 32],
+            scute(
+                &Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into()),
+                &[0; 32],
+            ),
+            ConfigDescriptor::canonical(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &extra,
-            ConfigDescriptor::canonical(),
         )
         .unwrap();
         // provenance carried verbatim
