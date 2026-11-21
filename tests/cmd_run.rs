@@ -102,7 +102,7 @@ async fn populate_bootable_with_requirements(
                     data_blocks: std::num::NonZeroU64::new((cow_bytes.len() as u64).div_ceil(4096))
                         .unwrap()
                         .into(),
-                    salt: "00".repeat(32),
+                    salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
                 },
             }),
             Layer::Pmi(PmiDescriptor {
@@ -389,7 +389,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                     size: data.len().to_string(),
                     verity_digest: sha256_digest(b"pending fixture tree").to_string(),
                     data_blocks: std::num::NonZeroU64::new(2).unwrap().into(),
-                    salt: "00".repeat(32),
+                    salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
                 },
             };
             manifest.layers[0] = if compressed {

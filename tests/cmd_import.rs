@@ -229,7 +229,7 @@ async fn bottom_scute_salt_is_zero_prefix_e2e() {
         Layer::Scute(s) => s.annotations.salt.clone(),
         _ => panic!("expected scute layer"),
     };
-    let salt = hex::decode(salt).unwrap();
+    let salt = salt.as_ref();
     assert_eq!(salt.len(), 64);
     assert_eq!(&salt[..32], &[0; 32]);
 }

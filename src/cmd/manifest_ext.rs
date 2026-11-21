@@ -105,7 +105,7 @@ impl ManifestExt for Manifest {
         let params = VerityParams {
             data_block_size: annotation(ANN_DATA_BLOCK_SIZE, "4096").parse()?,
             hash_block_size: annotation(ANN_HASH_BLOCK_SIZE, "4096").parse()?,
-            salt: hex::decode(&scute.annotations.salt)?,
+            salt: scute.annotations.salt.as_ref().to_vec(),
             uuid: [0; 16],
         };
         let mut header = params.header_for_blocks(scute.annotations.data_blocks.get())?;
@@ -137,7 +137,7 @@ impl ScuteRoots {
         let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = layer else {
             bail!("non-scute layer supplied a verity root");
         };
-        let salt = hex::decode(&scute.annotations.salt)?;
+        let salt = scute.annotations.salt.as_ref();
         let parent = salt
             .get(..32)
             .context("scute salt is shorter than its parent root")?;

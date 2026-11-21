@@ -1191,7 +1191,7 @@ mod tests {
                 let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut next.layers[0] else {
                     unreachable!()
                 };
-                scute.annotations.salt = hex::encode(parent);
+                scute.annotations.salt = devmap_verity::Salt::new(&parent).unwrap().into();
                 let mut parameters = pull_side_verity_params();
                 parameters.salt = parent.to_vec();
                 let tree = parameters.compute(&data).unwrap();
@@ -1267,7 +1267,7 @@ mod tests {
                 else {
                     unreachable!()
                 };
-                scute.annotations.salt = hex::encode(&params.salt);
+                scute.annotations.salt = devmap_verity::Salt::new(&params.salt).unwrap().into();
                 scute.annotations.verity_digest = Digest::Sha256(
                     <sha2::Sha256 as sha2::Digest>::digest(&params.compute(&data).unwrap().blob)
                         .into(),

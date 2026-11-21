@@ -67,7 +67,10 @@ async fn insert_manifest(
                 size: (1024).to_string(),
                 verity_digest: format!("sha256:{}", "00".repeat(32)),
                 data_blocks: std::num::NonZeroU64::MIN.into(),
-                salt: format!("{:0<8}", salt_seed),
+                salt: format!("{:0<8}", salt_seed)
+                    .parse::<devmap_verity::Salt>()
+                    .unwrap()
+                    .into(),
             },
         })],
         annotations: chain_annotations(),

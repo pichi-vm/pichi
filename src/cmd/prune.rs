@@ -370,7 +370,7 @@ mod tests {
                     size: "1024".into(),
                     verity_digest: Digest::Sha256([0; 32]).to_string(),
                     data_blocks: std::num::NonZeroU64::MIN.into(),
-                    salt: "00000000".into(),
+                    salt: devmap_verity::Salt::new(&[0; 4]).unwrap().into(),
                 },
             })],
             annotations: chain_annotations(),

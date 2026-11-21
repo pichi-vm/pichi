@@ -537,8 +537,9 @@ dependencies = [
 [[package]]
 name = "conglobate"
 version = "0.2.0"
-source = "git+https://github.com/pichi-vm/conglobate?branch=main#c9f55c3cbd2b7a2c0d207ac777b671fc1f2d8c2d"
+source = "git+https://github.com/pichi-vm/conglobate?branch=main#d80f56cac97d9ac117cb50604715e17aa1ad7685"
 dependencies = [
+ "devmap-verity",
  "hex",
  "humantime-serde",
  "serde",
@@ -811,7 +812,7 @@ dependencies = [
 [[package]]
 name = "devmap-core"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?branch=main#19a368a0083ad0cbe92e6a5b65e0bb5761f8616c"
+source = "git+https://github.com/pichi-vm/devmap?branch=main#8cd1d6c80d882e34d0f4fda911d20c8dec1ff127"
 dependencies = [
  "iocuddle",
 ]
@@ -819,7 +820,7 @@ dependencies = [
 [[package]]
 name = "devmap-linux"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?branch=main#19a368a0083ad0cbe92e6a5b65e0bb5761f8616c"
+source = "git+https://github.com/pichi-vm/devmap?branch=main#8cd1d6c80d882e34d0f4fda911d20c8dec1ff127"
 dependencies = [
  "devmap-core",
  "iocuddle",
@@ -829,7 +830,7 @@ dependencies = [
 [[package]]
 name = "devmap-snapshot"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?branch=main#19a368a0083ad0cbe92e6a5b65e0bb5761f8616c"
+source = "git+https://github.com/pichi-vm/devmap?branch=main#8cd1d6c80d882e34d0f4fda911d20c8dec1ff127"
 dependencies = [
  "devmap-core",
  "devmap-linux",
@@ -838,7 +839,7 @@ dependencies = [
 [[package]]
 name = "devmap-verity"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/devmap?branch=main#19a368a0083ad0cbe92e6a5b65e0bb5761f8616c"
+source = "git+https://github.com/pichi-vm/devmap?branch=main#8cd1d6c80d882e34d0f4fda911d20c8dec1ff127"
 dependencies = [
  "devmap-core",
  "devmap-linux",

@@ -54,7 +54,7 @@ async fn populate(
             size: (4096).to_string(),
             verity_digest: format!("sha256:{}", "00".repeat(32)),
             data_blocks: std::num::NonZeroU64::MIN.into(),
-            salt: "00".repeat(32),
+            salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
         },
     })];
     if with_pmi {

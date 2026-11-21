@@ -178,7 +178,7 @@ impl StagedImport {
                     data_blocks: std::num::NonZeroU64::new(size.div_ceil(4096))
                         .context("empty COW")?
                         .into(),
-                    salt: hex::encode(&salt),
+                    salt: header.parameters.salt.into(),
                     digest: cow_digest.to_string(),
                     size: size.to_string(),
                     verity_digest: verity_digest.to_string(),
@@ -394,14 +394,14 @@ mod tests {
             .compute(&bytes)
             .unwrap();
             assert_eq!(hex::encode(formatted.root_hash), root);
-            let salt = hex::decode(&scute.annotations.salt).unwrap();
+            let salt = scute.annotations.salt.as_ref();
             assert_eq!(salt.len(), 64);
             assert_eq!(&salt[..32], &[0; 32]);
             assert_eq!(staged.header.parameters.salt.as_ref(), salt);
             let formatted = VerityParams {
                 data_block_size: 4096,
                 hash_block_size: 4096,
-                salt,
+                salt: salt.to_vec(),
                 uuid: [0; 16],
             }
             .compute(&bytes)

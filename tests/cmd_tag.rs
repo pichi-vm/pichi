@@ -51,7 +51,7 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::a
                 size: (1024).to_string(),
                 verity_digest: format!("sha256:{}", "00".repeat(32)),
                 data_blocks: std::num::NonZeroU64::MIN.into(),
-                salt: "00ff".into(),
+                salt: devmap_verity::Salt::new(&[0, 255]).unwrap().into(),
             },
         })],
         annotations: chain_annotations(),

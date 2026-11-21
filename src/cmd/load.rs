@@ -1040,7 +1040,7 @@ pub(super) mod tests {
             let Layer::Scute(scute) = layer else {
                 panic!("uncompressed fixture");
             };
-            assert_eq!(scute.annotations.salt, hex::encode(parent));
+            assert_eq!(scute.annotations.salt.as_ref(), parent);
             let files = ScuteFiles::new(&manifest, layer, &store).unwrap();
             let layout = dir.path().join(chains.len().to_string());
             fixture.write(&layout);

@@ -60,7 +60,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
                     size: (4096).to_string(),
                     verity_digest: format!("sha256:{}", "00".repeat(32)),
                     data_blocks: std::num::NonZeroU64::MIN.into(),
-                    salt: "00".repeat(32),
+                    salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
                 },
             }),
             Layer::Pmi(PmiDescriptor {
@@ -130,7 +130,7 @@ async fn inspect_format_reaches_dotted_annotation() {
                 size: (4096).to_string(),
                 verity_digest: format!("sha256:{}", "00".repeat(32)),
                 data_blocks: std::num::NonZeroU64::MIN.into(),
-                salt: "00".repeat(32),
+                salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
             },
         })],
         annotations: chain_annotations(),

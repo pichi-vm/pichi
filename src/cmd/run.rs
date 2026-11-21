@@ -236,7 +236,7 @@ pub(crate) async fn build_gpt_spec(
             let (Layer::Scute(next) | Layer::ScuteZstd(next)) = next else {
                 anyhow::bail!("non-scute in GPT layers");
             };
-            let salt = hex::decode(&next.annotations.salt)?;
+            let salt = next.annotations.salt.as_ref();
             salt.get(..32)
                 .context("scute salt is shorter than its parent root")?
                 .try_into()?

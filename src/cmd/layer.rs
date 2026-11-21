@@ -1252,7 +1252,10 @@ mod tests {
                 unreachable!()
             };
             scute.annotations.data_blocks = std::num::NonZeroU64::new(count as u64).unwrap().into();
-            scute.annotations.salt = format!("{}{suffix}", "00".repeat(32));
+            scute.annotations.salt = format!("{}{suffix}", "00".repeat(32))
+                .parse::<devmap_verity::Salt>()
+                .unwrap()
+                .into();
             let scute = scute.clone();
             let header = fixture.manifest.verity_header(&scute, None).unwrap();
             let mut tree = std::io::Cursor::new(Vec::new());

@@ -96,7 +96,7 @@ mod tests {
                 size: "16384".into(),
                 verity_digest: Digest::Sha256([2; 32]).to_string(),
                 data_blocks: std::num::NonZeroU64::new(4).unwrap().into(),
-                salt: hex::encode(salt),
+                salt: devmap_verity::Salt::new(salt).unwrap().into(),
             },
         }
     }
@@ -154,8 +154,8 @@ mod tests {
         };
         assert_eq!(scute.annotations.data_blocks.get(), 4);
         assert_eq!(
-            scute.annotations.salt,
-            "0".repeat(64),
+            scute.annotations.salt.as_ref(),
+            &[0; 32],
             "salt annotation = 32 zero bytes hex-encoded = 64 hex zeros"
         );
     }
@@ -177,10 +177,7 @@ mod tests {
         let Layer::Scute(scute) = &m.layers[0] else {
             panic!("expected scute layer");
         };
-        assert_eq!(
-            scute.annotations.salt,
-            format!("{}{}", "0".repeat(64), "ab".repeat(32))
-        );
+        assert_eq!(scute.annotations.salt.as_ref(), salt);
     }
 
     /// Manifest passes `validate()` (Phase 42 D-07 rules).
