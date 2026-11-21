@@ -59,7 +59,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
 
     let repo_dir = std::fs::canonicalize(&args.dir)
         .with_context(|| format!("canonicalizing repo dir {}", args.dir.display()))?;
-    let (git_ref, network) = args
+    let (git_ref, network, repo_dir) = args
         .committed_network(&repo_dir)
         .context("reading committed build plan")?;
 
@@ -129,7 +129,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .await?;
 
     // Thin-launcher mounts (BUILD.md §2.2–§2.3): empty RW output, RO cache,
-    // RO repo (git object store / work tree the guest resolves `--ref` against).
+    // RO Git object store; linked-worktree metadata can live outside the worktree.
     let cache_dir = std::fs::canonicalize(&layout.graphroot)
         .with_context(|| format!("canonicalizing cache {}", layout.graphroot.display()))?;
 

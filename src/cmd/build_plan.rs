@@ -3,7 +3,7 @@
 
 //! Conservative host network selection from a pinned committed plan.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 use conglobate::plan::{Directive, Plan, Stage};
@@ -12,7 +12,7 @@ use gix::{ObjectId, object::tree::EntryKind};
 use crate::cli::BuildArgs;
 
 impl BuildArgs {
-    pub(super) fn committed_network(&self, repository: &Path) -> Result<(String, bool)> {
+    pub(super) fn committed_network(&self, repository: &Path) -> Result<(String, bool, PathBuf)> {
         let repo = gix::open::Options::isolated()
             .open(repository)?
             .to_thread_local();
@@ -26,11 +26,12 @@ impl BuildArgs {
             .tree_id()?
             .detach();
         let pinned = commit.to_string();
+        let store = std::fs::canonicalize(repo.common_dir())?;
         // The guest owns link and parent-component resolution. Keep networking
         // for those cases rather than duplicating its context filesystem here.
         let path = format!("{}/{}", self.context, self.plan);
         if path.split('/').any(|part| part == "..") {
-            return Ok((pinned, true));
+            return Ok((pinned, true, store));
         }
         let mut parts = path
             .split('/')
@@ -44,7 +45,7 @@ impl BuildArgs {
             })?;
             id = entry.object_id();
             match entry.mode().kind() {
-                EntryKind::Link | EntryKind::Commit => return Ok((pinned, true)),
+                EntryKind::Link | EntryKind::Commit => return Ok((pinned, true, store)),
                 EntryKind::Tree if parts.peek().is_some() => continue,
                 EntryKind::Blob | EntryKind::BlobExecutable if parts.peek().is_none() => {
                     let blob = repo.verified(id)?.try_into_blob()?;
@@ -55,7 +56,7 @@ impl BuildArgs {
                             .iter()
                             .any(|step| matches!(step, Directive::Exec { network: true, .. }))
                     });
-                    return Ok((pinned, network));
+                    return Ok((pinned, network, store));
                 }
                 _ => bail!("committed plan path does not name a regular file"),
             }
@@ -155,7 +156,44 @@ mod tests {
             BuildArgs::from_arg_matches(&matches)
                 .unwrap()
                 .committed_network(self.0.path())
+                .map(|(commit, network, _)| (commit, network))
         }
+    }
+
+    #[test]
+    fn linked_worktree_exposes_a_self_contained_object_store() {
+        let repo = Repository::new("sha1");
+        let linked = tempfile::tempdir().unwrap();
+        let path = linked.path().join("linked");
+        repo.git(&[
+            "worktree",
+            "add",
+            "--detach",
+            path.to_str().unwrap(),
+            "HEAD",
+        ]);
+        repo.git(&[
+            "-C",
+            path.to_str().unwrap(),
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "linked",
+        ]);
+        let matches = BuildArgs::augment_args(clap::Command::new("build"))
+            .try_get_matches_from(["build", ".", "--ref", "HEAD"])
+            .unwrap();
+        let mut args = BuildArgs::from_arg_matches(&matches).unwrap();
+        let (commit, network, store) = args.committed_network(&path).unwrap();
+        assert_eq!(store, repo.0.path().join(".git").canonicalize().unwrap());
+        assert!(!network);
+        assert_ne!(commit, repo.git(&["rev-parse", "HEAD"]));
+        args.git_ref = commit.clone();
+        // The guest sees only this mount, not the host worktree's .git target.
+        let exposed = linked.path().join("exposed");
+        std::fs::rename(store, &exposed).unwrap();
+        let (reopened, _, _) = args.committed_network(&exposed).unwrap();
+        assert_eq!(reopened, commit);
     }
 
     #[test]
