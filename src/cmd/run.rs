@@ -313,13 +313,13 @@ impl DevicePath for Path {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_support::ScuteFixture as _;
     use std::collections::BTreeMap;
 
     const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
     use conglobate::artifact::{
         ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-        ScuteAnnotations, ScuteDescriptor,
     };
     use pichi_storage::{BlobStore, FilesystemBlobStore};
     use tempfile::TempDir;
@@ -367,15 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn partition_layers_splits_pmi_and_scutes() {
-        let scute = ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
-            size: 4096,
-            annotations: ScuteAnnotations {
-                data_blocks: 1u64.try_into().unwrap(),
-                salt: "00".into(),
-            },
-        };
+        let scute = [0; 4096].descriptor(&[0; 32], false);
         let m = manifest_with(vec![pmi_layer(), Layer::Scute(scute)]);
         let (_pmi, scutes) = m.partition_layers().unwrap();
         assert_eq!(scutes.len(), 1);
@@ -383,15 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn partition_layers_errors_without_pmi() {
-        let scute = ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
-            size: 4096,
-            annotations: ScuteAnnotations {
-                data_blocks: 1u64.try_into().unwrap(),
-                salt: "00".into(),
-            },
-        };
+        let scute = [0; 4096].descriptor(&[0; 32], false);
         let m = manifest_with(vec![Layer::Scute(scute)]);
         let err = m.partition_layers().unwrap_err();
         assert!(err.to_string().contains("not bootable"), "got: {err}");
@@ -399,15 +383,7 @@ mod tests {
 
     #[tokio::test]
     async fn partition_layers_preserves_scute_encoding() {
-        let scute = ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
-            size: 4096,
-            annotations: ScuteAnnotations {
-                data_blocks: 1u64.try_into().unwrap(),
-                salt: "00".into(),
-            },
-        };
+        let scute = [0; 4096].descriptor(&[0; 32], false);
         let m = manifest_with(vec![
             Layer::Scute(scute.clone()),
             pmi_layer(),
@@ -589,14 +565,7 @@ mod tests {
             let data = vec![byte; 8193];
             let digest = sha256_digest(&data);
             store.put_blob(&digest, &data).await.unwrap();
-            let scute = ScuteDescriptor {
-                digest: digest.to_string(),
-                size: data.len() as u64,
-                annotations: ScuteAnnotations {
-                    data_blocks: 3u64.try_into().unwrap(),
-                    salt: hex::encode(tip),
-                },
-            };
+            let scute = data.descriptor(&tip, false);
             manifest.layers.push(Layer::Scute(scute.clone()));
             let header = manifest.verity_header(&scute, Some(scute.size)).unwrap();
             tip = header
@@ -654,14 +623,7 @@ mod tests {
         let cow_digest = sha256_digest(&cow_bytes);
         blob_store.put_blob(&cow_digest, &cow_bytes).await.unwrap();
 
-        let scute = ScuteDescriptor {
-            digest: cow_digest.to_string(),
-            size: cow_bytes.len() as u64,
-            annotations: ScuteAnnotations {
-                data_blocks: (cow_bytes.len() as u64).div_ceil(4096).try_into().unwrap(),
-                salt: hex::encode([0; 32]),
-            },
-        };
+        let scute = cow_bytes.descriptor(&[0; 32], false);
         let mut m = manifest_with(vec![pmi_layer(), Layer::Scute(scute.clone())]);
         let root = crate::cmd::layer::PreparedLayer::prepare_cached(&m, &m.layers[1], &blob_store)
             .await
@@ -717,14 +679,7 @@ mod tests {
                 };
                 let digest = sha256_digest(&wire);
                 store.put_blob(&digest, &wire).await.unwrap();
-                let scute = ScuteDescriptor {
-                    digest: digest.to_string(),
-                    size: wire.len() as u64,
-                    annotations: ScuteAnnotations {
-                        data_blocks: 2u64.try_into().unwrap(),
-                        salt: hex::encode([0; 32]),
-                    },
-                };
+                let scute = data.descriptor(&[0; 32], compressed);
                 let layer = if compressed {
                     Layer::ScuteZstd(scute)
                 } else {
