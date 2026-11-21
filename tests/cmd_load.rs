@@ -10,6 +10,10 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
     "amd64"
 };
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use assert_cmd::Command;
 use conglobate::artifact::{Digest, Manifest};
 use pichi::cmd::manifest_ext::ManifestExt as _;
@@ -25,7 +29,7 @@ async fn save_load_preserves_manifest_and_rebuilds_verity_on_cache_hits() {
     std::fs::write(&raw, vec![7; 8192]).unwrap();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", &source)
+        .storage(&source)
         .args(["import", "raw", "--arch", TEST_ARCH])
         .arg(&raw)
         .args(["-t", "roundtrip:v1"])
@@ -33,7 +37,7 @@ async fn save_load_preserves_manifest_and_rebuilds_verity_on_cache_hits() {
         .success();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", &source)
+        .storage(&source)
         .args(["save", "roundtrip:v1", "-o"])
         .arg(&layout)
         .assert()
@@ -66,7 +70,7 @@ async fn save_load_preserves_manifest_and_rebuilds_verity_on_cache_hits() {
     for _ in 0..2 {
         Command::cargo_bin("pichi")
             .unwrap()
-            .env("XDG_DATA_HOME", dir.path().join("destination"))
+            .storage(dir.path().join("destination"))
             .arg("load")
             .arg(&layout)
             .assert()
@@ -112,7 +116,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
         let tag = format!("fixture.local/salt:{suffix}");
         let output = Command::cargo_bin("pichi")
             .unwrap()
-            .env("XDG_DATA_HOME", &source_home)
+            .storage(&source_home)
             .args(["import", "raw", "--arch", TEST_ARCH])
             .arg(&raw)
             .args(["-t", &tag, "--quiet"])
@@ -152,7 +156,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
         };
         Command::cargo_bin("pichi")
             .unwrap()
-            .env("XDG_DATA_HOME", &source_home)
+            .storage(&source_home)
             .args(["save", &tag, "-o"])
             .arg(&layout)
             .assert()
@@ -197,7 +201,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
     for _ in 0..2 {
         Command::cargo_bin("pichi")
             .unwrap()
-            .env("XDG_DATA_HOME", &destination_home)
+            .storage(&destination_home)
             .arg("load")
             .arg(&combined)
             .assert()
@@ -221,7 +225,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
     std::fs::write(&guest_tree, &expected_trees[0].1).unwrap();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", dir.path().join("rejected"))
+        .storage(dir.path().join("rejected"))
         .arg("load")
         .arg(&combined)
         .assert()
@@ -230,7 +234,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
     // preparation variants; removing the last reference reclaims them all.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", &destination_home)
+        .storage(&destination_home)
         .args(["rmi", "fixture.local/salt:aa"])
         .assert()
         .success();
@@ -238,7 +242,7 @@ async fn same_blob_with_different_salts_survives_import_load_and_removal() {
     assert_eq!(store.blob_path(&cow).prepared_files().unwrap().len(), 2);
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", &destination_home)
+        .storage(&destination_home)
         .args(["rmi", "fixture.local/salt:bb"])
         .assert()
         .success();

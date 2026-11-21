@@ -7,6 +7,10 @@
 #[path = "common/process.rs"]
 mod process;
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use process::ChildExt as _;
 use serde_json::Value;
 use std::fs;
@@ -55,7 +59,7 @@ impl Smoke {
         let errors = self.directory.join(format!("{label}.stderr.log"));
         let mut command = Command::new(&self.binary);
         command
-            .env("XDG_DATA_HOME", &self.cache)
+            .storage(&self.cache)
             .args(args)
             .stdin(Stdio::null())
             .stdout(fs::File::create(&path).unwrap())

@@ -9,6 +9,10 @@
 #[path = "support/build_repo.rs"]
 mod build_repo;
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use assert_cmd::Command;
 use clap::{Args, FromArgMatches};
 use pichi::cli::BuildArgs;
@@ -167,7 +171,7 @@ fn build_missing_appliance_attempts_pull() {
     build_repo::prepare(tmp.path());
     let assert = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "build",
             tmp.path().to_str().unwrap(),
@@ -193,7 +197,7 @@ fn build_with(extra: &[&str]) -> assert_cmd::assert::Assert {
     args.extend_from_slice(extra);
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(&args)
         .assert()
 }

@@ -18,6 +18,10 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
 #[path = "support/index.rs"]
 mod index;
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use pichi::cmd::manifest_ext::ManifestExt as _;
 use std::path::{Path, PathBuf};
 
@@ -41,7 +45,7 @@ fn write_raw(path: &Path) {
 
 fn pichi(tmp: &TempDir) -> Command {
     let mut c = Command::cargo_bin("pichi").unwrap();
-    c.env("XDG_DATA_HOME", tmp.path());
+    c.storage(tmp.path());
     c
 }
 
