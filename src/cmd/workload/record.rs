@@ -902,7 +902,7 @@ mod tests {
                 let layer = Digest::Sha256(Sha256::digest(payload).into());
                 blobs.put_blob(&layer, payload).await?;
                 let manifest = Manifest {
-                    schema_version: 2,
+                    schema_version: Default::default(),
                     media_type: "application/vnd.oci.image.manifest.v1+json".into(),
                     artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
                     config: ConfigDescriptor::canonical(),

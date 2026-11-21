@@ -87,7 +87,7 @@ async fn populate_bootable_with_requirements(
     blob_store.put_blob(&pmi_digest, &pmi_bytes).await.unwrap();
 
     let mut manifest = Manifest {
-        schema_version: 2,
+        schema_version: Default::default(),
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
         config: ConfigDescriptor::canonical(),

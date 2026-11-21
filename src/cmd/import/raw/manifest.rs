@@ -66,7 +66,7 @@ impl BaseManifest for Manifest {
             .or_insert_with(|| created_rfc3339.to_string());
 
         let manifest = Manifest {
-            schema_version: 2,
+            schema_version: Default::default(),
             media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
             config,

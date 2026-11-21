@@ -44,7 +44,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let m = Manifest {
-        schema_version: 2,
+        schema_version: Default::default(),
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
         config: ConfigDescriptor::canonical(),
@@ -112,7 +112,7 @@ async fn inspect_format_reaches_dotted_annotation() {
     let tmp = TempDir::new().unwrap();
     let g = graphroot(&tmp);
     let m = Manifest {
-        schema_version: 2,
+        schema_version: Default::default(),
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
         config: ConfigDescriptor::canonical(),
@@ -233,7 +233,7 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
             conglobate::artifact::Digest::Sha256(sha2::Sha256::digest(&bytes).into());
         store.put_blob(&config_digest, &bytes).await.unwrap();
         let manifest = Manifest {
-            schema_version: 2,
+            schema_version: Default::default(),
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: ConfigDescriptor::for_config(config_digest.clone(), bytes.len() as u64),
@@ -309,7 +309,7 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
     let mut digests = Vec::new();
     for name in ["first", "second"] {
         let manifest = Manifest {
-            schema_version: 2,
+            schema_version: Default::default(),
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: ConfigDescriptor::canonical(),

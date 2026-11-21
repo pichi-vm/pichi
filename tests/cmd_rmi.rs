@@ -50,7 +50,7 @@ async fn insert_manifest(
     let scute_digest: conglobate::artifact::Digest =
         format!("sha256:{:0<64}", salt_seed).parse().unwrap();
     let m = Manifest {
-        schema_version: 2,
+        schema_version: Default::default(),
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
         config: ConfigDescriptor::canonical(),

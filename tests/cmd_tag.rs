@@ -37,7 +37,7 @@ fn graphroot(tmp: &TempDir) -> std::path::PathBuf {
 
 async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::artifact::Digest {
     let m = Manifest {
-        schema_version: 2,
+        schema_version: Default::default(),
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
         config: ConfigDescriptor::canonical(),

@@ -253,7 +253,7 @@ mod tests {
                 );
                 let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
                 let manifest = Manifest {
-                    schema_version: 2,
+                    schema_version: Default::default(),
                     media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
                     artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
                     config: ConfigDescriptor::canonical(),
@@ -325,7 +325,7 @@ mod tests {
             let pmi_digest = digest(&firmware);
             let config_digest = digest(&compressed);
             let manifest = Manifest {
-                schema_version: 2,
+                schema_version: Default::default(),
                 media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
                 artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
                 config: ConfigDescriptor::canonical(),
@@ -825,7 +825,7 @@ mod tests {
             Layer::Scute(scute_desc)
         };
         let manifest = Manifest {
-            schema_version: 2,
+            schema_version: Default::default(),
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: ConfigDescriptor::canonical(),

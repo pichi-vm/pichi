@@ -133,8 +133,8 @@ impl OciLayout {
         let index: LayoutIndex =
             serde_json::from_slice(&Self::small(&root, Path::new("index.json"), METADATA_CAP)?)?;
         ensure!(
-            index.schema_version == 2 && index.media_type == INDEX_TYPE,
-            "invalid OCI index schema or media type"
+            index.media_type == INDEX_TYPE,
+            "invalid OCI index media type"
         );
         ensure!(!index.manifests.is_empty(), "OCI index has no manifests");
         let store = FilesystemBlobStore::new(staging.path());
@@ -207,8 +207,8 @@ impl OciLayout {
             let manifest =
                 Manifest::decode_json(bytes.as_slice()).context("invalid OCI manifest")?;
             ensure!(
-                manifest.schema_version == 2 && manifest.media_type == MANIFEST_TYPE,
-                "invalid manifest schema or media type"
+                manifest.media_type == MANIFEST_TYPE,
+                "invalid manifest media type"
             );
             ensure!(!manifest.layers.is_empty(), "OCI artifact has no layers");
             let config = &manifest.config;

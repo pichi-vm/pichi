@@ -199,7 +199,7 @@ mod tests {
         let config = BootConfigFile::try_from(bytes).unwrap();
         config.store(&store).await.unwrap();
         let manifest = Manifest {
-            schema_version: 2,
+            schema_version: Default::default(),
             media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
             artifact_type: conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: conglobate::artifact::ConfigDescriptor::canonical(),
