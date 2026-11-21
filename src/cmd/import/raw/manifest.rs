@@ -27,8 +27,7 @@ use conglobate::artifact::{
 ///   - `dev.pichi.carapace.verity.hash` = `sha256:<hex>` commits the scute root.
 ///     Caller annotations cannot override the commitment.
 /// - `org.opencontainers.image.created` = caller-supplied RFC 3339 string.
-/// - Config descriptor: the canonical OCI empty config (base carapaces carry
-///   no launch contract; `pichi import pmi` sets one if given a `--config`).
+/// - Config descriptor: the caller's stored launch config.
 ///
 /// Calls `Manifest::validate()` defensively to catch any drift in
 /// our own builder against Phase 42 D-07 validation rules. Returns the
@@ -41,6 +40,7 @@ pub(super) trait BaseManifest {
         root: &[u8; 32],
         created_rfc3339: &str,
         extra: &BTreeMap<String, String>,
+        config: ConfigDescriptor,
     ) -> Result<Manifest>;
 }
 
@@ -52,6 +52,7 @@ impl BaseManifest for Manifest {
         root: &[u8; 32],
         created_rfc3339: &str,
         extra: &BTreeMap<String, String>,
+        config: ConfigDescriptor,
     ) -> Result<Manifest> {
         // Caller-supplied provenance annotations go in first; the structural
         // `verity.*` keys below then overwrite (they can't be spoofed via `extra`),
@@ -82,7 +83,7 @@ impl BaseManifest for Manifest {
             schema_version: 2,
             media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
-            config: ConfigDescriptor::canonical(),
+            config,
             layers,
             annotations,
         };
@@ -112,6 +113,7 @@ mod tests {
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
+            ConfigDescriptor::canonical(),
         )
         .unwrap();
         assert!(!m.annotations.contains_key("dev.pichi.carapace.verity.algo"));
@@ -147,6 +149,7 @@ mod tests {
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
+            ConfigDescriptor::canonical(),
         )
         .unwrap();
         let Layer::Scute(scute) = &m.layers[0] else {
@@ -173,6 +176,7 @@ mod tests {
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
+            ConfigDescriptor::canonical(),
         )
         .unwrap();
         let Layer::Scute(scute) = &m.layers[0] else {
@@ -196,6 +200,7 @@ mod tests {
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
+            ConfigDescriptor::canonical(),
         )
         .unwrap();
         // base() already calls validate() internally; double-check is
@@ -204,8 +209,8 @@ mod tests {
     }
 
     /// import produces a base carapace: exactly one Scute layer, no PMI, and
-    /// the canonical OCI empty config (the appliance form is assembled later
-    /// by `pichi import pmi`).
+    /// the supplied config (the appliance form is assembled later by
+    /// `pichi import pmi`).
     #[test]
     fn build_is_carapace_only() {
         let cow_digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into());
@@ -217,6 +222,7 @@ mod tests {
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
+            ConfigDescriptor::canonical(),
         )
         .unwrap();
         assert_eq!(m.layers.len(), 1, "expected exactly 1 layer (Scute)");
@@ -225,7 +231,7 @@ mod tests {
             !m.layers.iter().any(|l| matches!(l, Layer::Pmi(_))),
             "base carapace carries no PMI layer"
         );
-        assert!(m.config.is_empty(), "base carapace uses the empty config");
+        assert_eq!(m.config, ConfigDescriptor::canonical());
     }
 
     /// Caller annotations merge in, but structural verity keys can't be spoofed
@@ -259,6 +265,7 @@ mod tests {
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &extra,
+            ConfigDescriptor::canonical(),
         )
         .unwrap();
         // provenance carried verbatim
