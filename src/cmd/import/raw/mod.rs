@@ -180,7 +180,7 @@ impl StagedImport {
                         .into(),
                     salt: header.parameters.salt.into(),
                     digest: cow_digest.to_string(),
-                    size: size.to_string(),
+                    size: std::num::NonZeroU64::new(size).context("empty COW")?.into(),
                     verity_digest: verity_digest.to_string(),
                 },
             },
@@ -411,7 +411,7 @@ mod tests {
                 Some(&format!("sha256:{}", hex::encode(formatted.root_hash)))
             );
             assert_eq!(scute.annotations.digest, staged.cow_digest.to_string());
-            assert_eq!(scute.annotations.size, size.to_string());
+            assert_eq!(scute.annotations.size.get(), size);
             assert_eq!(
                 scute.annotations.verity_digest,
                 Digest::Sha256(Sha256::digest(&formatted.blob).into()).to_string()

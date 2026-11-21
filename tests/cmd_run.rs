@@ -97,7 +97,9 @@ async fn populate_bootable_with_requirements(
                 size: cow_bytes.len() as u64,
                 annotations: ScuteAnnotations {
                     digest: cow_digest.to_string(),
-                    size: cow_bytes.len().to_string(),
+                    size: std::num::NonZeroU64::new(cow_bytes.len() as u64)
+                        .unwrap()
+                        .into(),
                     verity_digest: sha256_digest(b"pending fixture tree").to_string(),
                     data_blocks: std::num::NonZeroU64::new((cow_bytes.len() as u64).div_ceil(4096))
                         .unwrap()
@@ -386,7 +388,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 size: wire.len() as u64,
                 annotations: ScuteAnnotations {
                     digest: sha256_digest(&data).to_string(),
-                    size: data.len().to_string(),
+                    size: std::num::NonZeroU64::new(data.len() as u64).unwrap().into(),
                     verity_digest: sha256_digest(b"pending fixture tree").to_string(),
                     data_blocks: std::num::NonZeroU64::new(2).unwrap().into(),
                     salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),

@@ -64,7 +64,7 @@ async fn insert_manifest(
             size: 1024,
             annotations: ScuteAnnotations {
                 digest: scute_digest.clone(),
-                size: (1024).to_string(),
+                size: std::num::NonZeroU64::new(1024).unwrap().into(),
                 verity_digest: format!("sha256:{}", "00".repeat(32)),
                 data_blocks: std::num::NonZeroU64::MIN.into(),
                 salt: format!("{:0<8}", salt_seed)

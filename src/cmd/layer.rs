@@ -321,7 +321,7 @@ impl PreparedLayer {
             output,
             hash: Sha256::new(),
             count: 0,
-            expected: scute.annotations.size.parse()?,
+            expected: scute.annotations.size.get(),
         };
         let root = header.format_padded(&mut decoded, hash)?;
         let count = decoded.count;
@@ -896,10 +896,10 @@ mod tests {
             };
             match damage {
                 "short size" => {
-                    scute.annotations.size = "4096".into();
+                    scute.annotations.size = std::num::NonZeroU64::new(4096).unwrap().into();
                 }
                 "long size" => {
-                    scute.annotations.size = "4098".into();
+                    scute.annotations.size = std::num::NonZeroU64::new(4098).unwrap().into();
                 }
                 "content digest" => scute.annotations.digest = Digest::Sha256([0; 32]).to_string(),
                 "verity digest" => {

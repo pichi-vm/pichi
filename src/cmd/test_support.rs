@@ -32,7 +32,7 @@ impl ScuteFixture for [u8] {
             size: wire.len() as u64,
             annotations: ScuteAnnotations {
                 digest: Digest::Sha256(Sha256::digest(self).into()).to_string(),
-                size: self.len().to_string(),
+                size: std::num::NonZeroU64::new(self.len() as u64).unwrap().into(),
                 data_blocks: std::num::NonZeroU64::new((self.len() as u64).div_ceil(4096))
                     .unwrap()
                     .into(),

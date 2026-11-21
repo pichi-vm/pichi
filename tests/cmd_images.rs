@@ -51,7 +51,7 @@ async fn populate(
         annotations: ScuteAnnotations {
             digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .into(),
-            size: (4096).to_string(),
+            size: std::num::NonZeroU64::new(4096).unwrap().into(),
             verity_digest: format!("sha256:{}", "00".repeat(32)),
             data_blocks: std::num::NonZeroU64::MIN.into(),
             salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),

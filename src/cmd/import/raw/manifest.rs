@@ -93,7 +93,7 @@ mod tests {
             size: 16384,
             annotations: ScuteAnnotations {
                 digest: digest.to_string(),
-                size: "16384".into(),
+                size: std::num::NonZeroU64::new(16384).unwrap().into(),
                 verity_digest: Digest::Sha256([2; 32]).to_string(),
                 data_blocks: std::num::NonZeroU64::new(4).unwrap().into(),
                 salt: devmap_verity::Salt::new(salt).unwrap().into(),
