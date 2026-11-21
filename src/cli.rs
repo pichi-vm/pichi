@@ -142,9 +142,9 @@ pub struct ImportPmiArgs {
     /// validated before import; empty configuration is omitted from the image.
     #[arg(long)]
     pub bootconfig: Option<std::path::PathBuf>,
-    /// Optional launch-contract config (JSON or YAML with a `requirements`
-    /// section; memory in bytes). Stored as the manifest config blob
-    /// (`vnd.pichi.config.v1+json`) instead of the OCI empty config.
+    /// Launch config (JSON or YAML with a `requirements` section; memory in MiB).
+    /// Omit to inherit the carapace's config, or store Pichi's default config
+    /// when importing without a carapace.
     #[arg(long)]
     pub config: Option<std::path::PathBuf>,
     /// Reference (`image:tag` or `image@sha256:...`) of a cached carapace whose
