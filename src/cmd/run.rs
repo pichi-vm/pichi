@@ -565,12 +565,12 @@ mod tests {
             let data = vec![byte; 8193];
             let digest = sha256_digest(&data);
             store.put_blob(&digest, &data).await.unwrap();
-            let scute = data.descriptor(&tip, false);
+            let mut scute = data.descriptor(&tip, false);
             manifest.layers.push(Layer::Scute(scute.clone()));
             let header = manifest.verity_header(&scute, Some(scute.size)).unwrap();
-            tip = header
-                .format_padded(data.as_slice(), &mut std::io::Cursor::new(Vec::new()))
-                .unwrap();
+            let mut verity = std::io::Cursor::new(Vec::new());
+            tip = header.format_padded(data.as_slice(), &mut verity).unwrap();
+            scute.annotations.verity_digest = sha256_digest(verity.get_ref()).to_string();
             scutes.push(scute);
         }
         manifest.layers = scutes.iter().cloned().map(Layer::Scute).collect();

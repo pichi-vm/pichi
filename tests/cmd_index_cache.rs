@@ -14,6 +14,8 @@ mod storage;
 use storage::Storage as _;
 
 use conglobate::artifact::Digest;
+use devmap_verity::Format as _;
+use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -39,7 +41,7 @@ impl Fixture {
         let config = Self::put(&store, b"{}").await;
         // One data block has no tree levels: its root hashes the salt and block.
         let root = Sha256::digest([&[0; 32][..], &[42; 4096][..]].concat());
-        let bytes = serde_json::to_vec(&json!({
+        let mut manifest = json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "artifactType": "application/vnd.pichi.artifact.v1+json",
@@ -52,7 +54,10 @@ impl Fixture {
                 "digest": layer.to_string(), "size": 4096,
                 "annotations": {
                     "dev.pichi.scute.verity.salt": "00".repeat(32),
-                    "dev.pichi.scute.verity.data-blocks": "1"
+                    "dev.pichi.scute.verity.data-blocks": "1",
+                    "dev.pichi.scute.size": "4096",
+                    "dev.pichi.scute.digest": layer.to_string(),
+                    "dev.pichi.scute.verity.digest": Digest::Sha256([0;32]).to_string()
                 }
             }],
             "annotations": {
@@ -62,8 +67,20 @@ impl Fixture {
                 "dev.pichi.carapace.verity.hash-type": "1",
                 "dev.pichi.carapace.verity.hash": format!("sha256:{}", hex::encode(root))
             }
-        }))
-        .unwrap();
+        });
+        let typed: conglobate::artifact::Manifest =
+            serde_json::from_value(manifest.clone()).unwrap();
+        let conglobate::artifact::Layer::Scute(scute) = &typed.layers[0] else {
+            unreachable!()
+        };
+        let header = typed.verity_header(scute, Some(4096)).unwrap();
+        let mut verity = std::io::Cursor::new(Vec::new());
+        header.format(&[42; 4096][..], &mut verity).unwrap();
+        manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.digest"] =
+            Digest::Sha256(Sha256::digest(verity.get_ref()).into())
+                .to_string()
+                .into();
+        let bytes = serde_json::to_vec(&manifest).unwrap();
         let manifest = Self::put(&store, &bytes).await;
         Self {
             directory,

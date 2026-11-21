@@ -7,7 +7,7 @@
 mod manifest;
 
 use std::fs::File;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
@@ -128,11 +128,12 @@ impl StagedImport {
         let size = planned.size();
         let exceptions = planned.exceptions();
         let cow = NamedTempFile::new_in(scratch)?;
-        let mut verity = NamedTempFile::new_in(scratch)?;
+        let mut hash = tempfile::tempfile_in(scratch)?;
         let mut reader = StoredScute {
             input: planned,
             output: BufWriter::new(cow.as_file()),
             hash: Sha256::new(),
+            count: 0,
         };
         let header = VerityParams {
             data_block_size: 4096,
@@ -142,9 +143,23 @@ impl StagedImport {
         }
         .header(size)?;
         let root = header
-            .format_padded(&mut reader, verity.as_file_mut())
+            .format_padded(&mut reader, &mut hash)
             .context("streaming scute and formatting verity")?;
-        let cow_digest = reader.finish()?;
+        let (cow_digest, measured_size) = reader.finish()?;
+        anyhow::ensure!(measured_size == size, "planned scute size mismatch");
+        hash.rewind()?;
+        let verity = NamedTempFile::new_in(scratch)?;
+        let mut measured = StoredScute {
+            input: hash,
+            output: BufWriter::new(verity.as_file()),
+            hash: Sha256::new(),
+            count: 0,
+        };
+        anyhow::ensure!(
+            io::copy(&mut measured, &mut io::sink())? == header.total_size()?,
+            "generated verity file size mismatch"
+        );
+        let (verity_digest, _) = measured.finish()?;
         cow.as_file().sync_all()?;
         verity.as_file().sync_all()?;
         if !args.quiet {
@@ -162,6 +177,9 @@ impl StagedImport {
                 annotations: ScuteAnnotations {
                     data_blocks: size.div_ceil(4096).try_into().context("empty COW")?,
                     salt: hex::encode(&salt),
+                    digest: cow_digest.to_string(),
+                    size: size.to_string(),
+                    verity_digest: verity_digest.to_string(),
                 },
             },
             ConfigDescriptor::for_config(config_digest.to_string(), config_bytes.len() as u64),
@@ -190,18 +208,23 @@ struct StoredScute<R, W> {
     input: R,
     output: W,
     hash: Sha256,
+    count: u64,
 }
 
 impl<R, W: Write> StoredScute<R, W> {
-    fn finish(mut self) -> io::Result<Digest> {
+    fn finish(mut self) -> io::Result<(Digest, u64)> {
         self.output.flush()?;
-        Ok(Digest::Sha256(self.hash.finalize().into()))
+        Ok((Digest::Sha256(self.hash.finalize().into()), self.count))
     }
 }
 
 impl<R: Read, W: Write> Read for StoredScute<R, W> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         let count = self.input.read(output)?;
+        self.count = self
+            .count
+            .checked_add(count as u64)
+            .ok_or(io::ErrorKind::InvalidData)?;
         self.output.write_all(&output[..count])?;
         self.hash.update(&output[..count]);
         Ok(count)
@@ -384,6 +407,12 @@ mod tests {
             assert_eq!(
                 manifest.annotations.get("dev.pichi.carapace.verity.hash"),
                 Some(&format!("sha256:{}", hex::encode(formatted.root_hash)))
+            );
+            assert_eq!(scute.annotations.digest, staged.cow_digest.to_string());
+            assert_eq!(scute.annotations.size, size.to_string());
+            assert_eq!(
+                scute.annotations.verity_digest,
+                Digest::Sha256(Sha256::digest(&formatted.blob).into()).to_string()
             );
             assert_eq!(std::fs::read(staged.verity.path()).unwrap(), formatted.blob);
             drop(staged);

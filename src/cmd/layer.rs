@@ -726,18 +726,21 @@ mod tests {
             } else {
                 data.clone()
             };
-            let root = VerityParams {
+            let verity = VerityParams {
                 data_block_size: 4096,
                 hash_block_size: 4096,
                 salt: vec![0; 32],
                 uuid: [0; 16],
             }
             .compute(&data)
-            .unwrap()
-            .root_hash;
+            .unwrap();
+            let root = verity.root_hash;
             let annotations = serde_json::json!({
                 "dev.pichi.scute.verity.salt": hex::encode([0; 32]),
                 "dev.pichi.scute.verity.data-blocks": declared.to_string(),
+                "dev.pichi.scute.size": data.len().to_string(),
+                "dev.pichi.scute.digest": Digest::Sha256(Sha256::digest(&data).into()).to_string(),
+                "dev.pichi.scute.verity.digest": Digest::Sha256(Sha256::digest(&verity.blob).into()).to_string(),
             });
             let manifest = serde_json::json!({
                 "schemaVersion": 2,
@@ -1205,6 +1208,17 @@ mod tests {
             };
             scute.annotations.data_blocks = (count as u64).try_into().unwrap();
             scute.annotations.salt = format!("{}{suffix}", "00".repeat(32));
+            let scute = scute.clone();
+            let header = fixture.manifest.verity_header(&scute, None).unwrap();
+            let mut tree = std::io::Cursor::new(Vec::new());
+            header
+                .format_padded(fixture.data.as_slice(), &mut tree)
+                .unwrap();
+            let Layer::ScuteZstd(scute) = &mut fixture.manifest.layers[0] else {
+                unreachable!()
+            };
+            scute.annotations.verity_digest =
+                Digest::Sha256(Sha256::digest(tree.get_ref()).into()).to_string();
             PreparedLayer::prepare_cached(&fixture.manifest, &fixture.manifest.layers[0], &store)
                 .await
                 .unwrap();
@@ -1304,6 +1318,9 @@ mod tests {
                 "annotations": {
                     "dev.pichi.scute.verity.salt": hex::encode([0; 32]),
                     "dev.pichi.scute.verity.data-blocks": "1",
+                    "dev.pichi.scute.size": "4096",
+                    "dev.pichi.scute.digest": Digest::Sha256([1;32]).to_string(),
+                    "dev.pichi.scute.verity.digest": Digest::Sha256([2;32]).to_string(),
                 },
             }],
             "annotations": {

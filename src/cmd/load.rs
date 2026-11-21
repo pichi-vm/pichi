@@ -695,6 +695,9 @@ pub(super) mod tests {
                 "annotations": {
                     "dev.pichi.scute.verity.salt": hex::encode(self.tip),
                     "dev.pichi.scute.verity.data-blocks": (cow.len() as u64).div_ceil(4096).to_string(),
+                    "dev.pichi.scute.size": cow.len().to_string(),
+                    "dev.pichi.scute.digest": Digest::Sha256(Sha256::digest(&cow).into()).to_string(),
+                    "dev.pichi.scute.verity.digest": Digest::Sha256(Sha256::digest(&output.blob).into()).to_string(),
                 },
             }));
             self.blobs.push(wire);

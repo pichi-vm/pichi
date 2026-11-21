@@ -96,6 +96,9 @@ async fn populate_bootable_with_requirements(
                 digest: cow_digest.to_string(),
                 size: cow_bytes.len() as u64,
                 annotations: ScuteAnnotations {
+                    digest: cow_digest.to_string(),
+                    size: cow_bytes.len().to_string(),
+                    verity_digest: sha256_digest(b"pending fixture tree").to_string(),
                     data_blocks: (cow_bytes.len() as u64).div_ceil(4096).try_into().unwrap(),
                     salt: "00".repeat(32),
                 },
@@ -121,9 +124,17 @@ async fn populate_bootable_with_requirements(
     let header = manifest.verity_header(scute, Some(scute.size)).unwrap();
     let source = blob_store.blob_path(&cow_digest);
     std::fs::create_dir_all(source.prepared_dir()).unwrap();
-    let verity =
-        std::fs::File::create(source.verity_path(&sha256_digest(&header.encode()))).unwrap();
-    let root = header.format(cow_bytes.as_slice(), verity).unwrap();
+    let mut verity = std::io::Cursor::new(Vec::new());
+    let root = header.format(cow_bytes.as_slice(), &mut verity).unwrap();
+    std::fs::write(
+        source.verity_path(&sha256_digest(&header.encode())),
+        verity.get_ref(),
+    )
+    .unwrap();
+    let Layer::Scute(scute) = &mut manifest.layers[0] else {
+        unreachable!()
+    };
+    scute.annotations.verity_digest = sha256_digest(verity.get_ref()).to_string();
     manifest.annotations.insert(
         "dev.pichi.carapace.verity.hash".into(),
         format!("sha256:{}", hex::encode(root)),
@@ -372,6 +383,9 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 digest: digest.to_string(),
                 size: wire.len() as u64,
                 annotations: ScuteAnnotations {
+                    digest: sha256_digest(&data).to_string(),
+                    size: data.len().to_string(),
+                    verity_digest: sha256_digest(b"pending fixture tree").to_string(),
                     data_blocks: 2u64.try_into().unwrap(),
                     salt: "00".repeat(32),
                 },
@@ -386,9 +400,12 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             };
             let header = manifest.verity_header(scute, None).unwrap();
             data.resize(8192, 0);
-            let root = header
-                .format(data.as_slice(), std::io::Cursor::new(Vec::new()))
-                .unwrap();
+            let mut verity = std::io::Cursor::new(Vec::new());
+            let root = header.format(data.as_slice(), &mut verity).unwrap();
+            let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut manifest.layers[0] else {
+                unreachable!()
+            };
+            scute.annotations.verity_digest = sha256_digest(verity.get_ref()).to_string();
             manifest.annotations.insert(
                 "dev.pichi.carapace.verity.hash".into(),
                 format!("sha256:{}", hex::encode(root)),

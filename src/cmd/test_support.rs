@@ -14,6 +14,14 @@ impl ScuteFixture for [u8] {
     fn descriptor(&self, salt: &[u8], compressed: bool) -> conglobate::artifact::ScuteDescriptor {
         use conglobate::artifact::{Digest, ScuteAnnotations, ScuteDescriptor};
         use sha2::{Digest as _, Sha256};
+        let tree = super::verity::VerityParams {
+            data_block_size: 4096,
+            hash_block_size: 4096,
+            salt: salt.to_vec(),
+            uuid: [0; 16],
+        }
+        .compute(self)
+        .unwrap();
         let wire = if compressed {
             ruzstd::encoding::compress_to_vec(self, ruzstd::encoding::CompressionLevel::Fastest)
         } else {
@@ -23,8 +31,11 @@ impl ScuteFixture for [u8] {
             digest: Digest::Sha256(Sha256::digest(&wire).into()).to_string(),
             size: wire.len() as u64,
             annotations: ScuteAnnotations {
+                digest: Digest::Sha256(Sha256::digest(self).into()).to_string(),
+                size: self.len().to_string(),
                 data_blocks: (self.len() as u64).div_ceil(4096).try_into().unwrap(),
                 salt: hex::encode(salt),
+                verity_digest: Digest::Sha256(Sha256::digest(&tree.blob).into()).to_string(),
             },
         }
     }

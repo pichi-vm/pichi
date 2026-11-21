@@ -404,7 +404,7 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         // Pre-set the tag in the cache.
-        let layer = Digest::Sha256([42; 32]);
+        let layer = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest([0; 4096]).into());
         let (bytes, cached) = make_scute_manifest(&layer, 4096, &[0; 4096], false);
         blob_store.put_blob(&cached, &bytes).await.unwrap();
         db.set_tag(&target.to_string(), &cached).await.unwrap();
@@ -1194,7 +1194,11 @@ mod tests {
                 scute.annotations.salt = hex::encode(parent);
                 let mut parameters = pull_side_verity_params();
                 parameters.salt = parent.to_vec();
-                parent = parameters.compute(&data).unwrap().root_hash;
+                let tree = parameters.compute(&data).unwrap();
+                parent = tree.root_hash;
+                scute.annotations.verity_digest =
+                    Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&tree.blob).into())
+                        .to_string();
                 layers.push(next.layers[0].clone());
                 manifest = Some(next);
                 registry.insert_blob("ghcr.io", "example/foo", digest, Bytes::from(wire));
@@ -1264,6 +1268,11 @@ mod tests {
                     unreachable!()
                 };
                 scute.annotations.salt = hex::encode(&params.salt);
+                scute.annotations.verity_digest = Digest::Sha256(
+                    <sha2::Sha256 as sha2::Digest>::digest(&params.compute(&data).unwrap().blob)
+                        .into(),
+                )
+                .to_string();
                 manifest.annotations.insert(
                     "dev.pichi.carapace.verity.hash".into(),
                     format!(

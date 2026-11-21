@@ -366,6 +366,9 @@ mod tests {
                 digest: scute_digest_str.clone(),
                 size: 1024,
                 annotations: ScuteAnnotations {
+                    digest: scute_digest_str.clone(),
+                    size: "1024".into(),
+                    verity_digest: Digest::Sha256([0; 32]).to_string(),
                     data_blocks: 1u64.try_into().unwrap(),
                     salt: "00000000".into(),
                 },
