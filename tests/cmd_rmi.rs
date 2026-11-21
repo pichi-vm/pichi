@@ -187,9 +187,8 @@ fn count_blob_files(graphroot: &std::path::Path) -> usize {
 }
 
 /// CACHE-04 / D-08: after rmi, blobs/sha256/ contains ZERO files for an
-/// artifact produced by `pichi import`. Pre-rmi shape: `<cow>` + `<cow>.prepared/<key>.verity`
-/// + `<manifest>` (3 entries; import is identity-decompression so no `.deflated`
-/// per D-04). The `.verity` sidecar MUST be unlinked together with the cow
+/// artifact produced by `pichi import`: COW, verity, config, manifest and index.
+/// The `.verity` sidecar MUST be unlinked together with the cow
 /// inside the same `with_index_lock` window.
 #[tokio::test]
 async fn rmi_after_import_leaves_no_orphans() {
@@ -213,12 +212,12 @@ async fn rmi_after_import_leaves_no_orphans() {
         .assert()
         .success();
 
-    // Pre-rmi: 4 entries (cow + .verity + manifest + index); explicitly assert NO
+    // Pre-rmi: 5 files (cow + .verity + config + manifest + index); assert NO
     // .deflated exists (D-04: identity-decompression import skips .deflated).
     let pre_count = count_blob_files(&g);
     assert_eq!(
-        pre_count, 4,
-        "pre-rmi: expected 4 entries (cow + manifest + index + .verity sidecar); got {pre_count}"
+        pre_count, 5,
+        "pre-rmi: expected cow, verity, config, manifest and index; got {pre_count}"
     );
     let blobs = g.join("blobs").join("sha256");
     let deflated_present = std::fs::read_dir(&blobs)
@@ -254,8 +253,8 @@ async fn rmi_after_import_leaves_no_orphans() {
 
 /// CACHE-04: appliance rmi (base carapace + imported PMI/boot configuration).
 /// Boot configuration has a prepared native text file but no verity tree.
-/// Pre-rmi: 9 files (cow + .verity + carapace-manifest + pmi + encoded bootconfig
-/// + native bootconfig + appliance-manifest + two indexes). Removing both tags
+/// Pre-rmi: 10 files (cow + .verity + config + carapace-manifest + pmi + encoded
+/// bootconfig + native bootconfig + appliance-manifest + two indexes). Removing both tags
 /// leaves zero files.
 #[tokio::test]
 async fn rmi_after_attach_leaves_no_orphans() {
@@ -305,8 +304,8 @@ async fn rmi_after_attach_leaves_no_orphans() {
 
     let pre_count = count_blob_files(&g);
     assert_eq!(
-        pre_count, 9,
-        "pre-rmi: expected 9 (cow + .verity + carapace-manifest + pmi + encoded bootconfig + \
+        pre_count, 10,
+        "pre-rmi: expected 10 (cow + .verity + config + carapace-manifest + pmi + encoded bootconfig + \
          native bootconfig + appliance-manifest + two indexes); got {pre_count}"
     );
 
@@ -364,7 +363,7 @@ async fn rmi_with_other_tag_preserves_source_and_sidecars() {
         .unwrap();
 
     let pre_count = count_blob_files(&g);
-    assert_eq!(pre_count, 4, "pre-rmi: expected 4 entries");
+    assert_eq!(pre_count, 5, "pre-rmi: expected 5 files");
 
     // rmi tag1 with --force (required because another tag references the
     // same manifest).
@@ -375,7 +374,7 @@ async fn rmi_with_other_tag_preserves_source_and_sidecars() {
         .assert()
         .success();
 
-    // tag1 gone, tag2 still resolves, all 4 files (cow + .verity + manifest + index)
+    // tag1 gone, tag2 resolves, all 5 files (cow + .verity + config + manifest + index)
     // STILL present.
     let db = FilesystemTagDb::open(&g).unwrap();
     assert!(
@@ -390,7 +389,7 @@ async fn rmi_with_other_tag_preserves_source_and_sidecars() {
     );
     let post_count = count_blob_files(&g);
     assert_eq!(
-        post_count, 4,
+        post_count, 5,
         "post-rmi --force with shared tag: blobs+sidecars MUST be preserved (refcount integrity); got {post_count}"
     );
 }

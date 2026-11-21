@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use carapace::image::{Plan as _, Planned};
-use conglobate::artifact::{Digest, Manifest, Reference};
+use conglobate::artifact::{Config, ConfigDescriptor, Digest, Manifest, Reference};
 use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use sha2::{Digest as _, Sha256};
 use tempfile::NamedTempFile;
@@ -65,6 +65,7 @@ impl ImportArgs {
         store
             .put_blob_from_path(staged.cow.path(), &staged.cow_digest)
             .await?;
+        store.put_blob(&staged.config.0, &staged.config.1).await?;
         store
             .put_blob(&staged.manifest_digest, &staged.manifest_bytes)
             .await?;
@@ -91,6 +92,7 @@ struct StagedImport {
     cow_digest: Digest,
     verity: NamedTempFile,
     header: devmap_verity::Header,
+    config: (Digest, Vec<u8>),
     manifest_bytes: Vec<u8>,
     manifest_digest: Digest,
     tag: Option<String>,
@@ -149,6 +151,8 @@ impl StagedImport {
             );
             log::info!("pichi import: verity root {}", hex::encode(root));
         }
+        let config_bytes = serde_json::to_vec(&Config::default())?;
+        let config_digest = Digest::Sha256(Sha256::digest(&config_bytes).into());
         let manifest = Manifest::base(
             &cow_digest,
             size,
@@ -156,6 +160,7 @@ impl StagedImport {
             &root,
             &args.created_rfc3339,
             &args.annotations,
+            ConfigDescriptor::for_config(config_digest.to_string(), config_bytes.len() as u64),
         )?;
         let manifest_bytes = serde_json::to_vec(&manifest)?;
         let manifest_digest =
@@ -165,6 +170,7 @@ impl StagedImport {
             cow_digest,
             verity,
             header,
+            config: (config_digest, config_bytes),
             manifest_bytes,
             manifest_digest,
             tag,
@@ -231,13 +237,13 @@ mod tests {
 
         args.run(&graphroot).await.unwrap();
 
-        // Index, manifest, cow and its prepared directory.
+        // Index, manifest, config, cow and its prepared directory.
         let blobs_dir = graphroot.join("blobs").join("sha256");
         let entries: Vec<_> = std::fs::read_dir(&blobs_dir).unwrap().collect();
         assert_eq!(
             entries.len(),
-            4,
-            "expected index, manifest, cow and preparation"
+            5,
+            "expected index, manifest, config, cow and preparation"
         );
 
         let verity_path = std::fs::read_dir(&blobs_dir)
