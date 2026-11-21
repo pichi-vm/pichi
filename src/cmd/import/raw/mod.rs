@@ -175,7 +175,9 @@ impl StagedImport {
                 digest: cow_digest.to_string(),
                 size,
                 annotations: ScuteAnnotations {
-                    data_blocks: size.div_ceil(4096).try_into().context("empty COW")?,
+                    data_blocks: std::num::NonZeroU64::new(size.div_ceil(4096))
+                        .context("empty COW")?
+                        .into(),
                     salt: hex::encode(&salt),
                     digest: cow_digest.to_string(),
                     size: size.to_string(),

@@ -537,7 +537,7 @@ dependencies = [
 [[package]]
 name = "conglobate"
 version = "0.2.0"
-source = "git+https://github.com/pichi-vm/conglobate?branch=main#109b47508cbfb2fc34158ecafdf554b9629ace8a"
+source = "git+https://github.com/pichi-vm/conglobate?branch=main#c9f55c3cbd2b7a2c0d207ac777b671fc1f2d8c2d"
 dependencies = [
  "hex",
  "humantime-serde",

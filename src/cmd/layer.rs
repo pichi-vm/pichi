@@ -1251,7 +1251,7 @@ mod tests {
             let Layer::ScuteZstd(scute) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
-            scute.annotations.data_blocks = (count as u64).try_into().unwrap();
+            scute.annotations.data_blocks = std::num::NonZeroU64::new(count as u64).unwrap().into();
             scute.annotations.salt = format!("{}{suffix}", "00".repeat(32));
             let scute = scute.clone();
             let header = fixture.manifest.verity_header(&scute, None).unwrap();

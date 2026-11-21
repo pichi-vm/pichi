@@ -99,7 +99,9 @@ async fn populate_bootable_with_requirements(
                     digest: cow_digest.to_string(),
                     size: cow_bytes.len().to_string(),
                     verity_digest: sha256_digest(b"pending fixture tree").to_string(),
-                    data_blocks: (cow_bytes.len() as u64).div_ceil(4096).try_into().unwrap(),
+                    data_blocks: std::num::NonZeroU64::new((cow_bytes.len() as u64).div_ceil(4096))
+                        .unwrap()
+                        .into(),
                     salt: "00".repeat(32),
                 },
             }),
@@ -386,7 +388,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                     digest: sha256_digest(&data).to_string(),
                     size: data.len().to_string(),
                     verity_digest: sha256_digest(b"pending fixture tree").to_string(),
-                    data_blocks: 2u64.try_into().unwrap(),
+                    data_blocks: std::num::NonZeroU64::new(2).unwrap().into(),
                     salt: "00".repeat(32),
                 },
             };

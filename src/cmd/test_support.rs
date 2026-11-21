@@ -33,7 +33,9 @@ impl ScuteFixture for [u8] {
             annotations: ScuteAnnotations {
                 digest: Digest::Sha256(Sha256::digest(self).into()).to_string(),
                 size: self.len().to_string(),
-                data_blocks: (self.len() as u64).div_ceil(4096).try_into().unwrap(),
+                data_blocks: std::num::NonZeroU64::new((self.len() as u64).div_ceil(4096))
+                    .unwrap()
+                    .into(),
                 salt: hex::encode(salt),
                 verity_digest: Digest::Sha256(Sha256::digest(&tree.blob).into()).to_string(),
             },

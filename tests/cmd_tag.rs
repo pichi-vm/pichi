@@ -50,7 +50,7 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::a
                     .into(),
                 size: (1024).to_string(),
                 verity_digest: format!("sha256:{}", "00".repeat(32)),
-                data_blocks: 1u64.try_into().unwrap(),
+                data_blocks: std::num::NonZeroU64::MIN.into(),
                 salt: "00ff".into(),
             },
         })],

@@ -95,7 +95,7 @@ mod tests {
                 digest: digest.to_string(),
                 size: "16384".into(),
                 verity_digest: Digest::Sha256([2; 32]).to_string(),
-                data_blocks: 4u64.try_into().unwrap(),
+                data_blocks: std::num::NonZeroU64::new(4).unwrap().into(),
                 salt: hex::encode(salt),
             },
         }

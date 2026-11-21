@@ -53,7 +53,7 @@ async fn populate(
                 .into(),
             size: (4096).to_string(),
             verity_digest: format!("sha256:{}", "00".repeat(32)),
-            data_blocks: 1u64.try_into().unwrap(),
+            data_blocks: std::num::NonZeroU64::MIN.into(),
             salt: "00".repeat(32),
         },
     })];
