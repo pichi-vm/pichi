@@ -312,7 +312,6 @@ async fn read_launch_contract(path: &Path) -> Result<(Digest, Vec<u8>)> {
         },
     )
     .with_context(|| format!("parse --config: {}", path.display()))?;
-    cfg.validate().context("invalid --config")?;
     let bytes = serde_json::to_vec(&cfg).context("serialise config blob")?;
     Ok((
         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into()),

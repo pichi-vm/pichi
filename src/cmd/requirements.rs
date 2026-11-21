@@ -55,7 +55,6 @@ pub(super) async fn load_config(
         .await
         .with_context(|| format!("reading config blob {digest}"))?;
     let config: Config = serde_json::from_slice(&bytes).context("parsing config blob")?;
-    config.validate().context("invalid config blob")?;
     Ok(Some(config))
 }
 
