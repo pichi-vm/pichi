@@ -14,6 +14,7 @@ use pichi_storage::{BlobSidecarExt, BlobStore, FilesystemBlobStore};
 use wait_timeout::ChildExt;
 
 use super::process::ChildExt as _;
+use super::storage::Storage as _;
 use super::{PICHI_BIN, SMOKE_SOURCE_REF};
 
 #[derive(Debug)]
@@ -207,7 +208,7 @@ impl SubmoduleFixture {
         let stderr = self.tmp.path().join(format!("{tag}.err"));
         let start = Instant::now();
         let mut child = Command::new(PICHI_BIN)
-            .env("XDG_DATA_HOME", &self.graphroot)
+            .storage(&self.graphroot)
             .env("PATH", super::dillo_path())
             .stdin(Stdio::null())
             .args([

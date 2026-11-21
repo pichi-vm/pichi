@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::process::ChildExt as _;
+use super::storage::Storage as _;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -147,7 +148,7 @@ impl Builds {
         let revision = String::from_utf8(revision.stdout).unwrap();
         let log = fs::File::create(repo.join("build.log")).unwrap();
         let mut child = Command::new(super::PICHI_BIN)
-            .env("XDG_DATA_HOME", &self.cache)
+            .storage(&self.cache)
             .env("PATH", super::dillo_path())
             .args([
                 "build",
@@ -178,7 +179,7 @@ impl Builds {
         let path = self.directory.join(format!("{name}.boot.log"));
         let log = fs::File::create(&path).unwrap();
         let mut child = Command::new(super::PICHI_BIN)
-            .env("XDG_DATA_HOME", &self.cache)
+            .storage(&self.cache)
             .env("PATH", super::dillo_path())
             .args(["run", tag, "--memory", "2048m", "--cpus", "1"])
             .stdin(Stdio::null())

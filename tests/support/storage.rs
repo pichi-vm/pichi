@@ -4,7 +4,7 @@
 use std::path::Path;
 
 /// Give every subprocess the fixture store, including rootful and Windows runs.
-pub(super) trait Storage {
+pub(crate) trait Storage {
     fn storage(&mut self, home: impl AsRef<Path>) -> &mut Self;
 }
 
