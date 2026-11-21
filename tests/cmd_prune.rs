@@ -14,6 +14,10 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
     "amd64"
 };
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
@@ -112,7 +116,7 @@ async fn prune_empty_cache_prints_nothing_to_prune() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["system", "prune"])
         .output()
         .unwrap();
@@ -132,7 +136,7 @@ async fn prune_all_blobs_live_prints_nothing_to_prune() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -149,7 +153,7 @@ async fn prune_all_blobs_live_prints_nothing_to_prune() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["system", "prune"])
         .output()
         .unwrap();
@@ -171,7 +175,7 @@ async fn prune_after_import_then_rmi_reports_zero_orphans() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -185,7 +189,7 @@ async fn prune_after_import_then_rmi_reports_zero_orphans() {
         .success();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", "myapp:base"])
         .assert()
         .success();
@@ -197,7 +201,7 @@ async fn prune_after_import_then_rmi_reports_zero_orphans() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["system", "prune"])
         .output()
         .unwrap();
@@ -221,7 +225,7 @@ async fn prune_shared_tag_preservation() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", "--force", "a:1"])
         .assert()
         .success();
@@ -241,7 +245,7 @@ async fn prune_shared_tag_preservation() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["system", "prune"])
         .output()
         .unwrap();
@@ -272,7 +276,7 @@ async fn prune_headless_sidecar_swept_silently() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["system", "prune"])
         .output()
         .unwrap();
@@ -303,7 +307,7 @@ async fn prune_dry_run_preserves_files() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["system", "prune", "--dry-run"])
         .output()
         .unwrap();
@@ -348,13 +352,13 @@ async fn prune_dry_run_then_real_run_byte_identical_stdout() {
 
     let out1 = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp1.path())
+        .storage(tmp1.path())
         .args(["system", "prune", "--dry-run"])
         .output()
         .unwrap();
     let out2 = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp2.path())
+        .storage(tmp2.path())
         .args(["system", "prune"])
         .output()
         .unwrap();
@@ -402,7 +406,7 @@ async fn prune_sorts_orphans_by_digest_ascii() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["system", "prune"])
         .output()
         .unwrap();
@@ -446,7 +450,7 @@ fn prune_counts_all_variants_and_headless_files_once() {
     }
     let dry = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["system", "prune", "--dry-run"])
         .assert()
         .success()
@@ -456,7 +460,7 @@ fn prune_counts_all_variants_and_headless_files_once() {
     assert_eq!(std::fs::read_dir(&blobs).unwrap().count(), 7);
     let real = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["system", "prune"])
         .assert()
         .success()

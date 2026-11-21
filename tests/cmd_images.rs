@@ -3,6 +3,10 @@
 
 //! Integration tests for `pichi images` (LOCAL-01 / SC1 + D-12..D-19).
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
@@ -83,7 +87,7 @@ async fn images_lists_default_columns() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .arg("images")
         .assert()
         .success()
@@ -111,7 +115,7 @@ async fn images_quiet_prints_full_sha256_digests() {
     let d = populate(&g, "docker.io/library/alpine:3", false).await;
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["images", "--quiet"])
         .assert()
         .success()
@@ -135,7 +139,7 @@ async fn images_format_does_not_html_escape() {
     populate(&g, "docker.io/library/alpine:3", false).await;
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "images",
             "--format",
@@ -160,7 +164,7 @@ async fn images_digests_flag_widens_column_to_full_digest() {
     let d = populate(&g, "docker.io/library/alpine:3", false).await;
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["images", "--digests"])
         .assert()
         .success()

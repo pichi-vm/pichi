@@ -3,18 +3,18 @@
 
 //! Workload listing output through the CLI.
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use assert_cmd::Command;
 
 #[test]
 fn quiet_lists_the_same_full_ids_as_the_table() {
     let root = tempfile::tempdir().unwrap();
-    let config = tempfile::tempdir().unwrap();
     let command = || {
         let mut command = Command::cargo_bin("pichi").unwrap();
-        command
-            .env("XDG_DATA_HOME", root.path())
-            .env("XDG_CONFIG_HOME", config.path())
-            .env("APPDATA", config.path());
+        command.storage(root.path());
         command
     };
     command().args(["ps", "-q"]).assert().success().stdout("");

@@ -3,6 +3,10 @@
 
 //! Integration tests for `pichi inspect` (LOCAL-02 / SC2 / D-20).
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
@@ -74,7 +78,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["inspect", "myapp:base"])
         .assert()
         .success()
@@ -134,7 +138,7 @@ async fn inspect_format_reaches_dotted_annotation() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "inspect",
             "myapp:base",
@@ -187,7 +191,7 @@ async fn inspect_image_index_lists_entries() {
 
     let out = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["inspect", "registry.io/multi:1"])
         .assert()
         .success()
@@ -264,7 +268,7 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
             .unwrap();
         let output = Command::cargo_bin("pichi")
             .unwrap()
-            .env("XDG_DATA_HOME", tmp.path())
+            .storage(tmp.path())
             .args(["inspect", "configured:1"])
             .assert()
             .success()
@@ -280,7 +284,7 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
         );
         Command::cargo_bin("pichi")
             .unwrap()
-            .env("XDG_DATA_HOME", tmp.path())
+            .storage(tmp.path())
             .args([
                 "inspect",
                 "configured:1",
@@ -332,7 +336,7 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
 
     let output = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "inspect", "absent:1", "second:1", "broken:1", "first:1", "second:1", "absent:2",
         ])
@@ -359,7 +363,7 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
     }
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "inspect",
             "second:1",
@@ -373,14 +377,14 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
         .stdout(format!("{}\n{}\n", digests[1], digests[0]));
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["inspect", "absent:1", "broken:1"])
         .assert()
         .code(125)
         .stdout("[]\n");
     let output = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["inspect", "first:1", "--format", "json"])
         .assert()
         .success()

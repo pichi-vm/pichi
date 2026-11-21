@@ -26,6 +26,10 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
     "amd64"
 };
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use std::path::PathBuf;
 
 use assert_cmd::Command;
@@ -62,7 +66,7 @@ async fn pull_never_errors_when_absent() {
     let _g = graphroot(&tmp);
     let assert = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["pull", "--pull=never", "ghcr.io/example/foo:bar"])
         .assert()
         .failure();
@@ -95,7 +99,7 @@ async fn pull_skips_existing_blobs() {
     std::fs::write(&raw, vec![0u8; 4096]).unwrap();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -110,20 +114,20 @@ async fn pull_skips_existing_blobs() {
     // Step 2: push to the test registry; a failed push must fail the test.
     let push = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["push", &format!("{base}/dedup:1")])
         .assert();
     push.success();
     // Step 3: rmi locally then pull; second pull must skip blob bodies.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", &format!("{base}/dedup:1")])
         .assert()
         .success();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["pull", &format!("{base}/dedup:1")])
         .assert()
         .success();
@@ -144,7 +148,7 @@ async fn pull_skips_existing_blobs() {
     let mtimes_before = canonical_mtimes();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["pull", "--pull=always", &format!("{base}/dedup:1")])
         .assert()
         .success();
@@ -171,7 +175,7 @@ async fn pull_always_refetches() {
     std::fs::write(&raw, vec![0u8; 4096]).unwrap();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -185,13 +189,13 @@ async fn pull_always_refetches() {
         .success();
     let push = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["push", &format!("{base}/always:1")])
         .assert();
     push.success();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["pull", "--pull=always", &format!("{base}/always:1")])
         .assert()
         .success();
@@ -212,7 +216,7 @@ async fn pull_newer_skips_when_unchanged() {
     std::fs::write(&raw, vec![0u8; 4096]).unwrap();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -226,13 +230,13 @@ async fn pull_newer_skips_when_unchanged() {
         .success();
     let push = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["push", &format!("{base}/newer:1")])
         .assert();
     push.success();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["pull", "--pull=newer", &format!("{base}/newer:1")])
         .assert()
         .success();
@@ -253,7 +257,7 @@ async fn anonymous_pull() {
     std::fs::write(&raw, vec![0u8; 4096]).unwrap();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -267,7 +271,7 @@ async fn anonymous_pull() {
         .success();
     let push = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["push", &format!("{base}/anon:1")])
         .assert();
     push.success();
@@ -275,7 +279,7 @@ async fn anonymous_pull() {
     let _g2 = graphroot(&tmp2);
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp2.path())
+        .storage(tmp2.path())
         .env_remove("REGISTRY_AUTH_FILE")
         .args(["pull", &format!("{base}/anon:1")])
         .assert()

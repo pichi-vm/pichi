@@ -5,6 +5,10 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "../support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use std::io;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -35,7 +39,7 @@ impl ChildExt for Child {
             let stopped = (|| {
                 let record = record?;
                 let mut stop = Command::new(env!("CARGO_BIN_EXE_pichi"))
-                    .env("XDG_DATA_HOME", data_home)
+                    .storage(data_home)
                     .args(["stop", "--time", "0"])
                     .arg(record.file_name())
                     .stdin(Stdio::null())

@@ -5,6 +5,10 @@
 
 #![allow(clippy::unwrap_used)]
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use assert_cmd::Command;
 
 #[test]
@@ -27,10 +31,7 @@ fn usage_and_command_errors_exit_125() {
     ] {
         Command::cargo_bin("pichi")
             .unwrap()
-            .env("XDG_DATA_HOME", root.path())
-            .env("XDG_CONFIG_HOME", root.path())
-            .env("LOCALAPPDATA", root.path())
-            .env("APPDATA", root.path())
+            .storage(root.path())
             .args(args)
             .assert()
             .code(125);

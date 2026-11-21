@@ -18,6 +18,7 @@
 mod common;
 
 use common::process::ChildExt as _;
+use common::storage::Storage as _;
 use common::{
     SMOKE_CONTEXT, SMOKE_LOCK, SMOKE_PLAN, SMOKE_SOURCE_REF, assert_pichi_ok, pichi,
     prepare_build_image, prepare_smoke_repo, seed_smoke_source_carapace,
@@ -122,7 +123,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     // regression cannot hang CI. Inherit stdio so console noise cannot
     // fill a pipe and deadlock dillo.
     let mut child = std::process::Command::new(common::PICHI_BIN)
-        .env("XDG_DATA_HOME", g)
+        .storage(g)
         .env("PATH", common::dillo_path())
         .args([
             "build",

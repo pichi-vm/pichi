@@ -13,8 +13,7 @@
 //
 // Gating: silently skips when `PICHI_TEST_REGISTRY` is unset (matches the
 // pattern in tests/cmd_pull.rs and tests/cmd_push.rs).
-// The Zot launcher supplies PICHI_TEST_REGISTRY and an isolated user config file
-// enabling HTTP for that registry through ordinary configuration.
+// The storage fixture enables HTTP for PICHI_TEST_REGISTRY in its own config.
 
 #![allow(missing_docs)]
 
@@ -27,6 +26,10 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
 #[path = "support/index.rs"]
 mod index;
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -35,8 +38,7 @@ use pichi_storage::{FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
 /// Standard graphroot helper — matches the layout used by `tests/cmd_pull.rs`
-/// and `tests/cmd_push.rs` so XDG_DATA_HOME redirection lines up with what
-/// the pichi binary expects.
+/// and `tests/cmd_push.rs`, with an explicit graphroot in the fixture config.
 fn graphroot(tmp: &TempDir) -> PathBuf {
     let p = tmp.path().join("pichi").join("storage");
     std::fs::create_dir_all(&p).unwrap();
@@ -122,7 +124,7 @@ async fn bit_identical_round_trip() {
     // Step 1: import — populates `<g>/blobs/sha256/...` and binds the tag.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -151,7 +153,7 @@ async fn bit_identical_round_trip() {
     // Step 2: push to zot. Plan 05 ships cmd::push; this is the upload path.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["push", &tag])
         .assert()
         .success();
@@ -160,7 +162,7 @@ async fn bit_identical_round_trip() {
     // refcounts) removes any blobs that drop to refcount zero.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", &tag])
         .assert()
         .success();
@@ -177,7 +179,7 @@ async fn bit_identical_round_trip() {
     // construction.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["pull", &tag])
         .assert()
         .success();
@@ -265,7 +267,7 @@ async fn bootconfig_and_pmi_are_byte_identical_after_registry_round_trip() {
     let tag = format!("{base}/roundtrip:bootconfig");
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "pmi",
@@ -286,7 +288,7 @@ async fn bootconfig_and_pmi_are_byte_identical_after_registry_round_trip() {
     for operation in ["push", "rmi", "pull"] {
         Command::cargo_bin("pichi")
             .unwrap()
-            .env("XDG_DATA_HOME", tmp.path())
+            .storage(tmp.path())
             .args([operation, &tag])
             .assert()
             .success();
@@ -315,7 +317,7 @@ async fn index_pin_survives_tag_move_and_fresh_cache() {
     let tag = format!("{base}/index-pin:one");
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", source.path())
+        .storage(source.path())
         .args([
             "import",
             "raw",
@@ -359,7 +361,7 @@ async fn index_pin_survives_tag_move_and_fresh_cache() {
     tags.set_tag(&tag, &index_digest).await.unwrap();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", source.path())
+        .storage(source.path())
         .args(["push", &tag])
         .assert()
         .success();
@@ -370,14 +372,14 @@ async fn index_pin_survives_tag_move_and_fresh_cache() {
     tags.set_tag(&release, &index_digest).await.unwrap();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", source.path())
+        .storage(source.path())
         .args(["push", &release])
         .assert()
         .success();
     tags.set_tag(&tag, &second).await.unwrap();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", source.path())
+        .storage(source.path())
         .args(["push", &tag])
         .assert()
         .success();
@@ -385,13 +387,13 @@ async fn index_pin_survives_tag_move_and_fresh_cache() {
     let pin = format!("{base}/index-pin@{index_digest}");
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", destination.path())
+        .storage(destination.path())
         .args(["pull", &pin])
         .assert()
         .success();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", destination.path())
+        .storage(destination.path())
         .args(["system", "prune"])
         .assert()
         .success();

@@ -17,6 +17,10 @@
 pub mod process;
 mod root_disk;
 pub mod stages;
+#[path = "../support/storage.rs"]
+pub(crate) mod storage;
+
+use storage::Storage as _;
 
 const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
     "arm64"
@@ -50,15 +54,13 @@ pub fn dillo_path() -> std::ffi::OsString {
     }
 }
 
-/// Run the `pichi` binary against an isolated cache (`graphroot` via
-/// `XDG_DATA_HOME`) with installed Dillo on Linux or the native build elsewhere.
+/// Run the `pichi` binary with private storage configuration and installed
+/// Dillo on Linux or the native build elsewhere.
 /// `envs` adds extra environment. Returns the captured output; use
 /// [`assert_pichi_ok`] to fail loudly with stdout+stderr.
 pub fn pichi(graphroot: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(PICHI_BIN);
-    cmd.env("XDG_DATA_HOME", graphroot)
-        .env("PATH", dillo_path())
-        .args(args);
+    cmd.storage(graphroot).env("PATH", dillo_path()).args(args);
     if args.first() == Some(&"build") {
         cmd.args(["--build-image", build_image()]);
     }

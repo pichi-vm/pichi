@@ -16,6 +16,10 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
 #[path = "support/index.rs"]
 mod index;
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use std::path::PathBuf;
 
 use assert_cmd::Command;
@@ -49,7 +53,7 @@ async fn import_happy_path() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -78,7 +82,7 @@ async fn import_happy_path() {
     // pichi inspect round-trips the manifest.
     let inspect = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["inspect", "myapp:base"])
         .assert()
         .success()
@@ -115,7 +119,7 @@ async fn import_accepts_non_gpt_input() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -139,7 +143,7 @@ async fn rejects_bad_chunk_size() {
     // Not power of two.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["import", "--chunk-size", "7", raw.to_str().unwrap(), "x:y"])
         .assert()
         .failure();
@@ -147,7 +151,7 @@ async fn rejects_bad_chunk_size() {
     // < 8 sectors.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["import", "--chunk-size", "4", raw.to_str().unwrap(), "x:y"])
         .assert()
         .failure();
@@ -155,7 +159,7 @@ async fn rejects_bad_chunk_size() {
     // > MAX (2048 sectors).
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "--chunk-size",
@@ -177,7 +181,7 @@ async fn bottom_scute_salt_is_zero_prefix_e2e() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -220,7 +224,7 @@ async fn import_without_pmi_has_no_pmi_layer() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -235,7 +239,7 @@ async fn import_without_pmi_has_no_pmi_layer() {
 
     let inspect = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["inspect", "nopmi:base"])
         .assert()
         .success()
@@ -264,7 +268,7 @@ async fn manifest_has_locked_verity_params_e2e() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",

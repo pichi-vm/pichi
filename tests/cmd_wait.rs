@@ -3,18 +3,18 @@
 
 //! Batch wait selection, output order and per-workload failures through the CLI.
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use assert_cmd::Command;
 
 #[test]
 fn waits_in_argument_order_and_continues_after_failed_observation() {
     let root = tempfile::tempdir().unwrap();
-    let config = tempfile::tempdir().unwrap();
     let command = || {
         let mut command = Command::cargo_bin("pichi").unwrap();
-        command
-            .env("XDG_DATA_HOME", root.path())
-            .env("XDG_CONFIG_HOME", config.path())
-            .env("APPDATA", config.path());
+        command.storage(root.path());
         command
     };
     command().arg("wait").assert().code(125).stdout("");

@@ -9,6 +9,10 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
     "amd64"
 };
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use conglobate::artifact::Digest;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use serde_json::json;
@@ -106,7 +110,7 @@ impl Fixture {
 
     fn run(&self, args: &[&str]) -> Output {
         Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
-            .env("XDG_DATA_HOME", self.directory.path())
+            .storage(self.directory.path())
             .args(args)
             .output()
             .unwrap()
@@ -259,7 +263,7 @@ async fn index_export_and_import_preserve_original_bytes() {
         );
         let destination = TempDir::new().unwrap();
         let output = Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
-            .env("XDG_DATA_HOME", destination.path())
+            .storage(destination.path())
             .args(["load", layout.to_str().unwrap()])
             .output()
             .unwrap();
@@ -279,7 +283,7 @@ async fn index_export_and_import_preserve_original_bytes() {
             );
         }
         let output = Command::new(assert_cmd::cargo::cargo_bin!("pichi"))
-            .env("XDG_DATA_HOME", destination.path())
+            .storage(destination.path())
             .args(["inspect", tag])
             .output()
             .unwrap();
@@ -642,7 +646,7 @@ async fn publishers_wait_for_collection_before_writing_blobs() {
         let guard = pichi_storage::lock_exclusive(&root.join("index.json.lock")).unwrap();
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("pichi"));
         command
-            .env("XDG_DATA_HOME", fixture.directory.path())
+            .storage(fixture.directory.path())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         match kind {
