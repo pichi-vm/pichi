@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cmd::verity::VerityFormat as _;
 use anyhow::{Context as _, Result, bail};
-use conglobate::artifact::{Digest, Layer, Manifest, Reference};
+use conglobate::artifact::{Digest, Layer, Manifest, Reference, ScuteDescriptor};
 use pichi_registry::Registry;
 use pichi_storage::{BlobSidecarExt, BlobStore};
 use sha2::{Digest as _, Sha256};
@@ -209,40 +209,43 @@ impl PreparedLayer {
         let mut pmi = None;
         let mut bootconfig = None;
         let scute = match layer {
-            Layer::Scute(scute) => {
-                let mut output = NamedTempFile::new_in(scratch)?;
-                let header = manifest.verity_header(scute, Some(scute.size))?;
-                let (deflated, root) = if header.parameters.data_size()? == scute.size {
-                    (None, header.format_padded(&mut wire, output.as_file_mut())?)
+            Layer::Scute(scute) | Layer::ScuteZstd(scute) => {
+                // Format in private scratch, then verify in file order while publishing
+                // the output bytes. The expected identity comes from the manifest.
+                let mut hash = tempfile::tempfile_in(scratch)?;
+                let header = manifest.verity_header(scute, None)?;
+                let (deflated, root) = if matches!(layer, Layer::ScuteZstd(_)) {
+                    let decoder = Self::decoder(&mut wire)?;
+                    let (data, root) = DecodePipeline::run(decoder, |input| {
+                        Self::prepare_data(input, scute, &header, &mut hash, scratch, data_seed)
+                    })?;
+                    (Some(data), root)
+                } else if header.parameters.data_size()? == scute.size {
+                    (None, header.format_padded(&mut wire, &mut hash)?)
                 } else {
                     let (data, root) = Self::prepare_data(
-                        &mut wire,
-                        &header,
-                        output.as_file_mut(),
-                        scratch,
-                        data_seed,
+                        &mut wire, scute, &header, &mut hash, scratch, data_seed,
                     )?;
                     (Some(data), root)
                 };
+                hash.rewind()?;
+                let output = NamedTempFile::new_in(scratch)?;
+                let mut verified = WireReader {
+                    input: hash,
+                    output: BufWriter::new(output.as_file()),
+                    hash: Sha256::new(),
+                    count: 0,
+                    expected: header.total_size()?,
+                };
+                io::copy(&mut verified, &mut io::sink())?;
+                verified
+                    .finish(&scute.annotations.verity_digest.parse()?)
+                    .context("verifying generated verity file")?;
                 Some(PreparedScute {
                     header,
                     root,
                     verity: output,
                     deflated,
-                })
-            }
-            Layer::ScuteZstd(scute) => {
-                let mut output = NamedTempFile::new_in(scratch)?;
-                let decoder = Self::decoder(&mut wire)?;
-                let header = manifest.verity_header(scute, None)?;
-                let (data, root) = DecodePipeline::run(decoder, |input| {
-                    Self::prepare_data(input, &header, output.as_file_mut(), scratch, data_seed)
-                })?;
-                Some(PreparedScute {
-                    header,
-                    root,
-                    verity: output,
-                    deflated: Some(data),
                 })
             }
             Layer::BootConfig(_) => {
@@ -298,6 +301,7 @@ impl PreparedLayer {
     /// Store the data stream while hashing it, then materialize final-block padding.
     fn prepare_data(
         input: impl Read,
+        scute: &ScuteDescriptor,
         header: &devmap_verity::Header,
         hash: &mut std::fs::File,
         scratch: &Path,
@@ -312,16 +316,18 @@ impl PreparedLayer {
             bail!("prepared data extent exceeds available scratch capacity");
         }
         let output = BufWriter::new(PreparedDataWriter::new(data.as_file_mut(), seed)?);
-        let mut decoded = DecodedReader {
+        let mut decoded = WireReader {
             input,
             output,
+            hash: Sha256::new(),
             count: 0,
-            capacity,
+            expected: scute.annotations.size.parse()?,
         };
         let root = header.format_padded(&mut decoded, hash)?;
-        decoded.output.flush()?;
         let count = decoded.count;
-        drop(decoded);
+        decoded
+            .finish(&scute.annotations.digest.parse()?)
+            .context("verifying decompressed scute")?;
         // Recreate canonical zero padding, even if the clone had a stale tail.
         data.as_file().set_len(count)?;
         data.as_file().set_len(padded_size)?;
@@ -873,6 +879,45 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn compressed_scute_requires_exact_content_and_generated_file_identities() {
+        for (damage, expected) in [
+            ("short size", "layer exceeds descriptor size"),
+            ("long size", "verifying decompressed scute"),
+            ("content digest", "verifying decompressed scute"),
+            ("verity digest", "verifying generated verity file"),
+        ] {
+            let scratch = tempfile::tempdir().unwrap();
+            let mut fixture = Fixture::new(true, 2);
+            let Layer::ScuteZstd(scute) = &mut fixture.manifest.layers[0] else {
+                unreachable!()
+            };
+            match damage {
+                "short size" => {
+                    scute.annotations.size = "4096".into();
+                }
+                "long size" => {
+                    scute.annotations.size = "4098".into();
+                }
+                "content digest" => scute.annotations.digest = Digest::Sha256([0; 32]).to_string(),
+                "verity digest" => {
+                    scute.annotations.verity_digest = Digest::Sha256([0; 32]).to_string()
+                }
+                _ => unreachable!(),
+            }
+            let error = fixture.prepare(scratch.path()).err().expect(damage);
+            assert!(
+                format!("{error:#}").contains(expected),
+                "{damage}: {error:#}"
+            );
+            assert_eq!(
+                std::fs::read_dir(scratch.path()).unwrap().count(),
+                0,
+                "{damage}"
+            );
+        }
     }
 
     #[test]

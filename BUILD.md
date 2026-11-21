@@ -311,7 +311,8 @@ abort the import and leave tags unchanged.
 Every scute also declares `dev.pichi.scute.digest` and `dev.pichi.scute.size`
 for its exact decompressed bytes, and `dev.pichi.scute.verity.digest` for
 its complete generated verity file, including the header and padding.
-The verity root remains a separate commitment. Raw import measures its scute
+Preparation verifies these identities before publishing the image. The
+verity root remains a separate commitment. Raw import measures its scute
 stream and hashes the finalized tree while copying private scratch to the
 output; it does not derive expected identities by rereading output files.
 
