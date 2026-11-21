@@ -358,7 +358,8 @@ there are no per-scute root annotations. The guest still verifies data blocks
 lazily against its trusted root. The v1 format identifiers are unchanged.
 
 `pichi import raw` records the computed chain root in the manifest annotation
-`dev.pichi.carapace.verity.hash`. Each import generates a fresh 32-byte salt
+`dev.pichi.carapace.verity.hash` and stores the default Pichi launch config
+as a blob referenced by the manifest. Each import generates a fresh 32-byte salt
 suffix using the operating system's cryptographic random source, after the
 32-byte zero parent prefix. Importing identical data again preserves the COW
 blob digest but produces a different salt, verity tree, root and manifest.

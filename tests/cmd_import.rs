@@ -24,7 +24,7 @@ use std::path::PathBuf;
 
 use assert_cmd::Command;
 use conglobate::artifact::{Layer, Manifest};
-use pichi_storage::{FilesystemBlobStore, FilesystemTagDb, TagDb};
+use pichi_storage::{BlobStore as _, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
 fn graphroot(tmp: &TempDir) -> PathBuf {
@@ -42,7 +42,7 @@ fn write_small_fixture(path: &std::path::Path) {
     std::fs::write(path, &buf).unwrap();
 }
 
-/// IMPORT-01: end-to-end import produces 4 blobs + 1 tag; manifest is
+/// IMPORT-01: end-to-end import produces a stored config and one tag; manifest is
 /// readable via `pichi inspect`.
 #[tokio::test]
 async fn import_happy_path() {
@@ -66,10 +66,10 @@ async fn import_happy_path() {
         .assert()
         .success();
 
-    // Four files: cow, verity, manifest and index.
+    // Four blobs plus the COW's prepared directory.
     let blobs = g.join("blobs").join("sha256");
     let n = std::fs::read_dir(&blobs).unwrap().count();
-    assert_eq!(n, 4, "expected 4 blobs in {}", blobs.display());
+    assert_eq!(n, 5, "expected 5 entries in {}", blobs.display());
 
     // Tag is set (canonical form: docker.io/library/myapp:base).
     let db = FilesystemTagDb::open(&g).unwrap();
@@ -100,6 +100,27 @@ async fn import_happy_path() {
     let (_, bytes) = index::manifest(&blob_store, &manifest_digest).await;
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(manifest.layers.len(), 1, "exactly one layer (one scute)");
+    assert_eq!(
+        manifest.config.media_type,
+        "application/vnd.pichi.config.v1+json"
+    );
+    assert!(manifest.config.data.is_none());
+    let config = blob_store
+        .get_blob(&manifest.config.digest.parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(manifest.config.size, config.len() as u64);
+    assert_eq!(
+        manifest.config.digest,
+        conglobate::artifact::Digest::Sha256(
+            <sha2::Sha256 as sha2::Digest>::digest(&config).into()
+        )
+        .to_string()
+    );
+    assert_eq!(
+        serde_json::from_slice::<conglobate::artifact::Config>(&config).unwrap(),
+        conglobate::artifact::Config::default()
+    );
 }
 
 /// IMPORT-05 / CONTEXT D-06: `pichi import` accepts non-GPT input
