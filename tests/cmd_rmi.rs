@@ -9,6 +9,10 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
     "amd64"
 };
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
@@ -83,7 +87,7 @@ async fn rmi_unique_manifest_unlinks_blobs() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", "alpine:3"])
         .assert()
         .success();
@@ -118,7 +122,7 @@ async fn rmi_shared_manifest_blocked_without_force() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", "alpine:3"])
         .assert()
         .failure();
@@ -200,7 +204,7 @@ async fn rmi_after_import_leaves_no_orphans() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -240,7 +244,7 @@ async fn rmi_after_import_leaves_no_orphans() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", "myapp:base"])
         .assert()
         .success();
@@ -272,7 +276,7 @@ async fn rmi_after_attach_leaves_no_orphans() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -286,7 +290,7 @@ async fn rmi_after_attach_leaves_no_orphans() {
         .success();
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "pmi",
@@ -312,7 +316,7 @@ async fn rmi_after_attach_leaves_no_orphans() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", "myapp:app", "myapp:base"])
         .assert()
         .success();
@@ -339,7 +343,7 @@ async fn rmi_with_other_tag_preserves_source_and_sidecars() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -370,7 +374,7 @@ async fn rmi_with_other_tag_preserves_source_and_sidecars() {
     // same manifest).
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", "--force", "tag1:v"])
         .assert()
         .success();
@@ -420,7 +424,7 @@ async fn rmi_tolerates_source_blob_without_sidecars() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", "legacy:v"])
         .assert()
         .success();
@@ -442,7 +446,7 @@ async fn rmi_force_preserves_shared_blobs() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", "--force", "alpine:3"])
         .assert()
         .success();

@@ -3,6 +3,10 @@
 
 //! Integration tests for `pichi tag` (LOCAL-04 / SC4).
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use std::collections::BTreeMap;
 
 use assert_cmd::Command;
@@ -73,7 +77,7 @@ async fn tag_creates_alias_no_blob_copy() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["tag", "alpine:3", "docker.io/library/alpine:latest"])
         .assert()
         .success();
@@ -100,7 +104,7 @@ async fn tag_missing_source_errors() {
 
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["tag", "nonexistent:tag", "newalias:1"])
         .assert()
         .failure();
