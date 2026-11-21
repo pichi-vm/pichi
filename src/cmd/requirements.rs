@@ -8,7 +8,7 @@
 //! `recommended` (else `required`) tier is used.
 
 use anyhow::{Context, Result, bail};
-use conglobate::artifact::{Config, Digest, Manifest, Recommendation, Requirements, Slot};
+use conglobate::artifact::{Config, Manifest, Recommendation, Requirements, Slot};
 use pichi_storage::BlobStore;
 
 /// Keep launcher argument spelling outside the shared image schema.
@@ -45,11 +45,7 @@ pub(super) async fn load_config(
     if manifest.config.is_empty() {
         return Ok(None);
     }
-    let digest: Digest = manifest
-        .config
-        .digest
-        .parse()
-        .with_context(|| format!("invalid config digest: {}", manifest.config.digest))?;
+    let digest = manifest.config.digest.clone();
     let bytes = blob_store
         .get_blob(&digest)
         .await

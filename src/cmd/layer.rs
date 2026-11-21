@@ -33,7 +33,7 @@ impl ScuteFiles {
         };
         let header = manifest.verity_header(scute, (!compressed).then_some(scute.size))?;
         Self::from_header(
-            &store.blob_path(&scute.digest.parse()?),
+            &store.blob_path(&scute.digest),
             compressed || scute.size != header.parameters.data_size()?,
             &header,
         )
@@ -75,7 +75,7 @@ struct PreparedScute {
 impl PreparedLayer {
     /// Select an already prepared PMI. Launch never repairs or decodes cache files.
     pub(super) async fn pmi_file(layer: &Layer, store: &dyn BlobStore) -> Result<PathBuf> {
-        let source = store.blob_path(&layer.digest_str().parse()?);
+        let source = store.blob_path(layer.digest());
         let path = match layer {
             Layer::Pmi(_) => source,
             Layer::PmiZstd(_) => Self::pmi_path(&source),
@@ -109,7 +109,7 @@ impl PreparedLayer {
         layer: &Layer,
         store: &dyn BlobStore,
     ) -> Result<Option<[u8; 32]>> {
-        let digest: Digest = layer.digest_str().parse()?;
+        let digest: Digest = layer.digest().clone();
         let scratch = store.scratch_dir().await?;
         let stream = registry
             .pull_blob_stream(&target.registry, &target.repo, &digest, layer.size())
@@ -143,7 +143,7 @@ impl PreparedLayer {
         store: &dyn BlobStore,
         reuse: Option<&dyn BlobStore>,
     ) -> Result<Option<[u8; 32]>> {
-        let digest: Digest = layer.digest_str().parse()?;
+        let digest: Digest = layer.digest().clone();
         let path = store.blob_path(&digest);
         let scratch = store.scratch_dir().await?;
         let seed = if matches!(layer, Layer::Scute(_) | Layer::ScuteZstd(_)) {
@@ -239,7 +239,7 @@ impl PreparedLayer {
                 };
                 io::copy(&mut verified, &mut io::sink())?;
                 verified
-                    .finish(&scute.annotations.verity_digest.parse()?)
+                    .finish(&scute.annotations.verity_digest)
                     .context("verifying generated verity file")?;
                 Some(PreparedScute {
                     header,
@@ -277,7 +277,7 @@ impl PreparedLayer {
                 None
             }
         };
-        wire.finish(&layer.digest_str().parse()?)?;
+        wire.finish(layer.digest())?;
         if let Some(scute) = &scute {
             scute.verity.as_file().sync_all()?;
             if let Some(data) = &scute.deflated {
@@ -326,7 +326,7 @@ impl PreparedLayer {
         let root = header.format_padded(&mut decoded, hash)?;
         let count = decoded.count;
         decoded
-            .finish(&scute.annotations.digest.parse()?)
+            .finish(&scute.annotations.digest)
             .context("verifying decompressed scute")?;
         // Recreate canonical zero padding, even if the clone had a stale tail.
         data.as_file().set_len(count)?;
@@ -777,7 +777,7 @@ mod tests {
         fn pmi(compressed: bool) -> Self {
             let mut fixture = Self::new(compressed, 2);
             let descriptor = conglobate::artifact::PmiDescriptor {
-                digest: Digest::Sha256(Sha256::digest(&fixture.wire).into()).to_string(),
+                digest: Digest::Sha256(Sha256::digest(&fixture.wire).into()),
                 size: fixture.wire.len() as u64,
             };
             fixture.manifest.layers = vec![if compressed {
@@ -807,7 +807,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = pichi_storage::FilesystemBlobStore::new(dir.path());
             let layer = &fixture.manifest.layers[0];
-            let digest = layer.digest_str().parse().unwrap();
+            let digest = layer.digest().clone();
             let prepared = fixture.prepare(dir.path()).unwrap();
             assert!(prepared.scute.is_none());
             assert_eq!(prepared.pmi.is_some(), compressed);
@@ -857,13 +857,12 @@ mod tests {
                 1 => fixture.wire = b"not a zstd frame".to_vec(),
                 2 => fixture.wire.extend_from_within(..),
                 3 => descriptor.size += 1,
-                4 => descriptor.digest = Digest::Sha256([0; 32]).to_string(),
+                4 => descriptor.digest = Digest::Sha256([0; 32]),
                 _ => unreachable!(),
             }
             if case < 3 {
                 descriptor.size = fixture.wire.len() as u64;
-                descriptor.digest =
-                    Digest::Sha256(Sha256::digest(&fixture.wire).into()).to_string();
+                descriptor.digest = Digest::Sha256(Sha256::digest(&fixture.wire).into());
             }
             assert!(fixture.prepare(scratch.path()).is_err(), "case {case}");
             assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
@@ -901,10 +900,8 @@ mod tests {
                 "long size" => {
                     scute.annotations.size = std::num::NonZeroU64::new(4098).unwrap().into();
                 }
-                "content digest" => scute.annotations.digest = Digest::Sha256([0; 32]).to_string(),
-                "verity digest" => {
-                    scute.annotations.verity_digest = Digest::Sha256([0; 32]).to_string()
-                }
+                "content digest" => scute.annotations.digest = Digest::Sha256([0; 32]),
+                "verity digest" => scute.annotations.verity_digest = Digest::Sha256([0; 32]),
                 _ => unreachable!(),
             }
             let error = fixture.prepare(scratch.path()).err().expect(damage);
@@ -941,7 +938,7 @@ mod tests {
                         _ => unreachable!(),
                     };
                     *size = fixture.wire.len() as u64;
-                    *digest = Digest::Sha256(Sha256::digest(&fixture.wire).into()).to_string();
+                    *digest = Digest::Sha256(Sha256::digest(&fixture.wire).into());
                     assert!(fixture.prepare(scratch.path()).is_err(), "magic {magic:#x}");
                     assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
                 }
@@ -1040,7 +1037,7 @@ mod tests {
             let store = FilesystemBlobStore::new(dir.path().join("canonical"));
             let hints = FilesystemBlobStore::new(dir.path().join("hints"));
             let layer = &fixture.manifest.layers[0];
-            let digest = layer.digest_str().parse().unwrap();
+            let digest = layer.digest().clone();
             store.put_blob(&digest, &fixture.wire).await.unwrap();
             let hint = ScuteFiles::new(&fixture.manifest, layer, &hints)
                 .unwrap()
@@ -1138,7 +1135,7 @@ mod tests {
             let Layer::ScuteZstd(descriptor) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
-            descriptor.digest = wrong.to_string();
+            descriptor.digest = wrong.clone();
             descriptor.size = fixture.wire.len() as u64;
             let dir = tempfile::tempdir().unwrap();
             let store = FilesystemBlobStore::new(dir.path().join("canonical"));
@@ -1188,7 +1185,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = pichi_storage::FilesystemBlobStore::new(dir.path());
             let layer = &fixture.manifest.layers[0];
-            let digest = layer.digest_str().parse().unwrap();
+            let digest = layer.digest().clone();
             store.put_blob(&digest, &fixture.wire).await.unwrap();
             let path = store.blob_path(&digest);
             let expected = fixture.prepare(dir.path()).unwrap().scute.unwrap();
@@ -1228,7 +1225,7 @@ mod tests {
         let mut fixture = Fixture::new(true, 2);
         let dir = tempfile::tempdir().unwrap();
         let store = pichi_storage::FilesystemBlobStore::new(dir.path());
-        let digest = fixture.manifest.layers[0].digest_str().parse().unwrap();
+        let digest = fixture.manifest.layers[0].digest().clone();
         store.put_blob(&digest, &fixture.wire).await.unwrap();
         let mut variants = Vec::new();
         for (block_size, count, hash_size, hash_type, suffix) in [
@@ -1265,8 +1262,7 @@ mod tests {
             let Layer::ScuteZstd(scute) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
-            scute.annotations.verity_digest =
-                Digest::Sha256(Sha256::digest(tree.get_ref()).into()).to_string();
+            scute.annotations.verity_digest = Digest::Sha256(Sha256::digest(tree.get_ref()).into());
             PreparedLayer::prepare_cached(&fixture.manifest, &fixture.manifest.layers[0], &store)
                 .await
                 .unwrap();
@@ -1308,8 +1304,7 @@ mod tests {
             let (Layer::Scute(d) | Layer::ScuteZstd(d)) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
-            d.digest =
-                Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"wrong").into()).to_string();
+            d.digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"wrong").into());
             assert!(fixture.prepare(scratch.path()).is_err());
         }
         let mut fixture = Fixture::new(true, 2);
@@ -1318,8 +1313,7 @@ mod tests {
             unreachable!()
         };
         d.size = fixture.wire.len() as u64;
-        d.digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&fixture.wire).into())
-            .to_string();
+        d.digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&fixture.wire).into());
         let error = fixture.prepare(scratch.path()).err().unwrap();
         assert!(error.to_string().contains("trailing bytes"), "{error:#}");
         assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);

@@ -47,7 +47,7 @@ impl WorkloadFixture {
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Pmi(PmiDescriptor {
-                digest: digest.to_string(),
+                digest: digest.clone(),
                 size: pmi.len() as u64,
             })],
             annotations: std::collections::BTreeMap::default(),
@@ -84,7 +84,7 @@ impl WorkloadFixture {
         ]);
         let store = FilesystemBlobStore::new(self.root.path().join("pichi/storage"));
         for layer in &manifest.layers {
-            let digest: Digest = layer.digest_str().parse().unwrap();
+            let digest: Digest = layer.digest().clone();
             std::fs::write(
                 blobs.join(digest.hex()),
                 store.get_blob(&digest).await.unwrap(),

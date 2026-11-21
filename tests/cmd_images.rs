@@ -46,21 +46,19 @@ async fn populate(
     with_pmi: bool,
 ) -> conglobate::artifact::Digest {
     let mut layers = vec![Layer::Scute(ScuteDescriptor {
-        digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111".into(),
+        digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
         size: 4096,
         annotations: ScuteAnnotations {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
+            digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
             size: std::num::NonZeroU64::new(4096).unwrap().into(),
-            verity_digest: format!("sha256:{}", "00".repeat(32)),
+            verity_digest: conglobate::artifact::Digest::Sha256([0x00; 32]),
             data_blocks: std::num::NonZeroU64::MIN.into(),
             salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
         },
     })];
     if with_pmi {
         layers.push(Layer::Pmi(PmiDescriptor {
-            digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                .into(),
+            digest: conglobate::artifact::Digest::Sha256([0x22; 32]),
             size: 8192,
         }));
     }

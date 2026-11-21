@@ -93,14 +93,14 @@ async fn populate_bootable_with_requirements(
         config: ConfigDescriptor::canonical(),
         layers: vec![
             Layer::Scute(ScuteDescriptor {
-                digest: cow_digest.to_string(),
+                digest: cow_digest.clone(),
                 size: cow_bytes.len() as u64,
                 annotations: ScuteAnnotations {
-                    digest: cow_digest.to_string(),
+                    digest: cow_digest.clone(),
                     size: std::num::NonZeroU64::new(cow_bytes.len() as u64)
                         .unwrap()
                         .into(),
-                    verity_digest: sha256_digest(b"pending fixture tree").to_string(),
+                    verity_digest: sha256_digest(b"pending fixture tree"),
                     data_blocks: std::num::NonZeroU64::new((cow_bytes.len() as u64).div_ceil(4096))
                         .unwrap()
                         .into(),
@@ -108,7 +108,7 @@ async fn populate_bootable_with_requirements(
                 },
             }),
             Layer::Pmi(PmiDescriptor {
-                digest: pmi_digest.to_string(),
+                digest: pmi_digest.clone(),
                 size: pmi_bytes.len() as u64,
             }),
         ],
@@ -120,7 +120,7 @@ async fn populate_bootable_with_requirements(
                 .unwrap();
         let digest = sha256_digest(&bytes);
         blob_store.put_blob(&digest, &bytes).await.unwrap();
-        manifest.config = ConfigDescriptor::for_config(digest.to_string(), bytes.len() as u64);
+        manifest.config = ConfigDescriptor::for_config(digest.clone(), bytes.len() as u64);
     }
     let Layer::Scute(scute) = &manifest.layers[0] else {
         unreachable!()
@@ -138,7 +138,7 @@ async fn populate_bootable_with_requirements(
     let Layer::Scute(scute) = &mut manifest.layers[0] else {
         unreachable!()
     };
-    scute.annotations.verity_digest = sha256_digest(verity.get_ref()).to_string();
+    scute.annotations.verity_digest = sha256_digest(verity.get_ref());
     manifest.annotations.insert(
         "dev.pichi.carapace.verity.hash".into(),
         format!("sha256:{}", hex::encode(root)),
@@ -384,12 +384,12 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             store.put_blob(&digest, &wire).await.unwrap();
             store.put_blob(&sha256_digest(b"{}"), b"{}").await.unwrap();
             let descriptor = ScuteDescriptor {
-                digest: digest.to_string(),
+                digest: digest.clone(),
                 size: wire.len() as u64,
                 annotations: ScuteAnnotations {
-                    digest: sha256_digest(&data).to_string(),
+                    digest: sha256_digest(&data),
                     size: std::num::NonZeroU64::new(data.len() as u64).unwrap().into(),
-                    verity_digest: sha256_digest(b"pending fixture tree").to_string(),
+                    verity_digest: sha256_digest(b"pending fixture tree"),
                     data_blocks: std::num::NonZeroU64::new(2).unwrap().into(),
                     salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
                 },
@@ -409,7 +409,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut manifest.layers[0] else {
                 unreachable!()
             };
-            scute.annotations.verity_digest = sha256_digest(verity.get_ref()).to_string();
+            scute.annotations.verity_digest = sha256_digest(verity.get_ref());
             manifest.annotations.insert(
                 "dev.pichi.carapace.verity.hash".into(),
                 format!("sha256:{}", hex::encode(root)),

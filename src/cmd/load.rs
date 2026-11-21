@@ -154,14 +154,13 @@ impl OciLayout {
             .map(PathBuf::from)
             .collect();
         let mut seen = HashSet::new();
+        let root_digests: HashSet<Digest> = layout
+            .roots
+            .iter()
+            .map(|entry| entry.digest.parse())
+            .collect::<Result<_, _>>()?;
         ensure!(
-            layout
-                .roots
-                .iter()
-                .map(|entry| &entry.digest)
-                .collect::<HashSet<_>>()
-                .len()
-                == layout.roots.len(),
+            root_digests.len() == layout.roots.len(),
             "duplicate OCI manifest"
         );
         let mut materialized_bytes: u64 = files.values().sum();
@@ -179,15 +178,16 @@ impl OciLayout {
                 "invalid index artifact type"
             );
             ensure!(entry.size <= METADATA_CAP, "manifest exceeds metadata cap");
+            let entry_digest: Digest = entry.digest.parse()?;
             // Saved indexes retain descriptors for platforms that were not pulled.
             // Root metadata and all content of each present manifest are required.
-            if !files.contains_key(&Self::blob_name(&entry.digest)?)
-                && !layout.roots.iter().any(|root| root.digest == entry.digest)
+            if !files.contains_key(&Self::blob_name(&entry_digest))
+                && !root_digests.contains(&entry_digest)
             {
                 layout.incomplete = true;
                 continue;
             }
-            let digest = layout.copy_blob(&root, &entry.digest, entry.size, &mut expected)?;
+            let digest = layout.copy_blob(&root, &entry_digest, entry.size, &mut expected)?;
             let bytes = std::fs::read(layout.store.blob_path(&digest))?;
             let value: serde_json::Value = serde_json::from_slice(&bytes)?;
             ensure!(
@@ -213,7 +213,7 @@ impl OciLayout {
             ensure!(!manifest.layers.is_empty(), "OCI artifact has no layers");
             let config = &manifest.config;
             ensure!(config.size <= METADATA_CAP, "config exceeds metadata cap");
-            if !config.is_empty() || files.contains_key(&Self::blob_name(&config.digest)?) {
+            if !config.is_empty() || files.contains_key(&Self::blob_name(&config.digest)) {
                 ensure!(
                     config.is_empty() || config.data.is_none(),
                     "inline pichi config is unsupported"
@@ -251,13 +251,13 @@ impl OciLayout {
             }
             let mut layers = HashSet::new();
             for layer in &manifest.layers {
-                ensure!(layers.insert(layer.digest_str()), "duplicate OCI layer");
-                let path = Self::blob_name(layer.digest_str())?;
+                ensure!(layers.insert(layer.digest()), "duplicate OCI layer");
+                let path = Self::blob_name(layer.digest());
                 if !files.contains_key(&path)
                     && !matches!(layer, conglobate::artifact::Layer::BootConfig(_))
                     && let Some(cache) = input_cache
                 {
-                    let digest: Digest = layer.digest_str().parse()?;
+                    let digest: Digest = layer.digest().clone();
                     if !layout.blobs.contains_key(&digest) {
                         materialized_bytes = materialized_bytes
                             .checked_add(layer.size())
@@ -281,19 +281,19 @@ impl OciLayout {
                         .copy_blob_from(
                             &directory,
                             name,
-                            layer.digest_str(),
+                            layer.digest(),
                             layer.size(),
                             &mut expected,
                         )
                         .with_context(|| {
                             format!(
                                 "resolve omitted OCI layer {} from input cache",
-                                layer.digest_str()
+                                layer.digest()
                             )
                         })?;
                 } else {
                     // A present but invalid output blob never falls back to cache.
-                    layout.copy_blob(&root, layer.digest_str(), layer.size(), &mut expected)?;
+                    layout.copy_blob(&root, layer.digest(), layer.size(), &mut expected)?;
                 }
                 if matches!(
                     layer,
@@ -312,7 +312,7 @@ impl OciLayout {
                     );
                     // Optional guest sidecars have only digest-derived names.
                     // They are compared with the fresh tree, never imported.
-                    let sidecar = Self::blob_name(layer.digest_str())?.with_extension("verity");
+                    let sidecar = Self::blob_name(layer.digest()).with_extension("verity");
                     if let Some(size) = files.get(&sidecar) {
                         layout.copy_guest_verity(
                             &root,
@@ -415,50 +415,43 @@ impl OciLayout {
         Ok(bytes)
     }
 
-    fn blob_name(value: &str) -> Result<PathBuf> {
-        let digest: Digest = value.parse().context("invalid OCI digest")?;
-        ensure!(
-            value == digest.to_string(),
-            "OCI digest must use lowercase sha256 hex"
-        );
-        Ok(Path::new("blobs/sha256").join(digest.hex()))
+    fn blob_name(digest: &Digest) -> PathBuf {
+        Path::new("blobs/sha256").join(digest.hex())
     }
 
     fn copy_blob(
         &mut self,
         root: &Dir,
-        value: &str,
+        digest: &Digest,
         size: u64,
         expected: &mut HashSet<PathBuf>,
     ) -> Result<Digest> {
-        let source = Self::blob_name(value)?;
-        self.copy_blob_from(root, &source, value, size, expected)
+        let source = Self::blob_name(digest);
+        self.copy_blob_from(root, &source, digest, size, expected)
     }
 
     fn copy_blob_from(
         &mut self,
         root: &Dir,
         source: &Path,
-        value: &str,
+        digest: &Digest,
         size: u64,
         expected: &mut HashSet<PathBuf>,
     ) -> Result<Digest> {
         ensure!(size <= self.capacity, "OCI blob exceeds scratch capacity");
-        let path = Self::blob_name(value)?;
-        let digest: Digest = value.parse()?;
-        expected.insert(path.clone());
-        if let Some(previous) = self.blobs.get(&digest) {
+        expected.insert(Self::blob_name(digest));
+        if let Some(previous) = self.blobs.get(digest) {
             ensure!(*previous == size, "conflicting OCI descriptor sizes");
-            return Ok(digest);
+            return Ok(digest.clone());
         }
         ensure!(self.blobs.len() < FILE_CAP, "OCI blob count exceeds limit");
-        let output = File::create(self.store.blob_path(&digest))?;
+        let output = File::create(self.store.blob_path(digest))?;
         ensure!(
-            Self::copy_content(root, source, size, output)? == digest,
+            Self::copy_content(root, source, size, output)? == *digest,
             "OCI blob digest mismatch: {digest}"
         );
         self.blobs.insert(digest.clone(), size);
-        Ok(digest)
+        Ok(digest.clone())
     }
 
     fn copy_content(
@@ -776,7 +769,7 @@ pub(super) mod tests {
             .iter()
             .map(|layer| {
                 let digest: Digest = layer["digest"].as_str().unwrap().parse().unwrap();
-                let source = output.join(OciLayout::blob_name(&digest.to_string()).unwrap());
+                let source = output.join(OciLayout::blob_name(&digest));
                 let target = store.blob_path(&digest);
                 std::fs::create_dir_all(target.parent().unwrap()).unwrap();
                 std::fs::rename(source, &target).unwrap();
@@ -824,8 +817,7 @@ pub(super) mod tests {
                 .unwrap()
                 .parse()
                 .unwrap();
-            std::fs::remove_file(output.join(OciLayout::blob_name(&digest.to_string()).unwrap()))
-                .unwrap();
+            std::fs::remove_file(output.join(OciLayout::blob_name(&digest))).unwrap();
             let target = store.blob_path(&digest);
             std::fs::create_dir_all(target.parent().unwrap()).unwrap();
             let mut bytes = fixture.blobs[0].clone();
@@ -866,7 +858,7 @@ pub(super) mod tests {
         );
         let config = super::super::boot_config::BootConfigFile::try_from(bytes.clone()).unwrap();
         let descriptor = config.descriptor().unwrap();
-        let digest: Digest = descriptor.digest.parse().unwrap();
+        let digest: Digest = descriptor.digest.clone();
         let mut fixture = LayoutFixture::new();
         let pmi = b"inherited PMI".to_vec();
         fixture.manifest["layers"]
@@ -887,8 +879,7 @@ pub(super) mod tests {
         fixture.write(&output);
         config.store(&store).await.unwrap();
         OciLayout::read_build(&output, &store).await.unwrap();
-        std::fs::remove_file(output.join(OciLayout::blob_name(&digest.to_string()).unwrap()))
-            .unwrap();
+        std::fs::remove_file(output.join(OciLayout::blob_name(&digest))).unwrap();
         assert!(OciLayout::read_build(&output, &store).await.is_err());
     }
 
@@ -909,11 +900,7 @@ pub(super) mod tests {
         std::fs::write(target, &fixture.blobs[0]).unwrap();
         let mut bad = fixture.blobs[0].clone();
         bad[0] ^= 1;
-        std::fs::write(
-            output.join(OciLayout::blob_name(&digest.to_string()).unwrap()),
-            bad,
-        )
-        .unwrap();
+        std::fs::write(output.join(OciLayout::blob_name(&digest)), bad).unwrap();
         assert!(OciLayout::read_build(&output, &store).await.is_err());
     }
 
@@ -930,11 +917,7 @@ pub(super) mod tests {
             let digest: Digest = layer["digest"].as_str().unwrap().parse().unwrap();
             let target = store.blob_path(&digest);
             std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-            std::fs::rename(
-                output.join(OciLayout::blob_name(&digest.to_string()).unwrap()),
-                target,
-            )
-            .unwrap();
+            std::fs::rename(output.join(OciLayout::blob_name(&digest)), target).unwrap();
             omitted_size += layer["size"].as_u64().unwrap();
         }
         let Err(error) = OciLayout::read_with_cache(&output, &store, omitted_size, true).await
@@ -943,7 +926,7 @@ pub(super) mod tests {
         };
         assert!(format!("{error:#}").contains("cache-backed OCI layout exceeds"));
         std::fs::rename(
-            output.join(OciLayout::blob_name(&manifest.to_string()).unwrap()),
+            output.join(OciLayout::blob_name(&manifest)),
             store.blob_path(&manifest),
         )
         .unwrap();
@@ -1036,7 +1019,7 @@ pub(super) mod tests {
                 format!("sha256:{}", hex::encode(fixture.tip)).into();
             let manifest: Manifest = serde_json::from_value(fixture.manifest.clone()).unwrap();
             let layer = manifest.layers.last().unwrap();
-            assert_eq!(layer.digest_str(), digest.to_string());
+            assert_eq!(layer.digest(), &digest);
             let Layer::Scute(scute) = layer else {
                 panic!("uncompressed fixture");
             };
@@ -1132,6 +1115,12 @@ pub(super) mod tests {
         let mut fixture = LayoutFixture::new();
         fixture.add_scute(false);
         fixture.add_scute(true);
+        let raw_digest = fixture.manifest["layers"][0]["digest"].as_str().unwrap();
+        fixture.manifest["layers"][0]["digest"] = format!(
+            "sha256:{}",
+            raw_digest.strip_prefix("sha256:").unwrap().to_uppercase()
+        )
+        .into();
         let digest = fixture.write(&output);
         fixture.sidecars(&output);
         for _ in 0..2 {
@@ -1247,6 +1236,7 @@ pub(super) mod tests {
             "fork",
             "duplicate layer",
             "duplicate manifest",
+            "duplicate digest spelling",
             "bad blocks",
             "bad geometry",
             "unexpected file",
@@ -1461,8 +1451,11 @@ pub(super) mod tests {
                     }
                 }
                 "unexpected directory" => std::fs::create_dir(output.join("elsewhere")).unwrap(),
-                "duplicate manifest" => {
-                    let entry = index["manifests"][0].clone();
+                "duplicate manifest" | "duplicate digest spelling" => {
+                    let mut entry = index["manifests"][0].clone();
+                    if case == "duplicate digest spelling" {
+                        entry["digest"] = format!("sha256:{}", digest.hex().to_uppercase()).into();
+                    }
                     index["manifests"].as_array_mut().unwrap().push(entry);
                 }
                 _ => {}
@@ -1486,6 +1479,12 @@ pub(super) mod tests {
                 Err(error) => Err(error),
             };
             assert!(result.is_err(), "accepted {case}");
+            if case == "duplicate digest spelling" {
+                assert!(
+                    format!("{:#}", result.as_ref().unwrap_err())
+                        .contains("duplicate OCI manifest")
+                );
+            }
             if case == "oversized total" {
                 assert!(
                     format!("{:#}", result.unwrap_err())

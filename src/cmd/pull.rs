@@ -128,11 +128,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     //     (the OCI empty config rides inline in the manifest — nothing to
     //     fetch). It is small; pull it into memory and commit.
     if !manifest.config.is_empty() {
-        let config_digest: Digest = manifest
-            .config
-            .digest
-            .parse()
-            .with_context(|| format!("parse config digest {}", manifest.config.digest))?;
+        let config_digest = manifest.config.digest.clone();
         if !blob_store.blob_exists(&config_digest).await {
             let mut buf: Vec<u8> = Vec::new();
             registry
@@ -159,7 +155,7 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
     let manifest_ref = &manifest;
     let mut downloads = futures_stream::iter(&manifest.layers)
         .map(|layer| async move {
-            let digest: Digest = layer.digest_str().parse()?;
+            let digest: Digest = layer.digest().clone();
             let root = if blob_store.blob_exists(&digest).await {
                 PreparedLayer::prepare_cached(manifest_ref, layer, blob_store).await?
             } else {
@@ -262,7 +258,7 @@ mod tests {
                     artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
                     config: ConfigDescriptor::canonical(),
                     layers: vec![Layer::PmiZstd(PmiDescriptor {
-                        digest: digest.to_string(),
+                        digest: digest.clone(),
                         size: wire.len() as u64,
                     })],
                     annotations: BTreeMap::new(),
@@ -335,11 +331,11 @@ mod tests {
                 config: ConfigDescriptor::canonical(),
                 layers: vec![
                     Layer::Pmi(PmiDescriptor {
-                        digest: pmi_digest.to_string(),
+                        digest: pmi_digest.clone(),
                         size: firmware.len() as u64,
                     }),
                     Layer::BootConfig(BootConfigDescriptor {
-                        digest: config_digest.to_string(),
+                        digest: config_digest.clone(),
                         size: compressed.len() as u64,
                     }),
                 ],
@@ -821,7 +817,7 @@ mod tests {
             ),
         );
         let mut scute_desc = data.descriptor(&[0; 32], is_zstd);
-        scute_desc.digest = scute_digest.to_string();
+        scute_desc.digest = scute_digest.clone();
         scute_desc.size = scute_size;
         let layer = if is_zstd {
             Layer::ScuteZstd(scute_desc)
@@ -1076,7 +1072,7 @@ mod tests {
             make_scute_manifest(&scute_digest, scute_data.len() as u64, &scute_data, false);
         let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
         manifest.layers.push(Layer::Pmi(PmiDescriptor {
-            digest: pmi_digest.to_string(),
+            digest: pmi_digest.clone(),
             size: pmi_bytes.len() as u64,
         }));
         let manifest_bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
@@ -1197,8 +1193,7 @@ mod tests {
                 let tree = parameters.compute(&data).unwrap();
                 parent = tree.root_hash;
                 scute.annotations.verity_digest =
-                    Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&tree.blob).into())
-                        .to_string();
+                    Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&tree.blob).into());
                 layers.push(next.layers[0].clone());
                 manifest = Some(next);
                 registry.insert_blob("ghcr.io", "example/foo", digest, Bytes::from(wire));
@@ -1271,8 +1266,7 @@ mod tests {
                 scute.annotations.verity_digest = Digest::Sha256(
                     <sha2::Sha256 as sha2::Digest>::digest(&params.compute(&data).unwrap().blob)
                         .into(),
-                )
-                .to_string();
+                );
                 manifest.annotations.insert(
                     "dev.pichi.carapace.verity.hash".into(),
                     format!(

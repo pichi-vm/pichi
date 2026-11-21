@@ -117,7 +117,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         manifest.annotations.insert(k, v);
     }
     manifest.layers.push(Layer::Pmi(PmiDescriptor {
-        digest: pmi_digest.to_string(),
+        digest: pmi_digest.clone(),
         size: pmi_bytes.len() as u64,
     }));
     if let Some(config) = &bootconfig
@@ -126,7 +126,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         manifest.layers.push(Layer::BootConfig(descriptor));
     }
     if let Some((digest, bytes)) = &config_blob {
-        manifest.config = ConfigDescriptor::for_config(digest.to_string(), bytes.len() as u64);
+        manifest.config = ConfigDescriptor::for_config(digest.clone(), bytes.len() as u64);
     }
     manifest
         .validate()

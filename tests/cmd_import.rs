@@ -105,17 +105,13 @@ async fn import_happy_path() {
         "application/vnd.pichi.config.v1+json"
     );
     assert!(manifest.config.data.is_none());
-    let config = blob_store
-        .get_blob(&manifest.config.digest.parse().unwrap())
-        .await
-        .unwrap();
+    let config = blob_store.get_blob(&manifest.config.digest).await.unwrap();
     assert_eq!(manifest.config.size, config.len() as u64);
     assert_eq!(
         manifest.config.digest,
         conglobate::artifact::Digest::Sha256(
             <sha2::Sha256 as sha2::Digest>::digest(&config).into()
         )
-        .to_string()
     );
     assert_eq!(
         serde_json::from_slice::<conglobate::artifact::Config>(&config).unwrap(),

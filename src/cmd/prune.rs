@@ -363,12 +363,12 @@ mod tests {
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Scute(ScuteDescriptor {
-                digest: scute_digest_str.clone(),
+                digest: scute_digest.clone(),
                 size: 1024,
                 annotations: ScuteAnnotations {
-                    digest: scute_digest_str.clone(),
+                    digest: scute_digest.clone(),
                     size: std::num::NonZeroU64::new(1024).unwrap().into(),
-                    verity_digest: Digest::Sha256([0; 32]).to_string(),
+                    verity_digest: Digest::Sha256([0; 32]),
                     data_blocks: std::num::NonZeroU64::MIN.into(),
                     salt: devmap_verity::Salt::new(&[0; 4]).unwrap().into(),
                 },

@@ -907,7 +907,7 @@ mod tests {
                     artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
                     config: ConfigDescriptor::canonical(),
                     layers: vec![Layer::Pmi(PmiDescriptor {
-                        digest: layer.to_string(),
+                        digest: layer.clone(),
                         size: payload.len() as u64,
                     })],
                     annotations: std::collections::BTreeMap::default(),

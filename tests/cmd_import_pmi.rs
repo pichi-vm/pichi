@@ -142,7 +142,7 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
     let scute = base.scute_layers()[0];
     let store = FilesystemBlobStore::new(&g);
     std::fs::write(
-        store.blob_path(&scute.digest_str().parse().unwrap()),
+        store.blob_path(scute.digest()),
         vec![b'x'; scute.size() as usize],
     )
     .unwrap();
@@ -344,14 +344,13 @@ async fn import_pmi_without_carapace_keeps_only_boot_components() {
     assert_eq!(m.config.media_type, "application/vnd.pichi.config.v1+json");
     assert!(m.config.data.is_none());
     let bytes = FilesystemBlobStore::new(&g)
-        .get_blob(&m.config.digest.parse().unwrap())
+        .get_blob(&m.config.digest)
         .await
         .unwrap();
     assert_eq!(m.config.size, bytes.len() as u64);
     assert_eq!(
         m.config.digest,
         conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into())
-            .to_string()
     );
     assert_eq!(
         serde_json::from_slice::<conglobate::artifact::Config>(&bytes).unwrap(),
@@ -466,7 +465,7 @@ async fn import_pmi_with_config_sets_config_blob() {
         );
         assert_eq!(m.config.media_type, "application/vnd.pichi.config.v1+json");
         let bytes = FilesystemBlobStore::new(&g)
-            .get_blob(&m.config.digest.parse().unwrap())
+            .get_blob(&m.config.digest)
             .await
             .unwrap();
         let config: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -652,7 +651,7 @@ async fn native_boot_components_survive_save_and_load_exactly() {
         .find(|layer| matches!(layer, Layer::BootConfig(_)))
         .unwrap();
     let native = FilesystemBlobStore::new(&source_root)
-        .blob_path(&config.digest_str().parse().unwrap())
+        .blob_path(config.digest())
         .prepared_dir()
         .join("bootconfig");
     assert_eq!(
@@ -673,7 +672,7 @@ async fn native_boot_components_survive_save_and_load_exactly() {
     let after = resolve_manifest(&destination_root, "docker.io/library/boot:copy").await;
     assert_eq!(before, after);
     for layer in &after.layers {
-        let digest = layer.digest_str().parse().unwrap();
+        let digest = layer.digest().clone();
         assert_eq!(
             std::fs::read(FilesystemBlobStore::new(&source_root).blob_path(&digest)).unwrap(),
             std::fs::read(FilesystemBlobStore::new(&destination_root).blob_path(&digest)).unwrap()
@@ -744,7 +743,7 @@ async fn publication_rechecks_cached_index_and_bootconfig_bytes() {
         .find(|layer| matches!(layer, Layer::BootConfig(_)))
         .unwrap();
     std::fs::write(
-        FilesystemBlobStore::new(&g).blob_path(&layer.digest_str().parse().unwrap()),
+        FilesystemBlobStore::new(&g).blob_path(layer.digest()),
         vec![b'x'; layer.size() as usize],
     )
     .unwrap();
@@ -802,7 +801,7 @@ async fn empty_bootconfig_request_rechecks_the_cached_pmi() {
     let manifest = resolve_manifest(&root, "docker.io/library/boot:1").await;
     let layer = &manifest.layers[0];
     std::fs::write(
-        FilesystemBlobStore::new(&root).blob_path(&layer.digest_str().parse().unwrap()),
+        FilesystemBlobStore::new(&root).blob_path(layer.digest()),
         vec![b'x'; layer.size() as usize],
     )
     .unwrap();

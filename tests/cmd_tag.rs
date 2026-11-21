@@ -42,14 +42,12 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::a
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
         config: ConfigDescriptor::canonical(),
         layers: vec![Layer::Scute(ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
+            digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
             size: 1024,
             annotations: ScuteAnnotations {
-                digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                    .into(),
+                digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: std::num::NonZeroU64::new(1024).unwrap().into(),
-                verity_digest: format!("sha256:{}", "00".repeat(32)),
+                verity_digest: conglobate::artifact::Digest::Sha256([0x00; 32]),
                 data_blocks: std::num::NonZeroU64::MIN.into(),
                 salt: devmap_verity::Salt::new(&[0, 255]).unwrap().into(),
             },

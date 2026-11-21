@@ -121,11 +121,7 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     //      `MANIFEST_INVALID` 400 because the `{}` blob wasn't uploaded.
     //      For a real `vnd.pichi.config.v1+json` blob the bytes come from the
     //      local cache; for the OCI empty config they are the well-known `{}`.
-    let config_digest: Digest = manifest
-        .config
-        .digest
-        .parse()
-        .with_context(|| format!("invalid config digest: {}", manifest.config.digest))?;
+    let config_digest = manifest.config.digest.clone();
     if !registry
         .head_blob(&target.registry, &target.repo, &config_digest)
         .await
@@ -163,16 +159,13 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     //    a wasted round-trip (registry would refuse). When v0.9 adds the
     //    config surface this becomes a one-line attempt before push_stream.
     for layer in &manifest.layers {
-        let digest_str = layer.digest_str();
-        let layer_digest: Digest = digest_str
-            .parse()
-            .with_context(|| format!("parse layer digest {digest_str}"))?;
+        let layer_digest = layer.digest();
 
         // 5a. HEAD-before-PUT (REGISTRY-02 dedup). T-44-05-02 TOCTOU race
         //     with concurrent push is benign per OCI semantics: PUT of a
         //     digest already present returns 201.
         if registry
-            .head_blob(&target.registry, &target.repo, &layer_digest)
+            .head_blob(&target.registry, &target.repo, layer_digest)
             .await
             .map_err(|e| anyhow!("head_blob {layer_digest}: {e}"))?
         {
@@ -181,12 +174,12 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
         }
 
         // 5b. Stream upload from BlobStore (async reader → ReaderStream).
-        let stream_chunks = blob_to_stream(blob_store, &layer_digest).await?;
+        let stream_chunks = blob_to_stream(blob_store, layer_digest).await?;
         registry
             .push_blob_stream(
                 &target.registry,
                 &target.repo,
-                &layer_digest,
+                layer_digest,
                 layer.size(),
                 stream_chunks,
             )

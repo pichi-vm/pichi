@@ -50,22 +50,18 @@ async fn inspect_bare_manifest_returns_full_schema() {
         config: ConfigDescriptor::canonical(),
         layers: vec![
             Layer::Scute(ScuteDescriptor {
-                digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                    .into(),
+                digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: 4096,
                 annotations: ScuteAnnotations {
-                    digest:
-                        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                            .into(),
+                    digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                     size: std::num::NonZeroU64::new(4096).unwrap().into(),
-                    verity_digest: format!("sha256:{}", "00".repeat(32)),
+                    verity_digest: conglobate::artifact::Digest::Sha256([0x00; 32]),
                     data_blocks: std::num::NonZeroU64::MIN.into(),
                     salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
                 },
             }),
             Layer::Pmi(PmiDescriptor {
-                digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                    .into(),
+                digest: conglobate::artifact::Digest::Sha256([0x22; 32]),
                 size: 8192,
             }),
         ],
@@ -121,14 +117,12 @@ async fn inspect_format_reaches_dotted_annotation() {
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
         config: ConfigDescriptor::canonical(),
         layers: vec![Layer::Scute(ScuteDescriptor {
-            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
+            digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
             size: 4096,
             annotations: ScuteAnnotations {
-                digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                    .into(),
+                digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: std::num::NonZeroU64::new(4096).unwrap().into(),
-                verity_digest: format!("sha256:{}", "00".repeat(32)),
+                verity_digest: conglobate::artifact::Digest::Sha256([0x00; 32]),
                 data_blocks: std::num::NonZeroU64::MIN.into(),
                 salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
             },
@@ -242,9 +236,9 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
             schema_version: 2,
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
-            config: ConfigDescriptor::for_config(config_digest.to_string(), bytes.len() as u64),
+            config: ConfigDescriptor::for_config(config_digest.clone(), bytes.len() as u64),
             layers: vec![Layer::Pmi(PmiDescriptor {
-                digest: format!("sha256:{}", "11".repeat(32)),
+                digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: 4096,
             })],
             annotations: BTreeMap::new(),
@@ -320,7 +314,7 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Pmi(PmiDescriptor {
-                digest: format!("sha256:{}", "11".repeat(32)),
+                digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: 4096,
             })],
             annotations: [("org.opencontainers.image.title".into(), name.into())].into(),

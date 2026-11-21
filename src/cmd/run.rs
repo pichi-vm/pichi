@@ -348,8 +348,7 @@ mod tests {
 
     fn pmi_layer() -> Layer {
         Layer::Pmi(PmiDescriptor {
-            digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                .into(),
+            digest: conglobate::artifact::Digest::Sha256([0x22; 32]),
             size: 8192,
         })
     }
@@ -412,7 +411,7 @@ mod tests {
             let digest = sha256_digest(&wire);
             store.put_blob(&digest, &wire).await.unwrap();
             let descriptor = PmiDescriptor {
-                digest: digest.to_string(),
+                digest: digest.clone(),
                 size: wire.len() as u64,
             };
             let m = manifest_with(vec![if compressed {
@@ -455,7 +454,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
-        let path = blob_store.blob_path(&m.layers[0].digest_str().parse().unwrap());
+        let path = blob_store.blob_path(m.layers[0].digest());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, vec![0; 8192]).unwrap();
 
@@ -482,7 +481,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
-        let path = blob_store.blob_path(&m.layers[0].digest_str().parse().unwrap());
+        let path = blob_store.blob_path(m.layers[0].digest());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, vec![0; 8192]).unwrap();
 
@@ -513,7 +512,7 @@ mod tests {
         config.store(&blob_store).await.unwrap();
         let m = manifest_with(vec![
             Layer::Pmi(conglobate::artifact::PmiDescriptor {
-                digest: digest.to_string(),
+                digest: digest.clone(),
                 size: pmi.len() as u64,
             }),
             Layer::BootConfig(config.descriptor().unwrap()),
@@ -529,7 +528,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let blob_store = FilesystemBlobStore::new(tmp.path());
         let m = manifest_with(vec![pmi_layer()]);
-        let path = blob_store.blob_path(&m.layers[0].digest_str().parse().unwrap());
+        let path = blob_store.blob_path(m.layers[0].digest());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, vec![0; 8192]).unwrap();
         let argv = build_dillo_args(&m, &blob_store, None, None, &Requirements::default())
@@ -570,7 +569,7 @@ mod tests {
             let header = manifest.verity_header(&scute, Some(scute.size)).unwrap();
             let mut verity = std::io::Cursor::new(Vec::new());
             tip = header.format_padded(data.as_slice(), &mut verity).unwrap();
-            scute.annotations.verity_digest = sha256_digest(verity.get_ref()).to_string();
+            scute.annotations.verity_digest = sha256_digest(verity.get_ref());
             scutes.push(scute);
         }
         manifest.layers = scutes.iter().cloned().map(Layer::Scute).collect();
@@ -590,7 +589,7 @@ mod tests {
         let spec = build_gpt_spec(&manifest, &refs, &store).await.unwrap();
         let gpt: dillo_config::GptSpec = serde_keyvalue::from_key_values(&spec).unwrap();
         for (index, scute) in scutes.iter().enumerate() {
-            let digest = scute.digest.parse().unwrap();
+            let digest = scute.digest.clone();
             let path = store.blob_path(&digest);
             let data = std::fs::read(&path).unwrap();
             let header = manifest.verity_header(scute, Some(scute.size)).unwrap();
@@ -686,7 +685,7 @@ mod tests {
                     Layer::Scute(scute)
                 };
                 let mut manifest = manifest_with(vec![pmi_layer(), layer]);
-                let pmi_path = store.blob_path(&manifest.layers[0].digest_str().parse().unwrap());
+                let pmi_path = store.blob_path(manifest.layers[0].digest());
                 std::fs::write(&pmi_path, vec![0; 8192]).unwrap();
                 let mut padded = data;
                 padded.resize(8192, 0);

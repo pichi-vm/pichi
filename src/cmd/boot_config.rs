@@ -48,14 +48,14 @@ impl BootConfigFile {
 
     pub(super) fn descriptor(&self) -> Option<BootConfigDescriptor> {
         (!self.text.is_empty()).then(|| BootConfigDescriptor {
-            digest: Digest::Sha256(Sha256::digest(&self.bytes).into()).to_string(),
+            digest: Digest::Sha256(Sha256::digest(&self.bytes).into()),
             size: self.bytes.len() as u64,
         })
     }
 
     pub(super) async fn store(&self, store: &(impl BlobStore + ?Sized)) -> Result<()> {
         if let Some(descriptor) = self.descriptor() {
-            let path = Self::path(&store.blob_path(&descriptor.digest.parse()?));
+            let path = Self::path(&store.blob_path(&descriptor.digest));
             tokio::fs::create_dir_all(path.parent().context("bootconfig path has no parent")?)
                 .await?;
             pichi_storage::write_sidecar_atomic(
@@ -64,9 +64,7 @@ impl BootConfigFile {
                 self.text.as_bytes(),
             )
             .await?;
-            store
-                .put_blob(&descriptor.digest.parse()?, &self.bytes)
-                .await?;
+            store.put_blob(&descriptor.digest, &self.bytes).await?;
         }
         Ok(())
     }
@@ -89,7 +87,7 @@ impl BootConfigFile {
         }) else {
             return Ok(None);
         };
-        let bytes = Self::verified(store, &descriptor.digest.parse()?, descriptor.size).await?;
+        let bytes = Self::verified(store, &descriptor.digest, descriptor.size).await?;
         let config = Self::try_from(bytes)?;
         ensure!(!config.text.is_empty(), "empty bootconfig must be omitted");
         Ok(Some(config))
@@ -110,7 +108,7 @@ impl BootConfigFile {
         }) else {
             return Ok(None);
         };
-        let path = Self::path(&store.blob_path(&descriptor.digest.parse()?));
+        let path = Self::path(&store.blob_path(&descriptor.digest));
         ensure!(
             tokio::fs::metadata(&path)
                 .await
@@ -207,7 +205,7 @@ mod tests {
             config: conglobate::artifact::ConfigDescriptor::canonical(),
             layers: vec![
                 Layer::Pmi(conglobate::artifact::PmiDescriptor {
-                    digest: Digest::Sha256(Sha256::digest(b"opaque PMI").into()).to_string(),
+                    digest: Digest::Sha256(Sha256::digest(b"opaque PMI").into()),
                     size: 10,
                 }),
                 Layer::BootConfig(config.descriptor().unwrap()),
@@ -220,7 +218,7 @@ mod tests {
             .unwrap();
         assert_eq!(tokio::fs::read(&path).await.unwrap(), text.as_bytes());
         tokio::fs::write(&path, b"cached text").await.unwrap();
-        let source = store.blob_path(&config.descriptor().unwrap().digest.parse().unwrap());
+        let source = store.blob_path(&config.descriptor().unwrap().digest);
         tokio::fs::write(&source, b"not compressed").await.unwrap();
         BootConfigFile::prepared_image(&manifest, &store)
             .await

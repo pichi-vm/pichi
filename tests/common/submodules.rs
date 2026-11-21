@@ -297,7 +297,7 @@ impl SubmoduleFixture {
             Manifest::decode_json(&store.get_blob(&manifest_digest).await.unwrap()[..]).unwrap();
         let mut layers = Vec::new();
         for layer in &manifest.layers {
-            let path = store.blob_path(&layer.digest_str().parse().unwrap());
+            let path = store.blob_path(layer.digest());
             let path = match layer {
                 Layer::Scute(_) => path,
                 Layer::ScuteZstd(scute) => path.deflated_path(

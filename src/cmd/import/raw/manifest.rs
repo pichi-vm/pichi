@@ -89,12 +89,12 @@ mod tests {
 
     fn scute(digest: &Digest, salt: &[u8]) -> ScuteDescriptor {
         ScuteDescriptor {
-            digest: digest.to_string(),
+            digest: digest.clone(),
             size: 16384,
             annotations: ScuteAnnotations {
-                digest: digest.to_string(),
+                digest: digest.clone(),
                 size: std::num::NonZeroU64::new(16384).unwrap().into(),
-                verity_digest: Digest::Sha256([2; 32]).to_string(),
+                verity_digest: Digest::Sha256([2; 32]),
                 data_blocks: std::num::NonZeroU64::new(4).unwrap().into(),
                 salt: devmap_verity::Salt::new(salt).unwrap().into(),
             },

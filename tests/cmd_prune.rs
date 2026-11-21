@@ -53,7 +53,8 @@ async fn insert_manifest(
     tag: &str,
     salt_seed: &str,
 ) -> (conglobate::artifact::Digest, conglobate::artifact::Digest) {
-    let scute_digest = format!("sha256:{:0<64}", salt_seed);
+    let scute_digest: conglobate::artifact::Digest =
+        format!("sha256:{:0<64}", salt_seed).parse().unwrap();
     let m = Manifest {
         schema_version: 2,
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
@@ -65,7 +66,7 @@ async fn insert_manifest(
             annotations: ScuteAnnotations {
                 digest: scute_digest.clone(),
                 size: std::num::NonZeroU64::new(1024).unwrap().into(),
-                verity_digest: format!("sha256:{}", "00".repeat(32)),
+                verity_digest: conglobate::artifact::Digest::Sha256([0x00; 32]),
                 data_blocks: std::num::NonZeroU64::MIN.into(),
                 salt: format!("{:0<8}", salt_seed)
                     .parse::<devmap_verity::Salt>()
@@ -82,7 +83,7 @@ async fn insert_manifest(
     let bs = FilesystemBlobStore::new(graphroot);
     use pichi_storage::BlobStore;
     bs.put_blob(&mdigest, &mbytes).await.unwrap();
-    let parsed_scute: conglobate::artifact::Digest = scute_digest.parse().unwrap();
+    let parsed_scute = scute_digest;
     bs.put_blob(&parsed_scute, b"fake-scute-bytes")
         .await
         .unwrap();

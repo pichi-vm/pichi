@@ -172,19 +172,19 @@ impl StagedImport {
         let config_digest = Digest::Sha256(Sha256::digest(&config_bytes).into());
         let manifest = Manifest::base(
             ScuteDescriptor {
-                digest: cow_digest.to_string(),
+                digest: cow_digest.clone(),
                 size,
                 annotations: ScuteAnnotations {
                     data_blocks: std::num::NonZeroU64::new(size.div_ceil(4096))
                         .context("empty COW")?
                         .into(),
                     salt: header.parameters.salt.into(),
-                    digest: cow_digest.to_string(),
+                    digest: cow_digest.clone(),
                     size: std::num::NonZeroU64::new(size).context("empty COW")?.into(),
-                    verity_digest: verity_digest.to_string(),
+                    verity_digest: verity_digest.clone(),
                 },
             },
-            ConfigDescriptor::for_config(config_digest.to_string(), config_bytes.len() as u64),
+            ConfigDescriptor::for_config(config_digest.clone(), config_bytes.len() as u64),
             &root,
             &args.created_rfc3339,
             &args.annotations,
@@ -410,11 +410,11 @@ mod tests {
                 manifest.annotations.get("dev.pichi.carapace.verity.hash"),
                 Some(&format!("sha256:{}", hex::encode(formatted.root_hash)))
             );
-            assert_eq!(scute.annotations.digest, staged.cow_digest.to_string());
+            assert_eq!(scute.annotations.digest, staged.cow_digest);
             assert_eq!(scute.annotations.size.get(), size);
             assert_eq!(
                 scute.annotations.verity_digest,
-                Digest::Sha256(Sha256::digest(&formatted.blob).into()).to_string()
+                Digest::Sha256(Sha256::digest(&formatted.blob).into())
             );
             assert_eq!(std::fs::read(staged.verity.path()).unwrap(), formatted.blob);
             drop(staged);
