@@ -365,6 +365,9 @@ blob digest but produces a different salt, verity tree, root and manifest.
 Loading or reusing an existing layer preserves its recorded salt.
 `pichi import pmi --carapace` preserves this
 root when adding boot components. Caller annotations cannot replace it.
+Without `--config`, PMI import preserves an inherited carapace config. When
+there is no carapace, it stores the default Pichi launch config as a blob.
+An explicit `--config` supplies the launch requirements in either case.
 PMI-only images carry no carapace root. Bootconfig is an optional accompanying
 component with media type `application/vnd.pichi.bootconfig.v1+zstd`. It cannot
 exist without PMI. Its compressed bytes are authenticated by the OCI descriptor.

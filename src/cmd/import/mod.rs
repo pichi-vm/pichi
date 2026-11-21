@@ -85,6 +85,13 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
 
     let config_blob = match &args.config {
         Some(p) => Some(read_launch_contract(p).await?),
+        None if args.carapace.is_none() => {
+            let bytes = serde_json::to_vec(&Config::default())?;
+            Some((
+                Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into()),
+                bytes,
+            ))
+        }
         None => None,
     };
 
