@@ -29,6 +29,10 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
     "amd64"
 };
 
+#[path = "support/storage.rs"]
+mod storage;
+use storage::Storage as _;
+
 use std::path::PathBuf;
 
 use assert_cmd::Command;
@@ -64,7 +68,7 @@ async fn push_no_cache_errors() {
     let _g = graphroot(&tmp);
     let assert = Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["push", "ghcr.io/example/notpresent:tag"])
         .assert()
         .failure();
@@ -98,7 +102,7 @@ async fn push_skips_existing_blobs() {
     // Seed cache via `pichi import`.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -114,7 +118,7 @@ async fn push_skips_existing_blobs() {
     // First push uploads everything.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["push", &tag])
         .assert()
         .success();
@@ -124,7 +128,7 @@ async fn push_skips_existing_blobs() {
     // when there's nothing to upload).
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["push", &tag])
         .assert()
         .success();
@@ -152,7 +156,7 @@ async fn push_then_pull_succeeds() {
     // 1. import → push.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args([
             "import",
             "raw",
@@ -172,7 +176,7 @@ async fn push_then_pull_succeeds() {
         .expect("tag should resolve after import");
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["push", &tag])
         .assert()
         .success();
@@ -180,7 +184,7 @@ async fn push_then_pull_succeeds() {
     // 2. rmi → pull.
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["rmi", &tag])
         .assert()
         .success();
@@ -191,7 +195,7 @@ async fn push_then_pull_succeeds() {
     );
     Command::cargo_bin("pichi")
         .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+        .storage(tmp.path())
         .args(["pull", &tag])
         .assert()
         .success();
