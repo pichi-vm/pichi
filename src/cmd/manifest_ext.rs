@@ -62,7 +62,7 @@ impl ManifestExt for Manifest {
     fn scute_layers(&self) -> Vec<&Layer> {
         self.layers
             .iter()
-            .filter(|layer| matches!(layer, Layer::Scute(_) | Layer::ScuteZstd(_)))
+            .filter(|layer| matches!(layer, Layer::Scute(_)))
             .collect()
     }
 
@@ -117,7 +117,7 @@ pub(super) struct ScuteRoots {
 
 impl ScuteRoots {
     pub(super) fn add(&mut self, layer: &Layer, root: [u8; 32]) -> Result<()> {
-        let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = layer else {
+        let Layer::Scute(scute) = layer else {
             bail!("non-scute layer supplied a verity root");
         };
         let salt = scute.annotations.salt.as_ref();
@@ -137,7 +137,7 @@ impl ScuteRoots {
         let expected = manifest
             .layers
             .iter()
-            .filter(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)))
+            .filter(|l| matches!(l, Layer::Scute(_)))
             .count();
         if self.count != expected {
             bail!("not every manifest scute was reconstructed");

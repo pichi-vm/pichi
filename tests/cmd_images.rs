@@ -39,6 +39,7 @@ async fn populate(
     with_pmi: bool,
 ) -> conglobate::artifact::Digest {
     let mut layers = vec![Layer::Scute(ScuteDescriptor {
+        media_type: conglobate::artifact::Compressable::Raw(Default::default()),
         digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
         size: 4096,
         annotations: ScuteAnnotations {

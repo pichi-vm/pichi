@@ -38,6 +38,7 @@ async fn insert_manifest(
         artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers: vec![Layer::Scute(ScuteDescriptor {
+            media_type: conglobate::artifact::Compressable::Raw(Default::default()),
             digest: scute_digest.clone(),
             size: 1024,
             annotations: ScuteAnnotations {

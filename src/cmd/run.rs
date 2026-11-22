@@ -233,7 +233,7 @@ pub(crate) async fn build_gpt_spec(
         // Ingestion verified the chain. Each child's salt commits its parent;
         // the manifest commits the tip. Launch only consumes those identities.
         let root: [u8; 32] = if let Some(next) = scutes.get(index + 1) {
-            let (Layer::Scute(next) | Layer::ScuteZstd(next)) = next else {
+            let Layer::Scute(next) = next else {
                 anyhow::bail!("non-scute in GPT layers");
             };
             let salt = next.annotations.salt.as_ref();
@@ -373,9 +373,9 @@ mod tests {
     async fn partition_layers_preserves_scute_encoding() {
         let scute = [0; 4096].descriptor(&[0; 32], false);
         let m = manifest_with(vec![
-            Layer::Scute(scute.clone()),
+            Layer::Scute(scute),
             pmi_layer(),
-            Layer::ScuteZstd(scute),
+            Layer::Scute([0; 4096].descriptor(&[0; 32], true)),
         ]);
         let (_, scutes) = m.partition_layers().unwrap();
         assert_eq!(scutes, vec![&m.layers[0], &m.layers[2]]);
@@ -659,11 +659,7 @@ mod tests {
                 let digest = sha256_digest(&wire);
                 store.put_blob(&digest, &wire).await.unwrap();
                 let scute = data.descriptor(&[0; 32], compressed);
-                let layer = if compressed {
-                    Layer::ScuteZstd(scute)
-                } else {
-                    Layer::Scute(scute)
-                };
+                let layer = Layer::Scute(scute);
                 let mut manifest = manifest_with(vec![pmi_layer(), layer]);
                 let pmi_path = store.blob_path(manifest.layers[0].digest());
                 std::fs::write(&pmi_path, vec![0; 8192]).unwrap();

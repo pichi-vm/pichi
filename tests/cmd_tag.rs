@@ -25,6 +25,7 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::a
         artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers: vec![Layer::Scute(ScuteDescriptor {
+            media_type: conglobate::artifact::Compressable::Raw(Default::default()),
             digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
             size: 1024,
             annotations: ScuteAnnotations {

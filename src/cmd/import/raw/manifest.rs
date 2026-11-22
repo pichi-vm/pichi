@@ -81,6 +81,7 @@ mod tests {
 
     fn scute(digest: &Digest, salt: &[u8]) -> ScuteDescriptor {
         ScuteDescriptor {
+            media_type: conglobate::artifact::Compressable::Raw(Default::default()),
             digest: digest.clone(),
             size: 16384,
             annotations: ScuteAnnotations {

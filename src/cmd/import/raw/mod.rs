@@ -172,6 +172,7 @@ impl StagedImport {
         let config_digest = Digest::Sha256(Sha256::digest(&config_bytes).into());
         let manifest = Manifest::base(
             ScuteDescriptor {
+                media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: cow_digest.clone(),
                 size,
                 annotations: ScuteAnnotations {

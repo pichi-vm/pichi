@@ -243,9 +243,7 @@ async fn carapace_scutes_manifest(
     }
     // Keep only the carapace's scute layers (drop any prior PMI/bootconfig so a re-run
     // replaces cleanly); its scute cows + `.verity` sidecars are already cached.
-    manifest
-        .layers
-        .retain(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)));
+    manifest.layers.retain(|l| matches!(l, Layer::Scute(_)));
     Ok((manifest, metadata.value["annotations"].clone()))
 }
 

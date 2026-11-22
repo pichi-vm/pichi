@@ -299,8 +299,7 @@ impl SubmoduleFixture {
         for layer in &manifest.layers {
             let path = store.blob_path(layer.digest());
             let path = match layer {
-                Layer::Scute(_) => path,
-                Layer::ScuteZstd(scute) => path.deflated_path(
+                Layer::Scute(scute) if layer.is_zstd_variant() => path.deflated_path(
                     manifest
                         .verity_header(scute, None)
                         .unwrap()
@@ -308,6 +307,7 @@ impl SubmoduleFixture {
                         .data_size()
                         .unwrap(),
                 ),
+                Layer::Scute(_) => path,
                 _ => continue,
             };
             layers.push(std::fs::read(path).unwrap());

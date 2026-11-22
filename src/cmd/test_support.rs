@@ -28,6 +28,11 @@ impl ScuteFixture for [u8] {
             self.to_vec()
         };
         ScuteDescriptor {
+            media_type: if compressed {
+                conglobate::artifact::Compressable::Zstd(Default::default())
+            } else {
+                conglobate::artifact::Compressable::Raw(Default::default())
+            },
             digest: Digest::Sha256(Sha256::digest(&wire).into()),
             size: wire.len() as u64,
             annotations: ScuteAnnotations {

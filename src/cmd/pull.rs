@@ -789,7 +789,7 @@ mod tests {
     use conglobate::artifact::PmiDescriptor;
     use pichi_storage::BlobSidecarExt;
 
-    /// Plan 02 helper: build a 1-Scute or 1-ScuteZstd manifest with a
+    /// Plan 02 helper: build a raw or compressed scute manifest with a
     /// 32-zero salt. Returns (manifest bytes, manifest digest).
     fn make_scute_manifest(
         scute_digest: &Digest,
@@ -800,11 +800,7 @@ mod tests {
         let mut scute_desc = data.descriptor(&[0; 32], is_zstd);
         scute_desc.digest = scute_digest.clone();
         scute_desc.size = scute_size;
-        let layer = if is_zstd {
-            Layer::ScuteZstd(scute_desc)
-        } else {
-            Layer::Scute(scute_desc)
-        };
+        let layer = Layer::Scute(scute_desc);
         let manifest = Manifest {
             schema_version: Default::default(),
             media_type: Default::default(),
@@ -1173,7 +1169,7 @@ mod tests {
                 let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
                 let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, &data, compressed);
                 let mut next: Manifest = serde_json::from_slice(&bytes).unwrap();
-                let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut next.layers[0] else {
+                let Layer::Scute(scute) = &mut next.layers[0] else {
                     unreachable!()
                 };
                 scute.annotations.salt = devmap_verity::Salt::new(&parent).unwrap().into();
@@ -1244,8 +1240,7 @@ mod tests {
             for suffix in [0xaa, 0xbb] {
                 let mut params = pull_side_verity_params();
                 params.salt.push(suffix);
-                let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut manifest.layers[0]
-                else {
+                let Layer::Scute(scute) = &mut manifest.layers[0] else {
                     unreachable!()
                 };
                 scute.annotations.salt = devmap_verity::Salt::new(&params.salt).unwrap().into();

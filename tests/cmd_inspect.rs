@@ -42,6 +42,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
         config: ConfigDescriptor::canonical(),
         layers: vec![
             Layer::Scute(ScuteDescriptor {
+                media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: 4096,
                 annotations: ScuteAnnotations {
@@ -109,6 +110,7 @@ async fn inspect_format_reaches_dotted_annotation() {
         artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers: vec![Layer::Scute(ScuteDescriptor {
+            media_type: conglobate::artifact::Compressable::Raw(Default::default()),
             digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
             size: 4096,
             annotations: ScuteAnnotations {

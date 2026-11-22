@@ -26,11 +26,10 @@ pub(super) struct ScuteFiles {
 
 impl ScuteFiles {
     pub(super) fn new(manifest: &Manifest, layer: &Layer, store: &dyn BlobStore) -> Result<Self> {
-        let (scute, compressed) = match layer {
-            Layer::Scute(scute) => (scute, false),
-            Layer::ScuteZstd(scute) => (scute, true),
-            _ => bail!("metadata layer has no scute files"),
+        let Layer::Scute(scute) = layer else {
+            bail!("metadata layer has no scute files");
         };
+        let compressed = layer.is_zstd_variant();
         let header = manifest.verity_header(scute, (!compressed).then_some(scute.size))?;
         Self::from_header(
             &store.blob_path(&scute.digest),
@@ -146,7 +145,7 @@ impl PreparedLayer {
         let digest: Digest = layer.digest().clone();
         let path = store.blob_path(&digest);
         let scratch = store.scratch_dir().await?;
-        let seed = if matches!(layer, Layer::Scute(_) | Layer::ScuteZstd(_)) {
+        let seed = if matches!(layer, Layer::Scute(_)) {
             reuse
                 .map(|store| ScuteFiles::new(manifest, layer, store).map(|files| files.data))
                 .transpose()?
@@ -209,12 +208,12 @@ impl PreparedLayer {
         let mut pmi = None;
         let mut bootconfig = None;
         let scute = match layer {
-            Layer::Scute(scute) | Layer::ScuteZstd(scute) => {
+            Layer::Scute(scute) => {
                 // Format in private scratch, then verify in file order while publishing
                 // the output bytes. The expected identity comes from the manifest.
                 let mut hash = tempfile::tempfile_in(scratch)?;
                 let header = manifest.verity_header(scute, None)?;
-                let (deflated, root) = if matches!(layer, Layer::ScuteZstd(_)) {
+                let (deflated, root) = if layer.is_zstd_variant() {
                     let decoder = Self::decoder(&mut wire)?;
                     let (data, root) = DecodePipeline::run(decoder, |input| {
                         Self::prepare_data(input, scute, &header, &mut hash, scratch, data_seed)
@@ -755,7 +754,7 @@ mod tests {
                 "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
                 "config": conglobate::artifact::ConfigDescriptor::canonical(),
                 "layers": [{
-                    "mediaType": if compressed { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
+                    "mediaType": if compressed { conglobate::artifact::Zstd::<conglobate::artifact::ScuteDescriptor>::MEDIA_TYPE } else { conglobate::artifact::ScuteDescriptor::MEDIA_TYPE },
                     "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
                     "size": wire.len(), "annotations": annotations,
                 }],
@@ -890,7 +889,7 @@ mod tests {
         ] {
             let scratch = tempfile::tempdir().unwrap();
             let mut fixture = Fixture::new(true, 2);
-            let Layer::ScuteZstd(scute) = &mut fixture.manifest.layers[0] else {
+            let Layer::Scute(scute) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
             match damage {
@@ -932,9 +931,7 @@ mod tests {
                         Layer::PmiZstd(descriptor) => {
                             (&mut descriptor.size, &mut descriptor.digest)
                         }
-                        Layer::ScuteZstd(descriptor) => {
-                            (&mut descriptor.size, &mut descriptor.digest)
-                        }
+                        Layer::Scute(descriptor) => (&mut descriptor.size, &mut descriptor.digest),
                         _ => unreachable!(),
                     };
                     *size = fixture.wire.len() as u64;
@@ -1132,7 +1129,7 @@ mod tests {
             } else {
                 Digest::Sha256(Sha256::digest(b"wrong source identity").into())
             };
-            let Layer::ScuteZstd(descriptor) = &mut fixture.manifest.layers[0] else {
+            let Layer::Scute(descriptor) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
             descriptor.digest = wrong.clone();
@@ -1244,7 +1241,7 @@ mod tests {
                 .parse::<devmap_core::BlockSize<devmap_verity::Constraint>>()
                 .unwrap()
                 .into();
-            let Layer::ScuteZstd(scute) = &mut fixture.manifest.layers[0] else {
+            let Layer::Scute(scute) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
             scute.annotations.data_blocks = std::num::NonZeroU64::new(count as u64).unwrap().into();
@@ -1258,7 +1255,7 @@ mod tests {
             header
                 .format_padded(fixture.data.as_slice(), &mut tree)
                 .unwrap();
-            let Layer::ScuteZstd(scute) = &mut fixture.manifest.layers[0] else {
+            let Layer::Scute(scute) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
             scute.annotations.verity_digest = Digest::Sha256(Sha256::digest(tree.get_ref()).into());
@@ -1300,7 +1297,7 @@ mod tests {
             fixture.wire.pop();
             assert!(fixture.prepare(scratch.path()).is_err());
             let mut fixture = Fixture::new(compressed, 2);
-            let (Layer::Scute(d) | Layer::ScuteZstd(d)) = &mut fixture.manifest.layers[0] else {
+            let Layer::Scute(d) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
             d.digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"wrong").into());
@@ -1308,7 +1305,7 @@ mod tests {
         }
         let mut fixture = Fixture::new(true, 2);
         fixture.wire.extend_from_within(..);
-        let Layer::ScuteZstd(d) = &mut fixture.manifest.layers[0] else {
+        let Layer::Scute(d) = &mut fixture.manifest.layers[0] else {
             unreachable!()
         };
         d.size = fixture.wire.len() as u64;
@@ -1353,7 +1350,7 @@ mod tests {
             "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
             "config": conglobate::artifact::ConfigDescriptor::canonical(),
             "layers": [{
-                "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD,
+                "mediaType": conglobate::artifact::Zstd::<conglobate::artifact::ScuteDescriptor>::MEDIA_TYPE,
                 "digest": digest.to_string(),
                 "size": WIRE.len(),
                 "annotations": {

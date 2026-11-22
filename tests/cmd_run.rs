@@ -87,6 +87,7 @@ async fn populate_bootable_with_requirements(
         config: ConfigDescriptor::canonical(),
         layers: vec![
             Layer::Scute(ScuteDescriptor {
+                media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: cow_digest.clone(),
                 size: cow_bytes.len() as u64,
                 annotations: ScuteAnnotations {
@@ -377,6 +378,11 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             store.put_blob(&digest, &wire).await.unwrap();
             store.put_blob(&sha256_digest(b"{}"), b"{}").await.unwrap();
             let descriptor = ScuteDescriptor {
+                media_type: if compressed {
+                    conglobate::artifact::Compressable::Zstd(Default::default())
+                } else {
+                    conglobate::artifact::Compressable::Raw(Default::default())
+                },
                 digest: digest.clone(),
                 size: wire.len() as u64,
                 annotations: ScuteAnnotations {
@@ -387,19 +393,15 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                     salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
                 },
             };
-            manifest.layers[0] = if compressed {
-                Layer::ScuteZstd(descriptor)
-            } else {
-                Layer::Scute(descriptor)
-            };
-            let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &manifest.layers[0] else {
+            manifest.layers[0] = Layer::Scute(descriptor);
+            let Layer::Scute(scute) = &manifest.layers[0] else {
                 unreachable!()
             };
             let header = manifest.verity_header(scute, None).unwrap();
             data.resize(8192, 0);
             let mut verity = std::io::Cursor::new(Vec::new());
             let root = header.format(data.as_slice(), &mut verity).unwrap();
-            let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &mut manifest.layers[0] else {
+            let Layer::Scute(scute) = &mut manifest.layers[0] else {
                 unreachable!()
             };
             scute.annotations.verity_digest = sha256_digest(verity.get_ref());
@@ -433,7 +435,7 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             let prepared = FilesystemBlobStore::new(&graphroot(&destination));
             assert_eq!(prepared.get_blob(&manifest_digest).await.unwrap(), bytes);
             let blob = prepared.blob_path(&digest);
-            let (Layer::Scute(scute) | Layer::ScuteZstd(scute)) = &manifest.layers[0] else {
+            let Layer::Scute(scute) = &manifest.layers[0] else {
                 unreachable!()
             };
             let header = manifest.verity_header(scute, None).unwrap();

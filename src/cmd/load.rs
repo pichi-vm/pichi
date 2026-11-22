@@ -217,13 +217,11 @@ impl OciLayout {
                     .context("invalid launch config")?;
                 }
             }
-            if manifest.layers.iter().any(|l| {
-                matches!(
-                    l,
-                    conglobate::artifact::Layer::Scute(_)
-                        | conglobate::artifact::Layer::ScuteZstd(_)
-                )
-            }) {
+            if manifest
+                .layers
+                .iter()
+                .any(|l| matches!(l, conglobate::artifact::Layer::Scute(_)))
+            {
                 ensure!(
                     manifest.annotations.verity.data_block_size.bytes().get() == 4096
                         && manifest.annotations.verity.hash_block_size.bytes().get() == 4096,
@@ -276,11 +274,7 @@ impl OciLayout {
                     // A present but invalid output blob never falls back to cache.
                     layout.copy_blob(&root, layer.digest(), layer.size(), &mut expected)?;
                 }
-                if matches!(
-                    layer,
-                    conglobate::artifact::Layer::Scute(_)
-                        | conglobate::artifact::Layer::ScuteZstd(_)
-                ) {
+                if matches!(layer, conglobate::artifact::Layer::Scute(_)) {
                     // Optional guest sidecars have only digest-derived names.
                     // They are compared with the fresh tree, never imported.
                     let sidecar = Self::blob_name(layer.digest()).with_extension("verity");
@@ -653,7 +647,7 @@ pub(super) mod tests {
                 cow.clone()
             };
             self.manifest["layers"].as_array_mut().unwrap().push(json!({
-                "mediaType": if compressed { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
+                "mediaType": if compressed { conglobate::artifact::Zstd::<conglobate::artifact::ScuteDescriptor>::MEDIA_TYPE } else { conglobate::artifact::ScuteDescriptor::MEDIA_TYPE },
                 "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
                 "size": wire.len(),
                 "annotations": {
