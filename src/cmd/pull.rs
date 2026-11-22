@@ -336,6 +336,7 @@ mod tests {
                         size: firmware.len() as u64,
                     }),
                     Layer::BootConfig(BootConfigDescriptor {
+                        media_type: Default::default(),
                         digest: config_digest.clone(),
                         size: compressed.len() as u64,
                     }),

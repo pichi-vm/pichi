@@ -48,6 +48,7 @@ impl BootConfigFile {
 
     pub(super) fn descriptor(&self) -> Option<BootConfigDescriptor> {
         (!self.text.is_empty()).then(|| BootConfigDescriptor {
+            media_type: Default::default(),
             digest: Digest::Sha256(Sha256::digest(&self.bytes).into()),
             size: self.bytes.len() as u64,
         })
