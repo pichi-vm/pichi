@@ -108,8 +108,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 [[package]]
 name = "applevisor"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "139a0fe60afd3e8c3a42fc0265caf4eb04b84a8b760623f7a6229174c18e4e36"
+source = "git+https://github.com/pichi-vm/applevisor?rev=2e38fb0e372e2bb8fbb90cbf89f5931b710c32a4#2e38fb0e372e2bb8fbb90cbf89f5931b710c32a4"
 dependencies = [
  "applevisor-sys",
 ]
@@ -883,13 +882,13 @@ dependencies = [
 [[package]]
 name = "dillo"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "anyhow",
  "argh",
- "ciborium",
  "dillo-config",
  "dillo-devtree",
+ "dillo-launch",
  "dillo-machine",
  "dillo-machine-hvf",
  "dillo-machine-kvm",
@@ -899,6 +898,7 @@ dependencies = [
  "dillo-mmio-virtio",
  "dillo-pci",
  "dillo-pci-virtio",
+ "dillo-runtime",
  "dillo-storage",
  "dillo-virtio",
  "dillo-virtio-blk",
@@ -911,7 +911,6 @@ dependencies = [
  "imago",
  "log",
  "mmarinus",
- "object 0.36.7",
  "pmi",
  "serde",
  "serde_json",
@@ -922,7 +921,7 @@ dependencies = [
 [[package]]
 name = "dillo-config"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "anyhow",
  "argh",
@@ -937,25 +936,36 @@ dependencies = [
 [[package]]
 name = "dillo-devtree"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "devtree",
  "thiserror 2.0.18",
 ]
 
 [[package]]
+name = "dillo-launch"
+version = "0.1.0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
+dependencies = [
+ "ciborium",
+ "dillo-machine",
+ "object 0.36.7",
+ "pmi",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dillo-machine"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
- "dillo-mmio",
  "pmi",
 ]
 
 [[package]]
 name = "dillo-machine-hvf"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "applevisor",
  "applevisor-sys",
@@ -972,7 +982,7 @@ dependencies = [
 [[package]]
 name = "dillo-machine-kvm"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "anyhow",
  "dillo-devtree",
@@ -992,7 +1002,7 @@ dependencies = [
 [[package]]
 name = "dillo-machine-whp"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "dillo-devtree",
  "dillo-machine",
@@ -1007,7 +1017,7 @@ dependencies = [
 [[package]]
 name = "dillo-mmio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "log",
  "thiserror 2.0.18",
@@ -1017,7 +1027,7 @@ dependencies = [
 [[package]]
 name = "dillo-mmio-uart"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "dillo-mmio",
  "vm-superio",
@@ -1026,7 +1036,7 @@ dependencies = [
 [[package]]
 name = "dillo-mmio-virtio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -1037,7 +1047,7 @@ dependencies = [
 [[package]]
 name = "dillo-pci"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "dillo-mmio",
  "log",
@@ -1046,7 +1056,7 @@ dependencies = [
 [[package]]
 name = "dillo-pci-virtio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "dillo-mmio",
  "dillo-pci",
@@ -1056,9 +1066,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dillo-runtime"
+version = "0.1.0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
+dependencies = [
+ "dillo-machine",
+ "log",
+]
+
+[[package]]
 name = "dillo-storage"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "imago",
 ]
@@ -1066,7 +1085,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "dillo-mmio",
  "log",
@@ -1077,7 +1096,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-blk"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "dillo-mmio",
  "dillo-storage",
@@ -1090,7 +1109,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-console"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "dillo-config",
  "dillo-mmio",
@@ -1109,7 +1128,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-fs"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -1124,7 +1143,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-gpt"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "anyhow",
  "dillo-virtio-blk",
@@ -1137,7 +1156,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-net"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "block2",
  "dillo-mmio",
@@ -1152,7 +1171,7 @@ dependencies = [
 [[package]]
 name = "dillo-virtio-vsock"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/dillo?branch=main#54c6c86a3b52a59f32717e2bbba45d85d6646ba0"
+source = "git+https://github.com/pichi-vm/dillo?branch=main#338b6e470a9fa3c001ae4699085f72b85c9a2226"
 dependencies = [
  "dillo-mmio",
  "dillo-virtio",
@@ -1293,6 +1312,15 @@ name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "flagset"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "flate2"
@@ -3260,8 +3288,9 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 [[package]]
 name = "pmi"
 version = "0.1.0"
-source = "git+https://github.com/pichi-vm/pmi?branch=main#5d6fe93b87d5af20d7387491f97aa89f31361ef9"
+source = "git+https://github.com/pichi-vm/pmi?branch=main#7a5028f15087652bc055f5b139efa48b8511c887"
 dependencies = [
+ "flagset",
  "serde",
 ]
 
