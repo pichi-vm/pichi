@@ -4,6 +4,7 @@
 //! Import OCI layouts into the cache. Build and load share this
 //! boundary: snapshot and verify guest bytes, rebuild verity, then publish tags.
 
+use conglobate::artifact::Media as _;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::Read as _;
@@ -174,7 +175,7 @@ impl OciLayout {
                 entry
                     .artifact_type
                     .as_deref()
-                    .is_none_or(|t| t == conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1),
+                    .is_none_or(|t| t == conglobate::artifact::PichiArtifact::MEDIA_TYPE),
                 "invalid index artifact type"
             );
             ensure!(entry.size <= METADATA_CAP, "manifest exceeds metadata cap");
@@ -625,7 +626,7 @@ pub(super) mod tests {
                 manifest: json!({
                     "schemaVersion": 2,
                     "mediaType": MANIFEST_TYPE,
-                    "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                    "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
                     "config": conglobate::artifact::ConfigDescriptor::canonical(),
                     "layers": [],
                     "annotations": {
@@ -701,7 +702,7 @@ pub(super) mod tests {
                     "schemaVersion": 2, "mediaType": INDEX_TYPE,
                     "manifests": [{
                         "mediaType": MANIFEST_TYPE,
-                        "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                        "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
                         "digest": digest.to_string(), "size": bytes.len(),
                         "annotations": { REF_NAME_ANNOTATION: "guest:ignored" },
                     }],

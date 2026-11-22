@@ -9,8 +9,8 @@ use storage::Storage as _;
 
 use assert_cmd::Command;
 use conglobate::artifact::{
-    ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-    ScuteAnnotations, ScuteDescriptor,
+    ConfigDescriptor, Layer, Manifest, Media as _, PichiArtifact, PmiDescriptor, ScuteAnnotations,
+    ScuteDescriptor,
 };
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
@@ -38,7 +38,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
     let m = Manifest {
         schema_version: Default::default(),
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+        artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers: vec![
             Layer::Scute(ScuteDescriptor {
@@ -86,7 +86,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
     assert_eq!(v["digest"].as_str(), Some(digest.to_string().as_str()));
     assert_eq!(
         v["manifest"]["artifactType"].as_str(),
-        Some(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+        Some(PichiArtifact::MEDIA_TYPE)
     );
     assert_eq!(v["manifest"]["layers"].as_array().map(Vec::len), Some(2));
     // Default JSON keeps canonical (flat) OCI annotation keys.
@@ -106,7 +106,7 @@ async fn inspect_format_reaches_dotted_annotation() {
     let m = Manifest {
         schema_version: Default::default(),
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+        artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers: vec![Layer::Scute(ScuteDescriptor {
             digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
@@ -163,7 +163,7 @@ async fn inspect_image_index_lists_entries() {
         "manifests": [
             {
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                "artifactType": PichiArtifact::MEDIA_TYPE,
                 "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "size": 1024,
                 "platform": {"architecture": "amd64", "os": "linux"}
@@ -227,7 +227,7 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
         let manifest = Manifest {
             schema_version: Default::default(),
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+            artifact_type: Default::default(),
             config: ConfigDescriptor::for_config(config_digest.clone(), bytes.len() as u64),
             layers: vec![Layer::Pmi(PmiDescriptor {
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
@@ -246,7 +246,7 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
                 other => panic!("unsupported test architecture {other}"),
             };
             let index = serde_json::json!({"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{
-                "mediaType":"application/vnd.oci.image.manifest.v1+json","artifactType":MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                "mediaType":"application/vnd.oci.image.manifest.v1+json","artifactType":PichiArtifact::MEDIA_TYPE,
                 "digest":manifest_digest.to_string(),"size":bytes.len(),"platform":{"os":"pichi","architecture":architecture}
             }]});
             let bytes = serde_json::to_vec(&index).unwrap();
@@ -303,7 +303,7 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
         let manifest = Manifest {
             schema_version: Default::default(),
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+            artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Pmi(PmiDescriptor {
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),

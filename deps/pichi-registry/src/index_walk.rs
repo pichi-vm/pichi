@@ -29,7 +29,7 @@
 //! gate stays a clean "0 matches" signal.
 
 use anyhow::{Context, Result, anyhow};
-use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
+use conglobate::artifact::{Media as _, PichiArtifact};
 use serde_json::Value;
 
 /// OCI Image Index media type (per OCI Image Spec 1.1). Re-exported so callers
@@ -38,7 +38,7 @@ use serde_json::Value;
 pub use conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1 as OCI_IMAGE_INDEX_MEDIA_TYPE;
 
 /// Walk an OCI Image Index `manifests[]` array; return the digest string of
-/// the entry matching `(artifactType=MEDIA_TYPE_PICHI_ARTIFACT_V1,
+/// the entry matching `(artifactType=PichiArtifact::MEDIA_TYPE,
 /// platform.os=target_os, platform.architecture=target_arch)`.
 ///
 /// On no-match: Err whose Display lists every entry's
@@ -87,7 +87,7 @@ pub fn pick_pichi_entry_from_index(
             pl_arch.unwrap_or("<none>"),
         ));
 
-        if artifact_type == Some(MEDIA_TYPE_PICHI_ARTIFACT_V1)
+        if artifact_type == Some(PichiArtifact::MEDIA_TYPE)
             && pl_os == Some(target_os)
             && pl_arch == Some(target_arch)
         {
@@ -116,7 +116,7 @@ pub fn pick_pichi_entry_from_index(
 #[cfg(test)]
 mod tests {
     use super::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
-    use conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1;
+    use conglobate::artifact::{Media as _, PichiArtifact};
 
     fn idx(entries: &str) -> Vec<u8> {
         format!(
@@ -130,9 +130,10 @@ mod tests {
         let entries = format!(
             r#"
             {{ "digest": "sha256:aaaa", "platform": {{"os":"linux","architecture":"amd64"}} }},
-            {{ "digest": "sha256:dddd", "artifactType": "{MEDIA_TYPE_PICHI_ARTIFACT_V1}",
+            {{ "digest": "sha256:dddd", "artifactType": "{}",
                "platform": {{"os":"linux","architecture":"amd64"}} }}
-        "#
+        "#,
+            PichiArtifact::MEDIA_TYPE
         );
         let digest = pick_pichi_entry_from_index(&idx(&entries), "linux", "amd64").unwrap();
         assert_eq!(
@@ -175,9 +176,10 @@ mod tests {
     fn pick_pichi_entry_from_index_wrong_arch() {
         let entries = format!(
             r#"
-            {{ "digest": "sha256:dddd_arm", "artifactType": "{MEDIA_TYPE_PICHI_ARTIFACT_V1}",
+            {{ "digest": "sha256:dddd_arm", "artifactType": "{}",
                "platform": {{"os":"linux","architecture":"arm64"}} }}
-        "#
+        "#,
+            PichiArtifact::MEDIA_TYPE
         );
         let err = pick_pichi_entry_from_index(&idx(&entries), "linux", "amd64").unwrap_err();
         let msg = err.to_string();

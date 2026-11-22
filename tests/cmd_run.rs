@@ -20,8 +20,8 @@ mod build_repo;
 
 use assert_cmd::Command;
 use conglobate::artifact::{
-    ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-    ScuteAnnotations, ScuteDescriptor,
+    ConfigDescriptor, Layer, Manifest, Media as _, PichiArtifact, PmiDescriptor, ScuteAnnotations,
+    ScuteDescriptor,
 };
 use devmap_verity::Format as _;
 use pichi::cmd::manifest_ext::ManifestExt as _;
@@ -83,7 +83,7 @@ async fn populate_bootable_with_requirements(
     let mut manifest = Manifest {
         schema_version: Default::default(),
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+        artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers: vec![
             Layer::Scute(ScuteDescriptor {
@@ -497,13 +497,13 @@ async fn run_resolves_cached_index_references() {
                 "mediaType": pichi_registry::OCI_IMAGE_INDEX_MEDIA_TYPE,
                 "manifests": [{
                     "mediaType": manifest.media_type,
-                    "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                    "artifactType": PichiArtifact::MEDIA_TYPE,
                     "digest": format!("sha256:{}", "44".repeat(32)),
                     "size": 1,
                     "platform": { "os": "pichi", "architecture": "not-this-host" },
                 }, {
                     "mediaType": manifest.media_type,
-                    "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                    "artifactType": PichiArtifact::MEDIA_TYPE,
                     "digest": manifest_digest.to_string(),
                     "size": manifest_size,
                     "platform": { "os": "pichi", "architecture": architecture },

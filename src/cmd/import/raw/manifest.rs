@@ -8,9 +8,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
 
-use conglobate::artifact::{
-    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteDescriptor,
-};
+use conglobate::artifact::{ConfigDescriptor, Digest, Layer, Manifest, ScuteDescriptor};
 
 /// Build a `Manifest` for a base carapace import (one Scute, no PMI).
 ///
@@ -62,7 +60,7 @@ impl BaseManifest for Manifest {
         let manifest = Manifest {
             schema_version: Default::default(),
             media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
+            artifact_type: Default::default(),
             config,
             layers: vec![Layer::Scute(scute)],
             annotations,

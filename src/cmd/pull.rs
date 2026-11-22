@@ -218,7 +218,7 @@ mod tests {
     use bytes::Bytes;
     use conglobate::artifact::Layer;
     use conglobate::artifact::Platform;
-    use conglobate::artifact::{ConfigDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1};
+    use conglobate::artifact::{ConfigDescriptor, Media as _, PichiArtifact};
     use pichi_registry::MockRegistry;
     use std::path::Path;
     use tempfile::TempDir;
@@ -254,7 +254,7 @@ mod tests {
                 let manifest = Manifest {
                     schema_version: Default::default(),
                     media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
-                    artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+                    artifact_type: Default::default(),
                     config: ConfigDescriptor::canonical(),
                     layers: vec![Layer::PmiZstd(PmiDescriptor {
                         digest: digest.clone(),
@@ -326,7 +326,7 @@ mod tests {
             let manifest = Manifest {
                 schema_version: Default::default(),
                 media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
-                artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+                artifact_type: Default::default(),
                 config: ConfigDescriptor::canonical(),
                 layers: vec![
                     Layer::Pmi(PmiDescriptor {
@@ -432,7 +432,7 @@ mod tests {
                 .expect_err("non-pichi bare manifest must be rejected");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("expected application/vnd.pichi.artifact.v1+json"),
+            msg.contains("expected media type application/vnd.pichi.artifact.v1+json"),
             "wrong rejection message: {msg}"
         );
         // No blobs written — BlobStore dir should be empty (or at most have
@@ -462,7 +462,7 @@ mod tests {
         let bad_pichi = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            "artifactType": PichiArtifact::MEDIA_TYPE,
             "config": {
                 "mediaType": "application/vnd.oci.empty.v1+json",
                 "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
@@ -668,13 +668,13 @@ mod tests {
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "digest": picked_manifest_digest.to_string(),
                 "size": picked_manifest_bytes.len(),
-                "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                "artifactType": PichiArtifact::MEDIA_TYPE,
                 "platform": {"os": "pichi", "architecture": Platform::host_architecture()}
             }, {
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "digest": format!("sha256:{}", "ab".repeat(32)),
                 "size": 123,
-                "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                "artifactType": PichiArtifact::MEDIA_TYPE,
                 "platform": {"os": "pichi", "architecture": "not-this-host"}
             }]
         });
@@ -808,7 +808,7 @@ mod tests {
         let manifest = Manifest {
             schema_version: Default::default(),
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+            artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers: vec![layer],
             annotations: conglobate::artifact::ManifestAnnotations {

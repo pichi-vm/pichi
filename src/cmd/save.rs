@@ -11,7 +11,7 @@ use anyhow::{Context, Result, ensure};
 use std::path::Path;
 
 use conglobate::artifact::{
-    Digest, Index, IndexDescriptor, LayoutMarker, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference,
+    Digest, Index, IndexDescriptor, LayoutMarker, Media as _, PichiArtifact, Reference,
 };
 use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
@@ -76,7 +76,7 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
                 .as_str()
                 .context("image has no media type")?
                 .into(),
-            artifact_type: Some(MEDIA_TYPE_PICHI_ARTIFACT_V1.into()),
+            artifact_type: Some(PichiArtifact::MEDIA_TYPE.into()),
             digest: digest.to_string(),
             size: root.bytes.len() as u64,
             platform: None,

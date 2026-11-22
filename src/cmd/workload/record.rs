@@ -548,9 +548,7 @@ mod tests {
         cli::{PruneArgs, RmiArgs},
         config::{Config, StorageConfig},
     };
-    use conglobate::artifact::{
-        ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-    };
+    use conglobate::artifact::{ConfigDescriptor, Layer, Manifest, PmiDescriptor};
     use madrillo::{CompletionCause, LeaderResult, OomEvidence};
     use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
     use sha2::{Digest as _, Sha256};
@@ -904,7 +902,7 @@ mod tests {
                 let manifest = Manifest {
                     schema_version: Default::default(),
                     media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-                    artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+                    artifact_type: Default::default(),
                     config: ConfigDescriptor::canonical(),
                     layers: vec![Layer::Pmi(PmiDescriptor {
                         digest: layer.clone(),

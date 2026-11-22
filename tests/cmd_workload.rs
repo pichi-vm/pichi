@@ -19,9 +19,7 @@ mod storage;
 use storage::Storage as _;
 
 use assert_cmd::Command;
-use conglobate::artifact::{
-    ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-};
+use conglobate::artifact::{ConfigDescriptor, Digest, Layer, Manifest, PmiDescriptor};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use sha2::{Digest as _, Sha256};
 use std::{os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
@@ -44,7 +42,7 @@ impl WorkloadFixture {
         let manifest = Manifest {
             schema_version: Default::default(),
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+            artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Pmi(PmiDescriptor {
                 digest: digest.clone(),

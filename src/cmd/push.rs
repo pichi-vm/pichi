@@ -224,7 +224,7 @@ mod tests {
     use super::*;
     use crate::cmd::test_support::ScuteFixture as _;
     use bytes::Bytes;
-    use conglobate::artifact::{ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1};
+    use conglobate::artifact::{ConfigDescriptor, Layer, Media as _, PichiArtifact};
     use pichi_registry::MockRegistry;
     use pichi_storage::TagDb as _;
     use std::path::Path;
@@ -259,7 +259,7 @@ mod tests {
         let manifest = Manifest {
             schema_version: Default::default(),
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+            artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Scute(data.descriptor(&[0; 32], false))],
             annotations: conglobate::artifact::ManifestAnnotations {
@@ -453,7 +453,7 @@ mod tests {
         let bad_manifest = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            "artifactType": PichiArtifact::MEDIA_TYPE,
             "config": {
                 "mediaType": "application/vnd.oci.empty.v1+json",
                 "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",

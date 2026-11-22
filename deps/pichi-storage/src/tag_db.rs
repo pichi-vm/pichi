@@ -42,7 +42,7 @@ use conglobate::artifact::{
 
 use crate::atomic::write_atomic;
 use crate::lock::lock_exclusive_async;
-use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1};
+use conglobate::artifact::{Digest, Media as _, PichiArtifact};
 
 /// OCI annotation key for the human-readable image reference (tag).
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
@@ -180,7 +180,7 @@ impl FilesystemTagDb {
         index.manifests.push(ManifestDescriptor {
             artifact_type: None,
             platform: None,
-            media_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
+            media_type: PichiArtifact::MEDIA_TYPE.to_string(),
             digest: digest.to_string(),
             size: 0,
             annotations: {

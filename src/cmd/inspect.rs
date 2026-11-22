@@ -22,7 +22,7 @@ use minijinja::Environment;
 use serde::Serialize;
 use serde_json::Value;
 
-use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, Reference};
+use conglobate::artifact::{Digest, Manifest, Media as _, PichiArtifact, Reference};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use crate::cli::InspectArgs;
@@ -155,7 +155,7 @@ fn inspect_index(
             .get("artifactType")
             .and_then(|v| v.as_str())
             .map(String::from);
-        let is_pichi = artifact_type.as_deref() == Some(MEDIA_TYPE_PICHI_ARTIFACT_V1);
+        let is_pichi = artifact_type.as_deref() == Some(PichiArtifact::MEDIA_TYPE);
         if is_pichi {
             pichi_count += 1;
         }

@@ -9,8 +9,7 @@ use storage::Storage as _;
 
 use assert_cmd::Command;
 use conglobate::artifact::{
-    ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-    ScuteAnnotations, ScuteDescriptor,
+    ConfigDescriptor, Layer, Manifest, PmiDescriptor, ScuteAnnotations, ScuteDescriptor,
 };
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
@@ -59,7 +58,7 @@ async fn populate(
     let m = Manifest {
         schema_version: Default::default(),
         media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+        artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers,
         annotations: chain_annotations(),

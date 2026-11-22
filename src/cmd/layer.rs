@@ -642,6 +642,7 @@ impl<R: Read, W: Write> Read for DecodedReader<R, W> {
 mod tests {
     use super::*;
     use crate::cmd::verity::VerityParams;
+    use conglobate::artifact::Media as _;
 
     #[test]
     fn decode_pipeline_preserves_bytes_and_zero_length_reads() {
@@ -751,7 +752,7 @@ mod tests {
             let manifest = serde_json::json!({
                 "schemaVersion": 2,
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+                "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
                 "config": conglobate::artifact::ConfigDescriptor::canonical(),
                 "layers": [{
                     "mediaType": if compressed { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD } else { conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1 },
@@ -1349,7 +1350,7 @@ mod tests {
         let manifest = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "artifactType": conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
             "config": conglobate::artifact::ConfigDescriptor::canonical(),
             "layers": [{
                 "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_SCUTE_V1_ZSTD,

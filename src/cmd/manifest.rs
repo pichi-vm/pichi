@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
-use conglobate::artifact::{Digest, MEDIA_TYPE_PICHI_ARTIFACT_V1, Reference, ReferenceKind};
+use conglobate::artifact::{Digest, Media as _, PichiArtifact, Reference, ReferenceKind};
 use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry};
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
@@ -76,7 +76,7 @@ pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
         }
         let mut descriptor = json!({
             "mediaType": OCI_MANIFEST_MEDIA_TYPE,
-            "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            "artifactType": PichiArtifact::MEDIA_TYPE,
             "digest": metadata.digest.to_string(),
             "size": metadata.bytes.len(),
             "annotations": { SOURCE_REF_ANNOTATION: src },
@@ -336,7 +336,7 @@ mod tests {
     fn entry(source: &str, digest: &str) -> Value {
         json!({
             "mediaType": OCI_MANIFEST_MEDIA_TYPE,
-            "artifactType": MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            "artifactType": PichiArtifact::MEDIA_TYPE,
             "digest": digest,
             "size": 123,
             "annotations": { SOURCE_REF_ANNOTATION: source },
@@ -436,7 +436,7 @@ mod tests {
             "annotations should be stripped"
         );
         assert_eq!(m["platform"]["architecture"], "amd64");
-        assert_eq!(m["artifactType"], MEDIA_TYPE_PICHI_ARTIFACT_V1);
+        assert_eq!(m["artifactType"], PichiArtifact::MEDIA_TYPE);
     }
 
     #[tokio::test]

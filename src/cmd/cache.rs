@@ -5,6 +5,7 @@
 
 use crate::cmd::platform::PlatformExt as _;
 use anyhow::{Context, Result, anyhow, ensure};
+use conglobate::artifact::Media as _;
 use conglobate::artifact::{
     Digest, Index, IndexDescriptor, Manifest, Platform, Reference, ReferenceKind,
 };
@@ -110,11 +111,6 @@ impl ImageMetadata {
     }
 
     pub(super) fn manifest(&self) -> Result<Manifest> {
-        ensure!(
-            self.value["artifactType"] == conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
-            "expected {}",
-            conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1
-        );
         Manifest::decode_json(self.bytes.as_slice()).context("invalid image manifest")
     }
 }
@@ -136,7 +132,7 @@ pub(super) trait ImageStore: BlobStore {
         let index = Index {
             manifests: vec![IndexDescriptor {
                 media_type: MANIFEST_TYPE.into(),
-                artifact_type: Some(conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1.into()),
+                artifact_type: Some(conglobate::artifact::PichiArtifact::MEDIA_TYPE.into()),
                 digest: metadata.digest.to_string(),
                 size: metadata.bytes.len() as u64,
                 platform: Some(platform.unwrap_or_else(|| Platform {
@@ -379,7 +375,7 @@ mod tests {
         let tags = FilesystemTagDb::open(dir.path()).unwrap();
         let mut manifest = serde_json::json!({
             "schemaVersion":2,"mediaType":MANIFEST_TYPE,
-            "artifactType":conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
+            "artifactType":conglobate::artifact::PichiArtifact::MEDIA_TYPE,
             "config":conglobate::artifact::ConfigDescriptor::canonical(),
             "layers":[],"annotations":{"org.opencontainers.image.created":"before"}
         });

@@ -25,8 +25,7 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow, bail};
 
 use conglobate::artifact::{
-    Config, ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
-    Reference,
+    Config, ConfigDescriptor, Digest, Layer, Manifest, PmiDescriptor, Reference,
 };
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
@@ -256,7 +255,7 @@ fn scuteless_manifest() -> Manifest {
     Manifest {
         schema_version: Default::default(),
         media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
-        artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
+        artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers: Vec::new(),
         annotations: conglobate::artifact::ManifestAnnotations {

@@ -226,8 +226,7 @@ mod tests {
     use pichi_storage::BlobStore as _;
 
     use conglobate::artifact::{
-        ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
-        ScuteDescriptor,
+        ConfigDescriptor, Layer, Manifest, ScuteAnnotations, ScuteDescriptor,
     };
     use pichi_storage::{FilesystemTagDb, TagDb};
     use tempfile::TempDir;
@@ -346,7 +345,7 @@ mod tests {
         let m = Manifest {
             schema_version: Default::default(),
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
-            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+            artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Scute(ScuteDescriptor {
                 digest: scute_digest.clone(),
