@@ -589,9 +589,10 @@ pub async fn run(args: LoadArgs, config: &Config) -> Result<()> {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    use crate::cmd::test_config::ConfigFixture as _;
     use crate::cmd::test_support::ScuteFixture as _;
     use crate::cmd::verity::VerityParams;
-    use conglobate::artifact::Layer;
+    use conglobate::artifact::{ConfigDescriptor, Layer};
     use pichi_storage::TagDb as _;
     use serde_json::{Value, json};
 
@@ -611,7 +612,7 @@ pub(super) mod tests {
                     "schemaVersion": 2,
                     "mediaType": Manifest::MEDIA_TYPE,
                     "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
-                    "config": conglobate::artifact::ConfigDescriptor::canonical(),
+                    "config": ConfigDescriptor::fixture(),
                     "layers": [],
                     "annotations": {
                     },
@@ -667,6 +668,12 @@ pub(super) mod tests {
 
         pub(crate) fn write(&self, dir: &Path) -> Digest {
             std::fs::create_dir_all(dir.join("blobs/sha256")).unwrap();
+            std::fs::write(
+                dir.join("blobs/sha256")
+                    .join(ConfigDescriptor::fixture().digest.hex()),
+                ConfigDescriptor::BYTES,
+            )
+            .unwrap();
             for blob in &self.blobs {
                 std::fs::write(
                     dir.join("blobs/sha256").join(

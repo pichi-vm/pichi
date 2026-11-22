@@ -11,9 +11,12 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
 
 #[path = "support/storage.rs"]
 mod storage;
+#[path = "../src/cmd/test_config.rs"]
+mod test_config;
 use storage::Storage as _;
+use test_config::ConfigFixture as _;
 
-use conglobate::artifact::Digest;
+use conglobate::artifact::{ConfigDescriptor, Digest};
 use devmap_verity::Format as _;
 use pichi::cmd::manifest_ext::ManifestExt as _;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
@@ -38,17 +41,14 @@ impl Fixture {
         let store = FilesystemBlobStore::new(&root);
         let tags = FilesystemTagDb::open(&root).unwrap();
         let layer = Self::put(&store, &[42; 4096]).await;
-        let config = Self::put(&store, b"{}").await;
+        let config = Self::put(&store, ConfigDescriptor::BYTES).await;
         // One data block has no tree levels: its root hashes the salt and block.
         let root = Sha256::digest([&[0; 32][..], &[42; 4096][..]].concat());
         let mut manifest = json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "artifactType": "application/vnd.pichi.artifact.v1+json",
-            "config": {
-                "mediaType": "application/vnd.oci.empty.v1+json",
-                "digest": config.to_string(), "size": 2, "data": "e30="
-            },
+            "config": ConfigDescriptor::fixture(),
             "layers": [{
                 "mediaType": "application/vnd.pichi.scute.v1",
                 "digest": layer.to_string(), "size": 4096,
