@@ -214,6 +214,7 @@ mod tests {
     use super::*;
     use crate::cmd::manifest_ext::ManifestExt as _;
     use crate::cmd::platform::PlatformExt as _;
+    use crate::cmd::test_config::ConfigFixture as _;
     use crate::cmd::test_support::ScuteFixture as _;
     use bytes::Bytes;
     use conglobate::artifact::Layer;
@@ -245,6 +246,12 @@ mod tests {
                 let db = open_db(&graph);
                 let target: Reference = "ghcr.io/example/pmi:1".parse().unwrap();
                 let registry = MockRegistry::new();
+                registry.insert_blob(
+                    "ghcr.io",
+                    "example/pmi",
+                    ConfigDescriptor::fixture().digest,
+                    Bytes::from_static(ConfigDescriptor::BYTES),
+                );
                 let data = b"opaque prepared PMI";
                 let wire = ruzstd::encoding::compress_to_vec(
                     data.as_slice(),
@@ -255,7 +262,7 @@ mod tests {
                     schema_version: Default::default(),
                     media_type: Default::default(),
                     artifact_type: Default::default(),
-                    config: ConfigDescriptor::canonical(),
+                    config: ConfigDescriptor::fixture(),
                     layers: vec![Layer::Pmi(PmiDescriptor {
                         media_type: conglobate::artifact::Compressable::Zstd(Default::default()),
                         digest: digest.clone(),
@@ -315,6 +322,12 @@ mod tests {
             let store = FilesystemBlobStore::new(&g);
             let target: Reference = "ghcr.io/example/boot:1".parse().unwrap();
             let registry = MockRegistry::new();
+            registry.insert_blob(
+                "ghcr.io",
+                "example/boot",
+                ConfigDescriptor::fixture().digest,
+                Bytes::from_static(ConfigDescriptor::BYTES),
+            );
             let firmware = b"opaque PMI".to_vec();
             let compressed = ruzstd::encoding::compress_to_vec(
                 text.as_bytes(),
@@ -328,7 +341,7 @@ mod tests {
                 schema_version: Default::default(),
                 media_type: Default::default(),
                 artifact_type: Default::default(),
-                config: ConfigDescriptor::canonical(),
+                config: ConfigDescriptor::fixture(),
                 layers: vec![
                     Layer::Pmi(PmiDescriptor {
                         media_type: conglobate::artifact::Compressable::Raw(Default::default()),
@@ -466,12 +479,7 @@ mod tests {
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "artifactType": PichiArtifact::MEDIA_TYPE,
-            "config": {
-                "mediaType": "application/vnd.oci.empty.v1+json",
-                "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
-                "size": 2,
-                "data": "e30="
-            },
+            "config": ConfigDescriptor::fixture(),
             "layers": [{
                 "mediaType": "application/vnd.pichi.scute.v1",
                 "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
@@ -515,6 +523,12 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         let mock = MockRegistry::new();
+        mock.insert_blob(
+            "ghcr.io",
+            "example/foo",
+            ConfigDescriptor::fixture().digest,
+            Bytes::from_static(ConfigDescriptor::BYTES),
+        );
 
         // Build a valid pichi manifest, then add trailing whitespace AFTER
         // the closing brace. The whitespace is irrelevant to JSON parsing
@@ -608,6 +622,12 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         let mock = MockRegistry::new();
+        mock.insert_blob(
+            "ghcr.io",
+            "example/foo",
+            ConfigDescriptor::fixture().digest,
+            Bytes::from_static(ConfigDescriptor::BYTES),
+        );
         let layer_data = b"layer-blob-bytes-for-end-state-check";
         let layer_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
@@ -654,6 +674,12 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         let mock = MockRegistry::new();
+        mock.insert_blob(
+            "ghcr.io",
+            "example/foo",
+            ConfigDescriptor::fixture().digest,
+            Bytes::from_static(ConfigDescriptor::BYTES),
+        );
 
         // Build a pichi manifest first (the picked entry).
         let layer_data = b"index-walk-layer-bytes";
@@ -808,7 +834,7 @@ mod tests {
             schema_version: Default::default(),
             media_type: Default::default(),
             artifact_type: Default::default(),
-            config: ConfigDescriptor::canonical(),
+            config: ConfigDescriptor::fixture(),
             layers: vec![layer],
             annotations: conglobate::artifact::ManifestAnnotations {
                 verity: conglobate::artifact::CarapaceVerity {
@@ -849,6 +875,12 @@ mod tests {
                 let store = FilesystemBlobStore::new(&g);
                 let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
                 let registry = MockRegistry::new();
+                registry.insert_blob(
+                    "ghcr.io",
+                    "example/foo",
+                    ConfigDescriptor::fixture().digest,
+                    Bytes::from_static(ConfigDescriptor::BYTES),
+                );
                 let data = vec![0x5a; length];
                 let wire = if compressed {
                     ruzstd::encoding::compress_to_vec(
@@ -922,6 +954,12 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         let mock = MockRegistry::new();
+        mock.insert_blob(
+            "ghcr.io",
+            "example/foo",
+            ConfigDescriptor::fixture().digest,
+            Bytes::from_static(ConfigDescriptor::BYTES),
+        );
 
         // Decompressed payload — needs to be >= 4096 bytes so the verity
         // feed's data_block_size aligns sensibly. Use a deterministic
@@ -992,6 +1030,12 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         let mock = MockRegistry::new();
+        mock.insert_blob(
+            "ghcr.io",
+            "example/foo",
+            ConfigDescriptor::fixture().digest,
+            Bytes::from_static(ConfigDescriptor::BYTES),
+        );
 
         let layer_data: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(4096 * 2).collect();
         let layer_digest =
@@ -1038,6 +1082,12 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         let mock = MockRegistry::new();
+        mock.insert_blob(
+            "ghcr.io",
+            "example/foo",
+            ConfigDescriptor::fixture().digest,
+            Bytes::from_static(ConfigDescriptor::BYTES),
+        );
 
         // Build the scute payload + compute its expected roothash so the
         // synthetic PMI can carry the matching value.
@@ -1115,6 +1165,12 @@ mod tests {
         let blob_store = FilesystemBlobStore::new(&g);
         let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
         let mock = MockRegistry::new();
+        mock.insert_blob(
+            "ghcr.io",
+            "example/foo",
+            ConfigDescriptor::fixture().digest,
+            Bytes::from_static(ConfigDescriptor::BYTES),
+        );
 
         let layer_data: Vec<u8> = (0u32..).map(|i| (i & 0xFF) as u8).take(4096 * 3).collect();
         let layer_digest =
@@ -1154,6 +1210,12 @@ mod tests {
             let store = FilesystemBlobStore::new(&graph);
             let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
             let registry = MockRegistry::new();
+            registry.insert_blob(
+                "ghcr.io",
+                "example/foo",
+                ConfigDescriptor::fixture().digest,
+                Bytes::from_static(ConfigDescriptor::BYTES),
+            );
             let mut parent = [0; 32];
             let mut layers = Vec::new();
             let mut manifest = None;
@@ -1255,6 +1317,12 @@ mod tests {
                 manifest.annotations.verity.root =
                     Some(Digest::Sha256(params.compute(&data).unwrap().root_hash));
                 let registry = MockRegistry::new();
+                registry.insert_blob(
+                    "ghcr.io",
+                    "example/foo",
+                    ConfigDescriptor::fixture().digest,
+                    Bytes::from_static(ConfigDescriptor::BYTES),
+                );
                 registry.insert_manifest(
                     "ghcr.io",
                     "example/foo",
@@ -1305,6 +1373,12 @@ mod tests {
                     let store = FilesystemBlobStore::new(&g);
                     let target: Reference = "ghcr.io/example/foo:bar".parse().unwrap();
                     let registry = MockRegistry::new();
+                    registry.insert_blob(
+                        "ghcr.io",
+                        "example/foo",
+                        ConfigDescriptor::fixture().digest,
+                        Bytes::from_static(ConfigDescriptor::BYTES),
+                    );
                     let data = vec![0x5a; 4097];
                     let wire = ruzstd::encoding::compress_to_vec(
                         data.as_slice(),
