@@ -218,6 +218,7 @@ async fn blob_to_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_config::ConfigFixture as _;
     use crate::cmd::test_support::ScuteFixture as _;
     use bytes::Bytes;
     use conglobate::artifact::{ConfigDescriptor, Layer, PichiArtifact};
@@ -256,7 +257,7 @@ mod tests {
             schema_version: Default::default(),
             media_type: Default::default(),
             artifact_type: Default::default(),
-            config: ConfigDescriptor::canonical(),
+            config: ConfigDescriptor::fixture(),
             layers: vec![Layer::Scute(data.descriptor(&[0; 32], false))],
             annotations: conglobate::artifact::ManifestAnnotations {
                 verity: conglobate::artifact::CarapaceVerity {
@@ -278,6 +279,10 @@ mod tests {
         let db = FilesystemTagDb::open(graphroot).unwrap();
         let layer_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
+        blob_store
+            .put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+            .await
+            .unwrap();
         blob_store
             .put_blob(&layer_digest, layer_data)
             .await
@@ -349,19 +354,13 @@ mod tests {
             .expect("push should succeed");
 
         let pushed = mock.pushed_blobs();
-        // 2 blobs: empty-config (`{}`, sha256:44136fa3...) pushed first per the
-        // OCI 1.1 inline-data fix (commit e69c9a3), then the layer.
-        assert_eq!(pushed.len(), 2, "empty-config + layer pushed");
+        assert_eq!(pushed.len(), 2, "config + layer pushed");
         assert_eq!(
-            pushed[0].2.to_string(),
-            "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
-            "empty-config blob first"
+            pushed[0].2,
+            ConfigDescriptor::fixture().digest,
+            "config blob first"
         );
-        assert_eq!(
-            pushed[0].3.as_ref(),
-            b"{}",
-            "empty-config bytes are 2-byte `{{}}`"
-        );
+        assert_eq!(pushed[0].3.as_ref(), ConfigDescriptor::BYTES);
         assert_eq!(pushed[1].2, layer_digest, "layer digest matches");
         assert_eq!(pushed[1].3.as_ref(), layer_data, "layer bytes match cache");
     }
@@ -450,12 +449,7 @@ mod tests {
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "artifactType": PichiArtifact::MEDIA_TYPE,
-            "config": {
-                "mediaType": "application/vnd.oci.empty.v1+json",
-                "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
-                "size": 2,
-                "data": "e30="
-            },
+            "config": ConfigDescriptor::fixture(),
             "layers": [{
                 "mediaType": "application/vnd.pichi.scute.v1",
                 "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
@@ -511,6 +505,10 @@ mod tests {
         let layer_data = b"raw-bytes-layer-data";
         let layer_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(layer_data).into());
+        blob_store
+            .put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+            .await
+            .unwrap();
         blob_store
             .put_blob(&layer_digest, layer_data)
             .await
