@@ -11,7 +11,10 @@ mod executable_path;
 
 #[path = "support/storage.rs"]
 mod storage;
+#[path = "../src/cmd/test_config.rs"]
+mod test_config;
 use storage::Storage as _;
+use test_config::ConfigFixture as _;
 
 use std::path::{Path, PathBuf};
 
@@ -69,6 +72,10 @@ async fn populate_bootable_with_requirements(
     requirements: Option<serde_json::Value>,
 ) -> (PathBuf, PathBuf) {
     let blob_store = FilesystemBlobStore::new(graphroot);
+    blob_store
+        .put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+        .await
+        .unwrap();
 
     // Prepare the cached scute before launch, as ingestion does.
     let cow_bytes = vec![0u8; 4096];
@@ -84,7 +91,7 @@ async fn populate_bootable_with_requirements(
         schema_version: Default::default(),
         media_type: Default::default(),
         artifact_type: Default::default(),
-        config: ConfigDescriptor::canonical(),
+        config: ConfigDescriptor::fixture(),
         layers: vec![
             Layer::Scute(ScuteDescriptor {
                 media_type: conglobate::artifact::Compressable::Raw(Default::default()),
@@ -377,7 +384,10 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
             };
             let digest = sha256_digest(&wire);
             store.put_blob(&digest, &wire).await.unwrap();
-            store.put_blob(&sha256_digest(b"{}"), b"{}").await.unwrap();
+            store
+                .put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+                .await
+                .unwrap();
             let descriptor = ScuteDescriptor {
                 media_type: if compressed {
                     conglobate::artifact::Compressable::Zstd(Default::default())

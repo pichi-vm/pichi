@@ -459,6 +459,7 @@ async fn boot_serve_and_wait(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_config::ConfigFixture as _;
     use conglobate::artifact::ReferenceKind;
     use dillo_config::FsSpec;
     use pichi_storage::TagDb as _;
@@ -903,26 +904,19 @@ mod tests {
         let db = FilesystemTagDb::open(&graphroot).unwrap();
         let blob_store = FilesystemBlobStore::new(&graphroot);
 
-        // Minimal D-07-valid PMI-only appliance manifest (empty config).
-        let platform_bytes = br#"{
+        // Minimal D-07-valid PMI-only appliance manifest.
+        let platform_val = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "artifactType": "application/vnd.pichi.artifact.v1+json",
-            "config": {
-                "mediaType": "application/vnd.oci.empty.v1+json",
-                "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
-                "size": 2,
-                "data": "e30="
-            },
+            "config": conglobate::artifact::ConfigDescriptor::fixture(),
             "layers": [{
                 "mediaType": "application/vnd.pichi.pmi.v1",
                 "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "size": 1
             }],
             "annotations": {}
-        }"#;
-        // Compact JSON so digest is stable-ish; recompute after parse round-trip.
-        let platform_val: serde_json::Value = serde_json::from_slice(platform_bytes).unwrap();
+        });
         let platform = serde_json::to_vec(&platform_val).unwrap();
         let platform_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&platform).into());

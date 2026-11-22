@@ -313,6 +313,7 @@ impl DevicePath for Path {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_config::ConfigFixture as _;
     use crate::cmd::test_support::ScuteFixture as _;
 
     use conglobate::artifact::{ConfigDescriptor, Digest, Layer, Manifest, PmiDescriptor};
@@ -348,7 +349,7 @@ mod tests {
             schema_version: Default::default(),
             media_type: Default::default(),
             artifact_type: Default::default(),
-            config: ConfigDescriptor::canonical(),
+            config: ConfigDescriptor::fixture(),
             layers,
             annotations: chain_annotations(),
         }

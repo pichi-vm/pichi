@@ -16,7 +16,10 @@ mod build_repo;
 
 #[path = "support/storage.rs"]
 mod storage;
+#[path = "../src/cmd/test_config.rs"]
+mod test_config;
 use storage::Storage as _;
+use test_config::ConfigFixture as _;
 
 use assert_cmd::Command;
 use conglobate::artifact::{ConfigDescriptor, Digest, Layer, Manifest, PmiDescriptor};
@@ -36,6 +39,10 @@ impl WorkloadFixture {
         let graphroot = root.path().join("pichi/storage");
         let tags = FilesystemTagDb::open(&graphroot).unwrap();
         let blobs = FilesystemBlobStore::new(&graphroot);
+        blobs
+            .put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+            .await
+            .unwrap();
         let pmi = b"PMI\0";
         let digest = Digest::Sha256(Sha256::digest(pmi).into());
         blobs.put_blob(&digest, pmi).await.unwrap();
@@ -43,7 +50,7 @@ impl WorkloadFixture {
             schema_version: Default::default(),
             media_type: Default::default(),
             artifact_type: Default::default(),
-            config: ConfigDescriptor::canonical(),
+            config: ConfigDescriptor::fixture(),
             layers: vec![Layer::Pmi(PmiDescriptor {
                 media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: digest.clone(),
@@ -72,6 +79,11 @@ impl WorkloadFixture {
         let blobs = product.join("blobs/sha256");
         std::fs::create_dir_all(&blobs).unwrap();
         let manifest = &self.manifest;
+        std::fs::write(
+            blobs.join(manifest.config.digest.hex()),
+            ConfigDescriptor::BYTES,
+        )
+        .unwrap();
         let store = FilesystemBlobStore::new(self.root.path().join("pichi/storage"));
         for layer in &manifest.layers {
             let digest: Digest = layer.digest().clone();

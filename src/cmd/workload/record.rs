@@ -544,6 +544,7 @@ impl Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_config::ConfigFixture as _;
     use crate::{
         cli::{PruneArgs, RmiArgs},
         config::{Config, StorageConfig},
@@ -892,6 +893,9 @@ mod tests {
                 ..Default::default()
             };
             let blobs = FilesystemBlobStore::new(&graphroot);
+            blobs
+                .put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+                .await?;
             let tags = FilesystemTagDb::open(&graphroot)?;
             let records = Records::open(&graphroot)?;
             let mut images = Vec::new();
@@ -903,7 +907,7 @@ mod tests {
                     schema_version: Default::default(),
                     media_type: Default::default(),
                     artifact_type: Default::default(),
-                    config: ConfigDescriptor::canonical(),
+                    config: ConfigDescriptor::fixture(),
                     layers: vec![Layer::Pmi(PmiDescriptor {
                         media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                         digest: layer.clone(),
