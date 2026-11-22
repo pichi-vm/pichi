@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 defaults:
   run:
@@ -172,33 +173,20 @@ jobs:
           $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)")
           Set-Acl -LiteralPath $cache -AclObject $acl
 
-      - name: 🔨 Build candidate appliance
+      - name: Download the native-qualified appliance
         if: inputs.build-appliance
-        env:
-          XDG_DATA_HOME: ${{ runner.temp }}/appliance-image-cache
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44970382210
+          name: bootstrap-${{ runner.arch == 'X64' && 'amd64' || 'arm64' }}
+          path: tests/fixtures/bootstrap
+
+      - name: Select the appliance layout
+        if: inputs.build-appliance
         run: |
-          suffix=''
-          if [ "$RUNNER_OS" = Windows ]; then suffix='.exe'; fi
-          pichi=("$GITHUB_WORKSPACE/target/debug/pichi$suffix")
-          if [ "$RUNNER_OS" = Windows ]; then
-            pichi=(pwsh -NoLogo -NoProfile -NonInteractive -File \
-              "$GITHUB_WORKSPACE/.github/scripts/windows-test-runner.ps1" "${pichi[@]}")
-          fi
-          digest=$(sed -n 's/^  "ghcr.io\/pichi-vm\/fedora:43": //p' appliance/image/pichi.lock)
-          builder=$(sed -n 's/^pub const DEFAULT_BUILD_IMAGE: &str = "\(.*\)";$/\1/p' src/cmd/build.rs)
-          # Retry downloads before launching any VM; completed layers stay cached.
-          for image in "ghcr.io/pichi-vm/fedora@$digest" "$builder"; do
-            for attempt in 1 2 3; do
-              if "${pichi[@]}" pull "$image"; then break; fi
-              if [ "$attempt" -eq 3 ]; then exit 1; fi
-              echo "::warning::Image pull failed; retrying ($attempt/3): $image"
-              sleep 5
-            done
-          done
-          "${pichi[@]}" build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
-            --memory 8192m -t qualification.local/appliance:build
           rm -rf tests/fixtures/appliance-layout
-          "${pichi[@]}" save qualification.local/appliance:build -o tests/fixtures/appliance-layout
+          mv tests/fixtures/bootstrap/appliance-oci tests/fixtures/appliance-layout
 
       - name: 🧪 Exercise commands and build
         env:
