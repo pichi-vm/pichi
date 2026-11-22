@@ -365,6 +365,7 @@ impl<T: BlobStore + ?Sized> ImageStore for T {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_config::ConfigFixture as _;
     use pichi_storage::{FilesystemBlobStore, FilesystemTagDb};
 
     #[tokio::test]
@@ -375,7 +376,7 @@ mod tests {
         let mut manifest = serde_json::json!({
             "schemaVersion":2,"mediaType":Manifest::MEDIA_TYPE,
             "artifactType":conglobate::artifact::PichiArtifact::MEDIA_TYPE,
-            "config":conglobate::artifact::ConfigDescriptor::canonical(),
+            "config":conglobate::artifact::ConfigDescriptor::fixture(),
             "layers":[],"annotations":{"org.opencontainers.image.created":"before"}
         });
         let bytes = serde_json::to_vec(&manifest).unwrap();

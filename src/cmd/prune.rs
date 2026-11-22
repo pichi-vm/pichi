@@ -223,6 +223,7 @@ fn is_blob_filename(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_config::ConfigFixture as _;
     use pichi_storage::BlobStore as _;
 
     use conglobate::artifact::{
@@ -346,7 +347,7 @@ mod tests {
             schema_version: Default::default(),
             media_type: Default::default(),
             artifact_type: Default::default(),
-            config: ConfigDescriptor::canonical(),
+            config: ConfigDescriptor::fixture(),
             layers: vec![Layer::Scute(ScuteDescriptor {
                 media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: scute_digest.clone(),
@@ -367,6 +368,9 @@ mod tests {
         );
 
         let bs = FilesystemBlobStore::new(g);
+        bs.put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+            .await
+            .unwrap();
         bs.put_blob(&mdigest, &mbytes).await.unwrap();
         bs.put_blob(&scute_digest, b"fake-scute-bytes")
             .await

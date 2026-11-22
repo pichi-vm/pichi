@@ -11,7 +11,10 @@ const TEST_ARCH: &str = if cfg!(target_arch = "aarch64") {
 
 #[path = "support/storage.rs"]
 mod storage;
+#[path = "../src/cmd/test_config.rs"]
+mod test_config;
 use storage::Storage as _;
+use test_config::ConfigFixture as _;
 
 use assert_cmd::Command;
 use conglobate::artifact::{ConfigDescriptor, Layer, Manifest, ScuteAnnotations, ScuteDescriptor};
@@ -36,7 +39,7 @@ async fn insert_manifest(
         schema_version: Default::default(),
         media_type: Default::default(),
         artifact_type: Default::default(),
-        config: ConfigDescriptor::canonical(),
+        config: ConfigDescriptor::fixture(),
         layers: vec![Layer::Scute(ScuteDescriptor {
             media_type: conglobate::artifact::Compressable::Raw(Default::default()),
             digest: scute_digest.clone(),
@@ -59,6 +62,9 @@ async fn insert_manifest(
         <sha2::Sha256 as sha2::Digest>::digest(&mbytes).into(),
     );
     let bs = FilesystemBlobStore::new(graphroot);
+    bs.put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+        .await
+        .unwrap();
     bs.put_blob(&mdigest, &mbytes).await.unwrap();
     // Insert a fake scute blob too so `delete_blob` actually finds something.
     let parsed_scute = scute_digest;
