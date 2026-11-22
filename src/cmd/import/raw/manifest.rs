@@ -77,6 +77,7 @@ impl BaseManifest for Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_config::ConfigFixture as _;
     use conglobate::artifact::ScuteAnnotations;
 
     fn scute(digest: &Digest, salt: &[u8]) -> ScuteDescriptor {
@@ -102,7 +103,7 @@ mod tests {
         let salt = vec![0u8; 32];
         let m = Manifest::base(
             scute(&cow_digest, &salt),
-            ConfigDescriptor::canonical(),
+            ConfigDescriptor::fixture(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
@@ -138,7 +139,7 @@ mod tests {
         let salt = vec![0u8; 32]; // Existing layers may have no suffix.
         let m = Manifest::base(
             scute(&cow_digest, &salt),
-            ConfigDescriptor::canonical(),
+            ConfigDescriptor::fixture(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
@@ -163,7 +164,7 @@ mod tests {
         salt.extend_from_slice(&[0xAB; 32]);
         let m = Manifest::base(
             scute(&cow_digest, &salt),
-            ConfigDescriptor::canonical(),
+            ConfigDescriptor::fixture(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
@@ -182,7 +183,7 @@ mod tests {
         let salt = vec![0u8; 32];
         let m = Manifest::base(
             scute(&cow_digest, &salt),
-            ConfigDescriptor::canonical(),
+            ConfigDescriptor::fixture(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
@@ -202,7 +203,7 @@ mod tests {
         let salt = vec![0u8; 32];
         let m = Manifest::base(
             scute(&cow_digest, &salt),
-            ConfigDescriptor::canonical(),
+            ConfigDescriptor::fixture(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &BTreeMap::new(),
@@ -214,7 +215,7 @@ mod tests {
             !m.layers.iter().any(|l| matches!(l, Layer::Pmi(_))),
             "base carapace carries no PMI layer"
         );
-        assert_eq!(m.config, ConfigDescriptor::canonical());
+        assert_eq!(m.config, ConfigDescriptor::fixture());
     }
 
     /// Caller annotations merge in, but structural verity keys can't be spoofed
@@ -246,7 +247,7 @@ mod tests {
                 &Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"deadbeef").into()),
                 &[0; 32],
             ),
-            ConfigDescriptor::canonical(),
+            ConfigDescriptor::fixture(),
             &[0xab; 32],
             "2026-05-07T12:00:00Z",
             &extra,

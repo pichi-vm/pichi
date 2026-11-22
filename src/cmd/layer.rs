@@ -640,6 +640,7 @@ impl<R: Read, W: Write> Read for DecodedReader<R, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_config::ConfigFixture as _;
     use crate::cmd::verity::VerityParams;
     use conglobate::artifact::Media as _;
 
@@ -752,7 +753,7 @@ mod tests {
                 "schemaVersion": 2,
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
-                "config": conglobate::artifact::ConfigDescriptor::canonical(),
+                "config": conglobate::artifact::ConfigDescriptor::fixture(),
                 "layers": [{
                     "mediaType": if compressed { conglobate::artifact::Zstd::<conglobate::artifact::ScuteDescriptor>::MEDIA_TYPE } else { conglobate::artifact::ScuteDescriptor::MEDIA_TYPE },
                     "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
@@ -1347,7 +1348,7 @@ mod tests {
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
-            "config": conglobate::artifact::ConfigDescriptor::canonical(),
+            "config": conglobate::artifact::ConfigDescriptor::fixture(),
             "layers": [{
                 "mediaType": conglobate::artifact::Zstd::<conglobate::artifact::ScuteDescriptor>::MEDIA_TYPE,
                 "digest": digest.to_string(),

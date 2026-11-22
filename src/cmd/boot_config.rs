@@ -152,6 +152,7 @@ impl BootConfigFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::test_config::ConfigFixture as _;
 
     #[test]
     fn compressed_text_preserves_spelling_without_reservation_padding() {
@@ -203,7 +204,7 @@ mod tests {
             schema_version: Default::default(),
             media_type: Default::default(),
             artifact_type: Default::default(),
-            config: conglobate::artifact::ConfigDescriptor::canonical(),
+            config: conglobate::artifact::ConfigDescriptor::fixture(),
             layers: vec![
                 Layer::Pmi(conglobate::artifact::PmiDescriptor {
                     media_type: conglobate::artifact::Compressable::Raw(Default::default()),

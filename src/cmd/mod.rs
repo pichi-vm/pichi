@@ -32,6 +32,8 @@ pub mod tag;
 pub mod update;
 
 #[cfg(test)]
+mod test_config;
+#[cfg(test)]
 mod test_support;
 mod verity;
 pub mod workload;
