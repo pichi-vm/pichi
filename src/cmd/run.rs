@@ -337,6 +337,7 @@ mod tests {
 
     fn pmi_layer() -> Layer {
         Layer::Pmi(PmiDescriptor {
+            media_type: conglobate::artifact::Compressable::Raw(Default::default()),
             digest: conglobate::artifact::Digest::Sha256([0x22; 32]),
             size: 8192,
         })
@@ -400,14 +401,15 @@ mod tests {
             let digest = sha256_digest(&wire);
             store.put_blob(&digest, &wire).await.unwrap();
             let descriptor = PmiDescriptor {
+                media_type: if compressed {
+                    conglobate::artifact::Compressable::Zstd(Default::default())
+                } else {
+                    conglobate::artifact::Compressable::Raw(Default::default())
+                },
                 digest: digest.clone(),
                 size: wire.len() as u64,
             };
-            let m = manifest_with(vec![if compressed {
-                Layer::PmiZstd(descriptor)
-            } else {
-                Layer::Pmi(descriptor)
-            }]);
+            let m = manifest_with(vec![Layer::Pmi(descriptor)]);
             assert_eq!(m.partition_layers().unwrap().0, &m.layers[0]);
             crate::cmd::layer::PreparedLayer::prepare_cached(&m, &m.layers[0], &store)
                 .await
@@ -501,6 +503,7 @@ mod tests {
         config.store(&blob_store).await.unwrap();
         let m = manifest_with(vec![
             Layer::Pmi(conglobate::artifact::PmiDescriptor {
+                media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: digest.clone(),
                 size: pmi.len() as u64,
             }),

@@ -127,14 +127,11 @@ impl Row {
         let (bootable, scute_count, size) = manifest
             .as_ref()
             .map(|m| {
-                let bootable = m
-                    .layers
-                    .iter()
-                    .any(|l| matches!(l, Layer::Pmi(_) | Layer::PmiZstd(_)));
+                let bootable = m.layers.iter().any(|l| matches!(l, Layer::Pmi(_)));
                 let scute_count = m
                     .layers
                     .iter()
-                    .filter(|l| !matches!(l, Layer::Pmi(_) | Layer::PmiZstd(_)))
+                    .filter(|l| !matches!(l, Layer::Pmi(_)))
                     .count();
                 // Sum of all layer sizes (per D-16). Excludes inline empty config + manifest.
                 let size: u64 = m.layers.iter().map(Layer::size).sum();

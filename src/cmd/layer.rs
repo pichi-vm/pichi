@@ -76,8 +76,8 @@ impl PreparedLayer {
     pub(super) async fn pmi_file(layer: &Layer, store: &dyn BlobStore) -> Result<PathBuf> {
         let source = store.blob_path(layer.digest());
         let path = match layer {
+            Layer::Pmi(_) if layer.is_zstd_variant() => Self::pmi_path(&source),
             Layer::Pmi(_) => source,
-            Layer::PmiZstd(_) => Self::pmi_path(&source),
             _ => bail!("layer is not PMI"),
         };
         anyhow::ensure!(
@@ -257,7 +257,7 @@ impl PreparedLayer {
                 bootconfig = Some(output);
                 None
             }
-            Layer::PmiZstd(_) => {
+            Layer::Pmi(_) if layer.is_zstd_variant() => {
                 let output = NamedTempFile::new_in(scratch)?;
                 let mut decoded = DecodedReader {
                     input: Self::decoder(&mut wire)?,
@@ -776,14 +776,15 @@ mod tests {
         fn pmi(compressed: bool) -> Self {
             let mut fixture = Self::new(compressed, 2);
             let descriptor = conglobate::artifact::PmiDescriptor {
+                media_type: if compressed {
+                    conglobate::artifact::Compressable::Zstd(Default::default())
+                } else {
+                    conglobate::artifact::Compressable::Raw(Default::default())
+                },
                 digest: Digest::Sha256(Sha256::digest(&fixture.wire).into()),
                 size: fixture.wire.len() as u64,
             };
-            fixture.manifest.layers = vec![if compressed {
-                Layer::PmiZstd(descriptor)
-            } else {
-                Layer::Pmi(descriptor)
-            }];
+            fixture.manifest.layers = vec![Layer::Pmi(descriptor)];
             fixture.manifest.annotations = Default::default();
             fixture.manifest.validate().unwrap();
             fixture
@@ -846,7 +847,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         for case in 0..5 {
             let mut fixture = Fixture::pmi(true);
-            let Layer::PmiZstd(descriptor) = &mut fixture.manifest.layers[0] else {
+            let Layer::Pmi(descriptor) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
             match case {
@@ -928,9 +929,7 @@ mod tests {
                         .extend_from_slice(&(payload.len() as u32).to_le_bytes());
                     fixture.wire.extend_from_slice(&payload);
                     let (size, digest) = match &mut fixture.manifest.layers[0] {
-                        Layer::PmiZstd(descriptor) => {
-                            (&mut descriptor.size, &mut descriptor.digest)
-                        }
+                        Layer::Pmi(descriptor) => (&mut descriptor.size, &mut descriptor.digest),
                         Layer::Scute(descriptor) => (&mut descriptor.size, &mut descriptor.digest),
                         _ => unreachable!(),
                     };

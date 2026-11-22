@@ -50,7 +50,7 @@ impl ManifestExt for Manifest {
 
     fn partition_layers(&self) -> Result<(&Layer, Vec<&Layer>)> {
         let pmi = self.layers.iter().find_map(|layer| match layer {
-            Layer::Pmi(_) | Layer::PmiZstd(_) => Some(layer),
+            Layer::Pmi(_) => Some(layer),
             _ => None,
         });
         let pmi = pmi.ok_or_else(|| {

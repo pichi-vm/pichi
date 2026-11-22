@@ -45,6 +45,7 @@ impl WorkloadFixture {
             artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Pmi(PmiDescriptor {
+                media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: digest.clone(),
                 size: pmi.len() as u64,
             })],

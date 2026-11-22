@@ -256,7 +256,8 @@ mod tests {
                     media_type: Default::default(),
                     artifact_type: Default::default(),
                     config: ConfigDescriptor::canonical(),
-                    layers: vec![Layer::PmiZstd(PmiDescriptor {
+                    layers: vec![Layer::Pmi(PmiDescriptor {
+                        media_type: conglobate::artifact::Compressable::Zstd(Default::default()),
                         digest: digest.clone(),
                         size: wire.len() as u64,
                     })],
@@ -330,6 +331,7 @@ mod tests {
                 config: ConfigDescriptor::canonical(),
                 layers: vec![
                     Layer::Pmi(PmiDescriptor {
+                        media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                         digest: pmi_digest.clone(),
                         size: firmware.len() as u64,
                     }),
@@ -1057,6 +1059,7 @@ mod tests {
             make_scute_manifest(&scute_digest, scute_data.len() as u64, &scute_data, false);
         let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
         manifest.layers.push(Layer::Pmi(PmiDescriptor {
+            media_type: conglobate::artifact::Compressable::Raw(Default::default()),
             digest: pmi_digest.clone(),
             size: pmi_bytes.len() as u64,
         }));

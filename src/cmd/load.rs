@@ -722,7 +722,7 @@ pub(super) mod tests {
             .as_array_mut()
             .unwrap()
             .push(json!({
-                "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1_ZSTD,
+                "mediaType": conglobate::artifact::Zstd::<conglobate::artifact::PmiDescriptor>::MEDIA_TYPE,
                 "digest": pmi_digest.to_string(), "size": pmi.len(),
             }));
         fixture.blobs.push(pmi);
@@ -830,7 +830,7 @@ pub(super) mod tests {
             .as_array_mut()
             .unwrap()
             .push(json!({
-                "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_PMI_V1,
+                "mediaType": conglobate::artifact::PmiDescriptor::MEDIA_TYPE,
                 "digest": Digest::Sha256(Sha256::digest(&pmi).into()).to_string(),
                 "size": pmi.len(),
             }));

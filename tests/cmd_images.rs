@@ -52,6 +52,7 @@ async fn populate(
     })];
     if with_pmi {
         layers.push(Layer::Pmi(PmiDescriptor {
+            media_type: conglobate::artifact::Compressable::Raw(Default::default()),
             digest: conglobate::artifact::Digest::Sha256([0x22; 32]),
             size: 8192,
         }));

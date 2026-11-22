@@ -103,6 +103,7 @@ async fn populate_bootable_with_requirements(
                 },
             }),
             Layer::Pmi(PmiDescriptor {
+                media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: pmi_digest.clone(),
                 size: pmi_bytes.len() as u64,
             }),

@@ -205,6 +205,7 @@ mod tests {
             config: conglobate::artifact::ConfigDescriptor::canonical(),
             layers: vec![
                 Layer::Pmi(conglobate::artifact::PmiDescriptor {
+                    media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                     digest: Digest::Sha256(Sha256::digest(b"opaque PMI").into()),
                     size: 10,
                 }),

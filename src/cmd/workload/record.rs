@@ -905,6 +905,7 @@ mod tests {
                     artifact_type: Default::default(),
                     config: ConfigDescriptor::canonical(),
                     layers: vec![Layer::Pmi(PmiDescriptor {
+                        media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                         digest: layer.clone(),
                         size: payload.len() as u64,
                     })],

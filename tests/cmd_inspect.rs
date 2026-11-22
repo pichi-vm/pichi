@@ -54,6 +54,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
                 },
             }),
             Layer::Pmi(PmiDescriptor {
+                media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: conglobate::artifact::Digest::Sha256([0x22; 32]),
                 size: 8192,
             }),
@@ -232,6 +233,7 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
             artifact_type: Default::default(),
             config: ConfigDescriptor::for_config(config_digest.clone(), bytes.len() as u64),
             layers: vec![Layer::Pmi(PmiDescriptor {
+                media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: 4096,
             })],
@@ -308,6 +310,7 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
             artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Pmi(PmiDescriptor {
+                media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: 4096,
             })],

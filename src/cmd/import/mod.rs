@@ -123,6 +123,7 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
             .insert(k, v.into());
     }
     manifest.layers.push(Layer::Pmi(PmiDescriptor {
+        media_type: conglobate::artifact::Compressable::Raw(Default::default()),
         digest: pmi_digest.clone(),
         size: pmi_bytes.len() as u64,
     }));
