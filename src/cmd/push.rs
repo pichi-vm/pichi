@@ -21,11 +21,6 @@ use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 use crate::cli::PushArgs;
 use crate::config::Config;
 
-/// Content-type for OCI image manifests. Plan 05 always pushes the pichi
-/// manifest under this media type — the inner `artifactType` field carries
-/// the `application/vnd.pichi.artifact.v1+json` discriminator (REGISTRY-07).
-use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as PUSH_MANIFEST_CONTENT_TYPE;
-
 /// Publish the cached image at the requested reference.
 pub async fn run(args: PushArgs, config: &Config) -> Result<()> {
     // Defense-in-depth: parse + canonicalise BEFORE any I/O (BL-02).
@@ -89,7 +84,7 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
                 blob_store,
                 &destination,
                 &image.bytes,
-                PUSH_MANIFEST_CONTENT_TYPE,
+                Manifest::MEDIA_TYPE,
             )
             .await?;
         }
@@ -259,7 +254,7 @@ mod tests {
         .root_hash;
         let manifest = Manifest {
             schema_version: Default::default(),
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+            media_type: Default::default(),
             artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Scute(data.descriptor(&[0; 32], false))],
@@ -547,7 +542,8 @@ mod tests {
         let (pushed_ref, pushed_media_type, pushed_digest) = &pushed[0];
         assert_eq!(pushed_ref, &target, "pushed reference matches");
         assert_eq!(
-            pushed_media_type, PUSH_MANIFEST_CONTENT_TYPE,
+            pushed_media_type,
+            Manifest::MEDIA_TYPE,
             "manifest content-type matches"
         );
         assert_eq!(

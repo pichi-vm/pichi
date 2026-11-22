@@ -254,7 +254,7 @@ async fn carapace_scutes_manifest(
 fn scuteless_manifest() -> Manifest {
     Manifest {
         schema_version: Default::default(),
-        media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
+        media_type: Default::default(),
         artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers: Vec::new(),

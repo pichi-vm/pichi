@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use bytes::Bytes;
-use conglobate::artifact::{Digest, Index, Media as _, Reference as PichiRef};
+use conglobate::artifact::{Digest, Index, Manifest, Media as _, Reference as PichiRef};
 use futures_util::stream::{Stream, StreamExt as _};
 use oci_client::{
     Client, Reference as OciRef, RegistryOperation,
@@ -52,7 +52,7 @@ use crate::{Registry, RegistryError, Result};
 /// "single-manifest" and "multi-arch index" happens at the call site
 /// (Plan 04 `cmd::pull`) by inspecting the returned bytes' `mediaType` field.
 const ACCEPTED_MANIFEST_TYPES: &[&str] = &[
-    conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1,
+    Manifest::MEDIA_TYPE,
     Index::MEDIA_TYPE,
     "application/vnd.docker.distribution.manifest.v2+json",
     "application/vnd.docker.distribution.manifest.list.v2+json",

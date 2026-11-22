@@ -24,7 +24,6 @@ use crate::cmd::layer::{PreparedLayer, ScuteFiles};
 use crate::cmd::manifest_ext::{ManifestExt as _, ScuteRoots};
 use crate::config::Config;
 
-use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as MANIFEST_TYPE;
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 const FILE_CAP: usize = 4096;
 
@@ -162,7 +161,8 @@ impl OciLayout {
         let mut pending = index.manifests;
         while let Some(entry) = pending.pop() {
             ensure!(
-                entry.media_type == MANIFEST_TYPE || entry.media_type == LayoutIndex::MEDIA_TYPE,
+                entry.media_type == Manifest::MEDIA_TYPE
+                    || entry.media_type == LayoutIndex::MEDIA_TYPE,
                 "unsupported index entry media type"
             );
             ensure!(
@@ -201,10 +201,6 @@ impl OciLayout {
             }
             let manifest =
                 Manifest::decode_json(bytes.as_slice()).context("invalid OCI manifest")?;
-            ensure!(
-                manifest.media_type == MANIFEST_TYPE,
-                "invalid manifest media type"
-            );
             ensure!(!manifest.layers.is_empty(), "OCI artifact has no layers");
             let config = &manifest.config;
             ensure!(config.size <= METADATA_CAP, "config exceeds metadata cap");
@@ -619,7 +615,7 @@ pub(super) mod tests {
             let mut fixture = Self {
                 manifest: json!({
                     "schemaVersion": 2,
-                    "mediaType": MANIFEST_TYPE,
+                    "mediaType": Manifest::MEDIA_TYPE,
                     "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
                     "config": conglobate::artifact::ConfigDescriptor::canonical(),
                     "layers": [],
@@ -695,7 +691,7 @@ pub(super) mod tests {
                 serde_json::to_vec(&json!({
                     "schemaVersion": 2, "mediaType": LayoutIndex::MEDIA_TYPE,
                     "manifests": [{
-                        "mediaType": MANIFEST_TYPE,
+                        "mediaType": Manifest::MEDIA_TYPE,
                         "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
                         "digest": digest.to_string(), "size": bytes.len(),
                         "annotations": { REF_NAME_ANNOTATION: "guest:ignored" },
@@ -1503,7 +1499,7 @@ pub(super) mod tests {
         let mut index: Value =
             serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
         index["manifests"].as_array_mut().unwrap().push(json!({
-            "mediaType": MANIFEST_TYPE, "digest": other.to_string(), "size": bytes.len(),
+            "mediaType": Manifest::MEDIA_TYPE, "digest": other.to_string(), "size": bytes.len(),
         }));
         std::fs::write(index_path, serde_json::to_vec(&index).unwrap()).unwrap();
         let layout = OciLayout::read(&output, &store).await.unwrap();

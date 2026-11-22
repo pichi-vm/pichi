@@ -25,7 +25,9 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
-use conglobate::artifact::{Digest, Index, Media as _, PichiArtifact, Reference, ReferenceKind};
+use conglobate::artifact::{
+    Digest, Index, Manifest, Media as _, PichiArtifact, Reference, ReferenceKind,
+};
 use pichi_registry::Registry;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
@@ -34,9 +36,6 @@ use crate::cmd::push::push_manifest_and_blobs;
 
 use crate::cli::{ManifestAnnotateArgs, ManifestCreateArgs, ManifestPushArgs};
 use crate::config::Config;
-
-/// OCI image manifest media type (the per-arch entries' `mediaType`).
-use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as OCI_MANIFEST_MEDIA_TYPE;
 
 /// Internal, non-OCI annotation recording which `create`/`annotate` source ref
 /// an entry came from. Stripped before the index is pushed.
@@ -75,7 +74,7 @@ pub async fn create(args: ManifestCreateArgs, config: &Config) -> Result<()> {
             metadata.manifest()?;
         }
         let mut descriptor = json!({
-            "mediaType": OCI_MANIFEST_MEDIA_TYPE,
+            "mediaType": Manifest::MEDIA_TYPE,
             "artifactType": PichiArtifact::MEDIA_TYPE,
             "digest": metadata.digest.to_string(),
             "size": metadata.bytes.len(),
@@ -163,15 +162,9 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
             kind: ReferenceKind::Digest(digest.clone()),
         };
         async move {
-            push_manifest_and_blobs(
-                registry,
-                blob_store,
-                &arch_ref,
-                raw,
-                OCI_MANIFEST_MEDIA_TYPE,
-            )
-            .await
-            .with_context(|| format!("push arch image {digest}"))
+            push_manifest_and_blobs(registry, blob_store, &arch_ref, raw, Manifest::MEDIA_TYPE)
+                .await
+                .with_context(|| format!("push arch image {digest}"))
         }
     }))
     .buffer_unordered(3);
@@ -335,7 +328,7 @@ mod tests {
 
     fn entry(source: &str, digest: &str) -> Value {
         json!({
-            "mediaType": OCI_MANIFEST_MEDIA_TYPE,
+            "mediaType": Manifest::MEDIA_TYPE,
             "artifactType": PichiArtifact::MEDIA_TYPE,
             "digest": digest,
             "size": 123,

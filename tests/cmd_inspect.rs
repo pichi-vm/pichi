@@ -37,7 +37,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
     let g = graphroot(&tmp);
     let m = Manifest {
         schema_version: Default::default(),
-        media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+        media_type: Default::default(),
         artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers: vec![
@@ -105,7 +105,7 @@ async fn inspect_format_reaches_dotted_annotation() {
     let g = graphroot(&tmp);
     let m = Manifest {
         schema_version: Default::default(),
-        media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+        media_type: Default::default(),
         artifact_type: Default::default(),
         config: ConfigDescriptor::canonical(),
         layers: vec![Layer::Scute(ScuteDescriptor {
@@ -226,7 +226,7 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
         store.put_blob(&config_digest, &bytes).await.unwrap();
         let manifest = Manifest {
             schema_version: Default::default(),
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+            media_type: Default::default(),
             artifact_type: Default::default(),
             config: ConfigDescriptor::for_config(config_digest.clone(), bytes.len() as u64),
             layers: vec![Layer::Pmi(PmiDescriptor {
@@ -302,7 +302,7 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
     for name in ["first", "second"] {
         let manifest = Manifest {
             schema_version: Default::default(),
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+            media_type: Default::default(),
             artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Pmi(PmiDescriptor {

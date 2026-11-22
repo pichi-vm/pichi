@@ -253,7 +253,7 @@ mod tests {
                 let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
                 let manifest = Manifest {
                     schema_version: Default::default(),
-                    media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
+                    media_type: Default::default(),
                     artifact_type: Default::default(),
                     config: ConfigDescriptor::canonical(),
                     layers: vec![Layer::PmiZstd(PmiDescriptor {
@@ -325,7 +325,7 @@ mod tests {
             let config_digest = digest(&compressed);
             let manifest = Manifest {
                 schema_version: Default::default(),
-                media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
+                media_type: Default::default(),
                 artifact_type: Default::default(),
                 config: ConfigDescriptor::canonical(),
                 layers: vec![
@@ -807,7 +807,7 @@ mod tests {
         };
         let manifest = Manifest {
             schema_version: Default::default(),
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+            media_type: Default::default(),
             artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers: vec![layer],

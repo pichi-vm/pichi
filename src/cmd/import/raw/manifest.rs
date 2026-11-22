@@ -59,7 +59,7 @@ impl BaseManifest for Manifest {
 
         let manifest = Manifest {
             schema_version: Default::default(),
-            media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
+            media_type: Default::default(),
             artifact_type: Default::default(),
             config,
             layers: vec![Layer::Scute(scute)],

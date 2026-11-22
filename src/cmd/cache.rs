@@ -19,7 +19,6 @@ use tokio::io::AsyncReadExt as _;
 use super::manifest_ext::ManifestExt as _;
 
 pub(super) const METADATA_CAP: u64 = 1024 * 1024;
-pub(super) use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as MANIFEST_TYPE;
 pub(super) const TARGET_OS: &str = "pichi";
 /// Captured bytes retain their original content identity through publication.
 pub(super) struct ImageMetadata {
@@ -51,7 +50,7 @@ impl ImageMetadata {
         ensure!(
             matches!(
                 value["mediaType"].as_str(),
-                Some(Index::MEDIA_TYPE | MANIFEST_TYPE)
+                Some(Index::MEDIA_TYPE | Manifest::MEDIA_TYPE)
             ),
             "unsupported image metadata media type"
         );
@@ -131,7 +130,7 @@ pub(super) trait ImageStore: BlobStore {
         metadata.manifest()?;
         let index = Index {
             manifests: vec![IndexDescriptor {
-                media_type: MANIFEST_TYPE.into(),
+                media_type: Manifest::MEDIA_TYPE.into(),
                 artifact_type: Some(conglobate::artifact::PichiArtifact::MEDIA_TYPE.into()),
                 digest: metadata.digest.to_string(),
                 size: metadata.bytes.len() as u64,
@@ -299,7 +298,7 @@ pub(super) trait ImageStore: BlobStore {
                         ensure!(
                             matches!(
                                 entry["mediaType"].as_str(),
-                                Some(Index::MEDIA_TYPE | MANIFEST_TYPE)
+                                Some(Index::MEDIA_TYPE | Manifest::MEDIA_TYPE)
                             ),
                             "unsupported index entry media type"
                         );
@@ -374,7 +373,7 @@ mod tests {
         let store = FilesystemBlobStore::new(dir.path());
         let tags = FilesystemTagDb::open(dir.path()).unwrap();
         let mut manifest = serde_json::json!({
-            "schemaVersion":2,"mediaType":MANIFEST_TYPE,
+            "schemaVersion":2,"mediaType":Manifest::MEDIA_TYPE,
             "artifactType":conglobate::artifact::PichiArtifact::MEDIA_TYPE,
             "config":conglobate::artifact::ConfigDescriptor::canonical(),
             "layers":[],"annotations":{"org.opencontainers.image.created":"before"}

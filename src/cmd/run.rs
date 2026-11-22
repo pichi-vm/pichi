@@ -345,7 +345,7 @@ mod tests {
     fn manifest_with(layers: Vec<Layer>) -> Manifest {
         Manifest {
             schema_version: Default::default(),
-            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+            media_type: Default::default(),
             artifact_type: Default::default(),
             config: ConfigDescriptor::canonical(),
             layers,
