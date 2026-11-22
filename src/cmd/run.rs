@@ -314,9 +314,6 @@ impl DevicePath for Path {
 mod tests {
     use super::*;
     use crate::cmd::test_support::ScuteFixture as _;
-    use std::collections::BTreeMap;
-
-    const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
 
     use conglobate::artifact::{
         ConfigDescriptor, Digest, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
@@ -324,20 +321,14 @@ mod tests {
     use pichi_storage::{BlobStore, FilesystemBlobStore};
     use tempfile::TempDir;
 
-    fn chain_annotations() -> BTreeMap<String, String> {
-        [
-            (
-                "dev.pichi.carapace.verity.hash",
-                "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-            ),
-            ("dev.pichi.carapace.verity.data-block-size", "4096"),
-            ("dev.pichi.carapace.verity.hash-block-size", "4096"),
-            ("dev.pichi.carapace.verity.version", "1"),
-            ("dev.pichi.carapace.verity.hash-type", "1"),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+    fn chain_annotations() -> conglobate::artifact::ManifestAnnotations {
+        conglobate::artifact::ManifestAnnotations {
+            verity: conglobate::artifact::CarapaceVerity {
+                root: Some(conglobate::artifact::Digest::Sha256([0x11; 32])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 
     fn sha256_digest(bytes: &[u8]) -> Digest {
@@ -548,7 +539,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multi_scute_gpt_uses_manifest_hash_type_and_preserves_preparation() {
+    async fn multi_scute_gpt_preserves_preparation() {
         use crate::cmd::layer::PreparedLayer;
         use crate::cmd::verity::VerityFormat as _;
 
@@ -557,9 +548,6 @@ mod tests {
         let mut scutes = Vec::new();
         let mut tip = [0; 32];
         let mut manifest = manifest_with(Vec::new());
-        manifest
-            .annotations
-            .insert("dev.pichi.carapace.verity.hash-type".into(), "0".into());
         for byte in [0x42, 0x73] {
             let data = vec![byte; 8193];
             let digest = sha256_digest(&data);
@@ -573,10 +561,7 @@ mod tests {
             scutes.push(scute);
         }
         manifest.layers = scutes.iter().cloned().map(Layer::Scute).collect();
-        manifest.annotations.insert(
-            "dev.pichi.carapace.verity.hash".into(),
-            format!("sha256:{}", hex::encode(tip)),
-        );
+        manifest.annotations.verity.root = Some(conglobate::artifact::Digest::Sha256(tip));
         let refs = manifest.scute_layers();
         let mut prepared = Vec::new();
         for layer in &refs {
@@ -628,10 +613,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        m.annotations.insert(
-            "dev.pichi.carapace.verity.hash".into(),
-            format!("sha256:{}", hex::encode(root)),
-        );
+        m.annotations.verity.root = Some(conglobate::artifact::Digest::Sha256(root));
 
         let spec = build_gpt_spec(&m, &m.scute_layers(), &blob_store)
             .await
@@ -698,10 +680,7 @@ mod tests {
                 .compute(&padded)
                 .unwrap()
                 .root_hash;
-                manifest.annotations.insert(
-                    "dev.pichi.carapace.verity.hash".into(),
-                    format!("sha256:{}", hex::encode(root)),
-                );
+                manifest.annotations.verity.root = Some(conglobate::artifact::Digest::Sha256(root));
                 crate::cmd::layer::PreparedLayer::prepare_cached(
                     &manifest,
                     &manifest.layers[1],
@@ -765,18 +744,14 @@ mod tests {
 
         let mut m2 = manifest_with(vec![pmi_layer()]);
         let host = std::env::consts::ARCH;
-        m2.annotations
-            .insert(ARCH_ANNOTATION.to_string(), host.to_string());
+        m2.annotations.oci.architecture = Some(host.to_string());
         m2.check_architecture().unwrap(); // matching
     }
 
     #[tokio::test]
     async fn check_architecture_rejects_mismatch() {
         let mut m = manifest_with(vec![pmi_layer()]);
-        m.annotations.insert(
-            ARCH_ANNOTATION.to_string(),
-            "totally-not-this-host".to_string(),
-        );
+        m.annotations.oci.architecture = Some("totally-not-this-host".to_string());
         let err = m.check_architecture().unwrap_err();
         assert!(
             err.to_string().contains("does not match host"),

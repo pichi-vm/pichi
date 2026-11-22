@@ -227,7 +227,6 @@ mod tests {
     use conglobate::artifact::{ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1};
     use pichi_registry::MockRegistry;
     use pichi_storage::TagDb as _;
-    use std::collections::BTreeMap;
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -248,17 +247,6 @@ mod tests {
     /// (NOT Manifest::to_bytes) so the Pitfall 3 negative-grep gate
     /// stays clean of false-positive call sites.
     fn make_pichi_manifest(data: &[u8]) -> (Bytes, Digest) {
-        let mut annotations = BTreeMap::new();
-        annotations.insert(
-            "dev.pichi.carapace.verity.data-block-size".into(),
-            "4096".into(),
-        );
-        annotations.insert(
-            "dev.pichi.carapace.verity.hash-block-size".into(),
-            "4096".into(),
-        );
-        annotations.insert("dev.pichi.carapace.verity.version".into(), "1".into());
-        annotations.insert("dev.pichi.carapace.verity.hash-type".into(), "1".into());
         let root = crate::cmd::verity::VerityParams {
             data_block_size: 4096,
             hash_block_size: 4096,
@@ -268,17 +256,19 @@ mod tests {
         .compute(data)
         .unwrap()
         .root_hash;
-        annotations.insert(
-            "dev.pichi.carapace.verity.hash".into(),
-            format!("sha256:{}", hex::encode(root)),
-        );
         let manifest = Manifest {
             schema_version: Default::default(),
             media_type: "application/vnd.oci.image.manifest.v1+json".into(),
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: ConfigDescriptor::canonical(),
             layers: vec![Layer::Scute(data.descriptor(&[0; 32], false))],
-            annotations,
+            annotations: conglobate::artifact::ManifestAnnotations {
+                verity: conglobate::artifact::CarapaceVerity {
+                    root: Some(Digest::Sha256(root)),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         };
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
         let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());

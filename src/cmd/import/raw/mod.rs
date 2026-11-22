@@ -189,7 +189,18 @@ impl StagedImport {
             &args.created_rfc3339,
             &args.annotations,
         )?;
-        let manifest_bytes = serde_json::to_vec(&manifest)?;
+        let mut value = serde_json::to_value(&manifest)?;
+        let annotations = value["annotations"]
+            .as_object_mut()
+            .context("missing annotations")?;
+        for (key, value) in &args.annotations {
+            if !key.starts_with("dev.pichi.carapace.verity.") {
+                annotations
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone().into());
+            }
+        }
+        let manifest_bytes = serde_json::to_vec(&value)?;
         let manifest_digest =
             Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
         Ok(Self {
@@ -407,8 +418,8 @@ mod tests {
             .compute(&bytes)
             .unwrap();
             assert_eq!(
-                manifest.annotations.get("dev.pichi.carapace.verity.hash"),
-                Some(&format!("sha256:{}", hex::encode(formatted.root_hash)))
+                manifest.annotations.verity.root,
+                Some(Digest::Sha256(formatted.root_hash))
             );
             assert_eq!(scute.annotations.digest, staged.cow_digest);
             assert_eq!(scute.annotations.size.get(), size);
@@ -457,8 +468,8 @@ mod tests {
         .compute(&bytes)
         .unwrap();
         assert_eq!(
-            manifest.annotations.get("dev.pichi.carapace.verity.hash"),
-            Some(&format!("sha256:{}", hex::encode(formatted.root_hash)))
+            manifest.annotations.verity.root,
+            Some(Digest::Sha256(formatted.root_hash))
         );
         assert_eq!(std::fs::read(staged.verity.path()).unwrap(), formatted.blob);
     }
@@ -488,12 +499,8 @@ mod tests {
         let sparse_manifest: Manifest = serde_json::from_slice(&sparse.manifest_bytes).unwrap();
         let dense_manifest: Manifest = serde_json::from_slice(&dense.manifest_bytes).unwrap();
         assert_ne!(
-            sparse_manifest
-                .annotations
-                .get("dev.pichi.carapace.verity.hash"),
-            dense_manifest
-                .annotations
-                .get("dev.pichi.carapace.verity.hash")
+            sparse_manifest.annotations.verity.root,
+            dense_manifest.annotations.verity.root
         );
         assert_eq!(
             std::fs::read(sparse.cow.path()).unwrap(),

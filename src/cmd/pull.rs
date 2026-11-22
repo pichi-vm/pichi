@@ -220,7 +220,6 @@ mod tests {
     use conglobate::artifact::Platform;
     use conglobate::artifact::{ConfigDescriptor, MEDIA_TYPE_PICHI_ARTIFACT_V1};
     use pichi_registry::MockRegistry;
-    use std::collections::BTreeMap;
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -261,7 +260,7 @@ mod tests {
                         digest: digest.clone(),
                         size: wire.len() as u64,
                     })],
-                    annotations: BTreeMap::new(),
+                    annotations: Default::default(),
                 };
                 registry.insert_manifest(
                     "ghcr.io",
@@ -339,7 +338,7 @@ mod tests {
                         size: compressed.len() as u64,
                     }),
                 ],
-                annotations: BTreeMap::new(),
+                annotations: Default::default(),
             };
             registry.insert_manifest(
                 "ghcr.io",
@@ -798,24 +797,6 @@ mod tests {
         data: &[u8],
         is_zstd: bool,
     ) -> (Bytes, Digest) {
-        let mut annotations = BTreeMap::new();
-        annotations.insert(
-            "dev.pichi.carapace.verity.data-block-size".into(),
-            "4096".into(),
-        );
-        annotations.insert(
-            "dev.pichi.carapace.verity.hash-block-size".into(),
-            "4096".into(),
-        );
-        annotations.insert("dev.pichi.carapace.verity.version".into(), "1".into());
-        annotations.insert("dev.pichi.carapace.verity.hash-type".into(), "1".into());
-        annotations.insert(
-            "dev.pichi.carapace.verity.hash".into(),
-            format!(
-                "sha256:{}",
-                hex::encode(pull_side_verity_params().compute(data).unwrap().root_hash)
-            ),
-        );
         let mut scute_desc = data.descriptor(&[0; 32], is_zstd);
         scute_desc.digest = scute_digest.clone();
         scute_desc.size = scute_size;
@@ -830,7 +811,15 @@ mod tests {
             artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
             config: ConfigDescriptor::canonical(),
             layers: vec![layer],
-            annotations,
+            annotations: conglobate::artifact::ManifestAnnotations {
+                verity: conglobate::artifact::CarapaceVerity {
+                    root: Some(Digest::Sha256(
+                        pull_side_verity_params().compute(data).unwrap().root_hash,
+                    )),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         };
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
         let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
@@ -1199,10 +1188,7 @@ mod tests {
                 registry.insert_blob("ghcr.io", "example/foo", digest, Bytes::from(wire));
             }
             let mut manifest = manifest.unwrap();
-            manifest.annotations.insert(
-                "dev.pichi.carapace.verity.hash".into(),
-                format!("sha256:{}", hex::encode(parent)),
-            );
+            manifest.annotations.verity.root = Some(conglobate::artifact::Digest::Sha256(parent));
             manifest.layers = order
                 .into_iter()
                 .map(|index| layers[index].clone())
@@ -1267,13 +1253,8 @@ mod tests {
                     <sha2::Sha256 as sha2::Digest>::digest(&params.compute(&data).unwrap().blob)
                         .into(),
                 );
-                manifest.annotations.insert(
-                    "dev.pichi.carapace.verity.hash".into(),
-                    format!(
-                        "sha256:{}",
-                        hex::encode(params.compute(&data).unwrap().root_hash)
-                    ),
-                );
+                manifest.annotations.verity.root =
+                    Some(Digest::Sha256(params.compute(&data).unwrap().root_hash));
                 let registry = MockRegistry::new();
                 registry.insert_manifest(
                     "ghcr.io",
@@ -1333,34 +1314,30 @@ mod tests {
                     let digest =
                         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into());
                     let (bytes, _) = make_scute_manifest(&digest, wire.len() as u64, &data, true);
-                    let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+                    let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
                     if cached {
                         store.put_blob(&digest, &wire).await.unwrap();
                         PreparedLayer::prepare_cached(&manifest, &manifest.layers[0], &store)
                             .await
                             .unwrap();
                     }
+                    let mut manifest = serde_json::to_value(manifest).unwrap();
                     let key = "dev.pichi.carapace.verity.hash";
                     match tip {
                         "missing" => {
-                            manifest.annotations.remove(key);
+                            manifest["annotations"].as_object_mut().unwrap().remove(key);
                         }
                         "zero" => {
-                            manifest
-                                .annotations
-                                .insert(key.into(), hex::encode([0; 32]));
+                            manifest["annotations"][key] =
+                                Digest::Sha256([0; 32]).to_string().into()
                         }
-                        "malformed" => {
-                            manifest.annotations.insert(key.into(), "not a root".into());
-                        }
+                        "malformed" => manifest["annotations"][key] = "not a root".into(),
                         "wrong" => {
-                            manifest
-                                .annotations
-                                .insert(key.into(), hex::encode([42; 32]));
+                            manifest["annotations"][key] =
+                                Digest::Sha256([42; 32]).to_string().into()
                         }
                         _ => {}
                     }
-                    let mut manifest = serde_json::to_value(manifest).unwrap();
                     let annotations = manifest["layers"][0]["annotations"]
                         .as_object_mut()
                         .unwrap();

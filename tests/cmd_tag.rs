@@ -7,8 +7,6 @@
 mod storage;
 use storage::Storage as _;
 
-use std::collections::BTreeMap;
-
 use assert_cmd::Command;
 use conglobate::artifact::{
     ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
@@ -16,18 +14,6 @@ use conglobate::artifact::{
 };
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
-
-fn chain_annotations() -> BTreeMap<String, String> {
-    [
-        ("dev.pichi.carapace.verity.data-block-size", "4096"),
-        ("dev.pichi.carapace.verity.hash-block-size", "4096"),
-        ("dev.pichi.carapace.verity.version", "1"),
-        ("dev.pichi.carapace.verity.hash-type", "1"),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect()
-}
 
 fn graphroot(tmp: &TempDir) -> std::path::PathBuf {
     let p = tmp.path().join("pichi").join("storage");
@@ -52,7 +38,7 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::a
                 salt: devmap_verity::Salt::new(&[0, 255]).unwrap().into(),
             },
         })],
-        annotations: chain_annotations(),
+        annotations: Default::default(),
     };
     let bytes = serde_json::to_vec(&m).unwrap();
     let digest =

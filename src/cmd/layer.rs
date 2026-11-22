@@ -762,7 +762,6 @@ mod tests {
                     "dev.pichi.carapace.verity.data-block-size": "4096",
                     "dev.pichi.carapace.verity.hash-block-size": "4096",
                     "dev.pichi.carapace.verity.version": "1",
-                    "dev.pichi.carapace.verity.hash-type": "1",
                     "dev.pichi.carapace.verity.hash": format!("sha256:{}", hex::encode(root)),
                 },
             });
@@ -785,7 +784,7 @@ mod tests {
             } else {
                 Layer::Pmi(descriptor)
             }];
-            fixture.manifest.annotations.clear();
+            fixture.manifest.annotations = Default::default();
             fixture.manifest.validate().unwrap();
             fixture
         }
@@ -1228,23 +1227,22 @@ mod tests {
         let digest = fixture.manifest.layers[0].digest().clone();
         store.put_blob(&digest, &fixture.wire).await.unwrap();
         let mut variants = Vec::new();
-        for (block_size, count, hash_size, hash_type, suffix) in [
-            (4096, 2, 4096, 1, "aa"),
-            (4096, 2, 4096, 1, "bb"),
-            (1024, 5, 4096, 1, "aa"),
-            (4096, 2, 1024, 1, "aa"),
-            (4096, 2, 4096, 0, "aa"),
+        for (block_size, count, hash_size, suffix) in [
+            (4096, 2, 4096, "aa"),
+            (4096, 2, 4096, "bb"),
+            (1024, 5, 4096, "aa"),
+            (4096, 2, 1024, "aa"),
         ] {
-            for (key, value) in [
-                ("data-block-size", block_size),
-                ("hash-block-size", hash_size),
-                ("hash-type", hash_type),
-            ] {
-                fixture.manifest.annotations.insert(
-                    format!("dev.pichi.carapace.verity.{key}"),
-                    value.to_string(),
-                );
-            }
+            fixture.manifest.annotations.verity.data_block_size = block_size
+                .to_string()
+                .parse::<devmap_core::BlockSize<devmap_verity::Constraint>>()
+                .unwrap()
+                .into();
+            fixture.manifest.annotations.verity.hash_block_size = hash_size
+                .to_string()
+                .parse::<devmap_core::BlockSize<devmap_verity::Constraint>>()
+                .unwrap()
+                .into();
             let Layer::ScuteZstd(scute) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
@@ -1274,7 +1272,7 @@ mod tests {
         assert_ne!(variants[0].0.data, variants[2].0.data);
         let trees: std::collections::HashSet<_> =
             variants.iter().map(|(files, _)| &files.verity).collect();
-        assert_eq!(trees.len(), 5);
+        assert_eq!(trees.len(), 4);
         for (files, expected) in variants {
             assert_eq!(
                 std::fs::read(files.verity).unwrap(),
@@ -1285,7 +1283,7 @@ mod tests {
                 std::fs::read(expected.deflated.unwrap().path()).unwrap()
             );
         }
-        assert_eq!(store.blob_path(&digest).prepared_files().unwrap().len(), 7);
+        assert_eq!(store.blob_path(&digest).prepared_files().unwrap().len(), 6);
     }
 
     #[test]
@@ -1369,7 +1367,6 @@ mod tests {
                 "dev.pichi.carapace.verity.data-block-size": "4096",
                 "dev.pichi.carapace.verity.hash-block-size": "4096",
                 "dev.pichi.carapace.verity.version": "1",
-                "dev.pichi.carapace.verity.hash-type": "1",
                 "dev.pichi.carapace.verity.hash": format!("sha256:{}", hex::encode([1; 32])),
             },
         });

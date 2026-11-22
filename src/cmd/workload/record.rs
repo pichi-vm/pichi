@@ -910,7 +910,7 @@ mod tests {
                         digest: layer.clone(),
                         size: payload.len() as u64,
                     })],
-                    annotations: std::collections::BTreeMap::default(),
+                    annotations: Default::default(),
                 };
                 let bytes = serde_json::to_vec(&manifest)?;
                 let image = Digest::Sha256(Sha256::digest(&bytes).into());

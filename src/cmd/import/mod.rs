@@ -103,9 +103,13 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     // scute layers and the committed tip hash annotation. Without
     // `--carapace`, start from an empty scute-less manifest (a PMI-only
     // bootable artifact).
-    let mut manifest = match &args.carapace {
+    let (mut manifest, mut annotations) = match &args.carapace {
         Some(carapace) => carapace_scutes_manifest(&blob_store, &db, carapace, &platform).await?,
-        None => scuteless_manifest(),
+        None => {
+            let manifest = scuteless_manifest();
+            let annotations = serde_json::to_value(&manifest.annotations)?;
+            (manifest, annotations)
+        }
     };
     // Merge caller-supplied provenance annotations. Structural verity-chain keys
     // are never overridable (they describe the carapace, not the operator's
@@ -114,7 +118,10 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
         if k.starts_with("dev.pichi.carapace.verity.") {
             continue;
         }
-        manifest.annotations.insert(k, v);
+        annotations
+            .as_object_mut()
+            .context("invalid annotations")?
+            .insert(k, v.into());
     }
     manifest.layers.push(Layer::Pmi(PmiDescriptor {
         digest: pmi_digest.clone(),
@@ -128,10 +135,13 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     if let Some((digest, bytes)) = &config_blob {
         manifest.config = ConfigDescriptor::for_config(digest.clone(), bytes.len() as u64);
     }
+    manifest.annotations = serde_json::from_value(annotations.clone())?;
     manifest
         .validate()
         .context("assembled bootable manifest failed self-validation (bug)")?;
-    let manifest_bytes = serde_json::to_vec(&manifest).context("serialising bootable manifest")?;
+    let mut value = serde_json::to_value(&manifest)?;
+    value["annotations"] = annotations;
+    let manifest_bytes = serde_json::to_vec(&value).context("serialising bootable manifest")?;
     let manifest_digest =
         Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&manifest_bytes).into());
 
@@ -200,7 +210,7 @@ async fn carapace_scutes_manifest(
     db: &FilesystemTagDb,
     carapace: &str,
     platform: &conglobate::artifact::Platform,
-) -> Result<Manifest> {
+) -> Result<(Manifest, serde_json::Value)> {
     // Accept a bare `sha256:<hex>` image digest directly — that is exactly
     // what `pichi import raw` prints, so an untagged carapace is referenceable
     // without inventing a repo. Otherwise parse as a tag / `repo@sha256:…` ref.
@@ -213,7 +223,7 @@ async fn carapace_scutes_manifest(
         blob_store.resolve(&carapace_ref, db).await?
     };
     let metadata = blob_store.metadata(&src_digest).await?;
-    let mut manifest = if metadata.is_index() {
+    let (metadata, mut manifest) = if metadata.is_index() {
         let selected = pichi_registry::pick_pichi_entry_from_index(
             &metadata.bytes,
             &platform.os,
@@ -224,9 +234,10 @@ async fn carapace_scutes_manifest(
             .iter()
             .find(|entry| entry["digest"] == selected)
             .context("selected carapace platform is missing")?;
-        blob_store.manifest_entry(entry).await?.1
+        blob_store.manifest_entry(entry).await?
     } else {
-        metadata.manifest()?
+        let manifest = metadata.manifest()?;
+        (metadata, manifest)
     };
     if manifest.scute_layers().is_empty() {
         bail!("{carapace} is not a carapace (no scute layers)");
@@ -236,47 +247,25 @@ async fn carapace_scutes_manifest(
     manifest
         .layers
         .retain(|l| matches!(l, Layer::Scute(_) | Layer::ScuteZstd(_)));
-    if let Some(root) = manifest.carapace_root()? {
-        manifest
-            .annotations
-            .remove("dev.pichi.carapace.verity.algo");
-        manifest.annotations.insert(
-            "dev.pichi.carapace.verity.hash".into(),
-            Digest::Sha256(root).to_string(),
-        );
-    }
-    for (key, default) in [
-        ("dev.pichi.carapace.verity.data-block-size", 4096),
-        ("dev.pichi.carapace.verity.hash-block-size", 4096),
-        ("dev.pichi.carapace.verity.version", 1),
-        ("dev.pichi.carapace.verity.hash-type", 1),
-    ] {
-        if manifest
-            .annotations
-            .get(key)
-            .is_some_and(|value| value.parse::<u32>() == Ok(default))
-        {
-            manifest.annotations.remove(key);
-        }
-    }
-    Ok(manifest)
+    Ok((manifest, metadata.value["annotations"].clone()))
 }
 
 /// A fresh scute-less manifest (a PMI-only bootable artifact): no carapace, so
 /// no chain-verity annotations — only the creation timestamp.
 fn scuteless_manifest() -> Manifest {
-    let mut annotations = BTreeMap::new();
-    annotations.insert(
-        "org.opencontainers.image.created".to_string(),
-        chrono::Utc::now().to_rfc3339(),
-    );
     Manifest {
         schema_version: Default::default(),
         media_type: conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1.into(),
         artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.to_string(),
         config: ConfigDescriptor::canonical(),
         layers: Vec::new(),
-        annotations,
+        annotations: conglobate::artifact::ManifestAnnotations {
+            oci: conglobate::artifact::OciAnnotations {
+                created: Some(chrono::Utc::now().to_rfc3339()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
     }
 }
 

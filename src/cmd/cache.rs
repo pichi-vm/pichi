@@ -381,7 +381,7 @@ mod tests {
             "schemaVersion":2,"mediaType":MANIFEST_TYPE,
             "artifactType":conglobate::artifact::MEDIA_TYPE_PICHI_ARTIFACT_V1,
             "config":conglobate::artifact::ConfigDescriptor::canonical(),
-            "layers":[],"annotations":{"test":"before"}
+            "layers":[],"annotations":{"org.opencontainers.image.created":"before"}
         });
         let bytes = serde_json::to_vec(&manifest).unwrap();
         let digest = Digest::Sha256(Sha256::digest(&bytes).into());
@@ -395,7 +395,7 @@ mod tests {
             serde_json::to_vec(&changed_index).unwrap(),
         )
         .unwrap();
-        manifest["annotations"]["test"] = "cached".into();
+        manifest["annotations"]["org.opencontainers.image.created"] = "cached".into();
         std::fs::write(
             store.blob_path(&digest),
             serde_json::to_vec(&manifest).unwrap(),
@@ -411,7 +411,7 @@ mod tests {
         let (_, selected) = crate::cmd::build::resolve_manifest(reference, &tags, &store)
             .await
             .unwrap();
-        assert_eq!(selected.annotations["test"], "cached");
+        assert_eq!(selected.annotations.oci.created.as_deref(), Some("cached"));
         assert!(store.manifest(&index).await.is_err());
         std::fs::write(store.blob_path(&index), original_index).unwrap();
         assert!(store.manifest(&index).await.is_err());

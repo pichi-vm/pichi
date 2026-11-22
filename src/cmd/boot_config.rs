@@ -210,7 +210,7 @@ mod tests {
                 }),
                 Layer::BootConfig(config.descriptor().unwrap()),
             ],
-            annotations: std::collections::BTreeMap::default(),
+            annotations: Default::default(),
         };
         let path = BootConfigFile::prepared_image(&manifest, &store)
             .await

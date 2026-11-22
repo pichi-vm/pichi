@@ -49,21 +49,15 @@ impl BaseManifest for Manifest {
         created_rfc3339: &str,
         extra: &BTreeMap<String, String>,
     ) -> Result<Manifest> {
-        // Caller-supplied provenance annotations go in first; the structural
-        // `verity.*` keys below then overwrite (they can't be spoofed via `extra`),
-        // and `created` is filled only if the caller didn't supply one.
+        // Caller metadata cannot override the measured root or reconstruction defaults.
         let mut annotations = extra.clone();
-        annotations.remove("dev.pichi.carapace.verity.algo");
-        for key in ["data-block-size", "hash-block-size", "version", "hash-type"] {
-            annotations.remove(&format!("dev.pichi.carapace.verity.{key}"));
-        }
-        annotations.insert(
-            "dev.pichi.carapace.verity.hash".into(),
-            Digest::Sha256(*root).to_string(),
-        );
+        annotations.retain(|key, _| !key.starts_with("dev.pichi.carapace.verity."));
         annotations
             .entry("org.opencontainers.image.created".to_string())
             .or_insert_with(|| created_rfc3339.to_string());
+        let mut annotations: conglobate::artifact::ManifestAnnotations =
+            serde_json::from_value(serde_json::to_value(annotations)?)?;
+        annotations.verity.root = Some(Digest::Sha256(*root));
 
         let manifest = Manifest {
             schema_version: Default::default(),
@@ -115,23 +109,25 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
-        assert!(!m.annotations.contains_key("dev.pichi.carapace.verity.algo"));
+        assert!(
+            serde_json::to_value(&m.annotations)
+                .unwrap()
+                .get("dev.pichi.carapace.verity.algo")
+                .is_none()
+        );
         for key in ["data-block-size", "hash-block-size", "version", "hash-type"] {
             assert!(
-                !m.annotations
-                    .contains_key(&format!("dev.pichi.carapace.verity.{key}"))
+                serde_json::to_value(&m.annotations)
+                    .unwrap()
+                    .get(format!("dev.pichi.carapace.verity.{key}"))
+                    .is_none()
             );
         }
         assert_eq!(
-            m.annotations
-                .get("org.opencontainers.image.created")
-                .map(String::as_str),
+            m.annotations.oci.created.as_deref(),
             Some("2026-05-07T12:00:00Z")
         );
-        assert_eq!(
-            m.annotations.get("dev.pichi.carapace.verity.hash"),
-            Some(&format!("sha256:{}", "ab".repeat(32)))
-        );
+        assert_eq!(m.annotations.verity.root, Some(Digest::Sha256([0xab; 32])));
     }
 
     /// CONTEXT D-01: bottom-scute salt prefix is exactly 32 zero bytes;
@@ -259,29 +255,29 @@ mod tests {
         .unwrap();
         // provenance carried verbatim
         assert_eq!(
-            m.annotations
-                .get("org.opencontainers.image.source")
-                .unwrap(),
+            m.annotations.oci.source.as_deref().unwrap(),
             "https://example/repo"
         );
         // caller-supplied created wins over the stamped timestamp
         assert_eq!(
-            m.annotations
-                .get("org.opencontainers.image.created")
-                .unwrap(),
+            m.annotations.oci.created.as_deref().unwrap(),
             "2020-01-01T00:00:00Z"
         );
         for key in ["data-block-size", "hash-block-size", "version", "hash-type"] {
             assert!(
-                !m.annotations
-                    .contains_key(&format!("dev.pichi.carapace.verity.{key}"))
+                serde_json::to_value(&m.annotations)
+                    .unwrap()
+                    .get(format!("dev.pichi.carapace.verity.{key}"))
+                    .is_none()
             );
         }
         // structural verity key cannot be overridden by a caller annotation
-        assert!(!m.annotations.contains_key("dev.pichi.carapace.verity.algo"));
-        assert_eq!(
-            m.annotations.get("dev.pichi.carapace.verity.hash"),
-            Some(&format!("sha256:{}", "ab".repeat(32)))
+        assert!(
+            serde_json::to_value(&m.annotations)
+                .unwrap()
+                .get("dev.pichi.carapace.verity.algo")
+                .is_none()
         );
+        assert_eq!(m.annotations.verity.root, Some(Digest::Sha256([0xab; 32])));
     }
 }

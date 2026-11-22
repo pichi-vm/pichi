@@ -7,8 +7,6 @@
 mod storage;
 use storage::Storage as _;
 
-use std::collections::BTreeMap;
-
 use assert_cmd::Command;
 use conglobate::artifact::{
     ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
@@ -17,20 +15,14 @@ use conglobate::artifact::{
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
-fn chain_annotations() -> BTreeMap<String, String> {
-    [
-        ("dev.pichi.carapace.verity.data-block-size", "4096"),
-        ("dev.pichi.carapace.verity.hash-block-size", "4096"),
-        ("dev.pichi.carapace.verity.version", "1"),
-        ("dev.pichi.carapace.verity.hash-type", "1"),
-        (
-            "dev.pichi.carapace.verity.hash",
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        ),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect()
+fn chain_annotations() -> conglobate::artifact::ManifestAnnotations {
+    conglobate::artifact::ManifestAnnotations {
+        verity: conglobate::artifact::CarapaceVerity {
+            root: Some(conglobate::artifact::Digest::Sha256([0x11; 32])),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 fn graphroot(tmp: &TempDir) -> std::path::PathBuf {
@@ -241,7 +233,7 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: 4096,
             })],
-            annotations: BTreeMap::new(),
+            annotations: Default::default(),
         };
         let bytes = serde_json::to_vec(&manifest).unwrap();
         let manifest_digest =
@@ -317,8 +309,10 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: 4096,
             })],
-            annotations: [("org.opencontainers.image.title".into(), name.into())].into(),
+            annotations: Default::default(),
         };
+        let mut manifest = serde_json::to_value(manifest).unwrap();
+        manifest["annotations"] = serde_json::json!({"org.opencontainers.image.title": name});
         let bytes = serde_json::to_vec(&manifest).unwrap();
         let digest = conglobate::artifact::Digest::Sha256(
             <sha2::Sha256 as sha2::Digest>::digest(&bytes).into(),

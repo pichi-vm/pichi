@@ -12,16 +12,9 @@ use crate::cmd::platform::PlatformExt as _;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
-use crate::cmd::verity::VerityParams;
 use conglobate::artifact::{BootConfigDescriptor, Layer, Manifest, ScuteDescriptor};
-use devmap_verity::{HashType, Header};
-
-/// Chain-wide verity annotation keys.
-const ANN_DATA_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.data-block-size";
-const ANN_HASH_BLOCK_SIZE: &str = "dev.pichi.carapace.verity.hash-block-size";
-
-/// Standard OCI image-architecture annotation key.
-const ARCH_ANNOTATION: &str = "org.opencontainers.image.architecture";
+use devmap_core::Geometry;
+use devmap_verity::{Algorithm, HashType, Header, Parameters};
 
 /// pichi-side queries and validations on a cached [`Manifest`].
 pub trait ManifestExt {
@@ -74,7 +67,7 @@ impl ManifestExt for Manifest {
     }
 
     fn check_architecture(&self) -> Result<()> {
-        let Some(arch) = self.annotations.get(ARCH_ANNOTATION) else {
+        let Some(arch) = self.annotations.oci.architecture.as_deref() else {
             return Ok(());
         };
         let host = std::env::consts::ARCH;
@@ -90,37 +83,27 @@ impl ManifestExt for Manifest {
     }
 
     fn verity_header(&self, scute: &ScuteDescriptor, size: Option<u64>) -> Result<Header> {
-        let annotation = |key: &str, default| {
-            self.annotations
-                .get(key)
-                .map(String::as_str)
-                .unwrap_or(default)
-        };
-        if annotation("dev.pichi.carapace.verity.version", "1").parse::<u32>()? != 1 {
-            bail!("unsupported verity header version");
-        }
-        // Carapace trust anchors and salt-chain prefixes are SHA-256 digests.
         self.carapace_root()?
             .ok_or_else(|| anyhow!("missing carapace root"))?;
-        let params = VerityParams {
-            data_block_size: annotation(ANN_DATA_BLOCK_SIZE, "4096").parse()?,
-            hash_block_size: annotation(ANN_HASH_BLOCK_SIZE, "4096").parse()?,
-            salt: scute.annotations.salt.as_ref().to_vec(),
+        let header = Header {
             uuid: [0; 16],
+            parameters: Parameters {
+                hash_type: HashType::Normal,
+                algorithm: Algorithm::Sha256,
+                salt: *scute.annotations.salt,
+                data: Geometry {
+                    size: *self.annotations.verity.data_block_size,
+                    count: *scute.annotations.data_blocks,
+                },
+                hash: *self.annotations.verity.hash_block_size,
+            },
         };
-        let mut header = params.header_for_blocks(scute.annotations.data_blocks.get())?;
         if size.is_some_and(|size| {
             size.div_ceil(u64::from(header.parameters.data.size.bytes().get()))
                 != header.parameters.data.count.get()
         }) {
             bail!("scute data_blocks disagrees with COW length");
         }
-        header.parameters.hash_type =
-            match annotation("dev.pichi.carapace.verity.hash-type", "1").parse::<u32>()? {
-                0 => HashType::ChromeOs,
-                1 => HashType::Normal,
-                value => bail!("unsupported verity hash type {value}"),
-            };
         Ok(header)
     }
 }

@@ -50,7 +50,7 @@ impl WorkloadFixture {
                 digest: digest.clone(),
                 size: pmi.len() as u64,
             })],
-            annotations: std::collections::BTreeMap::default(),
+            annotations: Default::default(),
         };
         let bytes = serde_json::to_vec(&manifest).unwrap();
         let digest = Digest::Sha256(Sha256::digest(&bytes).into());
@@ -72,16 +72,7 @@ impl WorkloadFixture {
         let product = self.root.path().join("product");
         let blobs = product.join("blobs/sha256");
         std::fs::create_dir_all(&blobs).unwrap();
-        let mut manifest = self.manifest.clone();
-        manifest.annotations.extend([
-            (
-                "dev.pichi.build.commit".into(),
-                format!("sha1:{}", "1".repeat(40)),
-            ),
-            ("dev.pichi.build.context".into(), ".".into()),
-            ("dev.pichi.build.plan".into(), "pichi.yaml".into()),
-            ("dev.pichi.build.lock".into(), "pichi.lock".into()),
-        ]);
+        let manifest = &self.manifest;
         let store = FilesystemBlobStore::new(self.root.path().join("pichi/storage"));
         for layer in &manifest.layers {
             let digest: Digest = layer.digest().clone();
@@ -91,7 +82,14 @@ impl WorkloadFixture {
             )
             .unwrap();
         }
-        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let mut value = serde_json::to_value(manifest).unwrap();
+        value["annotations"] = serde_json::json!({
+            "dev.pichi.build.commit": format!("sha1:{}", "1".repeat(40)),
+            "dev.pichi.build.context": ".",
+            "dev.pichi.build.plan": "pichi.yaml",
+            "dev.pichi.build.lock": "pichi.lock",
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
         let digest = Digest::Sha256(Sha256::digest(&bytes).into());
         std::fs::write(blobs.join(digest.hex()), &bytes).unwrap();
         std::fs::write(

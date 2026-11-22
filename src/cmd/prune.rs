@@ -225,8 +225,6 @@ mod tests {
     use super::*;
     use pichi_storage::BlobStore as _;
 
-    use std::collections::BTreeMap;
-
     use conglobate::artifact::{
         ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, ScuteAnnotations,
         ScuteDescriptor,
@@ -253,18 +251,6 @@ mod tests {
             },
             ..Default::default()
         }
-    }
-
-    fn chain_annotations() -> BTreeMap<String, String> {
-        [
-            ("dev.pichi.carapace.verity.data-block-size", "4096"),
-            ("dev.pichi.carapace.verity.hash-block-size", "4096"),
-            ("dev.pichi.carapace.verity.version", "1"),
-            ("dev.pichi.carapace.verity.hash-type", "1"),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
     }
 
     /// (1) Empty cache: run returns Ok; blobs/sha256/ unchanged (or absent).
@@ -373,7 +359,7 @@ mod tests {
                     salt: devmap_verity::Salt::new(&[0; 4]).unwrap().into(),
                 },
             })],
-            annotations: chain_annotations(),
+            annotations: Default::default(),
         };
         let mbytes = serde_json::to_vec(&m).unwrap();
         let mdigest = conglobate::artifact::Digest::Sha256(

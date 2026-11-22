@@ -41,20 +41,14 @@ fn graphroot(tmp: &TempDir) -> PathBuf {
     p
 }
 
-fn chain_annotations() -> std::collections::BTreeMap<String, String> {
-    [
-        (
-            "dev.pichi.carapace.verity.hash",
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        ),
-        ("dev.pichi.carapace.verity.data-block-size", "4096"),
-        ("dev.pichi.carapace.verity.hash-block-size", "4096"),
-        ("dev.pichi.carapace.verity.version", "1"),
-        ("dev.pichi.carapace.verity.hash-type", "1"),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect()
+fn chain_annotations() -> conglobate::artifact::ManifestAnnotations {
+    conglobate::artifact::ManifestAnnotations {
+        verity: conglobate::artifact::CarapaceVerity {
+            root: Some(conglobate::artifact::Digest::Sha256([0x11; 32])),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 fn sha256_digest(bytes: &[u8]) -> conglobate::artifact::Digest {
@@ -139,10 +133,9 @@ async fn populate_bootable_with_requirements(
         unreachable!()
     };
     scute.annotations.verity_digest = sha256_digest(verity.get_ref());
-    manifest.annotations.insert(
-        "dev.pichi.carapace.verity.hash".into(),
-        format!("sha256:{}", hex::encode(root)),
-    );
+    manifest.annotations.verity.root = Some(conglobate::artifact::Digest::Sha256(
+        root.as_ref().try_into().unwrap(),
+    ));
     let bytes = serde_json::to_vec(&manifest).unwrap();
     let digest =
         conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
@@ -410,10 +403,9 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                 unreachable!()
             };
             scute.annotations.verity_digest = sha256_digest(verity.get_ref());
-            manifest.annotations.insert(
-                "dev.pichi.carapace.verity.hash".into(),
-                format!("sha256:{}", hex::encode(root)),
-            );
+            manifest.annotations.verity.root = Some(conglobate::artifact::Digest::Sha256(
+                root.as_ref().try_into().unwrap(),
+            ));
             let bytes = serde_json::to_vec(&manifest).unwrap();
             let manifest_digest = sha256_digest(&bytes);
             store.put_blob(&manifest_digest, &bytes).await.unwrap();

@@ -294,6 +294,10 @@ async fn manifest_has_locked_verity_params_e2e() {
             raw.to_str().unwrap(),
             "-t",
             "params:check",
+            "--annotation",
+            "example.org/source=custom",
+            "--annotation",
+            "dev.pichi.carapace.verity.hash=spoofed",
         ])
         .assert()
         .success();
@@ -308,17 +312,19 @@ async fn manifest_has_locked_verity_params_e2e() {
     let blob_store = FilesystemBlobStore::new(&g);
     let (_, bytes) = index::manifest(&blob_store, &manifest_digest).await;
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["annotations"]["example.org/source"], "custom");
     assert!(
-        !manifest
-            .annotations
-            .contains_key("dev.pichi.carapace.verity.algo")
+        value["annotations"]
+            .get("dev.pichi.carapace.verity.algo")
+            .is_none()
     );
     assert!(manifest.carapace_root().unwrap().is_some());
     for key in ["data-block-size", "hash-block-size", "version", "hash-type"] {
         assert!(
-            !manifest
-                .annotations
-                .contains_key(&format!("dev.pichi.carapace.verity.{key}"))
+            value["annotations"]
+                .get(&format!("dev.pichi.carapace.verity.{key}"))
+                .is_none()
         );
     }
 }

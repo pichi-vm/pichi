@@ -126,16 +126,8 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
     assert!(app.layers.iter().any(|l| matches!(l, Layer::Scute(_))));
     assert!(app.layers.iter().any(|l| matches!(l, Layer::Pmi(_))));
     assert!(app.layers.iter().any(|l| matches!(l, Layer::BootConfig(_))));
-    let root = base
-        .annotations
-        .get("dev.pichi.carapace.verity.hash")
-        .unwrap();
-    assert_eq!(root.len(), 71);
-    assert!(root.starts_with("sha256:"));
-    assert_eq!(
-        app.annotations.get("dev.pichi.carapace.verity.hash"),
-        Some(root)
-    );
+    assert!(base.annotations.verity.root.is_some());
+    assert_eq!(app.annotations.verity.root, base.annotations.verity.root);
 
     // A new composition must authenticate inherited bytes even when its
     // source image and prepared verity are already cached.
@@ -177,7 +169,7 @@ async fn import_pmi_with_carapace_keeps_base_untouched() {
 }
 
 #[tokio::test]
-async fn legacy_carapace_composition_emits_only_a_qualified_root() {
+async fn carapace_composition_rejects_unqualified_root() {
     use conglobate::artifact::Digest;
     use sha2::{Digest as _, Sha256};
     let tmp = TempDir::new().unwrap();
@@ -195,14 +187,11 @@ async fn legacy_carapace_composition_emits_only_a_qualified_root() {
         ])
         .assert()
         .success();
-    let mut legacy = resolve_manifest(&g, "docker.io/library/base:1").await;
+    let legacy = resolve_manifest(&g, "docker.io/library/base:1").await;
     let root = legacy.carapace_root().unwrap().unwrap();
-    legacy
-        .annotations
-        .insert("dev.pichi.carapace.verity.hash".into(), hex::encode(root));
-    legacy
-        .annotations
-        .insert("dev.pichi.carapace.verity.algo".into(), "sha256".into());
+    let mut legacy = serde_json::to_value(legacy).unwrap();
+    legacy["annotations"]["dev.pichi.carapace.verity.hash"] = hex::encode(root).into();
+    legacy["annotations"]["dev.pichi.carapace.verity.algo"] = "sha256".into();
     let store = FilesystemBlobStore::new(&g);
     let bytes = serde_json::to_vec(&legacy).unwrap();
     let digest = Digest::Sha256(Sha256::digest(&bytes).into());
@@ -238,25 +227,18 @@ async fn legacy_carapace_composition_emits_only_a_qualified_root() {
             "app:1",
         ])
         .assert()
-        .success();
-    let app = resolve_manifest(&g, "docker.io/library/app:1").await;
-    assert_eq!(app.carapace_root().unwrap(), Some(root));
-    assert_eq!(
-        app.annotations["dev.pichi.carapace.verity.hash"],
-        Digest::Sha256(root).to_string()
-    );
+        .code(125);
     assert!(
-        !app.annotations
-            .contains_key("dev.pichi.carapace.verity.algo")
+        db.resolve_tag("docker.io/library/app:1")
+            .await
+            .unwrap()
+            .is_none()
     );
-    assert_eq!(
-        resolve_manifest(&g, "docker.io/library/legacy:1").await,
-        legacy
-    );
+    assert_eq!(store.get_blob(&digest).await.unwrap(), index);
 }
 
 #[tokio::test]
-async fn composition_omits_inherited_default_parameters() {
+async fn composition_preserves_inherited_annotations() {
     use conglobate::artifact::Digest;
     use sha2::{Digest as _, Sha256};
     let tmp = TempDir::new().unwrap();
@@ -274,17 +256,17 @@ async fn composition_omits_inherited_default_parameters() {
         ])
         .assert()
         .success();
-    let mut source = resolve_manifest(&g, "docker.io/library/base:1").await;
+    let source = resolve_manifest(&g, "docker.io/library/base:1").await;
+    let root = source.carapace_root().unwrap();
+    let mut source = serde_json::to_value(source).unwrap();
     for (key, value) in [
         ("data-block-size", "4096"),
         ("hash-block-size", "4096"),
         ("version", "1"),
-        ("hash-type", "1"),
     ] {
-        source
-            .annotations
-            .insert(format!("dev.pichi.carapace.verity.{key}"), value.into());
+        source["annotations"][format!("dev.pichi.carapace.verity.{key}")] = value.into();
     }
+    source["annotations"]["example.org/source"] = serde_json::json!({"retained": true});
     let store = FilesystemBlobStore::new(&g);
     let bytes = serde_json::to_vec(&source).unwrap();
     let digest = Digest::Sha256(Sha256::digest(&bytes).into());
@@ -304,17 +286,20 @@ async fn composition_omits_inherited_default_parameters() {
         .assert()
         .success();
     let app = resolve_manifest(&g, "docker.io/library/app:1").await;
+    assert_eq!(app.carapace_root().unwrap(), root);
+    let app_index = FilesystemTagDb::open(&g)
+        .unwrap()
+        .resolve_tag("docker.io/library/app:1")
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, bytes) = index::manifest(&store, &app_index).await;
+    let app: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(app["annotations"], source["annotations"]);
     assert_eq!(
-        app.carapace_root().unwrap(),
-        source.carapace_root().unwrap()
+        store.get_blob(&digest).await.unwrap(),
+        serde_json::to_vec(&source).unwrap()
     );
-    for key in ["data-block-size", "hash-block-size", "version", "hash-type"] {
-        assert!(
-            !app.annotations
-                .contains_key(&format!("dev.pichi.carapace.verity.{key}"))
-        );
-    }
-    assert_eq!(store.get_blob(&digest).await.unwrap(), bytes);
 }
 
 /// Kind 3: `import pmi` without `--carapace` produces a PMI-only bootable
@@ -364,7 +349,7 @@ async fn import_pmi_without_carapace_keeps_only_boot_components() {
         "PMI-only artifact has no scutes"
     );
     assert!(
-        !m.annotations.contains_key("dev.pichi.carapace.verity.hash"),
+        m.annotations.verity.root.is_none(),
         "PMI-only artifact declares no carapace verity hash"
     );
 }

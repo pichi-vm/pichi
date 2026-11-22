@@ -7,8 +7,6 @@
 mod storage;
 use storage::Storage as _;
 
-use std::collections::BTreeMap;
-
 use assert_cmd::Command;
 use conglobate::artifact::{
     ConfigDescriptor, Layer, MEDIA_TYPE_PICHI_ARTIFACT_V1, Manifest, PmiDescriptor,
@@ -17,21 +15,17 @@ use conglobate::artifact::{
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
 use tempfile::TempDir;
 
-fn chain_annotations() -> BTreeMap<String, String> {
-    [
-        ("dev.pichi.carapace.verity.data-block-size", "4096"),
-        ("dev.pichi.carapace.verity.hash-block-size", "4096"),
-        ("dev.pichi.carapace.verity.version", "1"),
-        ("dev.pichi.carapace.verity.hash-type", "1"),
-        (
-            "dev.pichi.carapace.verity.hash",
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        ),
-        ("org.opencontainers.image.created", "2026-05-01T12:00:00Z"),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect()
+fn chain_annotations() -> conglobate::artifact::ManifestAnnotations {
+    conglobate::artifact::ManifestAnnotations {
+        verity: conglobate::artifact::CarapaceVerity {
+            root: Some(conglobate::artifact::Digest::Sha256([0x11; 32])),
+            ..Default::default()
+        },
+        oci: conglobate::artifact::OciAnnotations {
+            created: Some("2026-05-01T12:00:00Z".into()),
+            ..Default::default()
+        },
+    }
 }
 
 fn graphroot(tmp: &TempDir) -> std::path::PathBuf {

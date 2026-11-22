@@ -146,7 +146,7 @@ impl Row {
 
         let created_dt = manifest
             .as_ref()
-            .and_then(|m| m.annotations.get("org.opencontainers.image.created"))
+            .and_then(|m| m.annotations.oci.created.as_deref())
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&Utc))
             .or_else(|| {

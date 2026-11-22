@@ -233,21 +233,11 @@ impl OciLayout {
                         | conglobate::artifact::Layer::ScuteZstd(_)
                 )
             }) {
-                for key in [
-                    "dev.pichi.carapace.verity.data-block-size",
-                    "dev.pichi.carapace.verity.hash-block-size",
-                ] {
-                    ensure!(
-                        manifest
-                            .annotations
-                            .get(key)
-                            .map(String::as_str)
-                            .unwrap_or("4096")
-                            .parse::<u32>()?
-                            == 4096,
-                        "carapace block sizes must be 4096"
-                    );
-                }
+                ensure!(
+                    manifest.annotations.verity.data_block_size.bytes().get() == 4096
+                        && manifest.annotations.verity.hash_block_size.bytes().get() == 4096,
+                    "carapace block sizes must be 4096"
+                );
             }
             let mut layers = HashSet::new();
             for layer in &manifest.layers {
@@ -300,16 +290,6 @@ impl OciLayout {
                     conglobate::artifact::Layer::Scute(_)
                         | conglobate::artifact::Layer::ScuteZstd(_)
                 ) {
-                    ensure!(
-                        manifest
-                            .annotations
-                            .get("dev.pichi.carapace.verity.hash-type")
-                            .map(String::as_str)
-                            .unwrap_or("1")
-                            .parse::<u32>()?
-                            == 1,
-                        "carapace hash type must be 1"
-                    );
                     // Optional guest sidecars have only digest-derived names.
                     // They are compared with the fresh tree, never imported.
                     let sidecar = Self::blob_name(layer.digest()).with_extension("verity");
@@ -1244,7 +1224,7 @@ pub(super) mod tests {
             "short salt",
             "missing base",
             "salt mismatch",
-            "hash type",
+            "verity version",
             "oversized hash block",
             "guest verity",
             "truncated verity",
@@ -1327,9 +1307,9 @@ pub(super) mod tests {
                     fixture.manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.salt"] =
                         hex::encode([0; 64]).into()
                 }
-                "hash type" => {
-                    fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash-type"] =
-                        "0".into()
+                "verity version" => {
+                    fixture.manifest["annotations"]["dev.pichi.carapace.verity.version"] =
+                        "2".into()
                 }
                 "oversized hash block" => {
                     fixture.manifest["annotations"]["dev.pichi.carapace.verity.hash-block-size"] =
