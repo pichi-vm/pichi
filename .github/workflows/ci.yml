@@ -1,22 +1,14 @@
-name: ⚡ CI
+name: Native schema bootstrap qualification
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
-    inputs:
-      rebuild-appliance:
-        description: Build and test candidate appliances
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: bootstrap-${{ github.ref }}
+  cancel-in-progress: false
 
 defaults:
   run:
@@ -24,139 +16,77 @@ defaults:
 
 env:
   NIGHTLY: nightly-2026-07-06
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
-  checks:
-    name: 🔎 checks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      appliance: ${{ steps.changes.outputs.appliance }}
+  bootstrap:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: avrea-ubuntu-latest-arm-4-vcpu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     steps:
-      - name: 📥 Check out source
-        uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: 🔎 Select appliance inputs and check commits
-        id: changes
-        env:
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-          FORCE_APPLIANCE: ${{ inputs.rebuild-appliance || false }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            base=$(git merge-base "$PR_BASE" "$PR_HEAD")
-            head=$PR_HEAD
-          elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]; then
-            base=$PUSH_BEFORE
-            head=$GITHUB_SHA
-          else
-            base=$GITHUB_SHA^
-            head=$GITHUB_SHA
-          fi
-          changed=$(git diff --name-only "$base" "$head" -- \
-            appliance/image deps/pichi-launch \
-            Cargo.toml Cargo.lock 'src/cmd/build*.rs' src/cmd/build \
-            .github/workflows/platforms.yml)
-          appliance=false
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then changed=""; fi
-          if [ -n "$changed" ] || [ "$FORCE_APPLIANCE" = true ]; then appliance=true; fi
-          echo "appliance=$appliance" >> "$GITHUB_OUTPUT"
-          pipx run gitlint --commits "$base..$head"
-      - name: 📦 Install check tools
-        uses: taiki-e/install-action@v2.90.0
-        with:
-          tool: hawkeye@6.5.0
-      - name: 🔎 Check license headers
-        run: hawkeye check --config licenserc.toml
-      - name: 🔎 Check formatting
-        run: |
-          rustup toolchain install "$NIGHTLY" --profile minimal --component rustfmt
-          cargo "+$NIGHTLY" fmt --all -- --check
-
-  platforms:
-    name: 🧪 platforms
-    needs: checks
-    uses: ./.github/workflows/platforms.yml
-    with:
-      build-appliance: ${{ needs.checks.outputs.appliance == 'true' }}
-
-  publish:
-    name: 🚀 publish
-    needs: [checks, platforms]
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.checks.outputs.appliance == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: 📥 Check out source
-        uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - name: 📦 Install toolchain
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: 77944b4dc400f52c95b581b0a44ef1ba576d4900
+          path: old
+          persist-credentials: false
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: pichi-vm/fedora
+          ref: 9350482e991706bd75c025ad29c8a1ac4179c662
+          path: fedora
+          persist-credentials: false
+      - name: Prepare native host
         run: |
+          sudo chmod a+rw /dev/kvm
+          sudo sysctl -w vm.nr_hugepages=2048
+          test -r /dev/kvm && test -w /dev/kvm
+          test "$(cat /proc/sys/vm/nr_hugepages)" -ge 2048
           rustup toolchain install "$NIGHTLY" --profile minimal
           rustup default "$NIGHTLY"
-      - name: ♻️ Restore build cache
-        uses: Swatinem/rust-cache@v2
-      - name: 🔨 Build Pichi
-        run: |
-          cargo "+$NIGHTLY" build --locked --bin pichi
-          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
-      - name: ⬇️ Download candidates
-        uses: actions/download-artifact@v4
-        timeout-minutes: 10
+      - uses: Swatinem/rust-cache@v2
         with:
-          pattern: appliance-oci-*
-      - name: 🔑 Authenticate to GHCR
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          workspaces: |
+            . -> target
+            old -> target
+          cache-targets: false
+          cache-directories: |
+            ${{ github.workspace }}/target
+            ${{ github.workspace }}/old/target
+      - name: Build both host schema versions
         run: |
-          auth_dir="$RUNNER_TEMP/publish-auth"
-          mkdir -p "$auth_dir"
-          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
-            "$(printf '%s:%s' "$GITHUB_ACTOR" "$GHCR_TOKEN" | base64 -w0)" > "$auth_dir/config.json"
-          echo "REGISTRY_AUTH_FILE=$auth_dir/config.json" >> "$GITHUB_ENV"
-      - name: 🚀 Publish and verify image
-        env:
-          XDG_DATA_HOME: ${{ runner.temp }}/publish-cache
+          cargo build --locked --bin pichi
+          (cd old && cargo build --locked --bin pichi)
+      - name: Build the matching native monitor
+        run: python3 .github/scripts/build_monitor.py
+      - name: Build both native PMI consumers
         run: |
-          version=$(cargo "+$NIGHTLY" metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "pichi") | .version')
-          image="ghcr.io/pichi-vm/pichi-build:latest"
-          pichi load appliance-oci-amd64 --tag "${image}-amd64"
-          pichi load appliance-oci-arm64 --tag "${image}-arm64"
-          pichi manifest create "$image" "${image}-amd64" "${image}-arm64" \
-            -a "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            -a "org.opencontainers.image.revision=$GITHUB_SHA" \
-            -a "org.opencontainers.image.version=$version"
-          pichi manifest annotate "$image" "${image}-amd64" --os pichi --arch amd64
-          pichi manifest annotate "$image" "${image}-arm64" --os pichi --arch arm64
-          for arch in amd64 arm64; do
-            pichi inspect "${image}-$arch" | jq -r '.[0].entries[].digest'
-          done | sort > "$RUNNER_TEMP/expected-manifests"
-          pichi manifest push "$image" "$image" | tee "$RUNNER_TEMP/push-result"
-          expected_index=$(sed -n 's/^digest: //p' "$RUNNER_TEMP/push-result")
-          [[ "$expected_index" =~ ^sha256:[0-9a-f]{64}$ ]]
-          export XDG_DATA_HOME="$RUNNER_TEMP/publish-verify"
-          for attempt in 1 2 3 4 5 6; do
-            if pichi pull "$image" &&
-               pichi inspect "$image" > "$RUNNER_TEMP/published.json" &&
-               [ "$(jq -r '.[0].digest' "$RUNNER_TEMP/published.json")" = "$expected_index" ]; then
-              break
-            fi
-            if [ "$attempt" -eq 6 ]; then
-              echo '::error::Published tag did not resolve to the expected index after six attempts.'
-              exit 1
-            fi
-            echo "::warning::Published image is not yet readable at the expected digest; retrying ($attempt/6)."
-            sleep 10
+          for generation in old current; do
+            lock=Cargo.lock
+            if [ "$generation" = old ]; then lock=old/Cargo.lock; fi
+            revision=$(python3 -c 'import sys,tomllib; lock=tomllib.load(open(sys.argv[1], "rb")); print(next(p["source"].rsplit("#",1)[1] for p in lock["package"] if p["name"] == "dillo"))' "$lock")
+            cargo --config "$GITHUB_WORKSPACE/.cargo/config.toml" install \
+              --git https://github.com/pichi-vm/dillo --rev "$revision" --locked --bin dillo \
+              --root "$GITHUB_WORKSPACE/target/dillo-$generation" \
+              --target-dir "$GITHUB_WORKSPACE/target/dillo-build-$generation" dillo
           done
-          jq -r '.[0].entries[].digest' "$RUNNER_TEMP/published.json" | sort > "$RUNNER_TEMP/actual-manifests"
-          diff "$RUNNER_TEMP/expected-manifests" "$RUNNER_TEMP/actual-manifests"
-          digest=$(jq -r '.[0].digest' "$RUNNER_TEMP/published.json")
-          blob="$XDG_DATA_HOME/pichi/storage/blobs/sha256/${digest#sha256:}"
-          test "sha256:$(sha256sum "$blob" | cut -d ' ' -f1)" = "$digest"
+      - name: Build and qualify current images
+        run: bash .github/qualification/build.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bootstrap-${{ matrix.arch }}
+          path: artifacts/
+          if-no-files-found: ignore
+      - name: Remove monitor checkout
+        if: always()
+        run: python3 .github/scripts/build_monitor.py --cleanup

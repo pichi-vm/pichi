@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+version: 1
+stages:
+  rootfs:
+    use: !bootstrap localhost/fedora:seed
+    steps:
+      - exec:
+          command: printf 'current-schema-bootstrap\n' > /mnt/qualification.txt
+image:
+  root: rootfs
