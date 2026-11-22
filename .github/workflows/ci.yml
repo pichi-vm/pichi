@@ -1,4 +1,4 @@
-name: Native schema bootstrap qualification
+name: Native ARM schema and command qualification
 
 on:
   workflow_dispatch:
@@ -24,8 +24,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
-            runner: ubuntu-24.04
           - arch: arm64
             runner: avrea-ubuntu-latest-arm-4-vcpu
     runs-on: ${{ matrix.runner }}
@@ -51,8 +49,9 @@ jobs:
           sudo sysctl -w vm.nr_hugepages=2048
           test -r /dev/kvm && test -w /dev/kvm
           test "$(cat /proc/sys/vm/nr_hugepages)" -ge 2048
-          rustup toolchain install "$NIGHTLY" --profile minimal
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src,clippy
           rustup default "$NIGHTLY"
+          rustup target add x86_64-unknown-none aarch64-unknown-none-softfloat aarch64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -81,11 +80,32 @@ jobs:
           done
       - name: Build and qualify current images
         run: bash .github/qualification/build.sh
+      - name: Select the native candidate and runtime
+        run: |
+          echo "$GITHUB_WORKSPACE/target/dillo-current/bin" >> "$GITHUB_PATH"
+          mkdir -p tests/fixtures
+          cp -a artifacts/appliance-oci tests/fixtures/appliance-layout
+      - name: Check code with Clippy
+        run: cargo clippy --locked --workspace --all-targets
+      - name: Run workspace and command tests against the native candidate
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+          ZOT_ASSET: zot-linux-arm64-minimal
+          ZOT_SHA256: 931d687899cc4b1fcad4c026d2792df6132e6de1b2f329aa730dccee14ec0395
+        run: |
+          bash .github/scripts/test-registry.sh
+          cargo test --locked -p pichi --lib native_monitor_launch_and_async_control -- --ignored --nocapture
+          cargo test --locked -p pichi --test cmd_run build_channel_preserves_guest_first_exchange -- --ignored --nocapture
+          bash .github/scripts/test-registry.sh bash .github/scripts/test-commands.sh candidate_appliance_builds_and_boots
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: bootstrap-${{ matrix.arch }}
-          path: artifacts/
+          path: |
+            artifacts/
+            ${{ runner.temp }}/zot.log
+            ${{ runner.temp }}/command-tests.txt
+            ${{ runner.temp }}/pichi command smoke */*.log
           if-no-files-found: ignore
       - name: Remove monitor checkout
         if: always()
