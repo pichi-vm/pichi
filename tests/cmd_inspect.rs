@@ -5,7 +5,10 @@
 
 #[path = "support/storage.rs"]
 mod storage;
+#[path = "../src/cmd/test_config.rs"]
+mod test_config;
 use storage::Storage as _;
+use test_config::ConfigFixture as _;
 
 use assert_cmd::Command;
 use conglobate::artifact::{
@@ -39,7 +42,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
         schema_version: Default::default(),
         media_type: Default::default(),
         artifact_type: Default::default(),
-        config: ConfigDescriptor::canonical(),
+        config: ConfigDescriptor::fixture(),
         layers: vec![
             Layer::Scute(ScuteDescriptor {
                 media_type: conglobate::artifact::Compressable::Raw(Default::default()),
@@ -65,6 +68,9 @@ async fn inspect_bare_manifest_returns_full_schema() {
     let digest =
         conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     let bs = FilesystemBlobStore::new(&g);
+    bs.put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+        .await
+        .unwrap();
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();
     db.set_tag("docker.io/library/myapp:base", &digest)
@@ -109,7 +115,7 @@ async fn inspect_format_reaches_dotted_annotation() {
         schema_version: Default::default(),
         media_type: Default::default(),
         artifact_type: Default::default(),
-        config: ConfigDescriptor::canonical(),
+        config: ConfigDescriptor::fixture(),
         layers: vec![Layer::Scute(ScuteDescriptor {
             media_type: conglobate::artifact::Compressable::Raw(Default::default()),
             digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
@@ -128,6 +134,9 @@ async fn inspect_format_reaches_dotted_annotation() {
     let digest =
         conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     let bs = FilesystemBlobStore::new(&g);
+    bs.put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+        .await
+        .unwrap();
     bs.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(&g).unwrap();
     db.set_tag("docker.io/library/myapp:base", &digest)
@@ -301,6 +310,10 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
     let tmp = TempDir::new().unwrap();
     let root = graphroot(&tmp);
     let store = FilesystemBlobStore::new(&root);
+    store
+        .put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+        .await
+        .unwrap();
     let tags = FilesystemTagDb::open(&root).unwrap();
     let mut digests = Vec::new();
     for name in ["first", "second"] {
@@ -308,7 +321,7 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
             schema_version: Default::default(),
             media_type: Default::default(),
             artifact_type: Default::default(),
-            config: ConfigDescriptor::canonical(),
+            config: ConfigDescriptor::fixture(),
             layers: vec![Layer::Pmi(PmiDescriptor {
                 media_type: conglobate::artifact::Compressable::Raw(Default::default()),
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),

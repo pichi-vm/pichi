@@ -5,7 +5,10 @@
 
 #[path = "support/storage.rs"]
 mod storage;
+#[path = "../src/cmd/test_config.rs"]
+mod test_config;
 use storage::Storage as _;
+use test_config::ConfigFixture as _;
 
 use assert_cmd::Command;
 use conglobate::artifact::{ConfigDescriptor, Layer, Manifest, ScuteAnnotations, ScuteDescriptor};
@@ -23,7 +26,7 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::a
         schema_version: Default::default(),
         media_type: Default::default(),
         artifact_type: Default::default(),
-        config: ConfigDescriptor::canonical(),
+        config: ConfigDescriptor::fixture(),
         layers: vec![Layer::Scute(ScuteDescriptor {
             media_type: conglobate::artifact::Compressable::Raw(Default::default()),
             digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
@@ -42,6 +45,10 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::a
     let digest =
         conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     let blob_store = FilesystemBlobStore::new(graphroot);
+    blob_store
+        .put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+        .await
+        .unwrap();
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(graphroot).unwrap();
     db.set_tag(tag, &digest).await.unwrap();

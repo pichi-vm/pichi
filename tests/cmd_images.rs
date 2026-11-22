@@ -5,7 +5,10 @@
 
 #[path = "support/storage.rs"]
 mod storage;
+#[path = "../src/cmd/test_config.rs"]
+mod test_config;
 use storage::Storage as _;
+use test_config::ConfigFixture as _;
 
 use assert_cmd::Command;
 use conglobate::artifact::{
@@ -61,7 +64,7 @@ async fn populate(
         schema_version: Default::default(),
         media_type: Default::default(),
         artifact_type: Default::default(),
-        config: ConfigDescriptor::canonical(),
+        config: ConfigDescriptor::fixture(),
         layers,
         annotations: chain_annotations(),
     };
@@ -69,6 +72,10 @@ async fn populate(
     let digest =
         conglobate::artifact::Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&bytes).into());
     let blob_store = FilesystemBlobStore::new(graphroot);
+    blob_store
+        .put_blob(&ConfigDescriptor::fixture().digest, ConfigDescriptor::BYTES)
+        .await
+        .unwrap();
     blob_store.put_blob(&digest, &bytes).await.unwrap();
     let db = FilesystemTagDb::open(graphroot).unwrap();
     db.set_tag(tag, &digest).await.unwrap();
