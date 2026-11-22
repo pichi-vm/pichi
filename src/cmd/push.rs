@@ -108,32 +108,20 @@ pub(crate) async fn push_manifest_and_blobs<R: Registry>(
     let manifest =
         Manifest::decode_json(raw_manifest).context("re-validate manifest before push")?;
 
-    // Push the empty-config blob (`{}`, 2 bytes, sha256:44136fa3...)
-    //      before any layer. OCI 1.1 lets the manifest carry inline `data`
-    //      for the empty-config descriptor, but registries (zot included)
-    //      still require the physical blob to exist before accepting the
-    //      manifest — they validate every descriptor's digest is present.
-    //      This was caught by the first ShelbyAPichi CI run: zot returned
-    //      `MANIFEST_INVALID` 400 because the `{}` blob wasn't uploaded.
-    //      For a real `vnd.pichi.config.v1+json` blob the bytes come from the
-    //      local cache; for the OCI empty config they are the well-known `{}`.
+    // Registries require the config blob before accepting the manifest.
     let config_digest = manifest.config.digest.clone();
     if !registry
         .head_blob(&target.registry, &target.repo, &config_digest)
         .await
         .map_err(|e| anyhow!("head_blob config {config_digest}: {e}"))?
     {
-        let bytes: Bytes = if manifest.config.is_empty() {
-            Bytes::from_static(b"{}")
-        } else {
-            Bytes::from(
-                blob_store
-                    .get_blob(&config_digest)
-                    .await
-                    .with_context(|| format!("read config blob {config_digest} from cache"))?
-                    .to_vec(),
-            )
-        };
+        let bytes = Bytes::from(
+            blob_store
+                .get_blob(&config_digest)
+                .await
+                .with_context(|| format!("read config blob {config_digest} from cache"))?
+                .to_vec(),
+        );
         let size = bytes.len() as u64;
         let one_chunk = stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) });
         registry
@@ -388,7 +376,7 @@ mod tests {
 
         let pushed_blobs = mock.pushed_blobs();
         let pushed_manifests = mock.pushed_manifests();
-        // 2 blobs: empty-config (per OCI 1.1 inline-data fix) + layer.
+        // Two blobs: stored config, then layer.
         assert_eq!(pushed_blobs.len(), 2);
         assert_eq!(pushed_manifests.len(), 1);
         // MockRegistry's logs are append-only in call order. The fact that

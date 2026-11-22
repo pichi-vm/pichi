@@ -55,9 +55,7 @@ pub async fn run(args: SaveArgs, config: &Config) -> Result<()> {
         tokio::fs::write(blobs_dir.join(image.digest.hex()), &image.bytes).await?;
         if !image.is_index() {
             let manifest = image.manifest()?;
-            if !manifest.config.is_empty() {
-                to_copy.insert(manifest.config.digest.clone());
-            }
+            to_copy.insert(manifest.config.digest.clone());
             for layer in &manifest.layers {
                 to_copy.insert(layer.digest().clone());
             }

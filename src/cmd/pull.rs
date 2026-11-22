@@ -124,28 +124,24 @@ pub(crate) async fn pull_inner_with_registry<R: Registry>(
         .manifest()
         .with_context(|| format!("validate pichi manifest {final_digest}"))?;
 
-    // 4a. Pull the config blob when it is a real `vnd.pichi.config.v1+json`
-    //     (the OCI empty config rides inline in the manifest — nothing to
-    //     fetch). It is small; pull it into memory and commit.
-    if !manifest.config.is_empty() {
-        let config_digest = manifest.config.digest.clone();
-        if !blob_store.blob_exists(&config_digest).await {
-            let mut buf: Vec<u8> = Vec::new();
-            registry
-                .pull_blob(
-                    &target.registry,
-                    &target.repo,
-                    &config_digest,
-                    manifest.config.size,
-                    &mut buf,
-                )
-                .await
-                .map_err(|e| anyhow!("pull config blob {config_digest}: {e}"))?;
-            blob_store
-                .put_blob(&config_digest, &buf)
-                .await
-                .with_context(|| format!("put config blob {config_digest}"))?;
-        }
+    // Fetch the stored launch config before publishing the image.
+    let config_digest = manifest.config.digest.clone();
+    if !blob_store.blob_exists(&config_digest).await {
+        let mut buf: Vec<u8> = Vec::new();
+        registry
+            .pull_blob(
+                &target.registry,
+                &target.repo,
+                &config_digest,
+                manifest.config.size,
+                &mut buf,
+            )
+            .await
+            .map_err(|e| anyhow!("pull config blob {config_digest}: {e}"))?;
+        blob_store
+            .put_blob(&config_digest, &buf)
+            .await
+            .with_context(|| format!("put config blob {config_digest}"))?;
     }
 
     // Authenticate and prepare every layer at ingestion, including cache hits.

@@ -204,19 +204,11 @@ impl OciLayout {
             ensure!(!manifest.layers.is_empty(), "OCI artifact has no layers");
             let config = &manifest.config;
             ensure!(config.size <= METADATA_CAP, "config exceeds metadata cap");
-            if !config.is_empty() || files.contains_key(&Self::blob_name(&config.digest)) {
-                ensure!(
-                    config.is_empty() || config.data.is_none(),
-                    "inline pichi config is unsupported"
-                );
-                let digest = layout.copy_blob(&root, &config.digest, config.size, &mut expected)?;
-                if !config.is_empty() {
-                    serde_json::from_slice::<conglobate::artifact::Config>(&std::fs::read(
-                        layout.store.blob_path(&digest),
-                    )?)
-                    .context("invalid launch config")?;
-                }
-            }
+            let digest = layout.copy_blob(&root, &config.digest, config.size, &mut expected)?;
+            serde_json::from_slice::<conglobate::artifact::Config>(&std::fs::read(
+                layout.store.blob_path(&digest),
+            )?)
+            .context("invalid launch config")?;
             if manifest
                 .layers
                 .iter()
@@ -1266,14 +1258,15 @@ pub(super) mod tests {
                 "config type" => fixture.manifest["config"]["mediaType"] = "text/plain".into(),
                 "missing config" | "bad config" | "inline config" => {
                     fixture.manifest["config"] = json!({
-                        "mediaType": conglobate::artifact::MEDIA_TYPE_PICHI_CONFIG_V1,
+                        "mediaType": conglobate::artifact::Config::MEDIA_TYPE,
                         "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"bad config").into()).to_string(),
                         "size": 10,
                     });
-                    if case != "missing config" {
+                    if case == "bad config" {
                         fixture.blobs.push(b"bad config".to_vec());
                     }
                     if case == "inline config" {
+                        // Inline data cannot replace the required stored blob.
                         fixture.manifest["config"]["data"] = "e30=".into();
                     }
                 }

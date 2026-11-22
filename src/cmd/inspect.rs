@@ -37,8 +37,7 @@ use crate::config::Config;
 struct InspectOutput {
     digest: String,
     manifest: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    config: Option<conglobate::artifact::Config>,
+    config: conglobate::artifact::Config,
 }
 
 #[derive(Serialize)]
@@ -115,7 +114,9 @@ async fn inspect_one(
             Err(_) => None,
         };
         let config = match &selected {
-            Some(image) => super::requirements::load_config(&image.manifest()?, blob_store).await?,
+            Some(image) => {
+                Some(super::requirements::load_config(&image.manifest()?, blob_store).await?)
+            }
             None => None,
         };
         return inspect_index(&digest, &metadata.value, selected, config);

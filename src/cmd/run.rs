@@ -72,18 +72,17 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
 
             // Derive the dillo argv from the manifest + runtime resources, applying
             // the artifact config's required floors (BUILD.md §7) when present.
-            let reqs = requirements::load_requirements(&manifest, &blob_store).await?;
+            let requirements = requirements::load_requirements(&manifest, &blob_store).await?;
             let cpus = requirements::Sizing::Cpus.resolve(
                 args.cpus.or(config.run.cpus),
-                reqs.as_ref().and_then(Requirements::cpus_required),
-                reqs.as_ref().and_then(Requirements::cpus_recommended),
+                requirements.cpus_required(),
+                requirements.cpus_recommended(),
             )?;
             let memory = requirements::Sizing::Memory.resolve(
                 args.memory.or(config.run.memory_mib),
-                reqs.as_ref().and_then(Requirements::memory_required_mib),
-                reqs.as_ref().and_then(Requirements::memory_recommended_mib),
+                requirements.memory_required_mib(),
+                requirements.memory_recommended_mib(),
             )?;
-            let requirements = reqs.unwrap_or_default();
             let mut dillo_args =
                 build_dillo_args(&manifest, &blob_store, cpus, memory, &requirements).await?;
             let record = Records::open(&layout.graphroot)?.reserve(vec![digest])?;

@@ -101,10 +101,9 @@ async fn import_happy_path() {
     let manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(manifest.layers.len(), 1, "exactly one layer (one scute)");
     assert_eq!(
-        manifest.config.media_type,
+        serde_json::to_value(manifest.config.media_type).unwrap(),
         "application/vnd.pichi.config.v1+json"
     );
-    assert!(manifest.config.data.is_none());
     let config = blob_store.get_blob(&manifest.config.digest).await.unwrap();
     assert_eq!(manifest.config.size, config.len() as u64);
     assert_eq!(

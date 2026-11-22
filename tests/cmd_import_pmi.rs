@@ -326,8 +326,10 @@ async fn import_pmi_without_carapace_keeps_only_boot_components() {
         .success();
 
     let m = resolve_manifest(&g, "docker.io/library/boot:1").await;
-    assert_eq!(m.config.media_type, "application/vnd.pichi.config.v1+json");
-    assert!(m.config.data.is_none());
+    assert_eq!(
+        serde_json::to_value(m.config.media_type).unwrap(),
+        "application/vnd.pichi.config.v1+json"
+    );
     let bytes = FilesystemBlobStore::new(&g)
         .get_blob(&m.config.digest)
         .await
@@ -444,11 +446,10 @@ async fn import_pmi_with_config_sets_config_blob() {
             .success();
 
         let m = resolve_manifest(&g, "docker.io/library/boot:1").await;
-        assert!(
-            !m.config.is_empty(),
-            "config blob must be a real vnd.pichi.config.v1+json, not the empty config"
+        assert_eq!(
+            serde_json::to_value(m.config.media_type).unwrap(),
+            "application/vnd.pichi.config.v1+json"
         );
-        assert_eq!(m.config.media_type, "application/vnd.pichi.config.v1+json");
         let bytes = FilesystemBlobStore::new(&g)
             .get_blob(&m.config.digest)
             .await

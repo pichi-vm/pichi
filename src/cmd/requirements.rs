@@ -25,33 +25,25 @@ impl SlotArgument for Slot {
     }
 }
 
-/// Load the artifact's launch contract from its config blob. Returns `Ok(None)`
-/// for artifacts with the OCI empty config (no launch contract, e.g. plain
-/// carapaces).
+/// Load the artifact's launch requirements from its stored config.
 pub async fn load_requirements(
     manifest: &Manifest,
     blob_store: &impl BlobStore,
-) -> Result<Option<Requirements>> {
-    Ok(load_config(manifest, blob_store)
-        .await?
-        .map(|c| c.requirements))
+) -> Result<Requirements> {
+    Ok(load_config(manifest, blob_store).await?.requirements)
 }
 
 /// Decode and validate the image config for launch and inspection.
 pub(super) async fn load_config(
     manifest: &Manifest,
     blob_store: &impl BlobStore,
-) -> Result<Option<Config>> {
-    if manifest.config.is_empty() {
-        return Ok(None);
-    }
-    let digest = manifest.config.digest.clone();
+) -> Result<Config> {
+    let digest = &manifest.config.digest;
     let bytes = blob_store
-        .get_blob(&digest)
+        .get_blob(digest)
         .await
         .with_context(|| format!("reading config blob {digest}"))?;
-    let config: Config = serde_json::from_slice(&bytes).context("parsing config blob")?;
-    Ok(Some(config))
+    serde_json::from_slice(&bytes).context("parsing config blob")
 }
 
 /// VM resources whose maximum can be detected from the host.

@@ -133,7 +133,7 @@ impl Row {
                     .iter()
                     .filter(|l| !matches!(l, Layer::Pmi(_)))
                     .count();
-                // Sum of all layer sizes (per D-16). Excludes inline empty config + manifest.
+                // Sum of all layer sizes (per D-16). Excludes config and manifest.
                 let size: u64 = m.layers.iter().map(Layer::size).sum();
                 (bootable, scute_count, size)
             })

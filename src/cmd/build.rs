@@ -104,13 +104,13 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
             let reqs = requirements::load_requirements(&build_manifest, &blob_store).await?;
             let cpus = requirements::Sizing::Cpus.resolve(
                 args.cpus,
-                reqs.as_ref().and_then(Requirements::cpus_required),
-                reqs.as_ref().and_then(Requirements::cpus_recommended),
+                reqs.cpus_required(),
+                reqs.cpus_recommended(),
             )?;
             let memory = requirements::Sizing::Memory.resolve(
                 args.memory,
-                reqs.as_ref().and_then(Requirements::memory_required_mib),
-                reqs.as_ref().and_then(Requirements::memory_recommended_mib),
+                reqs.memory_required_mib(),
+                reqs.memory_recommended_mib(),
             )?;
 
             let record = Records::open(&layout.graphroot)?.reserve(vec![build_digest])?;
@@ -123,7 +123,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
                 gpt_specs,
                 cpus,
                 memory,
-                reqs.unwrap_or_default(),
+                reqs,
             ))
         })
         .await?;

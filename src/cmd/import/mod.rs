@@ -105,7 +105,11 @@ pub async fn run_pmi(args: ImportPmiArgs, config: &PichiConfig) -> Result<()> {
     let (mut manifest, mut annotations) = match &args.carapace {
         Some(carapace) => carapace_scutes_manifest(&blob_store, &db, carapace, &platform).await?,
         None => {
-            let manifest = scuteless_manifest();
+            let (digest, bytes) = config_blob.as_ref().context("missing default config")?;
+            let manifest = scuteless_manifest(ConfigDescriptor::for_config(
+                digest.clone(),
+                bytes.len() as u64,
+            ));
             let annotations = serde_json::to_value(&manifest.annotations)?;
             (manifest, annotations)
         }
@@ -250,12 +254,12 @@ async fn carapace_scutes_manifest(
 
 /// A fresh scute-less manifest (a PMI-only bootable artifact): no carapace, so
 /// no chain-verity annotations — only the creation timestamp.
-fn scuteless_manifest() -> Manifest {
+fn scuteless_manifest(config: ConfigDescriptor) -> Manifest {
     Manifest {
         schema_version: Default::default(),
         media_type: Default::default(),
         artifact_type: Default::default(),
-        config: ConfigDescriptor::canonical(),
+        config,
         layers: Vec::new(),
         annotations: conglobate::artifact::ManifestAnnotations {
             oci: conglobate::artifact::OciAnnotations {
