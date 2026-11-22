@@ -24,9 +24,7 @@ use crate::cmd::layer::{PreparedLayer, ScuteFiles};
 use crate::cmd::manifest_ext::{ManifestExt as _, ScuteRoots};
 use crate::config::Config;
 
-use conglobate::artifact::{
-    MEDIA_TYPE_OCI_INDEX_V1 as INDEX_TYPE, MEDIA_TYPE_OCI_MANIFEST_V1 as MANIFEST_TYPE,
-};
+use conglobate::artifact::MEDIA_TYPE_OCI_MANIFEST_V1 as MANIFEST_TYPE;
 const REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 const FILE_CAP: usize = 4096;
 
@@ -133,10 +131,6 @@ impl OciLayout {
         );
         let index: LayoutIndex =
             serde_json::from_slice(&Self::small(&root, Path::new("index.json"), METADATA_CAP)?)?;
-        ensure!(
-            index.media_type == INDEX_TYPE,
-            "invalid OCI index media type"
-        );
         ensure!(!index.manifests.is_empty(), "OCI index has no manifests");
         let store = FilesystemBlobStore::new(staging.path());
         std::fs::create_dir_all(staging.path().join("blobs/sha256"))?;
@@ -168,7 +162,7 @@ impl OciLayout {
         let mut pending = index.manifests;
         while let Some(entry) = pending.pop() {
             ensure!(
-                entry.media_type == MANIFEST_TYPE || entry.media_type == INDEX_TYPE,
+                entry.media_type == MANIFEST_TYPE || entry.media_type == LayoutIndex::MEDIA_TYPE,
                 "unsupported index entry media type"
             );
             ensure!(
@@ -199,7 +193,7 @@ impl OciLayout {
             if !seen.insert(digest.clone()) {
                 continue;
             }
-            if entry.media_type == INDEX_TYPE {
+            if entry.media_type == LayoutIndex::MEDIA_TYPE {
                 let nested: LayoutIndex = serde_json::from_slice(&bytes)?;
                 ensure!(!nested.manifests.is_empty(), "OCI index has no manifests");
                 pending.extend(nested.manifests);
@@ -699,7 +693,7 @@ pub(super) mod tests {
             std::fs::write(
                 dir.join("index.json"),
                 serde_json::to_vec(&json!({
-                    "schemaVersion": 2, "mediaType": INDEX_TYPE,
+                    "schemaVersion": 2, "mediaType": LayoutIndex::MEDIA_TYPE,
                     "manifests": [{
                         "mediaType": MANIFEST_TYPE,
                         "artifactType": conglobate::artifact::PichiArtifact::MEDIA_TYPE,
@@ -1246,7 +1240,7 @@ pub(super) mod tests {
             let mut fixture = LayoutFixture::new();
             match case {
                 "manifest schema" => fixture.manifest["schemaVersion"] = 1.into(),
-                "manifest type" => fixture.manifest["mediaType"] = INDEX_TYPE.into(),
+                "manifest type" => fixture.manifest["mediaType"] = LayoutIndex::MEDIA_TYPE.into(),
                 "artifact type" => fixture.manifest["artifactType"] = "text/plain".into(),
                 "missing root" => {
                     fixture.manifest["annotations"]
@@ -1367,7 +1361,7 @@ pub(super) mod tests {
                 "empty index" => index["manifests"] = json!([]),
                 "index schema" => index["schemaVersion"] = 1.into(),
                 "index type" => index["mediaType"] = "text/plain".into(),
-                "entry type" => index["manifests"][0]["mediaType"] = INDEX_TYPE.into(),
+                "entry type" => index["manifests"][0]["mediaType"] = LayoutIndex::MEDIA_TYPE.into(),
                 "entry artifact" => index["manifests"][0]["artifactType"] = "text/plain".into(),
                 "entry digest" => index["manifests"][0]["digest"] = "sha256:../../escape".into(),
                 "entry size" => index["manifests"][0]["size"] = 1.into(),
@@ -1382,7 +1376,7 @@ pub(super) mod tests {
                     let nested = Digest::Sha256(Sha256::digest(&bytes).into());
                     std::fs::write(output.join("blobs/sha256").join(nested.hex()), &bytes).unwrap();
                     index["manifests"] = json!([{
-                        "mediaType": INDEX_TYPE,
+                        "mediaType": LayoutIndex::MEDIA_TYPE,
                         "digest": nested.to_string(), "size": bytes.len(),
                     }]);
                 }

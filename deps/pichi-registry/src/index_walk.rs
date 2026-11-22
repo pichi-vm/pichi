@@ -32,11 +32,6 @@ use anyhow::{Context, Result, anyhow};
 use conglobate::artifact::{Media as _, PichiArtifact};
 use serde_json::Value;
 
-/// OCI Image Index media type (per OCI Image Spec 1.1). Re-exported so callers
-/// have a single canonical constant; the value is also accepted by
-/// `pull_manifest_raw`'s `accepted_media_types` array in `http.rs`.
-pub use conglobate::artifact::MEDIA_TYPE_OCI_INDEX_V1 as OCI_IMAGE_INDEX_MEDIA_TYPE;
-
 /// Walk an OCI Image Index `manifests[]` array; return the digest string of
 /// the entry matching `(artifactType=PichiArtifact::MEDIA_TYPE,
 /// platform.os=target_os, platform.architecture=target_arch)`.
@@ -115,12 +110,13 @@ pub fn pick_pichi_entry_from_index(
 
 #[cfg(test)]
 mod tests {
-    use super::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
-    use conglobate::artifact::{Media as _, PichiArtifact};
+    use super::pick_pichi_entry_from_index;
+    use conglobate::artifact::{Index, Media as _, PichiArtifact};
 
     fn idx(entries: &str) -> Vec<u8> {
         format!(
-            r#"{{ "schemaVersion": 2, "mediaType": "{OCI_IMAGE_INDEX_MEDIA_TYPE}", "manifests": [{entries}] }}"#
+            r#"{{ "schemaVersion": 2, "mediaType": "{}", "manifests": [{entries}] }}"#,
+            Index::MEDIA_TYPE
         )
         .into_bytes()
     }

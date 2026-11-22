@@ -9,7 +9,7 @@ use conglobate::artifact::Media as _;
 use conglobate::artifact::{
     Digest, Index, IndexDescriptor, Manifest, Platform, Reference, ReferenceKind,
 };
-use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, pick_pichi_entry_from_index};
+use pichi_registry::pick_pichi_entry_from_index;
 use pichi_storage::{BlobStore, TagDb};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -51,7 +51,7 @@ impl ImageMetadata {
         ensure!(
             matches!(
                 value["mediaType"].as_str(),
-                Some(OCI_IMAGE_INDEX_MEDIA_TYPE | MANIFEST_TYPE)
+                Some(Index::MEDIA_TYPE | MANIFEST_TYPE)
             ),
             "unsupported image metadata media type"
         );
@@ -73,7 +73,7 @@ impl ImageMetadata {
     }
 
     pub(super) fn is_index(&self) -> bool {
-        self.value["mediaType"] == OCI_IMAGE_INDEX_MEDIA_TYPE
+        self.value["mediaType"] == Index::MEDIA_TYPE
     }
 
     pub(super) fn entries(&self) -> Result<&[Value]> {
@@ -299,7 +299,7 @@ pub(super) trait ImageStore: BlobStore {
                         ensure!(
                             matches!(
                                 entry["mediaType"].as_str(),
-                                Some(OCI_IMAGE_INDEX_MEDIA_TYPE | MANIFEST_TYPE)
+                                Some(Index::MEDIA_TYPE | MANIFEST_TYPE)
                             ),
                             "unsupported index entry media type"
                         );

@@ -25,8 +25,8 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
-use conglobate::artifact::{Digest, Media as _, PichiArtifact, Reference, ReferenceKind};
-use pichi_registry::{OCI_IMAGE_INDEX_MEDIA_TYPE, Registry};
+use conglobate::artifact::{Digest, Index, Media as _, PichiArtifact, Reference, ReferenceKind};
+use pichi_registry::Registry;
 use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb};
 
 use super::cache::ImageStore as _;
@@ -182,7 +182,7 @@ pub async fn push(args: ManifestPushArgs, config: &Config) -> Result<()> {
 
     let index_bytes = serde_json::to_vec(&ready).context("serialise OCI image index")?;
     let digest = registry
-        .push_manifest(&dest, OCI_IMAGE_INDEX_MEDIA_TYPE, Bytes::from(index_bytes))
+        .push_manifest(&dest, Index::MEDIA_TYPE, Bytes::from(index_bytes))
         .await
         .map_err(|e| anyhow!("push image index {dest}: {e}"))?;
 
@@ -203,7 +203,7 @@ fn build_index(
 ) -> Value {
     let mut index = json!({
         "schemaVersion": 2,
-        "mediaType": OCI_IMAGE_INDEX_MEDIA_TYPE,
+        "mediaType": Index::MEDIA_TYPE,
         "manifests": entries,
     });
     if !annotations.is_empty() {
@@ -350,10 +350,7 @@ mod tests {
     #[tokio::test]
     async fn build_index_has_index_media_type() {
         let idx = build_index(vec![entry("img:43-amd64", "sha256:aa")], &empty());
-        assert_eq!(
-            idx["mediaType"], OCI_IMAGE_INDEX_MEDIA_TYPE,
-            "index media type"
-        );
+        assert_eq!(idx["mediaType"], Index::MEDIA_TYPE, "index media type");
         assert_eq!(idx["schemaVersion"], 2);
         assert_eq!(idx["manifests"].as_array().unwrap().len(), 1);
     }

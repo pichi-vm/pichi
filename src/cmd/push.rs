@@ -12,6 +12,7 @@ use super::cache::ImageStore as _;
 use crate::cmd::manifest_ext::ManifestExt as _;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
+use conglobate::artifact::Media as _;
 use conglobate::artifact::{Digest, Manifest, Reference, ReferenceKind};
 use futures_util::stream;
 use pichi_registry::Registry;
@@ -77,7 +78,7 @@ pub(crate) async fn push_inner_with_registry<R: Registry>(
             registry
                 .push_manifest(
                     &destination,
-                    pichi_registry::OCI_IMAGE_INDEX_MEDIA_TYPE,
+                    conglobate::artifact::Index::MEDIA_TYPE,
                     Bytes::from(image.bytes),
                 )
                 .await
@@ -224,7 +225,7 @@ mod tests {
     use super::*;
     use crate::cmd::test_support::ScuteFixture as _;
     use bytes::Bytes;
-    use conglobate::artifact::{ConfigDescriptor, Layer, Media as _, PichiArtifact};
+    use conglobate::artifact::{ConfigDescriptor, Layer, PichiArtifact};
     use pichi_registry::MockRegistry;
     use pichi_storage::TagDb as _;
     use std::path::Path;
