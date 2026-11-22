@@ -266,7 +266,8 @@ fn scuteless_manifest(config: ConfigDescriptor) -> Manifest {
                 created: Some(chrono::Utc::now().to_rfc3339()),
                 ..Default::default()
             },
-            ..Default::default()
+            build: None,
+            verity: Default::default(),
         },
     }
 }

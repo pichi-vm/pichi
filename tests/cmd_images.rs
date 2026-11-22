@@ -19,6 +19,7 @@ use tempfile::TempDir;
 
 fn chain_annotations() -> conglobate::artifact::ManifestAnnotations {
     conglobate::artifact::ManifestAnnotations {
+        build: None,
         verity: conglobate::artifact::CarapaceVerity {
             root: Some(conglobate::artifact::Digest::Sha256([0x11; 32])),
             ..Default::default()
@@ -49,7 +50,6 @@ async fn populate(
             digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
             size: std::num::NonZeroU64::new(4096).unwrap().into(),
             verity_digest: conglobate::artifact::Digest::Sha256([0x00; 32]),
-            data_blocks: std::num::NonZeroU64::MIN.into(),
             salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
         },
     })];

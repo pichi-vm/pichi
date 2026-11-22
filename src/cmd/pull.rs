@@ -264,7 +264,11 @@ mod tests {
                         digest: digest.clone(),
                         size: wire.len() as u64,
                     })],
-                    annotations: Default::default(),
+                    annotations: conglobate::artifact::ManifestAnnotations {
+                        oci: Default::default(),
+                        build: None,
+                        verity: Default::default(),
+                    },
                 };
                 registry.insert_manifest(
                     "ghcr.io",
@@ -350,7 +354,11 @@ mod tests {
                         size: compressed.len() as u64,
                     }),
                 ],
-                annotations: Default::default(),
+                annotations: conglobate::artifact::ManifestAnnotations {
+                    oci: Default::default(),
+                    build: None,
+                    verity: Default::default(),
+                },
             };
             registry.insert_manifest(
                 "ghcr.io",
@@ -839,7 +847,8 @@ mod tests {
                     )),
                     ..Default::default()
                 },
-                ..Default::default()
+                oci: Default::default(),
+                build: None,
             },
         };
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
@@ -1358,10 +1367,10 @@ mod tests {
     }
 
     /// Cached and uncached input must reconstruct the declared tip with a
-    /// valid block count before replacing an existing tag.
+    /// valid exact size before replacing an existing tag.
     #[tokio::test(flavor = "current_thread")]
-    async fn pull_requires_tip_commitment_and_block_count() {
-        for declared in [None, Some(0u64), Some(2)] {
+    async fn pull_requires_tip_commitment_and_size() {
+        for declared in [None, Some(0u64), Some(4097)] {
             for cached in [false, true] {
                 for tip in ["correct", "missing", "zero", "malformed", "wrong"] {
                     let (_tmp, g) = graphroot();
@@ -1410,13 +1419,10 @@ mod tests {
                     let annotations = manifest["layers"][0]["annotations"]
                         .as_object_mut()
                         .unwrap();
-                    if let Some(blocks) = declared {
-                        annotations.insert(
-                            "dev.pichi.scute.verity.data-blocks".into(),
-                            blocks.to_string().into(),
-                        );
+                    if let Some(size) = declared {
+                        annotations.insert("dev.pichi.scute.size".into(), size.to_string().into());
                     } else {
-                        annotations.remove("dev.pichi.scute.verity.data-blocks");
+                        annotations.remove("dev.pichi.scute.size");
                     }
                     let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
                     let old = Digest::Sha256([0x77; 32]);
@@ -1436,7 +1442,7 @@ mod tests {
                         &db,
                     )
                     .await;
-                    let valid = declared == Some(2) && tip == "correct";
+                    let valid = declared == Some(4097) && tip == "correct";
                     assert_eq!(
                         result.is_ok(),
                         valid,

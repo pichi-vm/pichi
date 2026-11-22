@@ -199,9 +199,13 @@ contract is:
 | `dev.pichi.build.plan` | Required: plan path relative to the context |
 | `dev.pichi.build.lock` | Present when consumed: lock path relative to the context |
 | `dev.pichi.build.bootstrapped` | `"true"` when the selected build uses a bootstrap tool |
-| `dev.pichi.build.location` | Optional: repository provenance / locator hint |
+| `org.opencontainers.image.source` | Optional: repository locator for the annotated commit |
 
-The guest resolves the requested `ref` to the annotated commit. Location
+Imports may omit build provenance. If any provenance field is supplied,
+the commit, context, and plan must all be present; decoding rejects partial
+groups rather than inventing missing facts.
+
+The guest resolves the requested `ref` to the annotated commit. Source
 is a locator, not an authenticated identity; omit it when absent and do
 not include embedded credentials. The commit and selected paths bind the
 plan and lock bytes; there are no separate tree or object-format keys or
@@ -316,12 +320,12 @@ verity root remains a separate commitment. Raw import measures its scute
 stream and hashes the finalized tree while copying private scratch to the
 output; it does not derive expected identities by rereading output files.
 
-Every scute must declare a positive `dev.pichi.scute.verity.data-blocks`
-count. The count describes the decoded data rounded up to 4,096-byte blocks;
-it must agree with the raw descriptor size or the actual decoded length.
+The verity block count is derived by rounding the required decompressed size
+up to the chain's data block size. No separate count annotation is emitted or
+required. The exact size must agree with the raw descriptor or decoded length.
 Compressed inputs feed the verity formatter while they are decoded, using
-the declared count to place the hash tree. Missing or zero counts fail
-before any output tag changes, including when the blob is already cached.
+the derived count to place the hash tree. Missing or zero sizes and overflowing
+padded extents fail before tag publication, including for cached blobs.
 Prepared data files include the final block's zero padding so they expose
 the full extent covered by its verity tree. The encoded OCI blob retains its
 original bytes and digest. Raw inputs with a partial final block also receive

@@ -176,9 +176,6 @@ impl StagedImport {
                 digest: cow_digest.clone(),
                 size,
                 annotations: ScuteAnnotations {
-                    data_blocks: std::num::NonZeroU64::new(size.div_ceil(4096))
-                        .context("empty COW")?
-                        .into(),
                     salt: header.parameters.salt.into(),
                     digest: cow_digest.clone(),
                     size: std::num::NonZeroU64::new(size).context("empty COW")?.into(),
@@ -396,7 +393,7 @@ mod tests {
             let conglobate::artifact::Layer::Scute(scute) = &manifest.layers[0] else {
                 panic!("expected scute")
             };
-            assert_eq!(scute.annotations.data_blocks.get(), size / 4096);
+            assert_eq!(scute.annotations.size.get(), size);
             let formatted = VerityParams {
                 data_block_size: 4096,
                 hash_block_size: 4096,

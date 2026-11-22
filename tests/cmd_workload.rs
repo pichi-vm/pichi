@@ -56,7 +56,11 @@ impl WorkloadFixture {
                 digest: digest.clone(),
                 size: pmi.len() as u64,
             })],
-            annotations: Default::default(),
+            annotations: conglobate::artifact::ManifestAnnotations {
+                oci: Default::default(),
+                build: None,
+                verity: Default::default(),
+            },
         };
         let bytes = serde_json::to_vec(&manifest).unwrap();
         let digest = Digest::Sha256(Sha256::digest(&bytes).into());

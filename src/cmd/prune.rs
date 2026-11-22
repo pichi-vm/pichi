@@ -356,11 +356,14 @@ mod tests {
                     digest: scute_digest.clone(),
                     size: std::num::NonZeroU64::new(1024).unwrap().into(),
                     verity_digest: Digest::Sha256([0; 32]),
-                    data_blocks: std::num::NonZeroU64::MIN.into(),
                     salt: devmap_verity::Salt::new(&[0; 4]).unwrap().into(),
                 },
             })],
-            annotations: Default::default(),
+            annotations: conglobate::artifact::ManifestAnnotations {
+                oci: Default::default(),
+                build: None,
+                verity: Default::default(),
+            },
         };
         let mbytes = serde_json::to_vec(&m).unwrap();
         let mdigest = conglobate::artifact::Digest::Sha256(

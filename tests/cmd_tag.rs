@@ -35,11 +35,14 @@ async fn populate_cache(graphroot: &std::path::Path, tag: &str) -> conglobate::a
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: std::num::NonZeroU64::new(1024).unwrap().into(),
                 verity_digest: conglobate::artifact::Digest::Sha256([0x00; 32]),
-                data_blocks: std::num::NonZeroU64::MIN.into(),
                 salt: devmap_verity::Salt::new(&[0, 255]).unwrap().into(),
             },
         })],
-        annotations: Default::default(),
+        annotations: conglobate::artifact::ManifestAnnotations {
+            oci: Default::default(),
+            build: None,
+            verity: Default::default(),
+        },
     };
     let bytes = serde_json::to_vec(&m).unwrap();
     let digest =

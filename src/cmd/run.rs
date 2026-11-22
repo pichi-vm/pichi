@@ -325,7 +325,8 @@ mod tests {
                 root: Some(conglobate::artifact::Digest::Sha256([0x11; 32])),
                 ..Default::default()
             },
-            ..Default::default()
+            oci: Default::default(),
+            build: None,
         }
     }
 

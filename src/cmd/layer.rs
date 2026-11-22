@@ -719,11 +719,11 @@ mod tests {
     }
 
     impl Fixture {
-        fn new(compressed: bool, declared: u64) -> Self {
-            Self::with_size(compressed, declared, 4097)
+        fn new(compressed: bool) -> Self {
+            Self::with_size(compressed, 4097)
         }
 
-        fn with_size(compressed: bool, declared: u64, size: usize) -> Self {
+        fn with_size(compressed: bool, size: usize) -> Self {
             let data = vec![0x5a; size];
             let wire = if compressed {
                 ruzstd::encoding::compress_to_vec(
@@ -744,7 +744,6 @@ mod tests {
             let root = verity.root_hash;
             let annotations = serde_json::json!({
                 "dev.pichi.scute.verity.salt": hex::encode([0; 32]),
-                "dev.pichi.scute.verity.data-blocks": declared.to_string(),
                 "dev.pichi.scute.size": data.len().to_string(),
                 "dev.pichi.scute.digest": <Digest>::Sha256(Sha256::digest(&data).into()).to_string(),
                 "dev.pichi.scute.verity.digest": <Digest>::Sha256(Sha256::digest(&verity.blob).into()).to_string(),
@@ -775,7 +774,7 @@ mod tests {
         }
 
         fn pmi(compressed: bool) -> Self {
-            let mut fixture = Self::new(compressed, 2);
+            let mut fixture = Self::new(compressed);
             let descriptor = conglobate::artifact::PmiDescriptor {
                 media_type: if compressed {
                     conglobate::artifact::Compressable::Zstd(Default::default())
@@ -786,7 +785,11 @@ mod tests {
                 size: fixture.wire.len() as u64,
             };
             fixture.manifest.layers = vec![Layer::Pmi(descriptor)];
-            fixture.manifest.annotations = Default::default();
+            fixture.manifest.annotations = conglobate::artifact::ManifestAnnotations {
+                oci: Default::default(),
+                build: None,
+                verity: Default::default(),
+            };
             fixture.manifest.validate().unwrap();
             fixture
         }
@@ -803,7 +806,7 @@ mod tests {
 
     #[test]
     fn scute_header_requires_exact_data_length() {
-        let fixture = Fixture::new(false, 2);
+        let fixture = Fixture::new(false);
         let Layer::Scute(scute) = &fixture.manifest.layers[0] else {
             unreachable!()
         };
@@ -901,7 +904,7 @@ mod tests {
             ("verity digest", "verifying generated verity file"),
         ] {
             let scratch = tempfile::tempdir().unwrap();
-            let mut fixture = Fixture::new(true, 2);
+            let mut fixture = Fixture::new(true);
             let Layer::Scute(scute) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
@@ -934,7 +937,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         for magic in 0x184D_2A50_u32..=0x184D_2A5F {
             for payload in [Vec::new(), vec![7; 31]] {
-                for mut fixture in [Fixture::pmi(true), Fixture::new(true, 2)] {
+                for mut fixture in [Fixture::pmi(true), Fixture::new(true)] {
                     fixture.wire = magic.to_le_bytes().to_vec();
                     fixture
                         .wire
@@ -963,7 +966,7 @@ mod tests {
                 self.0.read(&mut output[..length])
             }
         }
-        for fixture in [Fixture::pmi(true), Fixture::new(true, 2)] {
+        for fixture in [Fixture::pmi(true), Fixture::new(true)] {
             let scratch = tempfile::tempdir().unwrap();
             let prepared = PreparedLayer::read(
                 Fragments(&fixture.wire),
@@ -990,7 +993,7 @@ mod tests {
     #[test]
     fn streams_raw_and_zstd_with_declared_extents() {
         for compressed in [false, true] {
-            let fixture = Fixture::new(compressed, 2);
+            let fixture = Fixture::new(compressed);
             let scratch = tempfile::tempdir().unwrap();
             let result = fixture.prepare(scratch.path()).unwrap();
             assert_eq!(result.scute.as_ref().unwrap().root, fixture.root);
@@ -1021,7 +1024,7 @@ mod tests {
     #[test]
     fn aligned_raw_data_needs_no_prepared_copy() {
         for compressed in [false, true] {
-            let fixture = Fixture::with_size(compressed, 2, 8192);
+            let fixture = Fixture::with_size(compressed, 8192);
             let scratch = tempfile::tempdir().unwrap();
             let prepared = fixture.prepare(scratch.path()).unwrap();
             assert_eq!(
@@ -1040,7 +1043,7 @@ mod tests {
     async fn data_hints_are_private_and_repair_stale_bytes_and_padding() {
         use pichi_storage::FilesystemBlobStore;
         for compressed in [false, true] {
-            let fixture = Fixture::with_size(compressed, 40, 160_001);
+            let fixture = Fixture::with_size(compressed, 160_001);
             let dir = tempfile::tempdir().unwrap();
             let store = FilesystemBlobStore::new(dir.path().join("canonical"));
             let hints = FilesystemBlobStore::new(dir.path().join("hints"));
@@ -1133,7 +1136,7 @@ mod tests {
     async fn matching_data_hint_does_not_bypass_canonical_verification() {
         use pichi_storage::FilesystemBlobStore;
         for damage in ["digest", "frame"] {
-            let mut fixture = Fixture::new(true, 2);
+            let mut fixture = Fixture::new(true);
             let wrong = if damage == "frame" {
                 fixture.wire = b"invalid compressed input".to_vec();
                 Digest::Sha256(Sha256::digest(&fixture.wire).into())
@@ -1189,7 +1192,7 @@ mod tests {
     #[tokio::test]
     async fn cached_preparation_rebuilds_and_repairs_sidecars() {
         for compressed in [false, true] {
-            let fixture = Fixture::new(compressed, 2);
+            let fixture = Fixture::new(compressed);
             let dir = tempfile::tempdir().unwrap();
             let store = pichi_storage::FilesystemBlobStore::new(dir.path());
             let layer = &fixture.manifest.layers[0];
@@ -1230,17 +1233,17 @@ mod tests {
 
     #[tokio::test]
     async fn preparation_variants_share_only_identical_data_extents() {
-        let mut fixture = Fixture::new(true, 2);
+        let mut fixture = Fixture::new(true);
         let dir = tempfile::tempdir().unwrap();
         let store = pichi_storage::FilesystemBlobStore::new(dir.path());
         let digest = fixture.manifest.layers[0].digest().clone();
         store.put_blob(&digest, &fixture.wire).await.unwrap();
         let mut variants = Vec::new();
-        for (block_size, count, hash_size, suffix) in [
-            (4096, 2, 4096, "aa"),
-            (4096, 2, 4096, "bb"),
-            (1024, 5, 4096, "aa"),
-            (4096, 2, 1024, "aa"),
+        for (block_size, hash_size, suffix) in [
+            (4096, 4096, "aa"),
+            (4096, 4096, "bb"),
+            (1024, 4096, "aa"),
+            (4096, 1024, "aa"),
         ] {
             fixture.manifest.annotations.verity.data_block_size = block_size
                 .to_string()
@@ -1255,7 +1258,6 @@ mod tests {
             let Layer::Scute(scute) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
-            scute.annotations.data_blocks = std::num::NonZeroU64::new(count as u64).unwrap().into();
             scute.annotations.salt = format!("{}{suffix}", "00".repeat(32))
                 .parse::<devmap_verity::Salt>()
                 .unwrap()
@@ -1300,7 +1302,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let over_capacity = fs4::available_space(scratch.path()).unwrap() + 1;
         for size in [4096, 8193, over_capacity, u64::MAX] {
-            let mut fixture = Fixture::new(true, 2);
+            let mut fixture = Fixture::new(true);
             let Layer::Scute(scute) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
@@ -1308,17 +1310,17 @@ mod tests {
             assert!(fixture.prepare(scratch.path()).is_err());
         }
         for compressed in [false, true] {
-            let mut fixture = Fixture::new(compressed, 2);
+            let mut fixture = Fixture::new(compressed);
             fixture.wire.pop();
             assert!(fixture.prepare(scratch.path()).is_err());
-            let mut fixture = Fixture::new(compressed, 2);
+            let mut fixture = Fixture::new(compressed);
             let Layer::Scute(d) = &mut fixture.manifest.layers[0] else {
                 unreachable!()
             };
             d.digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"wrong").into());
             assert!(fixture.prepare(scratch.path()).is_err());
         }
-        let mut fixture = Fixture::new(true, 2);
+        let mut fixture = Fixture::new(true);
         fixture.wire.extend_from_within(..);
         let Layer::Scute(d) = &mut fixture.manifest.layers[0] else {
             unreachable!()
@@ -1370,7 +1372,6 @@ mod tests {
                 "size": WIRE.len(),
                 "annotations": {
                     "dev.pichi.scute.verity.salt": hex::encode([0; 32]),
-                    "dev.pichi.scute.verity.data-blocks": "1",
                     "dev.pichi.scute.size": "4096",
                     "dev.pichi.scute.digest": <Digest>::Sha256([1;32]).to_string(),
                     "dev.pichi.scute.verity.digest": <Digest>::Sha256([2;32]).to_string(),
@@ -1404,7 +1405,7 @@ mod tests {
     fn observes_network_error_after_declared_extent() {
         let scratch = tempfile::tempdir().unwrap();
         for compressed in [false, true] {
-            let fixture = Fixture::new(compressed, 2);
+            let fixture = Fixture::new(compressed);
             let error = PreparedLayer::read(
                 LateFailure(&fixture.wire),
                 &fixture.manifest,

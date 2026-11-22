@@ -118,8 +118,9 @@ pub struct ImportRawArgs {
     #[arg(long, default_value_t = false)]
     pub quiet: bool,
     /// Extra manifest annotations, `KEY=VALUE` (repeatable) — e.g.
-    /// `-a org.opencontainers.image.source=<url>`. pichi carries them verbatim;
+    /// `-a org.opencontainers.image.description=<text>`. Pichi carries them verbatim;
     /// the structural `dev.pichi.carapace.verity.*` keys cannot be overridden.
+    /// Build provenance, if supplied, must include commit, context, and plan.
     #[arg(short = 'a', long = "annotation", value_name = "KEY=VALUE")]
     pub annotations: Vec<String>,
 }
@@ -162,8 +163,9 @@ pub struct ImportPmiArgs {
     #[arg(long, default_value_t = false)]
     pub quiet: bool,
     /// Extra manifest annotations, `KEY=VALUE` (repeatable) — e.g.
-    /// `-a org.opencontainers.image.source=<url>`. pichi carries them verbatim;
+    /// `-a org.opencontainers.image.description=<text>`. Pichi carries them verbatim;
     /// the structural `dev.pichi.carapace.verity.*` keys cannot be overridden.
+    /// Build provenance, if supplied, must include commit, context, and plan.
     #[arg(short = 'a', long = "annotation", value_name = "KEY=VALUE")]
     pub annotations: Vec<String>,
 }

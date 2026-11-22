@@ -913,7 +913,11 @@ mod tests {
                         digest: layer.clone(),
                         size: payload.len() as u64,
                     })],
-                    annotations: Default::default(),
+                    annotations: conglobate::artifact::ManifestAnnotations {
+                        oci: Default::default(),
+                        build: None,
+                        verity: Default::default(),
+                    },
                 };
                 let bytes = serde_json::to_vec(&manifest)?;
                 let image = Digest::Sha256(Sha256::digest(&bytes).into());

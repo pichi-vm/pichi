@@ -252,7 +252,8 @@ mod tests {
                     root: Some(Digest::Sha256(root)),
                     ..Default::default()
                 },
-                ..Default::default()
+                oci: Default::default(),
+                build: None,
             },
         };
         let bytes = Bytes::from(serde_json::to_vec(&manifest).unwrap());
@@ -444,7 +445,6 @@ mod tests {
                 "size": 1024,
                 "annotations": {
                     "dev.pichi.scute.verity.salt": "00".repeat(64),
-                    "dev.pichi.scute.verity.data-blocks": "1",
                     "dev.pichi.scute.size": "1024",
                     "dev.pichi.scute.digest": <Digest>::Sha256([0x11;32]).to_string(),
                     "dev.pichi.scute.verity.digest": <Digest>::Sha256([2;32]).to_string()

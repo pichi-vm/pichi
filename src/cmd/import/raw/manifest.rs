@@ -89,7 +89,6 @@ mod tests {
                 digest: digest.clone(),
                 size: std::num::NonZeroU64::new(16384).unwrap().into(),
                 verity_digest: Digest::Sha256([2; 32]),
-                data_blocks: std::num::NonZeroU64::new(4).unwrap().into(),
                 salt: devmap_verity::Salt::new(salt).unwrap().into(),
             },
         }
@@ -109,6 +108,7 @@ mod tests {
             &BTreeMap::new(),
         )
         .unwrap();
+        assert!(m.annotations.build.is_none());
         assert!(
             serde_json::to_value(&m.annotations)
                 .unwrap()
@@ -148,7 +148,7 @@ mod tests {
         let Layer::Scute(scute) = &m.layers[0] else {
             panic!("expected scute layer");
         };
-        assert_eq!(scute.annotations.data_blocks.get(), 4);
+        assert_eq!(scute.annotations.size.get(), 16384);
         assert_eq!(
             scute.annotations.salt.as_ref(),
             &[0; 32],
@@ -218,11 +218,48 @@ mod tests {
         assert_eq!(m.config, ConfigDescriptor::fixture());
     }
 
+    #[test]
+    fn import_rejects_incomplete_build_provenance() {
+        let digest = Digest::Sha256([1; 32]);
+        for (key, value) in [
+            (
+                "dev.pichi.build.commit",
+                format!("sha1:{}", "ab".repeat(20)),
+            ),
+            ("dev.pichi.build.context", ".".into()),
+            ("dev.pichi.build.plan", "pichi.yaml".into()),
+            (
+                "org.opencontainers.image.source",
+                "https://example/repo".into(),
+            ),
+        ] {
+            assert!(
+                Manifest::base(
+                    scute(&digest, &[0; 32]),
+                    ConfigDescriptor::fixture(),
+                    &[0xab; 32],
+                    "2026-05-07T12:00:00Z",
+                    &BTreeMap::from([(key.into(), value)]),
+                )
+                .is_err(),
+                "{key}"
+            );
+        }
+    }
+
     /// Caller annotations merge in, but structural verity keys can't be spoofed
     /// and a caller-supplied `created` wins over the stamped one.
     #[test]
     fn extra_annotations_merge_with_structural_precedence() {
         let mut extra = BTreeMap::new();
+        extra.extend([
+            (
+                "dev.pichi.build.commit".into(),
+                format!("sha1:{}", "ab".repeat(20)),
+            ),
+            ("dev.pichi.build.context".into(), ".".into()),
+            ("dev.pichi.build.plan".into(), "pichi.yaml".into()),
+        ]);
         extra.insert(
             "org.opencontainers.image.source".to_string(),
             "https://example/repo".to_string(),
@@ -255,7 +292,13 @@ mod tests {
         .unwrap();
         // provenance carried verbatim
         assert_eq!(
-            m.annotations.oci.source.as_deref().unwrap(),
+            m.annotations
+                .build
+                .as_ref()
+                .unwrap()
+                .source
+                .as_deref()
+                .unwrap(),
             "https://example/repo"
         );
         // caller-supplied created wins over the stamped timestamp

@@ -54,7 +54,6 @@ impl Fixture {
                 "digest": layer.to_string(), "size": 4096,
                 "annotations": {
                     "dev.pichi.scute.verity.salt": "00".repeat(32),
-                    "dev.pichi.scute.verity.data-blocks": "1",
                     "dev.pichi.scute.size": "4096",
                     "dev.pichi.scute.digest": layer.to_string(),
                     "dev.pichi.scute.verity.digest": <Digest>::Sha256([0;32]).to_string()

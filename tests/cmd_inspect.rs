@@ -24,7 +24,8 @@ fn chain_annotations() -> conglobate::artifact::ManifestAnnotations {
             root: Some(conglobate::artifact::Digest::Sha256([0x11; 32])),
             ..Default::default()
         },
-        ..Default::default()
+        oci: Default::default(),
+        build: None,
     }
 }
 
@@ -52,7 +53,6 @@ async fn inspect_bare_manifest_returns_full_schema() {
                     digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                     size: std::num::NonZeroU64::new(4096).unwrap().into(),
                     verity_digest: conglobate::artifact::Digest::Sha256([0x00; 32]),
-                    data_blocks: std::num::NonZeroU64::MIN.into(),
                     salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
                 },
             }),
@@ -124,7 +124,6 @@ async fn inspect_format_reaches_dotted_annotation() {
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: std::num::NonZeroU64::new(4096).unwrap().into(),
                 verity_digest: conglobate::artifact::Digest::Sha256([0x00; 32]),
-                data_blocks: std::num::NonZeroU64::MIN.into(),
                 salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
             },
         })],
@@ -246,7 +245,11 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: 4096,
             })],
-            annotations: Default::default(),
+            annotations: conglobate::artifact::ManifestAnnotations {
+                oci: Default::default(),
+                build: None,
+                verity: Default::default(),
+            },
         };
         let bytes = serde_json::to_vec(&manifest).unwrap();
         let manifest_digest =
@@ -327,7 +330,11 @@ async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
                 digest: conglobate::artifact::Digest::Sha256([0x11; 32]),
                 size: 4096,
             })],
-            annotations: Default::default(),
+            annotations: conglobate::artifact::ManifestAnnotations {
+                oci: Default::default(),
+                build: None,
+                verity: Default::default(),
+            },
         };
         let mut manifest = serde_json::to_value(manifest).unwrap();
         manifest["annotations"] = serde_json::json!({"org.opencontainers.image.title": name});

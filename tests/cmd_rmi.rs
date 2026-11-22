@@ -48,14 +48,17 @@ async fn insert_manifest(
                 digest: scute_digest.clone(),
                 size: std::num::NonZeroU64::new(1024).unwrap().into(),
                 verity_digest: conglobate::artifact::Digest::Sha256([0x00; 32]),
-                data_blocks: std::num::NonZeroU64::MIN.into(),
                 salt: format!("{:0<8}", salt_seed)
                     .parse::<devmap_verity::Salt>()
                     .unwrap()
                     .into(),
             },
         })],
-        annotations: Default::default(),
+        annotations: conglobate::artifact::ManifestAnnotations {
+            oci: Default::default(),
+            build: None,
+            verity: Default::default(),
+        },
     };
     let mbytes = serde_json::to_vec(&m).unwrap();
     let mdigest = conglobate::artifact::Digest::Sha256(

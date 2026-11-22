@@ -50,7 +50,8 @@ fn chain_annotations() -> conglobate::artifact::ManifestAnnotations {
             root: Some(conglobate::artifact::Digest::Sha256([0x11; 32])),
             ..Default::default()
         },
-        ..Default::default()
+        oci: Default::default(),
+        build: None,
     }
 }
 
@@ -103,9 +104,6 @@ async fn populate_bootable_with_requirements(
                         .unwrap()
                         .into(),
                     verity_digest: sha256_digest(b"pending fixture tree"),
-                    data_blocks: std::num::NonZeroU64::new((cow_bytes.len() as u64).div_ceil(4096))
-                        .unwrap()
-                        .into(),
                     salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
                 },
             }),
@@ -400,7 +398,6 @@ async fn loaded_scutes_reach_dillo_as_uncompressed_data_and_verity() {
                     digest: sha256_digest(&data),
                     size: std::num::NonZeroU64::new(data.len() as u64).unwrap().into(),
                     verity_digest: sha256_digest(b"pending fixture tree"),
-                    data_blocks: std::num::NonZeroU64::new(2).unwrap().into(),
                     salt: devmap_verity::Salt::new(&[0; 32]).unwrap().into(),
                 },
             };

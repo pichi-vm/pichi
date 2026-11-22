@@ -213,7 +213,11 @@ mod tests {
                 }),
                 Layer::BootConfig(config.descriptor().unwrap()),
             ],
-            annotations: Default::default(),
+            annotations: conglobate::artifact::ManifestAnnotations {
+                oci: Default::default(),
+                build: None,
+                verity: Default::default(),
+            },
         };
         let path = BootConfigFile::prepared_image(&manifest, &store)
             .await
