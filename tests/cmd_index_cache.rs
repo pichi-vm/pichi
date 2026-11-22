@@ -57,7 +57,7 @@ impl Fixture {
                     "dev.pichi.scute.verity.data-blocks": "1",
                     "dev.pichi.scute.size": "4096",
                     "dev.pichi.scute.digest": layer.to_string(),
-                    "dev.pichi.scute.verity.digest": Digest::Sha256([0;32]).to_string()
+                    "dev.pichi.scute.verity.digest": <Digest>::Sha256([0;32]).to_string()
                 }
             }],
             "annotations": {
@@ -77,7 +77,7 @@ impl Fixture {
         let mut verity = std::io::Cursor::new(Vec::new());
         header.format(&[42; 4096][..], &mut verity).unwrap();
         manifest["layers"][0]["annotations"]["dev.pichi.scute.verity.digest"] =
-            Digest::Sha256(Sha256::digest(verity.get_ref()).into())
+            <Digest>::Sha256(Sha256::digest(verity.get_ref()).into())
                 .to_string()
                 .into();
         let bytes = serde_json::to_vec(&manifest).unwrap();

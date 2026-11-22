@@ -101,7 +101,7 @@ impl WorkloadFixture {
             "dev.pichi.build.lock": "pichi.lock",
         });
         let bytes = serde_json::to_vec(&value).unwrap();
-        let digest = Digest::Sha256(Sha256::digest(&bytes).into());
+        let digest = <Digest>::Sha256(Sha256::digest(&bytes).into());
         std::fs::write(blobs.join(digest.hex()), &bytes).unwrap();
         std::fs::write(
             product.join("oci-layout"),

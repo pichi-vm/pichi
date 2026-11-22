@@ -1398,12 +1398,12 @@ mod tests {
                         }
                         "zero" => {
                             manifest["annotations"][key] =
-                                Digest::Sha256([0; 32]).to_string().into()
+                                <Digest>::Sha256([0; 32]).to_string().into()
                         }
                         "malformed" => manifest["annotations"][key] = "not a root".into(),
                         "wrong" => {
                             manifest["annotations"][key] =
-                                Digest::Sha256([42; 32]).to_string().into()
+                                <Digest>::Sha256([42; 32]).to_string().into()
                         }
                         _ => {}
                     }

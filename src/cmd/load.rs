@@ -641,14 +641,14 @@ pub(super) mod tests {
             };
             self.manifest["layers"].as_array_mut().unwrap().push(json!({
                 "mediaType": if compressed { conglobate::artifact::Zstd::<conglobate::artifact::ScuteDescriptor>::MEDIA_TYPE } else { conglobate::artifact::ScuteDescriptor::MEDIA_TYPE },
-                "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
+                "digest": <Digest>::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
                 "size": wire.len(),
                 "annotations": {
                     "dev.pichi.scute.verity.salt": hex::encode(self.tip),
                     "dev.pichi.scute.verity.data-blocks": (cow.len() as u64).div_ceil(4096).to_string(),
                     "dev.pichi.scute.size": cow.len().to_string(),
-                    "dev.pichi.scute.digest": Digest::Sha256(Sha256::digest(&cow).into()).to_string(),
-                    "dev.pichi.scute.verity.digest": Digest::Sha256(Sha256::digest(&output.blob).into()).to_string(),
+                    "dev.pichi.scute.digest": <Digest>::Sha256(Sha256::digest(&cow).into()).to_string(),
+                    "dev.pichi.scute.verity.digest": <Digest>::Sha256(Sha256::digest(&output.blob).into()).to_string(),
                 },
             }));
             self.blobs.push(wire);
@@ -669,7 +669,7 @@ pub(super) mod tests {
             for blob in &self.blobs {
                 std::fs::write(
                     dir.join("blobs/sha256").join(
-                        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(blob).into()).hex(),
+                        <Digest>::Sha256(<sha2::Sha256 as sha2::Digest>::digest(blob).into()).hex(),
                     ),
                     blob,
                 )
@@ -699,7 +699,7 @@ pub(super) mod tests {
         fn sidecars(&self, dir: &Path) {
             for (blob, tree) in self.blobs.iter().zip(&self.trees) {
                 let path = dir.join("blobs/sha256").join(
-                    Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(blob).into()).hex(),
+                    <Digest>::Sha256(<sha2::Sha256 as sha2::Digest>::digest(blob).into()).hex(),
                 );
                 std::fs::write(path.with_extension("verity"), tree).unwrap();
             }
@@ -830,7 +830,7 @@ pub(super) mod tests {
             .unwrap()
             .push(json!({
                 "mediaType": conglobate::artifact::PmiDescriptor::MEDIA_TYPE,
-                "digest": Digest::Sha256(Sha256::digest(&pmi).into()).to_string(),
+                "digest": <Digest>::Sha256(Sha256::digest(&pmi).into()).to_string(),
                 "size": pmi.len(),
             }));
         fixture.blobs.push(pmi);
@@ -1259,7 +1259,7 @@ pub(super) mod tests {
                 "missing config" | "bad config" | "inline config" => {
                     fixture.manifest["config"] = json!({
                         "mediaType": conglobate::artifact::Config::MEDIA_TYPE,
-                        "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"bad config").into()).to_string(),
+                        "digest": <Digest>::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"bad config").into()).to_string(),
                         "size": 10,
                     });
                     if case == "bad config" {
@@ -1332,7 +1332,7 @@ pub(super) mod tests {
             }
             let digest = fixture.write(&output);
             let cow = output.join("blobs/sha256").join(
-                Digest::Sha256(
+                <Digest>::Sha256(
                     <sha2::Sha256 as sha2::Digest>::digest(
                         fixture.blobs.first().map_or(&b""[..], Vec::as_slice),
                     )
@@ -1363,7 +1363,7 @@ pub(super) mod tests {
                     absent["digest"] = format!("sha256:{}", "ab".repeat(32)).into();
                     index["manifests"].as_array_mut().unwrap().push(absent);
                     let bytes = serde_json::to_vec(&index).unwrap();
-                    let nested = Digest::Sha256(Sha256::digest(&bytes).into());
+                    let nested = <Digest>::Sha256(Sha256::digest(&bytes).into());
                     std::fs::write(output.join("blobs/sha256").join(nested.hex()), &bytes).unwrap();
                     index["manifests"] = json!([{
                         "mediaType": LayoutIndex::MEDIA_TYPE,
@@ -1379,7 +1379,7 @@ pub(super) mod tests {
                 "unexpected file" => std::fs::write(output.join("secret"), b"secret").unwrap(),
                 "unreferenced blob" => std::fs::write(
                     output.join("blobs/sha256").join(
-                        Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"extra").into())
+                        <Digest>::Sha256(<sha2::Sha256 as sha2::Digest>::digest(b"extra").into())
                             .hex(),
                     ),
                     b"extra",
@@ -1532,7 +1532,7 @@ pub(super) mod tests {
             let fixture = LayoutFixture::new();
             fixture.write(&output);
             let cow = output.join("blobs/sha256").join(
-                Digest::Sha256(
+                <Digest>::Sha256(
                     <sha2::Sha256 as sha2::Digest>::digest(
                         fixture.blobs.first().map_or(&b""[..], Vec::as_slice),
                     )

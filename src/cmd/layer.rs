@@ -746,8 +746,8 @@ mod tests {
                 "dev.pichi.scute.verity.salt": hex::encode([0; 32]),
                 "dev.pichi.scute.verity.data-blocks": declared.to_string(),
                 "dev.pichi.scute.size": data.len().to_string(),
-                "dev.pichi.scute.digest": Digest::Sha256(Sha256::digest(&data).into()).to_string(),
-                "dev.pichi.scute.verity.digest": Digest::Sha256(Sha256::digest(&verity.blob).into()).to_string(),
+                "dev.pichi.scute.digest": <Digest>::Sha256(Sha256::digest(&data).into()).to_string(),
+                "dev.pichi.scute.verity.digest": <Digest>::Sha256(Sha256::digest(&verity.blob).into()).to_string(),
             });
             let manifest = serde_json::json!({
                 "schemaVersion": 2,
@@ -756,7 +756,7 @@ mod tests {
                 "config": conglobate::artifact::ConfigDescriptor::fixture(),
                 "layers": [{
                     "mediaType": if compressed { conglobate::artifact::Zstd::<conglobate::artifact::ScuteDescriptor>::MEDIA_TYPE } else { conglobate::artifact::ScuteDescriptor::MEDIA_TYPE },
-                    "digest": Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
+                    "digest": <Digest>::Sha256(<sha2::Sha256 as sha2::Digest>::digest(&wire).into()).to_string(),
                     "size": wire.len(), "annotations": annotations,
                 }],
                 "annotations": {
@@ -1343,7 +1343,7 @@ mod tests {
         ];
         assert_eq!(DEFAULT_MAX_WINDOW_SIZE, 128 * 1024 * 1024);
 
-        let digest = Digest::Sha256(<sha2::Sha256 as sha2::Digest>::digest(WIRE).into());
+        let digest = <Digest>::Sha256(<sha2::Sha256 as sha2::Digest>::digest(WIRE).into());
         let manifest = serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -1357,8 +1357,8 @@ mod tests {
                     "dev.pichi.scute.verity.salt": hex::encode([0; 32]),
                     "dev.pichi.scute.verity.data-blocks": "1",
                     "dev.pichi.scute.size": "4096",
-                    "dev.pichi.scute.digest": Digest::Sha256([1;32]).to_string(),
-                    "dev.pichi.scute.verity.digest": Digest::Sha256([2;32]).to_string(),
+                    "dev.pichi.scute.digest": <Digest>::Sha256([1;32]).to_string(),
+                    "dev.pichi.scute.verity.digest": <Digest>::Sha256([2;32]).to_string(),
                 },
             }],
             "annotations": {

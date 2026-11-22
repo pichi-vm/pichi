@@ -446,8 +446,8 @@ mod tests {
                     "dev.pichi.scute.verity.salt": "00".repeat(64),
                     "dev.pichi.scute.verity.data-blocks": "1",
                     "dev.pichi.scute.size": "1024",
-                    "dev.pichi.scute.digest": Digest::Sha256([0x11;32]).to_string(),
-                    "dev.pichi.scute.verity.digest": Digest::Sha256([2;32]).to_string()
+                    "dev.pichi.scute.digest": <Digest>::Sha256([0x11;32]).to_string(),
+                    "dev.pichi.scute.verity.digest": <Digest>::Sha256([2;32]).to_string()
                 }
             }]
             // NOTE: no top-level annotations → missing chain annotations.

@@ -537,7 +537,7 @@ dependencies = [
 [[package]]
 name = "conglobate"
 version = "0.2.0"
-source = "git+https://github.com/pichi-vm/conglobate?branch=main#ae7071f619c6c4a75b51f285822517ec2f5272b8"
+source = "git+https://github.com/pichi-vm/conglobate?branch=main#b9190beb24d4aff66793ba254c53f874e2ef70a7"
 dependencies = [
  "devmap-core",
  "devmap-verity",
