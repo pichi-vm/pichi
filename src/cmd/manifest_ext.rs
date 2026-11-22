@@ -85,26 +85,23 @@ impl ManifestExt for Manifest {
     fn verity_header(&self, scute: &ScuteDescriptor, size: Option<u64>) -> Result<Header> {
         self.carapace_root()?
             .ok_or_else(|| anyhow!("missing carapace root"))?;
-        let header = Header {
+        if size.is_some_and(|size| size != scute.annotations.size.get()) {
+            bail!("scute size disagrees with COW length");
+        }
+        let block_size = *self.annotations.verity.data_block_size;
+        Ok(Header {
             uuid: [0; 16],
             parameters: Parameters {
                 hash_type: HashType::Normal,
                 algorithm: Algorithm::Sha256,
                 salt: *scute.annotations.salt,
                 data: Geometry {
-                    size: *self.annotations.verity.data_block_size,
-                    count: *scute.annotations.data_blocks,
+                    size: block_size,
+                    count: scute.annotations.size.div_ceil(block_size.bytes().into()),
                 },
                 hash: *self.annotations.verity.hash_block_size,
             },
-        };
-        if size.is_some_and(|size| {
-            size.div_ceil(u64::from(header.parameters.data.size.bytes().get()))
-                != header.parameters.data.count.get()
-        }) {
-            bail!("scute data_blocks disagrees with COW length");
-        }
-        Ok(header)
+        })
     }
 }
 

@@ -801,6 +801,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn scute_header_requires_exact_data_length() {
+        let fixture = Fixture::new(false, 2);
+        let Layer::Scute(scute) = &fixture.manifest.layers[0] else {
+            unreachable!()
+        };
+        let header = fixture.manifest.verity_header(scute, Some(4097)).unwrap();
+        assert_eq!(header.parameters.data.count.get(), 2);
+        assert!(fixture.manifest.verity_header(scute, Some(4098)).is_err());
+    }
+
     #[tokio::test]
     async fn pmi_transport_preserves_exact_bytes_and_repairs_decoded_cache() {
         for compressed in [false, true] {
@@ -1287,9 +1298,13 @@ mod tests {
     #[test]
     fn rejects_wrong_lengths_digests_and_trailing_frames_without_leaking_temps() {
         let scratch = tempfile::tempdir().unwrap();
-        let over_capacity = fs4::available_space(scratch.path()).unwrap() / 4096 + 1;
-        for declared in [1, 3, over_capacity, u64::MAX] {
-            let fixture = Fixture::new(true, declared);
+        let over_capacity = fs4::available_space(scratch.path()).unwrap() + 1;
+        for size in [4096, 8193, over_capacity, u64::MAX] {
+            let mut fixture = Fixture::new(true, 2);
+            let Layer::Scute(scute) = &mut fixture.manifest.layers[0] else {
+                unreachable!()
+            };
+            scute.annotations.size = std::num::NonZeroU64::new(size).unwrap().into();
             assert!(fixture.prepare(scratch.path()).is_err());
         }
         for compressed in [false, true] {
